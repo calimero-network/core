@@ -1018,7 +1018,7 @@ async fn test_deploy() -> eyre::Result<()> {
         proposal: Proposal {
             id: proposal_id,
             author_id: alice_cx_id.rt()?,
-            actions: actions.clone(),
+            actions,
         },
     };
     let signed = Signed::new(&request, |p| alice_cx_sk.sign(p))?;
@@ -1112,14 +1112,20 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let bigger_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib_fat.wasm").await?;
     let smaller_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
 
+    println!("Config contract: {}", contract.id());
+    let config_balance = worker.view_account(&contract.id()).await?.balance;
+    println!("Config contract balance: {}", config_balance);
+
     // Set initial proxy code
-    let _test = contract
+    let res = contract
         .call("set_proxy_code")
         .args(bigger_proxy_wasm.clone())
         .max_gas()
         .transact()
         .await?
         .into_result()?;
+
+    assert!(res.failures().is_empty(), "{:#?}", res.failures());
 
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
@@ -1162,22 +1168,20 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
         .json()?;
 
     println!("Proxy address: {}", proxy_address);
-
-    // Fund proxy contract for storage costs
-    let _unused = root_account
-        .transfer_near(&proxy_address, NearToken::from_near(50))
-        .await?
-        .into_result()?;
+    let proxy_balance = worker.view_account(&proxy_address).await?.balance;
+    println!("Proxy balance: {}", proxy_balance);
 
     // Get initial measurements
     let initial_outcome = worker.view_account(&proxy_address).await?;
     let initial_storage = initial_outcome.storage_usage;
     let initial_code_size = bigger_proxy_wasm.len() as u64;
+    let initial_balance = initial_outcome.balance;
 
     println!("Initial storage usage: {}", initial_storage);
     println!("Initial WASM size: {}", initial_code_size);
+    println!("Initial Balance: {}", initial_balance);
 
-    let _test = contract
+    let res = contract
         .call("set_proxy_code")
         .args(smaller_proxy_wasm.clone())
         .max_gas()
@@ -1185,8 +1189,10 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
         .await?
         .into_result()?;
 
+    assert!(res.failures().is_empty(), "{:#?}", res.failures());
+
     // Update proxy contract
-    let _res = node1
+    let res = node1
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
@@ -1203,30 +1209,116 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
         .await?
         .into_result()?;
 
-    // Uncomment to print the update result
-    // println!("Update result: {:#?}", _res);
+    assert!(res.failures().is_empty(), "{:#?}", res.failures());
 
-    // Get final measurements
-    let final_outcome = worker.view_account(&proxy_address).await?;
-    let final_storage = final_outcome.storage_usage;
-    let final_code_size = smaller_proxy_wasm.len() as u64;
+    // Get intermediate measurements
+    let intermediate_outcome = worker.view_account(&proxy_address).await?;
+    let intermediate_storage = intermediate_outcome.storage_usage;
+    let intermediate_code_size = smaller_proxy_wasm.len() as u64;
+    let intermediate_balance = intermediate_outcome.balance;
 
-    println!("Final storage usage: {}", final_storage);
-    println!("Final WASM size: {}", final_code_size);
+    println!("Intermediate storage usage: {}", intermediate_storage);
+    println!("Intermediate WASM size: {}", intermediate_code_size);
+    println!("Intermediate Balance: {}", intermediate_balance);
 
     // Calculate raw differences (can be negative)
-    let storage_change = final_storage as i64 - initial_storage as i64;
-    let code_change = final_code_size as i64 - initial_code_size as i64;
+    let storage_change = intermediate_storage as i64 - initial_storage as i64;
+    let code_change = intermediate_code_size as i64 - initial_code_size as i64;
+    let intermediate_balance_change =
+        intermediate_balance.as_yoctonear() as i128 - initial_balance.as_yoctonear() as i128;
+    let intermediate_balance_change_is_negative = intermediate_balance_change.is_negative();
+    let intermediate_balance_change =
+        NearToken::from_yoctonear(intermediate_balance_change.unsigned_abs());
 
     println!("Storage change: {:+}", storage_change);
     println!("Code change: {:+}", code_change);
+    println!(
+        "Balance change: {:+} (negative: {})",
+        intermediate_balance_change, intermediate_balance_change_is_negative
+    );
 
-    // Test exact equality
+    assert!(intermediate_balance_change_is_negative);
+
     assert_eq!(
         storage_change, code_change,
         "Storage change ({:+}) should exactly match code size change ({:+})",
         storage_change, code_change
     );
+
+    let res = contract
+        .call("set_proxy_code")
+        .args(bigger_proxy_wasm.clone())
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
+    assert!(res.failures().is_empty(), "{:#?}", res.failures());
+
+    // Update proxy contract
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest::new(
+                    context_id,
+                    ContextRequestKind::UpdateProxyContract,
+                ));
+                Request::new(alice_cx_id.rt()?, kind)
+            },
+            |p| alice_cx_sk.sign(p),
+        )?)
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
+    assert!(res.failures().is_empty(), "{:#?}", res.failures());
+
+    // Get final measurements
+    let final_outcome = worker.view_account(&proxy_address).await?;
+    let final_storage = final_outcome.storage_usage;
+    let final_code_size = bigger_proxy_wasm.len() as u64;
+    let final_balance = final_outcome.balance;
+
+    println!("Final storage usage: {}", final_storage);
+    println!("Final WASM size: {}", final_code_size);
+    println!("Final Balance: {}", final_balance);
+
+    // Calculate raw differences (can be negative)
+    let storage_change = final_storage as i64 - intermediate_storage as i64;
+    let code_change = final_code_size as i64 - intermediate_code_size as i64;
+    let final_balance_change =
+        final_balance.as_yoctonear() as i128 - intermediate_balance.as_yoctonear() as i128;
+    let final_balance_change_is_negative = final_balance_change.is_negative();
+    let final_balance_change = NearToken::from_yoctonear(final_balance_change.unsigned_abs());
+
+    println!("Storage change: {:+}", storage_change);
+    println!("Code change: {:+}", code_change);
+    println!(
+        "Balance change: {:+} (negative: {})",
+        final_balance_change, final_balance_change_is_negative
+    );
+
+    assert!(!final_balance_change_is_negative);
+
+    let diff = final_balance_change
+        .as_yoctonear()
+        .abs_diff(intermediate_balance_change.as_yoctonear());
+
+    assert!(
+        NearToken::from_yoctonear(diff) < NearToken::from_millinear(1),
+        "Balance change should be within a milliNEAR"
+    );
+
+    assert_eq!(
+        storage_change, code_change,
+        "Storage change ({:+}) should exactly match code size change ({:+})",
+        storage_change, code_change
+    );
+
+    let config_balance = worker.view_account(&contract.id()).await?.balance;
+    println!("Config contract balance: {}", config_balance);
 
     Ok(())
 }

@@ -37,7 +37,8 @@ impl ContextConfigs {
                     author_id,
                     application,
                 } => {
-                    self.add_context(&request.signer_id, context_id, author_id, application);
+                    let _is_sent_on_drop =
+                        self.add_context(&request.signer_id, context_id, author_id, application);
                 }
                 ContextRequestKind::UpdateApplication { application } => {
                     self.update_application(&request.signer_id, context_id, application);
@@ -55,7 +56,8 @@ impl ContextConfigs {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
                 ContextRequestKind::UpdateProxyContract => {
-                    self.update_proxy_contract(&request.signer_id, context_id);
+                    let _is_sent_on_drop =
+                        self.update_proxy_contract(&request.signer_id, context_id);
                 }
             },
         }
@@ -124,8 +126,7 @@ impl ContextConfigs {
 
         env::log_str(&format!("Context `{}` added", context_id));
 
-        self.deploy_proxy_contract(context_id, account_id)
-            .then(Self::ext(env::current_account_id()).add_context_callback())
+        self.init_proxy_contract(context_id, account_id)
     }
 
     fn update_application(
@@ -299,22 +300,31 @@ impl ContextConfigs {
         }
     }
 
-    pub fn deploy_proxy_contract(
+    // take the proxy code from LazyOption's cache
+    // without it assuming we're removing the value
+    fn get_proxy_code(&self) -> Vec<u8> {
+        let code_ref = self.proxy_code.get();
+
+        let code_ptr = std::ptr::from_ref(code_ref) as usize + 0;
+
+        let code_mut = unsafe { &mut *(code_ptr as *mut Option<Vec<u8>>) };
+
+        code_mut.take().expect("proxy code not set")
+    }
+
+    pub fn init_proxy_contract(
         &mut self,
         context_id: Repr<ContextId>,
         account_id: AccountId,
     ) -> Promise {
         // Known constants from NEAR protocol
-        //Use near tokens instead of yoctoNEAR
         const ACCOUNT_CREATION_COST: NearToken = NearToken::from_millinear(1); // 0.001 NEAR
         const MIN_ACCOUNT_BALANCE: NearToken = NearToken::from_millinear(35).saturating_div(10); // 0.0035 NEAR
         const STORAGE_TIP: NearToken = NearToken::from_near(1).saturating_div(10); // 0.1 NEAR
 
-        // Calculate storage needs
-        let contract_bytes = self.proxy_code.get().clone().unwrap();
+        let contract_bytes = self.get_proxy_code();
         let storage_cost = env::storage_byte_cost().saturating_mul(contract_bytes.len() as u128);
 
-        // Calculate required deposit
         let required_deposit = ACCOUNT_CREATION_COST
             .saturating_add(MIN_ACCOUNT_BALANCE)
             .saturating_add(STORAGE_TIP)
@@ -325,29 +335,19 @@ impl ContextConfigs {
             "Insufficient contract balance for deployment"
         );
 
-        // Calculate init gas dynamically
-        let init_args = serde_json::to_vec(&json!({
-            "context_id": context_id,
-            "context_config_account_id": env::current_account_id()
-        }))
-        .unwrap();
+        let init_args = serde_json::to_vec(&json!({ "context_id": context_id })).unwrap();
 
-        let init_gas = Gas::from_gas(
-            Gas::from_tgas(20).as_gas()
-                + ((init_args.len() as u64) + contract_bytes.len() as u64) * 100_000,
-        );
-
-        Promise::new(account_id)
+        Promise::new(account_id.clone())
             .create_account()
             .transfer(required_deposit)
             .deploy_contract(contract_bytes)
             .function_call(
                 "init".to_owned(),
                 init_args,
-                NearToken::from_near(0),
-                init_gas,
+                NearToken::default(),
+                Gas::from_tgas(1),
             )
-            .then(Self::ext(env::current_account_id()).proxy_contract_callback("deploy".to_owned()))
+            .then(Self::ext(env::current_account_id()).proxy_contract_callback())
     }
 
     fn update_proxy_contract(
@@ -355,7 +355,6 @@ impl ContextConfigs {
         signer_id: &SignerId,
         context_id: Repr<ContextId>,
     ) -> Promise {
-        // Get the context and verify proxy contract exists
         let context = self
             .contexts
             .get_mut(&context_id)
@@ -365,42 +364,37 @@ impl ContextConfigs {
             .proxy
             .get(signer_id)
             .expect("unable to update contract")
-            .get_mut();
+            .get_mut()
+            .clone();
 
-        let new_code = self.proxy_code.get().clone().unwrap();
+        let contract_bytes = self.get_proxy_code();
+        let storage_cost = env::storage_byte_cost().saturating_mul(contract_bytes.len() as u128);
 
-        // Call the update method on the proxy contract
-        Promise::new(proxy_account_id.clone())
+        require!(
+            env::account_balance() >= storage_cost,
+            "Insufficient contract balance for deployment"
+        );
+
+        Promise::new(proxy_account_id)
             .function_call(
                 "update_contract".to_owned(),
-                new_code,
-                NearToken::from_near(0),
+                contract_bytes,
+                storage_cost,
                 Gas::from_tgas(100),
             )
-            .then(Self::ext(env::current_account_id()).proxy_contract_callback("update".to_owned()))
+            .then(Self::ext(env::current_account_id()).proxy_contract_callback())
     }
 }
 
 #[near]
 impl ContextConfigs {
-    pub fn add_context_callback(
-        &mut self,
-        #[callback_result] call_result: Result<(), PromiseError>,
-    ) {
-        if let Err(e) = call_result {
-            panic!("Failed to deploy proxy contract for context: {:?}", e);
-        }
-    }
-
     #[private]
     pub fn proxy_contract_callback(
         &mut self,
         #[callback_result] call_result: Result<(), PromiseError>,
-        action: String,
     ) {
-        if let Err(e) = call_result {
-            env::panic_str(&format!("Failed to {} proxy contract: {:?}", action, e));
-        }
-        env::log_str(&format!("Successfully {} proxy contract", action));
+        call_result.expect("Failed to update proxy contract");
+
+        env::log_str("Successfully deployed proxy contract");
     }
 }

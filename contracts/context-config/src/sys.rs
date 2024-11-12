@@ -34,10 +34,9 @@ impl ContextConfigs {
         env::log_str("Erasing contract");
 
         for (_, context) in self.contexts.drain() {
-            drop(context.application.into_inner());
+            let _ignored = context.application.into_inner();
             context.members.into_inner().clear();
-            // let mut proxy = context.proxy.into_inner();
-            // proxy = AccountId::try_from("".to_string()).unwrap();
+            let _ignored = context.proxy.into_inner();
         }
 
         self.proxy_code = LazyOption::new(b"p", None);
@@ -91,7 +90,7 @@ impl ContextConfigs {
     #[private]
     pub fn set_proxy_code(&mut self) {
         self.proxy_code
-            .set(Some(env::input().expect("Expected proxy code").to_vec()));
+            .set(Some(env::input().expect("Expected proxy code")));
     }
 }
 

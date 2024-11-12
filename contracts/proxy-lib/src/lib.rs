@@ -44,7 +44,7 @@ pub struct ProxyContract {
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
     pub context_storage: IterableMap<Box<[u8]>, Box<[u8]>>,
-    pub code_size: u64,
+    pub code_size: (u64, Option<u64>),
 }
 
 #[derive(Clone, Debug)]
@@ -58,17 +58,17 @@ pub struct FunctionCallPermission {
 #[near]
 impl ProxyContract {
     #[init]
-    pub fn init(context_id: Repr<ContextId>, context_config_account_id: AccountId) -> Self {
+    pub fn init(context_id: Repr<ContextId>) -> Self {
         Self {
             context_id: context_id.rt().expect("Invalid context id"),
-            context_config_account_id,
+            context_config_account_id: env::predecessor_account_id(),
             proposals: IterableMap::new(b"r".to_vec()),
             approvals: IterableMap::new(b"c".to_vec()),
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
             num_approvals: 3,
             active_proposals_limit: 10,
             context_storage: IterableMap::new(b"l"),
-            code_size: env::storage_usage() as u64,
+            code_size: (env::storage_usage(), None),
         }
     }
 

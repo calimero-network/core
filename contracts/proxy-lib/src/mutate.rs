@@ -18,13 +18,19 @@ use crate::{assert_membership, MemberAction};
 #[near]
 impl ProxyContract {
     pub fn mutate(&mut self) -> Promise {
+        if let (_, Some(_)) = self.code_size {
+            env::panic_str("contract upgrade in progress");
+        }
+
         parse_input!(request: Signed<ProxyMutateRequest>);
+
         let request = request
             .parse(|i| match i {
                 ProxyMutateRequest::Propose { proposal } => *proposal.author_id,
                 ProxyMutateRequest::Approve { approval } => *approval.signer_id,
             })
             .expect(&format!("Invalid input: {:?}", request));
+
         match request {
             ProxyMutateRequest::Propose { proposal } => self.propose(proposal),
             ProxyMutateRequest::Approve { approval } => {
@@ -200,48 +206,52 @@ impl ProxyContract {
         }
     }
 
+    #[payable]
     pub fn update_contract(&mut self) -> Promise {
-        // Verify caller is the context config contract
+        env::log_str("suhhh");
+
         require!(
             env::predecessor_account_id() == self.context_config_account_id,
             "Only the context config contract can update the proxy"
         );
 
         let new_code = env::input().expect("Expected proxy code");
-        let new_code_size = new_code.len() as u64;
+        let (_, new_code_size @ None) = &mut self.code_size else {
+            env::panic_str("contract upgrade in progress");
+        };
 
-        // Deploy the new code and chain the callback
+        new_code_size.replace(new_code.len() as u64);
+
         Promise::new(env::current_account_id())
             .deploy_contract(new_code)
-            .then(Self::ext(env::current_account_id()).update_contract_callback(new_code_size))
+            .then(
+                Self::ext(env::current_account_id())
+                    .update_contract_callback(env::attached_deposit()),
+            )
     }
 
     #[private]
     pub fn update_contract_callback(
         &mut self,
-        new_code_size: u64,
+        attached_deposit: NearToken,
         #[callback_result] call_result: Result<(), PromiseError>,
     ) {
-        require!(
-            env::promise_results_count() == 1,
-            "Expected 1 promise result"
-        );
+        let (old_code_size, Some(new_code_size)) = self.code_size else {
+            env::panic_str("fatal: new code size not set");
+        };
 
-        if let Err(e) = call_result {
-            env::panic_str(&format!("Failed to update proxy contract code: {:?}", e));
-        }
+        self.code_size = (new_code_size, None);
 
-        // Calculate refund based on code size difference only
-        let old_code_size = self.code_size;
-        if new_code_size < old_code_size {
-            let refund =
-                (old_code_size - new_code_size) as u128 * env::storage_byte_cost().as_yoctonear();
-            Promise::new(self.context_config_account_id.clone())
-                .transfer(NearToken::from_yoctonear(refund));
-        }
+        call_result.expect("Failed to update proxy contract");
 
-        // Update stored code size
-        self.code_size = new_code_size;
+        let old_cost = env::storage_byte_cost().saturating_mul(old_code_size as u128);
+        let new_cost = env::storage_byte_cost().saturating_mul(new_code_size as u128);
+        let refund = attached_deposit
+            .saturating_add(old_cost)
+            .saturating_sub(new_cost);
+
+        Promise::new(self.context_config_account_id.clone()).transfer(refund);
+
         env::log_str("Successfully updated proxy contract code");
     }
 }
