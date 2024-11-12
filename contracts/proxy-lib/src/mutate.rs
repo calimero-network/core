@@ -12,7 +12,8 @@ use near_sdk::{
 };
 
 use super::{parse_input, Proposal, ProxyContract, ProxyContractExt, Signed};
-use crate::{assert_membership, config_contract, MemberAction};
+use crate::ext_config::config_contract;
+use crate::{assert_membership, MemberAction};
 
 #[near]
 impl ProxyContract {

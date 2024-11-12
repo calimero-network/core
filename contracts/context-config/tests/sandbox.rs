@@ -901,6 +901,7 @@ async fn test_deploy() -> eyre::Result<()> {
     let root_account = worker.root_account()?;
     let node1 = root_account
         .create_subaccount("node1")
+        .initial_balance(NearToken::from_near(50))
         .transact()
         .await?
         .into_result()?;
@@ -912,12 +913,6 @@ async fn test_deploy() -> eyre::Result<()> {
     let context_secret = SigningKey::from_bytes(&rng.gen());
     let context_public = context_secret.verifying_key();
     let context_id = context_public.to_bytes().rt()?;
-
-    // Fund node1 just for gas fees
-    let _unused = root_account
-        .transfer_near(node1.id(), NearToken::from_near(50))
-        .await?
-        .into_result();
 
     // Set proxy code
     let new_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
@@ -957,10 +952,10 @@ async fn test_deploy() -> eyre::Result<()> {
         )?)
         .max_gas()
         .transact()
-        .await?;
+        .await?
+        .into_result()?;
 
-    // println!("Execution result: {:#?}", res);
-    // println!("Logs: {:#?}", res.logs());  // Print the logs
+    dbg!(res.total_gas_burnt);
 
     // Assert context creation
     let expected_log = format!("Context `{}` added", context_id);
@@ -983,9 +978,6 @@ async fn test_deploy() -> eyre::Result<()> {
         contract.id()
     );
 
-    //Uncomment to print the proxy contract address
-    // println!("Proxy contract address: {}", proxy_address);
-
     // Call the update function
     let res = node1
         .call(contract.id(), "mutate")
@@ -1002,17 +994,11 @@ async fn test_deploy() -> eyre::Result<()> {
         )?)
         .max_gas()
         .transact()
-        .await?;
+        .await?
+        .into_result()?;
 
-    // println!("Update result: {:?}", res);
-    // Check the result
-    assert!(res.is_success(), "Transaction failed: {:?}", res);
-
-    // Verify we got our success message
-    let result = res.into_result()?;
     assert!(
-        result
-            .logs()
+        res.logs()
             .iter()
             .any(|log| log.contains("Successfully updated proxy contract")),
         "Expected success message in logs"
@@ -1042,7 +1028,8 @@ async fn test_deploy() -> eyre::Result<()> {
         .args_json(signed)
         .max_gas()
         .transact()
-        .await?;
+        .await?
+        .into_result()?;
 
     // Assert proposal creation result
     let proposal_result = res.json::<ProposalWithApprovals>()?;
@@ -1110,6 +1097,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let root_account = worker.root_account()?;
     let node1 = root_account
         .create_subaccount("node1")
+        .initial_balance(NearToken::from_near(50))
         .transact()
         .await?
         .into_result()?;
@@ -1124,12 +1112,6 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
 
     let bigger_proxy_wasm = fs::read("./tests/proxy_lib.wasm").await?;
     let smaller_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
-
-    // Fund node1 for gas fees
-    let _unused = root_account
-        .transfer_near(node1.id(), NearToken::from_near(50))
-        .await?
-        .into_result();
 
     // Set initial proxy code
     let _test = contract
@@ -1167,7 +1149,8 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
         )?)
         .max_gas()
         .transact()
-        .await?;
+        .await?
+        .into_result()?;
 
     // Verify proxy contract deployment
     let expected_log = format!("Context `{}` added", context_id);
@@ -1185,7 +1168,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let _unused = root_account
         .transfer_near(&proxy_address, NearToken::from_near(50))
         .await?
-        .into_result();
+        .into_result()?;
 
     // Get initial measurements
     let initial_outcome = worker.view_account(&proxy_address).await?;
@@ -1218,7 +1201,8 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
         )?)
         .max_gas()
         .transact()
-        .await?;
+        .await?
+        .into_result()?;
 
     // Uncomment to print the update result
     // println!("Update result: {:#?}", _res);
@@ -1228,8 +1212,6 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let final_storage = final_outcome.storage_usage;
     let final_code_size = smaller_proxy_wasm.len() as u64;
 
-    println!("Initial storage usage: {}", initial_storage);
-    println!("Initial WASM size: {}", initial_code_size);
     println!("Final storage usage: {}", final_storage);
     println!("Final WASM size: {}", final_code_size);
 
