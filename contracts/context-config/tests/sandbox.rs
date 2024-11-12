@@ -1119,6 +1119,8 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
 
+    let node1_balance = worker.view_account(&node1.id()).await?.balance;
+
     // Deploy proxy contract
     let res = node1
         .call(contract.id(), "mutate")
@@ -1149,6 +1151,17 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     // Verify proxy contract deployment
     let expected_log = format!("Context `{}` added", context_id);
     assert!(res.logs().iter().any(|log| log == &expected_log));
+
+    let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
+
+    let diff = node1_balance.saturating_sub(node1_balance_after);
+    let node1_balance = node1_balance_after;
+
+    assert!(
+        diff < NearToken::from_millinear(10),
+        "Node1 balance should not be reduced by more than 10 milliNEAR, but was reduced by {}",
+        diff
+    );
 
     let proxy_address: AccountId = contract
         .view("proxy_contract")
@@ -1199,6 +1212,17 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
         .into_result()?;
 
     assert!(res.failures().is_empty(), "{:#?}", res.failures());
+
+    let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
+
+    let diff = node1_balance.saturating_sub(node1_balance_after);
+    let node1_balance = node1_balance_after;
+
+    assert!(
+        diff < NearToken::from_millinear(10),
+        "Node1 balance should not be reduced by more than 10 milliNEAR, but was reduced by {}",
+        diff
+    );
 
     // Get intermediate measurements
     let intermediate_outcome = worker.view_account(&proxy_address).await?;
@@ -1263,6 +1287,16 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
         .into_result()?;
 
     assert!(res.failures().is_empty(), "{:#?}", res.failures());
+
+    let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
+
+    let diff = node1_balance.saturating_sub(node1_balance_after);
+
+    assert!(
+        diff < NearToken::from_millinear(10),
+        "Node1 balance should not be reduced by more than 10 milliNEAR, but was reduced by {}",
+        diff
+    );
 
     // Get final measurements
     let final_outcome = worker.view_account(&proxy_address).await?;
