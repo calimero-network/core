@@ -6,10 +6,9 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::Proposal;
 
-#[derive(Copy, Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalRequest {
-    pub(super) offset: usize,
-    pub(super) length: usize,
+    pub(super) proposal_id: ProposalId,
 }
 
 impl Method<Near> for ProposalRequest {
@@ -22,15 +21,14 @@ impl Method<Near> for ProposalRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let proposal: Option<Proposal> = serde_json::from_slice(&response)?;
-        Ok(proposal)
+        serde_json::from_slice(&response).map_err(Into::into)
     }
 }
 
 impl Method<Starknet> for ProposalRequest {
     const METHOD: &'static str = "proposals";
 
-    type Returns = Vec<(ProposalId, Proposal)>;
+    type Returns = Option<Proposal>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         todo!()

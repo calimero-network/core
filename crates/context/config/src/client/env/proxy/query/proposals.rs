@@ -6,12 +6,12 @@ use crate::client::protocol::starknet::Starknet;
 use crate::Proposal;
 
 #[derive(Copy, Clone, Debug, Serialize)]
-pub(super) struct ProposalRequest {
+pub(super) struct ProposalsRequest {
     pub(super) offset: usize,
     pub(super) length: usize,
 }
 
-impl Method<Near> for ProposalRequest {
+impl Method<Near> for ProposalsRequest {
     const METHOD: &'static str = "proposals";
 
     type Returns = Vec<Proposal>;
@@ -25,7 +25,7 @@ impl Method<Near> for ProposalRequest {
     }
 }
 
-impl Method<Starknet> for ProposalRequest {
+impl Method<Starknet> for ProposalsRequest {
     const METHOD: &'static str = "proposals";
 
     type Returns = Vec<Proposal>;

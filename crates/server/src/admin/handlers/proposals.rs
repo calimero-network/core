@@ -113,7 +113,7 @@ pub struct GetProposalsResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalResponse {
-    pub data: Proposal,
+    pub data: ProposalConfig,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
@@ -150,19 +150,21 @@ pub async fn get_proposal_handler(
     session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let proposal = Proposal {
-        id: "proposal_1".to_owned(),
-        author: get_mock_user(),
-        actions: get_mock_actions(),
-        title: "Proposal Title".to_owned(),
-        description: "Proposal Description".to_owned(),
-        created_at: "2024-10-31T12:00:00Z".to_owned(),
-    };
+    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
 
-    ApiResponse {
-        payload: GetProposalResponse { data: proposal },
+    match state
+        .ctx_manager
+        .get_proposal(context_id, proposal_id)
+        .await
+    {
+        Ok(context_proposal) => ApiResponse {
+            payload: GetProposalResponse {
+                data: context_proposal,
+            },
+        }
+        .into_response(),
+        Err(_) => "failed to fetch proposal".into_response(),
     }
-    .into_response()
 }
 
 #[derive(Deserialize, Serialize)]

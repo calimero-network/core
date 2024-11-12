@@ -1192,4 +1192,32 @@ impl ContextManager {
             Err(err) => Err(eyre::eyre!("Failed to fetch proposals: {}", err)),
         }
     }
+
+    pub async fn get_proposal(
+        &self,
+        context_id: ContextId,
+        proposal_id: String,
+    ) -> EyreResult<Proposal> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .proposal(proposal_id)
+            .await;
+
+            match response {
+                Ok(Some(proposal)) => Ok(proposal),
+                Ok(None) => Err(eyre::eyre!("No proposal found with the specified ID")),
+                Err(err) => Err(eyre::eyre!("Failed to fetch proposal: {}", err)),
+            }
+    }
 }
