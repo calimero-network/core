@@ -15,7 +15,7 @@ use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
     ApplicationSource as ApplicationSourceConfig,
 };
-use calimero_context_config::{ProposalAction, ProposalId};
+use calimero_context_config::{Proposal, ProposalAction, ProposalId};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
@@ -1163,5 +1163,33 @@ impl ContextManager {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn get_proposals(
+        &self,
+        context_id: ContextId,
+        offset: usize,
+        length: usize,
+    ) -> EyreResult<Vec<Proposal>> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .proposals(offset, length)
+            .await;
+
+        match response {
+            Ok(proposals) => Ok(proposals),
+            Err(err) => Err(eyre::eyre!("Failed to fetch proposals: {}", err)),
+        }
     }
 }

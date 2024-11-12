@@ -18,7 +18,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         &self,
         offset: usize,
         length: usize,
-    ) -> Result<Vec<(ProposalId, Proposal)>, ClientError<T>> {
+    ) -> Result<Vec<Proposal>, ClientError<T>> {
         let params = ProposalRequest { offset, length };
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }

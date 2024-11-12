@@ -3,7 +3,9 @@ use std::vec;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
-use axum::Extension;
+use axum::{Extension, Json};
+use calimero_context_config::Proposal as ProposalConfig;
+use calimero_primitives::context::ContextId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_sessions::Session;
@@ -105,7 +107,7 @@ pub struct Message {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsResponse {
-    pub data: Vec<Proposal>,
+    pub data: Vec<ProposalConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -114,32 +116,33 @@ pub struct GetProposalResponse {
     pub data: Proposal,
 }
 
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProposalsRequest {
+    pub offset: u32,
+    pub length: u32,
+}
+
 pub async fn get_proposals_handler(
     Path(context_id): Path<String>,
-    session: Session,
     Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<GetProposalsRequest>,
 ) -> impl IntoResponse {
-    let sample_action = Action::ExternalFunctionCall(ExternalFunctionCall {
-        receiver_id: get_mock_user(),
-        method_name: "sampleMethod".to_owned(),
-        args: serde_json::json!({"example": "value"}),
-        deposit: "100".to_owned(),
-        gas: "10".to_owned(),
-    });
+    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
 
-    let proposals = vec![Proposal {
-        id: "proposal_1".to_owned(),
-        author: get_mock_user(),
-        actions: vec![sample_action],
-        title: "Proposal 1".to_owned(),
-        description: "This is the first proposal.".to_owned(),
-        created_at: "2024-10-31T12:00:00Z".to_owned(),
-    }];
-
-    ApiResponse {
-        payload: GetProposalsResponse { data: proposals },
+    match state
+        .ctx_manager
+        .get_proposals(context_id, req.offset as usize, req.length as usize)
+        .await
+    {
+        Ok(context_proposals) => ApiResponse {
+            payload: GetProposalsResponse {
+                data: context_proposals,
+            },
+        }
+        .into_response(),
+        Err(_) => "failed to fetch proposals".into_response(),
     }
-    .into_response()
 }
 
 pub async fn get_proposal_handler(

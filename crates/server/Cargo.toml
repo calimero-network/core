@@ -48,7 +48,7 @@ calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
 calimero-server-primitives = { path = "../server-primitives" }
 calimero-store = { path = "../store", features = ["serde"] }
-
+calimero-context-config = { path = "../context/config" }
 [dev-dependencies]
 color-eyre.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

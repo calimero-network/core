@@ -1348,6 +1348,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "calimero-context",
+ "calimero-context-config",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server-primitives",
