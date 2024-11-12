@@ -1204,6 +1204,21 @@ impl ContextManager {
             bail!("Context not found");
         };
 
+        let proposal_id_vec = match bs58::decode(&proposal_id).into_vec() {
+            Ok(vec) => vec,
+            Err(e) => {
+                bail!("Not valid base58 string: {}", e);
+            }
+        };
+
+        let proposal_id: Result<[u8; 32], _> = proposal_id_vec.try_into();
+        let proposal_id = match proposal_id {
+            Ok(arr) => arr,
+            Err(_) => {
+                bail!("Proposal ID must be 32 bytes long");
+            }
+        };
+
         let response = self
             .config_client
             .query::<ContextProxy>(
@@ -1214,10 +1229,10 @@ impl ContextManager {
             .proposal(proposal_id)
             .await;
 
-            match response {
-                Ok(Some(proposal)) => Ok(proposal),
-                Ok(None) => Err(eyre::eyre!("No proposal found with the specified ID")),
-                Err(err) => Err(eyre::eyre!("Failed to fetch proposal: {}", err)),
-            }
+        match response {
+            Ok(Some(proposal)) => Ok(proposal),
+            Ok(None) => Err(eyre::eyre!("No proposal found with the specified ID")),
+            Err(err) => Err(eyre::eyre!("Failed to fetch proposal: {}", err)),
+        }
     }
 }

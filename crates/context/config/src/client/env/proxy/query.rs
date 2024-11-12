@@ -24,13 +24,10 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
-    pub async fn proposal(&self, proposal_id: String) -> Result<Option<Proposal>, ClientError<T>> {
-        let proposal_id_vec = bs58::decode(proposal_id).into_vec().unwrap();
-        let proposal_id: [u8; 32] = proposal_id_vec
-            .try_into()
-            .expect("slice with incorrect length");
-
+    pub async fn proposal(&self, proposal_id: ProposalId) -> Result<Option<Proposal>, ClientError<T>> {
+    
         let params = ProposalRequest { proposal_id };
+    
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 }
