@@ -136,7 +136,7 @@ impl Node {
                 sequence_id: sequencer.next(),
                 payload: MessagePayload::KeyShare { sender_key },
             },
-            Some(shared_key), // or None?
+            Some(shared_key),
         )
         .await?;
 
