@@ -194,6 +194,10 @@ impl Node {
         }
 
         match payload {
+            InitPayload::KeyShare => {
+                self.handle_key_share_request(context, their_identity, stream)
+                    .await?
+            }
             InitPayload::BlobShare { blob_id } => {
                 self.handle_blob_share_request(context, their_identity, blob_id, stream)
                     .await?
@@ -226,10 +230,6 @@ impl Node {
                     stream,
                 )
                 .await?
-            }
-            InitPayload::KeyShare => {
-                self.handle_key_share_request(context, their_identity, stream)
-                    .await?
             }
         };
 

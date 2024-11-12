@@ -53,11 +53,11 @@ impl Node {
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
 
-        let Some(ack) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? else {
-            bail!("connection closed while awaiting state sync handshake");
+        let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? else {
+            bail!("connection closed while awaiting key share");
         };
 
-        let sender_key = match ack {
+        let sender_key = match msg {
             StreamMessage::Message {
                 payload: MessagePayload::KeyShare { sender_key },
                 ..
@@ -69,25 +69,8 @@ impl Node {
             }
         };
 
-        let sender_key_stored = self
-            .ctx_manager
-            .get_sender_key(&context.id, &their_identity)?;
-
-        match sender_key_stored {
-            Some(sender_key_stored) => {
-                if sender_key != sender_key_stored {
-                    self.ctx_manager.update_sender_key(
-                        &context.id,
-                        &their_identity,
-                        &sender_key,
-                    )?;
-                }
-            }
-            None => {
-                self.ctx_manager
-                    .update_sender_key(&context.id, &their_identity, &sender_key)?;
-            }
-        }
+        self.ctx_manager
+            .update_sender_key(&context.id, &their_identity, &sender_key)?;
 
         Ok(())
     }
