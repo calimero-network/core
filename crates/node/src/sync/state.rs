@@ -144,8 +144,7 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
-            None, // I think it should be None here,
-                  // because the first recv in the function above has to have some way of decrypting it?
+            None,
         )
         .await?;
 

@@ -16,7 +16,7 @@ use crate::types::{InitPayload, StreamMessage};
 use crate::Node;
 
 mod blobs;
-mod key_share;
+mod key;
 mod state;
 
 #[derive(Copy, Clone, Debug)]
@@ -227,7 +227,7 @@ impl Node {
                 )
                 .await?
             }
-            InitPayload::KeyShare {} => {
+            InitPayload::KeyShare => {
                 self.handle_key_share_request(context, their_identity, stream)
                     .await?
             }

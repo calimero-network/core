@@ -162,7 +162,7 @@ impl Node {
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
             },
-            Some(shared_key),
+            None,
         )
         .await?;
 

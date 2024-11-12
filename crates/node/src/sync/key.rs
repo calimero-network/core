@@ -23,7 +23,7 @@ impl Node {
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
-                payload: InitPayload::KeyShare {},
+                payload: InitPayload::KeyShare,
             },
             None,
         )
@@ -33,15 +33,35 @@ impl Node {
             bail!("connection closed while awaiting state sync handshake");
         };
 
-        let (sender_key, their_identity) = match ack {
-            StreamMessage::Message {
-                payload:
-                    MessagePayload::KeyShare {
-                        sender_key,
-                        public_key: their_identity,
-                    },
+        let their_identity = match ack {
+            StreamMessage::Init {
+                party_id,
+                payload: InitPayload::KeyShare,
                 ..
-            } => (sender_key, their_identity),
+            } => party_id,
+            unexpected @ (StreamMessage::Init { .. }
+            | StreamMessage::Message { .. }
+            | StreamMessage::OpaqueError) => {
+                bail!("unexpected message: {:?}", unexpected)
+            }
+        };
+
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
+        let Some(ack) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? else {
+            bail!("connection closed while awaiting state sync handshake");
+        };
+
+        let sender_key = match ack {
+            StreamMessage::Message {
+                payload: MessagePayload::KeyShare { sender_key },
+                ..
+            } => sender_key,
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
             | StreamMessage::OpaqueError) => {
@@ -90,6 +110,17 @@ impl Node {
             bail!("no identities found for context: {}", context.id);
         };
 
+        send(
+            stream,
+            &StreamMessage::Init {
+                context_id: context.id,
+                party_id: our_identity,
+                payload: InitPayload::KeyShare,
+            },
+            None,
+        )
+        .await?;
+
         let sender_key = self
             .ctx_manager
             .get_sender_key(&context.id, &our_identity)?
@@ -103,10 +134,7 @@ impl Node {
             stream,
             &StreamMessage::Message {
                 sequence_id: sequencer.next(),
-                payload: MessagePayload::KeyShare {
-                    sender_key,
-                    public_key: our_identity,
-                },
+                payload: MessagePayload::KeyShare { sender_key },
             },
             Some(shared_key), // or None?
         )
