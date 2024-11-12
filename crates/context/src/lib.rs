@@ -799,6 +799,24 @@ impl ContextManager {
         Ok(key.map(PrivateKey::from))
     }
 
+    pub fn update_sender_key(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        sender_key: &PrivateKey,
+    ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        handle.put(
+            &ContextIdentityKey::new(*context_id, *public_key),
+            &ContextIdentityValue {
+                private_key: None,
+                sender_key: Some(**sender_key),
+            },
+        )?;
+
+        Ok(())
+    }
+
     pub fn get_private_key(
         &self,
         context_id: ContextId,

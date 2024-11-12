@@ -52,9 +52,16 @@ pub enum InitPayload {
 // this I was encrypting
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum MessagePayload<'a> {
-    StateSync { artifact: Cow<'a, [u8]> },
-    BlobShare { chunk: Cow<'a, [u8]> },
-    KeyShare { sender_key: PrivateKey },
+    StateSync {
+        artifact: Cow<'a, [u8]>,
+    },
+    BlobShare {
+        chunk: Cow<'a, [u8]>,
+    },
+    KeyShare {
+        sender_key: PrivateKey,
+        public_key: PublicKey,
+    },
 }
 
 #[derive(Deserialize)]

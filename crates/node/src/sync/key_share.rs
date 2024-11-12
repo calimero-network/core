@@ -33,11 +33,15 @@ impl Node {
             bail!("connection closed while awaiting state sync handshake");
         };
 
-        let sender_key = match ack {
+        let (sender_key, their_identity) = match ack {
             StreamMessage::Message {
-                payload: MessagePayload::KeyShare { sender_key },
+                payload:
+                    MessagePayload::KeyShare {
+                        sender_key,
+                        public_key: their_identity,
+                    },
                 ..
-            } => sender_key,
+            } => (sender_key, their_identity),
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
             | StreamMessage::OpaqueError) => {
@@ -45,7 +49,25 @@ impl Node {
             }
         };
 
-        // Do I store "his" SenderKey somewhere?
+        let sender_key_stored = self
+            .ctx_manager
+            .get_sender_key(&context.id, &their_identity)?;
+
+        match sender_key_stored {
+            Some(sender_key_stored) => {
+                if sender_key != sender_key_stored {
+                    self.ctx_manager.update_sender_key(
+                        &context.id,
+                        &their_identity,
+                        &sender_key,
+                    )?;
+                }
+            }
+            None => {
+                self.ctx_manager
+                    .update_sender_key(&context.id, &their_identity, &sender_key)?;
+            }
+        }
 
         Ok(())
     }
@@ -81,7 +103,10 @@ impl Node {
             stream,
             &StreamMessage::Message {
                 sequence_id: sequencer.next(),
-                payload: MessagePayload::KeyShare { sender_key },
+                payload: MessagePayload::KeyShare {
+                    sender_key,
+                    public_key: our_identity,
+                },
             },
             Some(shared_key), // or None?
         )
