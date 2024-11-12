@@ -752,10 +752,6 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id, carol_cx_id]);
 
-    // let state = contract.view_state().await?;
-    // println!("State size: {}", state.len());
-    // assert_eq!(state.len(), 11);
-
     let res = contract
         .call("erase")
         .max_gas()
@@ -765,17 +761,10 @@ async fn main() -> eyre::Result<()> {
 
     assert!(res.logs().contains(&"Erasing contract"), "{:?}", res.logs());
 
-    // let state = contract.view_state().await?;
+    let state = contract.view_state().await?;
 
-    // assert_eq!(state.len(), 1);
-    // assert_eq!(state.get(&b"STATE"[..]).map(|v| v.len()), Some(24));
-
-    // // After contract deployment
-    // let state_size = worker
-    //     .view(contract.id(), "get_state_size")  // We'd need to add this method to the contract
-    //     .await?
-    //     .json::<u64>()?;
-    // println!("Initial state size: {}", state_size);
+    assert_eq!(state.len(), 1);
+    assert_eq!(state.get(&b"STATE"[..]).map(|v| v.len()), Some(37));
 
     Ok(())
 }

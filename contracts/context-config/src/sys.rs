@@ -4,7 +4,7 @@ use std::io;
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Application, ContextId, ContextIdentity, SignerId};
 use calimero_context_config::{SystemRequest, Timestamp};
-use near_sdk::store::{IterableMap, IterableSet, LazyOption};
+use near_sdk::store::{IterableMap, IterableSet};
 use near_sdk::{env, near};
 
 use crate::{parse_input, Config, ContextConfigs, ContextConfigsExt};
@@ -39,7 +39,7 @@ impl ContextConfigs {
             let _ignored = context.proxy.into_inner();
         }
 
-        self.proxy_code = LazyOption::new(b"p", None);
+        self.proxy_code.set(None);
 
         env::log_str(&format!(
             "Post-erase storage usage: {}",
