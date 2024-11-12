@@ -47,8 +47,8 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    Init(InitCommand),
     Config(ConfigCommand),
+    Init(InitCommand),
     #[command(alias = "up")]
     Run(RunCommand),
     #[command(alias = "call")]
@@ -70,8 +70,8 @@ pub struct RootArgs {
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
         match self.action {
-            SubCommands::Init(init) => init.run(self.args),
             SubCommands::Config(config) => config.run(&self.args),
+            SubCommands::Init(init) => init.run(self.args),
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Relay(relay) => relay.run(self.args).await,
         }
