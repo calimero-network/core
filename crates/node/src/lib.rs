@@ -549,7 +549,7 @@ impl Node {
 // TODO: move this into the config
 // TODO: also this would be nice to have global default with per application customization
 fn get_runtime_limits() -> EyreResult<VMLimits> {
-    Ok(calimero_runtime::logic::VMLimits {
+    Ok(VMLimits {
         max_memory_pages: 1 << 10, // 1 KiB
         max_stack_size: 200 << 10, // 200 KiB
         max_registers: 100,
