@@ -233,7 +233,8 @@ impl ProxyContract {
         // Calculate refund based on code size difference only
         let old_code_size = self.code_size;
         if new_code_size < old_code_size {
-            let refund = (old_code_size - new_code_size) as u128 * env::storage_byte_cost().as_yoctonear();
+            let refund =
+                (old_code_size - new_code_size) as u128 * env::storage_byte_cost().as_yoctonear();
             Promise::new(self.context_config_account_id.clone())
                 .transfer(NearToken::from_yoctonear(refund));
         }
