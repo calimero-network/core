@@ -15,7 +15,7 @@ use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
     ApplicationSource as ApplicationSourceConfig,
 };
-use calimero_context_config::{Proposal, ProposalAction, ProposalId, User};
+use calimero_context_config::{Proposal, ProposalAction, ProposalId, ProposalWithApprovals, User};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
@@ -1263,7 +1263,7 @@ impl ContextManager {
         &self,
         context_id: ContextId,
         proposal_id: String,
-    ) -> EyreResult<u16> {
+    ) -> EyreResult<ProposalWithApprovals> {
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {

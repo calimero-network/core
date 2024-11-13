@@ -4,6 +4,7 @@ use super::ProposalId;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::ProposalWithApprovals;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalApprovalsRequest {
@@ -11,9 +12,9 @@ pub(super) struct ProposalApprovalsRequest {
 }
 
 impl Method<Near> for ProposalApprovalsRequest {
-    const METHOD: &'static str = "proposal_approvals";
+    const METHOD: &'static str = "get_confirmations_count";
 
-    type Returns = u16;
+    type Returns = ProposalWithApprovals;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         serde_json::to_vec(&self).map_err(Into::into)
@@ -25,9 +26,9 @@ impl Method<Near> for ProposalApprovalsRequest {
 }
 
 impl Method<Starknet> for ProposalApprovalsRequest {
-    const METHOD: &'static str = "proposal_approvals";
+    const METHOD: &'static str = "get_confirmations_count";
 
-    type Returns = u16;
+    type Returns = ProposalWithApprovals;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         todo!()

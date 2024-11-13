@@ -4,7 +4,7 @@ use std::vec;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_context_config::{Proposal as ProposalConfig, User};
+use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals, User};
 use calimero_primitives::context::ContextId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -190,10 +190,9 @@ pub async fn get_number_of_active_proposals_handler(
 #[derive(Debug, Copy, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetNumberOfProposalApprovalsResponse {
-    pub data: u16,
+    pub data: ProposalWithApprovals,
 }
 
-// get_confirmations_count proxy
 pub async fn get_number_of_proposal_approvals_handler(
     Path((context_id, proposal_id)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -211,7 +210,7 @@ pub async fn get_number_of_proposal_approvals_handler(
             },
         }
         .into_response(),
-        Err(_) => "failed to fetch proposal".into_response(),
+        Err(_) => "failed to fetch proposal approvals".into_response(),
     }
 }
 

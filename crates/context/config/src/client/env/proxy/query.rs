@@ -7,7 +7,7 @@ use proposals::ProposalsRequest;
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::{Proposal, ProposalId, User};
+use crate::{Proposal, ProposalId, ProposalWithApprovals, User};
 
 mod active_proposals;
 mod proposal;
@@ -51,7 +51,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     pub async fn get_number_of_proposal_approvals(
         &self,
         proposal_id: ProposalId,
-    ) -> Result<u16, ClientError<T>> {
+    ) -> Result<ProposalWithApprovals, ClientError<T>> {
         let params = ProposalApprovalsRequest { proposal_id };
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
