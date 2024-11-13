@@ -23,13 +23,13 @@ impl ProxyContractHelper {
 
     pub fn create_proposal_request(
         &self,
-        id: &Repr<ProposalId>,
+        id: &ProposalId,
         author: &SigningKey,
         actions: &Vec<ProposalAction>,
     ) -> eyre::Result<Signed<ProxyMutateRequest>> {
         let request = ProxyMutateRequest::Propose {
             proposal: Proposal {
-                id: id.clone(),
+                id: id.rt().expect("infallible conversion"),
                 author_id: author.verifying_key().rt().expect("Invalid signer"),
                 actions: actions.clone(),
             },
@@ -64,7 +64,7 @@ impl ProxyContractHelper {
         &self,
         caller: &Account,
         signer: &SigningKey,
-        proposal_id: &Repr<ProposalId>,
+        proposal_id: &ProposalId,
     ) -> eyre::Result<ExecutionResult<Value>> {
         let signer_id = signer
             .verifying_key()
@@ -75,7 +75,7 @@ impl ProxyContractHelper {
         let request = ProxyMutateRequest::Approve {
             approval: ProposalApprovalWithSigner {
                 signer_id,
-                proposal_id: proposal_id.clone(),
+                proposal_id: proposal_id.rt().expect("infallible conversion"),
                 added_timestamp: 0,
             },
         };
