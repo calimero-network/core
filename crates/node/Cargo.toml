@@ -29,7 +29,6 @@ calimero-primitives = { path = "../primitives", features = ["borsh"] }
 calimero-runtime = { path = "../runtime" }
 calimero-server = { path = "../server", features = ["jsonrpc", "websocket", "admin"] }
 calimero-store = { path = "../store", features = ["datatypes"] }
-calimero-context-config = { path = "../context/config" }
 
 [lints]
 workspace = true
