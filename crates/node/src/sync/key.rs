@@ -1,7 +1,7 @@
 use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
 use calimero_primitives::context::Context;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::{bail, OptionExt};
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
@@ -59,40 +59,17 @@ impl Node {
             .ok_or_eyre("expected own identity to have sender key")?;
 
         let mut sqx_out = Sequencer::default();
-        send(
+
+        self.bidirectional_key_sync(
+            context,
+            our_identity,
+            their_identity,
+            &mut sqx_out,
             stream,
-            &StreamMessage::Message {
-                sequence_id: sqx_out.next(),
-                payload: MessagePayload::KeyShare { sender_key },
-            },
-            Some(shared_key),
+            shared_key,
+            sender_key,
         )
-        .await?;
-
-        let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? else {
-            bail!("connection closed while awaiting key share");
-        };
-
-        let (sequence_id, sender_key) = match msg {
-            StreamMessage::Message {
-                sequence_id,
-                payload: MessagePayload::KeyShare { sender_key },
-            } => (sequence_id, sender_key),
-            unexpected @ (StreamMessage::Init { .. }
-            | StreamMessage::Message { .. }
-            | StreamMessage::OpaqueError) => {
-                bail!("unexpected message: {:?}", unexpected)
-            }
-        };
-
-        let mut sqx_in = Sequencer::default();
-
-        sqx_in.test(sequence_id)?;
-
-        self.ctx_manager
-            .update_sender_key(&context.id, &their_identity, &sender_key)?;
-
-        Ok(())
+        .await
     }
 
     pub(super) async fn handle_key_share_request(
@@ -137,6 +114,37 @@ impl Node {
             .ok_or_eyre("expected own identity to have sender key")?;
 
         let mut sqx_out = Sequencer::default();
+
+        let mut context = context;
+        self.bidirectional_key_sync(
+            &mut context,
+            our_identity,
+            their_identity,
+            &mut sqx_out,
+            stream,
+            shared_key,
+            sender_key,
+        )
+        .await
+    }
+
+    async fn bidirectional_key_sync(
+        &self,
+        context: &mut Context,
+        our_identity: PublicKey,
+        their_identity: PublicKey,
+        sqx_out: &mut Sequencer,
+        stream: &mut Stream,
+        shared_key: SharedKey,
+        sender_key: PrivateKey,
+    ) -> eyre::Result<()> {
+        debug!(
+            context_id=%context.id,
+            our_root_hash=%context.root_hash,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            "Starting bidirectional key sync",
+        );
         send(
             stream,
             &StreamMessage::Message {

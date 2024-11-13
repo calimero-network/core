@@ -57,7 +57,7 @@ pub enum MessagePayload<'a> {
     KeyShare { sender_key: PrivateKey },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct ProposalRequest {
     pub sender: String,
     pub receiver: String,
