@@ -15,7 +15,8 @@ use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
     ApplicationSource as ApplicationSourceConfig,
 };
-use calimero_context_config::{Proposal, ProposalAction, ProposalId, ProposalWithApprovals, User};
+use calimero_context_config::types::ProposalId;
+use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals, User};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
@@ -1196,27 +1197,12 @@ impl ContextManager {
     pub async fn get_proposal(
         &self,
         context_id: ContextId,
-        proposal_id: String,
+        proposal_id: ProposalId,
     ) -> EyreResult<Proposal> {
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             bail!("Context not found");
-        };
-
-        let proposal_id_vec = match bs58::decode(&proposal_id).into_vec() {
-            Ok(vec) => vec,
-            Err(e) => {
-                bail!("Not valid base58 string: {}", e);
-            }
-        };
-
-        let proposal_id: Result<[u8; 32], _> = proposal_id_vec.try_into();
-        let proposal_id = match proposal_id {
-            Ok(arr) => arr,
-            Err(_) => {
-                bail!("Proposal ID must be 32 bytes long");
-            }
         };
 
         let response = self
@@ -1258,27 +1244,12 @@ impl ContextManager {
     pub async fn get_number_of_proposal_approvals(
         &self,
         context_id: ContextId,
-        proposal_id: String,
+        proposal_id: ProposalId,
     ) -> EyreResult<ProposalWithApprovals> {
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             bail!("Context not found");
-        };
-
-        let proposal_id_vec = match bs58::decode(&proposal_id).into_vec() {
-            Ok(vec) => vec,
-            Err(e) => {
-                bail!("Not valid base58 string: {}", e);
-            }
-        };
-
-        let proposal_id: Result<[u8; 32], _> = proposal_id_vec.try_into();
-        let proposal_id = match proposal_id {
-            Ok(arr) => arr,
-            Err(_) => {
-                bail!("Proposal ID must be 32 bytes long");
-            }
         };
 
         let response = self
@@ -1303,27 +1274,12 @@ impl ContextManager {
     pub async fn get_proposal_approvers(
         &self,
         context_id: ContextId,
-        proposal_id: String,
+        proposal_id: ProposalId,
     ) -> EyreResult<Vec<User>> {
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             bail!("Context not found");
-        };
-
-        let proposal_id_vec = match bs58::decode(&proposal_id).into_vec() {
-            Ok(vec) => vec,
-            Err(e) => {
-                bail!("Not valid base58 string: {}", e);
-            }
-        };
-
-        let proposal_id: Result<[u8; 32], _> = proposal_id_vec.try_into();
-        let proposal_id = match proposal_id {
-            Ok(arr) => arr,
-            Err(_) => {
-                bail!("Proposal ID must be 32 bytes long");
-            }
         };
 
         let response = self

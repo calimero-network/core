@@ -7,6 +7,7 @@ use proposals::ProposalsRequest;
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
+use crate::repr::Repr;
 use crate::{Proposal, ProposalId, ProposalWithApprovals, User};
 
 mod active_proposals;
@@ -37,7 +38,9 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         &self,
         proposal_id: ProposalId,
     ) -> Result<Option<Proposal>, ClientError<T>> {
-        let params = ProposalRequest { proposal_id };
+        let params = ProposalRequest {
+            proposal_id: Repr::new(proposal_id),
+        };
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
@@ -52,7 +55,9 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         &self,
         proposal_id: ProposalId,
     ) -> Result<ProposalWithApprovals, ClientError<T>> {
-        let params = ProposalApprovalsRequest { proposal_id };
+        let params = ProposalApprovalsRequest {
+            proposal_id: Repr::new(proposal_id),
+        };
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
@@ -61,7 +66,9 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         &self,
         proposal_id: ProposalId,
     ) -> Result<Vec<User>, ClientError<T>> {
-        let params = ProposalApproversRequest { proposal_id };
+        let params = ProposalApproversRequest {
+            proposal_id: Repr::new(proposal_id),
+        };
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }

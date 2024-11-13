@@ -4,11 +4,12 @@ use super::ProposalId;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::repr::Repr;
 use crate::ProposalWithApprovals;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalApprovalsRequest {
-    pub(super) proposal_id: ProposalId,
+    pub(super) proposal_id: Repr<ProposalId>,
 }
 
 impl Method<Near> for ProposalApprovalsRequest {

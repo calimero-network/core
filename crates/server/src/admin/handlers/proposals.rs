@@ -4,6 +4,9 @@ use std::vec;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use calimero_context_config::repr::Repr;
+use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::types::ProposalId;
 use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals, User};
 use calimero_primitives::context::ContextId;
 use serde::{Deserialize, Serialize};
@@ -137,12 +140,12 @@ pub async fn get_proposals_handler(
 }
 
 pub async fn get_proposal_handler(
-    Path((context_id, proposal_id)): Path<(ContextId, String)>,
+    Path((context_id, proposal_id)): Path<(ContextId, Repr<ProposalId>)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .get_proposal(context_id, proposal_id)
+        .get_proposal(context_id, proposal_id.rt().expect("infallible conversion"))
         .await
     {
         Ok(context_proposal) => ApiResponse {
@@ -188,12 +191,15 @@ pub struct GetNumberOfProposalApprovalsResponse {
 }
 
 pub async fn get_number_of_proposal_approvals_handler(
-    Path((context_id, proposal_id)): Path<(ContextId, String)>,
+    Path((context_id, proposal_id)): Path<(ContextId, Repr<ProposalId>)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .get_number_of_proposal_approvals(context_id, proposal_id)
+        .get_number_of_proposal_approvals(
+            context_id,
+            proposal_id.rt().expect("infallible conversion"),
+        )
         .await
     {
         Ok(number_of_proposal_approvals) => ApiResponse {
@@ -214,13 +220,15 @@ pub struct GetProposalApproversResponse {
 
 // return list of users who approved
 pub async fn get_proposal_approvers_handler(
-    Path((context_id, proposal_id)): Path<(ContextId, String)>,
+    Path((context_id, proposal_id)): Path<(ContextId, Repr<ProposalId>)>,
     Extension(state): Extension<Arc<AdminState>>,
-    //Json(req): Json<GetProposalApproversResponse>,
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .get_proposal_approvers(context_id, proposal_id)
+        .get_proposal_approvers(
+            context_id,
+            proposal_id.rt().expect("infallible conversion"),
+        )
         .await
     {
         Ok(proposal_approvers) => ApiResponse {
