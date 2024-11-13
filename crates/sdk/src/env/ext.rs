@@ -147,7 +147,7 @@ impl AsRef<[u8]> for ProposalId {
 }
 
 impl ProposalId {
-    pub fn as_str<'a>(&self, buf: &'a mut [u8; 32]) -> &'a str {
+    pub fn as_str<'a>(&self, buf: &'a mut [u8; 44]) -> &'a str {
         let len = bs58::encode(&self.0).onto(&mut buf[..]).unwrap();
         std::str::from_utf8(&buf[..len]).unwrap()
     }
@@ -168,7 +168,7 @@ impl Serialize for ProposalId {
     where
         S: serde::Serializer,
     {
-        let mut buf = [0; 32];
+        let mut buf = [0; 44];
         serializer.serialize_str(self.as_str(&mut buf))
     }
 }
@@ -188,7 +188,7 @@ impl<'de> Deserialize<'de> for ProposalId {
 
 impl fmt::Display for ProposalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str(&mut [0; 32]))
+        write!(f, "{}", self.as_str(&mut [0; 44]))
     }
 }
 

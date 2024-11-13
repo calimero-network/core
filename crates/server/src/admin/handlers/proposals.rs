@@ -10,8 +10,8 @@ use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals,
 use calimero_primitives::context::ContextId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::admin::service::parse_api_error;
-use crate::admin::service::ApiResponse;
+
+use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
 //todo split it up into separate files
