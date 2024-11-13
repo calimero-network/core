@@ -132,7 +132,7 @@ pub async fn get_proposals_handler(
             },
         }
         .into_response(),
-        Err(_) => "failed to fetch proposals".into_response(),
+        Err(err) => parse_api_error(err).into_response(),
     }
 }
 
@@ -151,7 +151,7 @@ pub async fn get_proposal_handler(
             },
         }
         .into_response(),
-        Err(_) => "failed to fetch proposal".into_response(),
+        Err(err) => parse_api_error(err).into_response(),
     }
 }
 
@@ -177,7 +177,7 @@ pub async fn get_number_of_active_proposals_handler(
             },
         }
         .into_response(),
-        Err(_) => "failed to fetch proposal".into_response(),
+        Err(err) => parse_api_error(err).into_response(),
     }
 }
 
@@ -202,7 +202,7 @@ pub async fn get_number_of_proposal_approvals_handler(
             },
         }
         .into_response(),
-        Err(_) => "failed to fetch proposal approvals".into_response(),
+        Err(err) => parse_api_error(err).into_response(),
     }
 }
 
@@ -229,7 +229,7 @@ pub async fn get_proposal_approvers_handler(
             },
         }
         .into_response(),
-        Err(_) => "failed to fetch proposal".into_response(),
+        Err(err) => parse_api_error(err).into_response(),
     }
 }
 
