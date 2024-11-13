@@ -117,12 +117,10 @@ pub struct GetProposalsRequest {
 }
 
 pub async fn get_proposals_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<GetProposalsRequest>,
 ) -> impl IntoResponse {
-    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
-
     match state
         .ctx_manager
         .get_proposals(context_id, req.offset as usize, req.limit as usize)
@@ -139,11 +137,9 @@ pub async fn get_proposals_handler(
 }
 
 pub async fn get_proposal_handler(
-    Path((context_id, proposal_id)): Path<(String, String)>,
+    Path((context_id, proposal_id)): Path<(ContextId, String)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
-
     match state
         .ctx_manager
         .get_proposal(context_id, proposal_id)
@@ -167,11 +163,9 @@ pub struct GetNumberOfActiveProposalsResponse {
 
 // TODO - proxy missing function to fetch number of all
 pub async fn get_number_of_active_proposals_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
-
     match state
         .ctx_manager
         .get_number_of_active_proposals(context_id)
@@ -194,11 +188,9 @@ pub struct GetNumberOfProposalApprovalsResponse {
 }
 
 pub async fn get_number_of_proposal_approvals_handler(
-    Path((context_id, proposal_id)): Path<(String, String)>,
+    Path((context_id, proposal_id)): Path<(ContextId, String)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
-
     match state
         .ctx_manager
         .get_number_of_proposal_approvals(context_id, proposal_id)
@@ -222,12 +214,10 @@ pub struct GetProposalApproversResponse {
 
 // return list of users who approved
 pub async fn get_proposal_approvers_handler(
-    Path((context_id, proposal_id)): Path<(String, String)>,
+    Path((context_id, proposal_id)): Path<(ContextId, String)>,
     Extension(state): Extension<Arc<AdminState>>,
     //Json(req): Json<GetProposalApproversResponse>,
 ) -> impl IntoResponse {
-    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
-
     match state
         .ctx_manager
         .get_proposal_approvers(context_id, proposal_id)
