@@ -92,7 +92,8 @@ async fn test_create_proposal() -> Result<()> {
         setup_test(&worker).await?;
 
     let proposal_id = rand::thread_rng().gen();
-    let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
+    let proposal_id_repr = Repr::new(proposal_id);
+    let proposal = proxy_helper.create_proposal_request(&proposal_id_repr, &alice_sk, &vec![])?;
 
     let res: Option<ProposalWithApprovals> = proxy_helper
         .proxy_mutate(&relayer_account, &proposal)
@@ -102,7 +103,7 @@ async fn test_create_proposal() -> Result<()> {
     match res {
         Some(proposal) => {
             assert_eq!(
-                proposal.proposal_id, proposal_id,
+                proposal.proposal_id, proposal_id_repr,
                 "Expected proposal_id to be 0"
             );
             assert_eq!(proposal.num_approvals, 1, "Expected 1 approval");
@@ -119,7 +120,7 @@ async fn test_view_proposal() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = Repr::new(rand::thread_rng().gen());
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let _res = proxy_helper
@@ -138,7 +139,7 @@ async fn test_view_proposal() -> Result<()> {
 
     let non_existent_proposal_id = [2; 32];
     let view_proposal: Option<Proposal> = proxy_helper
-        .view_proposal(&relayer_account, &non_existent_proposal_id)
+        .view_proposal(&relayer_account, &Repr::new(non_existent_proposal_id))
         .await?;
     assert!(view_proposal.is_none());
     Ok(())
@@ -182,7 +183,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     assert!(error.to_string().contains("Is not a member"));
 
     let view_proposal: Option<ProposalWithApprovals> = proxy_helper
-        .view_proposal_confirmations(&relayer_account, &[0; 32])
+        .view_proposal_confirmations(&relayer_account, &Repr::new([0; 32]))
         .await?
         .json()?;
 
@@ -200,8 +201,8 @@ async fn test_create_multiple_proposals() -> Result<()> {
         setup_test(&worker).await?;
 
     let mut rng = rand::thread_rng();
-    let proposal_1_id = rng.gen();
-    let proposal_2_id = rng.gen();
+    let proposal_1_id = Repr::new(rng.gen());
+    let proposal_2_id = Repr::new(rng.gen());
     let proposal_1 = proxy_helper.create_proposal_request(&proposal_1_id, &alice_sk, &vec![])?;
     let proposal_2 = proxy_helper.create_proposal_request(&proposal_2_id, &alice_sk, &vec![])?;
 
@@ -237,7 +238,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .add_members(&relayer_account, &alice_sk, &[bob_sk.clone()], &context_sk)
         .await?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = Repr::new(rand::thread_rng().gen());
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
@@ -266,7 +267,7 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = Repr::new(rand::thread_rng().gen());
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
@@ -318,7 +319,7 @@ async fn create_and_approve_proposal(
     actions: &Vec<ProposalAction>,
     members: Vec<SigningKey>,
 ) -> Result<()> {
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = Repr::new(rand::thread_rng().gen());
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &members[0], actions)?;
 
     let res: ProposalWithApprovals = proxy_helper
@@ -594,18 +595,18 @@ async fn test_view_proposals() -> Result<()> {
     let proposal1_actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 5,
     }];
-    let proposal1_id = rand::thread_rng().gen();
+    let proposal1_id = Repr::new(rand::thread_rng().gen());
     let proposal1 =
         proxy_helper.create_proposal_request(&proposal1_id, &alice_sk, &proposal1_actions)?;
     let proposal2_actions = vec![ProposalAction::SetNumApprovals { num_approvals: 2 }];
-    let proposal2_id = rand::thread_rng().gen();
+    let proposal2_id = Repr::new(rand::thread_rng().gen());
     let proposal2 =
         proxy_helper.create_proposal_request(&proposal2_id, &alice_sk, &proposal2_actions)?;
     let proposal3_actions = vec![ProposalAction::SetContextValue {
         key: b"example_key".to_vec().into_boxed_slice(),
         value: b"example_value".to_vec().into_boxed_slice(),
     }];
-    let proposal3_id = rand::thread_rng().gen();
+    let proposal3_id = Repr::new(rand::thread_rng().gen());
     let proposal3 =
         proxy_helper.create_proposal_request(&proposal3_id, &alice_sk, &proposal3_actions)?;
 

@@ -36,7 +36,7 @@ impl ProxyContract {
             ProxyMutateRequest::Approve { approval } => {
                 self.perform_action_by_member(MemberAction::Approve {
                     identity: approval.signer_id,
-                    proposal_id: approval.proposal_id,
+                    proposal_id: approval.proposal_id.rt().expect("Invalid proposal ID"),
                 })
             }
         }
@@ -48,7 +48,7 @@ impl ProxyContract {
     pub fn internal_approve_proposal(
         &mut self,
         signer_id: Repr<SignerId>,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
         #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
     ) -> Option<ProposalWithApprovals> {
         assert_membership(call_result);
@@ -72,7 +72,7 @@ impl ProxyContract {
         self.proposals.insert(proposal.id, proposal.clone());
         self.approvals.insert(proposal.id, HashSet::new());
         self.internal_confirm(
-            proposal.id,
+            proposal.id.rt().expect("Invalid proposal ID"),
             proposal.author_id.rt().expect("Invalid signer"),
         );
         self.build_proposal_response(proposal.id)
@@ -189,7 +189,7 @@ impl ProxyContract {
         self.context_storage.insert(key.clone(), value)
     }
 
-    fn internal_confirm(&mut self, proposal_id: ProposalId, signer_id: SignerId) {
+    fn internal_confirm(&mut self, proposal_id: Repr<ProposalId>, signer_id: SignerId) {
         let approvals = self.approvals.get_mut(&proposal_id).unwrap();
         assert!(
             !approvals.contains(&signer_id),
@@ -295,7 +295,7 @@ impl ProxyContract {
             })
     }
 
-    fn build_proposal_response(&self, proposal_id: ProposalId) -> Option<ProposalWithApprovals> {
+    fn build_proposal_response(&self, proposal_id: Repr<ProposalId>) -> Option<ProposalWithApprovals> {
         let approvals = self.get_confirmations_count(proposal_id);
         match approvals {
             None => None,
@@ -306,7 +306,7 @@ impl ProxyContract {
         }
     }
 
-    fn remove_proposal(&mut self, proposal_id: ProposalId) -> Proposal {
+    fn remove_proposal(&mut self, proposal_id: Repr<ProposalId>) -> Proposal {
         self.approvals.remove(&proposal_id);
         let proposal = self
             .proposals

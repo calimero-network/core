@@ -25,7 +25,7 @@ const _: () = {
 enum MemberAction {
     Approve {
         identity: Repr<SignerId>,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
     },
     Create {
         proposal: Proposal,
@@ -39,8 +39,8 @@ pub struct ProxyContract {
     pub context_id: ContextId,
     pub context_config_account_id: AccountId,
     pub num_approvals: u32,
-    pub proposals: IterableMap<ProposalId, Proposal>,
-    pub approvals: IterableMap<ProposalId, HashSet<SignerId>>,
+    pub proposals: IterableMap<Repr<ProposalId>, Proposal>,
+    pub approvals: IterableMap<Repr<ProposalId>, HashSet<SignerId>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
     pub context_storage: IterableMap<Box<[u8]>, Box<[u8]>>,
@@ -83,13 +83,13 @@ impl ProxyContract {
         proposals
     }
 
-    pub fn proposal(&self, proposal_id: &ProposalId) -> Option<Proposal> {
+    pub fn proposal(&self, proposal_id: &Repr<ProposalId>) -> Option<Proposal> {
         self.proposals.get(proposal_id).cloned()
     }
 
     pub fn get_confirmations_count(
         &self,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
     ) -> Option<ProposalWithApprovals> {
         let approvals_for_proposal = self.approvals.get(&proposal_id);
         approvals_for_proposal.map(|approvals| ProposalWithApprovals {
