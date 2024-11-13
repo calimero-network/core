@@ -132,7 +132,7 @@ impl Node {
             .get_private_key(context.id, our_identity)?
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &our_identity);
+        let shared_key = SharedKey::new(&private_key, &their_identity);
 
         send(
             stream,
