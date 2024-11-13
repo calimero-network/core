@@ -249,7 +249,6 @@ impl ReprBytes for Signature {
     }
 }
 
-
 #[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct ProposalId(Identity);
 

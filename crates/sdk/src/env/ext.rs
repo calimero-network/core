@@ -137,17 +137,7 @@ impl External {
 }
 
 /// Unique identifier for a proposal.
-#[derive(
-    BorshDeserialize,
-    BorshSerialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ProposalId(pub [u8; 32]);
 
 impl AsRef<[u8]> for ProposalId {

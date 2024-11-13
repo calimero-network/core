@@ -2,10 +2,8 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{SignerId, ProposalId};
-use calimero_context_config::{
-    ProposalAction, ProposalWithApprovals, ProxyMutateRequest,
-};
+use calimero_context_config::types::{ProposalId, SignerId};
+use calimero_context_config::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 use near_sdk::{
     env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
     PromiseResult,

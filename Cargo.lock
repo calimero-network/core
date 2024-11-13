@@ -1306,6 +1306,7 @@ name = "calimero-sdk"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "bs58 0.5.1",
  "calimero-sdk-macros",
  "cfg-if 1.0.0",
  "serde",
