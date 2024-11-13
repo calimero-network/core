@@ -1,9 +1,8 @@
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use ed25519_dalek::{SecretKey, SigningKey};
 use ring::aead;
-use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug)]
 pub struct SharedKey {
     key: SecretKey,
 }

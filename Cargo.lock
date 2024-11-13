@@ -1204,7 +1204,6 @@ dependencies = [
  "eyre",
  "rand 0.8.5",
  "ring 0.17.8",
- "serde",
 ]
 
 [[package]]

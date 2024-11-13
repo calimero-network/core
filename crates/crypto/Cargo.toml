@@ -10,7 +10,6 @@ license.workspace = true
 curve25519-dalek.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 ring.workspace = true
-serde = { workspace = true, features = ["derive"] }
 
 calimero-primitives = { path = "../primitives", features = ["rand"] }
 
