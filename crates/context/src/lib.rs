@@ -1342,10 +1342,7 @@ impl ContextManager {
 
         match response {
             Ok(proposals) => Ok(proposals),
-            Err(err) => Err(eyre::eyre!(
-                "Failed to fetch proposal approvers: {}",
-                err
-            )),
+            Err(err) => Err(eyre::eyre!("Failed to fetch proposal approvers: {}", err)),
         }
     }
 }

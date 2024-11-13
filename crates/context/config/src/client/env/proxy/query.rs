@@ -1,19 +1,19 @@
-use proposal::ProposalRequest;
-use proposals::ProposalsRequest;
 use active_proposals::ActiveProposalRequest;
+use proposal::ProposalRequest;
 use proposal_approvals::ProposalApprovalsRequest;
 use proposal_approvers::ProposalApproversRequest;
+use proposals::ProposalsRequest;
 
 use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::{Proposal, ProposalId, User};
 
-mod proposal;
-mod proposals;
 mod active_proposals;
+mod proposal;
 mod proposal_approvals;
 mod proposal_approvers;
+mod proposals;
 
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {
@@ -26,7 +26,10 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<Proposal>, ClientError<T>> {
-        let params = ProposalsRequest { offset, length: limit };
+        let params = ProposalsRequest {
+            offset,
+            length: limit,
+        };
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
@@ -39,9 +42,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
-    pub async fn get_number_of_active_proposals(
-        &self,
-    ) -> Result<u16, ClientError<T>> {
+    pub async fn get_number_of_active_proposals(&self) -> Result<u16, ClientError<T>> {
         let params = ActiveProposalRequest {};
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
