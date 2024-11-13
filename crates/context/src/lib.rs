@@ -1227,13 +1227,9 @@ impl ContextManager {
                 context_config.proxy_contract.as_ref().into(),
             )
             .proposal(proposal_id)
-            .await;
+            .await?;
 
-        match response {
-            Ok(Some(proposal)) => Ok(proposal),
-            Ok(None) => Err(eyre::eyre!("No proposal found with the specified ID")),
-            Err(err) => Err(eyre::eyre!("Failed to fetch proposal: {}", err)),
-        }
+        response.ok_or_eyre("no proposal found with the specified ID")
     }
 
     pub async fn get_number_of_active_proposals(&self, context_id: ContextId) -> EyreResult<u16> {
