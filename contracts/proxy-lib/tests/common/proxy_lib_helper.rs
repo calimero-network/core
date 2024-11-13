@@ -1,5 +1,5 @@
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{Signed, ProposalId};
+use calimero_context_config::types::{ProposalId, Signed};
 use calimero_context_config::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProxyMutateRequest,
 };
@@ -7,8 +7,8 @@ use ed25519_dalek::{Signer, SigningKey};
 use near_sdk::AccountId;
 use near_workspaces::result::{ExecutionResult, Value, ViewResultDetails};
 use near_workspaces::Account;
-use serde_json::json;
 use rand::Rng;
+use serde_json::json;
 
 pub const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
 
