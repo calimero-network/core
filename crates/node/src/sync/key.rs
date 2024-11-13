@@ -53,21 +53,41 @@ impl Node {
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
 
+        let sender_key = self
+            .ctx_manager
+            .get_sender_key(&context.id, &our_identity)?
+            .ok_or_eyre("expected own identity to have sender key")?;
+
+        let mut sqx_out = Sequencer::default();
+        send(
+            stream,
+            &StreamMessage::Message {
+                sequence_id: sqx_out.next(),
+                payload: MessagePayload::KeyShare { sender_key },
+            },
+            Some(shared_key),
+        )
+        .await?;
+
         let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? else {
             bail!("connection closed while awaiting key share");
         };
 
-        let sender_key = match msg {
+        let (sequence_id, sender_key) = match msg {
             StreamMessage::Message {
+                sequence_id,
                 payload: MessagePayload::KeyShare { sender_key },
-                ..
-            } => sender_key,
+            } => (sequence_id, sender_key),
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
             | StreamMessage::OpaqueError) => {
                 bail!("unexpected message: {:?}", unexpected)
             }
         };
+
+        let mut sqx_in = Sequencer::default();
+
+        sqx_in.test(sequence_id)?;
 
         self.ctx_manager
             .update_sender_key(&context.id, &their_identity, &sender_key)?;
@@ -104,24 +124,51 @@ impl Node {
         )
         .await?;
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         let sender_key = self
             .ctx_manager
             .get_sender_key(&context.id, &our_identity)?
             .ok_or_eyre("expected own identity to have sender key")?;
 
-        let mut sequencer = Sequencer::default();
-
-        let shared_key = SharedKey::new(&sender_key, &our_identity);
-
+        let mut sqx_out = Sequencer::default();
         send(
             stream,
             &StreamMessage::Message {
-                sequence_id: sequencer.next(),
+                sequence_id: sqx_out.next(),
                 payload: MessagePayload::KeyShare { sender_key },
             },
             Some(shared_key),
         )
         .await?;
+
+        let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? else {
+            bail!("connection closed while awaiting key share");
+        };
+
+        let (sequence_id, sender_key) = match msg {
+            StreamMessage::Message {
+                sequence_id,
+                payload: MessagePayload::KeyShare { sender_key },
+            } => (sequence_id, sender_key),
+            unexpected @ (StreamMessage::Init { .. }
+            | StreamMessage::Message { .. }
+            | StreamMessage::OpaqueError) => {
+                bail!("unexpected message: {:?}", unexpected)
+            }
+        };
+
+        let mut sqx_in = Sequencer::default();
+
+        sqx_in.test(sequence_id)?;
+
+        self.ctx_manager
+            .update_sender_key(&context.id, &their_identity, &sender_key)?;
 
         Ok(())
     }

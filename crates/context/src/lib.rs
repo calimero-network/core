@@ -805,9 +805,10 @@ impl ContextManager {
         public_key: &PublicKey,
         sender_key: &PrivateKey,
     ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
         let mut identity = handle
             .get(&ContextIdentityKey::new(*context_id, *public_key))?
-            .ok_or_eyre("unknown identity");
+            .ok_or_eyre("unknown identity")?;
 
         identity.sender_key = Some(**sender_key);
 
