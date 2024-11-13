@@ -56,9 +56,3 @@ pub enum MessagePayload<'a> {
     BlobShare { chunk: Cow<'a, [u8]> },
     KeyShare { sender_key: PrivateKey },
 }
-
-#[derive(Deserialize, Debug)]
-pub struct ProposalRequest {
-    pub sender: String,
-    pub receiver: String,
-}
