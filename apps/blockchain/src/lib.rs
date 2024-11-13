@@ -65,7 +65,7 @@ impl AppState {
         }
     }
 
-    pub fn create_new_proposal(&self, receiver: String) -> Result<bool, Error> {
+    pub fn create_new_proposal(&self, receiver: String) -> Result<env::ext::ProposalId, Error> {
         env::log("env Call in wasm create new proposal");
         println!("Call in wasm create new proposal {:?}", receiver);
         let account_id = env::ext::AccountId("vuki.testnet".to_string());
@@ -77,7 +77,7 @@ impl AppState {
 
         println!("Create new proposal with id: {:?}", proposal_id);
 
-        Ok(true)
+        Ok(proposal_id)
     }
 
     pub fn approve_proposal(&mut self, proposal_id: String) -> Result<bool, Error> {
