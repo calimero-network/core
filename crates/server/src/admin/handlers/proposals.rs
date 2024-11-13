@@ -112,8 +112,8 @@ pub struct GetProposalResponse {
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsRequest {
-    pub offset: u32,
-    pub limit: u32,
+    pub offset: usize,
+    pub limit: usize,
 }
 
 pub async fn get_proposals_handler(
@@ -123,7 +123,7 @@ pub async fn get_proposals_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .get_proposals(context_id, req.offset as usize, req.limit as usize)
+        .get_proposals(context_id, req.offset, req.limit)
         .await
     {
         Ok(context_proposals) => ApiResponse {
