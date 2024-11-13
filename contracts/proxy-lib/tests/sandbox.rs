@@ -29,7 +29,7 @@ async fn setup_test(
     let bytes = fs::read(common::proxy_lib_helper::PROXY_CONTRACT_WASM)?;
     let alice_sk: SigningKey = common::generate_keypair()?;
     let context_sk = common::generate_keypair()?;
-    let relayer_account = common::create_account_with_balance(&worker, "account", 100).await?;
+    let relayer_account = common::create_account_with_balance(&worker, "account", 1000).await?;
 
     let _test = config_helper
         .config_contract
@@ -42,25 +42,16 @@ async fn setup_test(
 
     let _res = config_helper
         .add_context_to_config(&relayer_account, &context_sk, &alice_sk)
-        .await?
-        .into_result()?;
+        .await?;
 
     let context_id: Repr<ContextId> = Repr::new(context_sk.verifying_key().rt()?);
     let contract_id_str = config_helper
         .get_proxy_contract(&relayer_account, &context_id)
-        .await?
-        .expect("Contract not found");
+        .await?;
 
     let proxy_id: AccountId = contract_id_str.parse()?;
-    let proxy_helper =
-        ProxyContractHelper::new(proxy_id, config_helper.config_contract.id().clone())?;
 
-    // This account is only used to deploy the proxy contract
-    let developer_account = common::create_account_with_balance(&worker, "alice", 10).await?;
-
-    let _res = proxy_helper
-        .initialize(&developer_account, &context_sk.verifying_key().rt()?)
-        .await;
+    let proxy_helper = ProxyContractHelper::new(proxy_id)?;
 
     Ok((
         config_helper,
@@ -74,14 +65,14 @@ async fn setup_test(
 #[tokio::test]
 async fn update_proxy_code() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
+
     let (config_helper, _proxy_helper, relayer_account, context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     // Call the update function
     let res = config_helper
         .update_proxy_contract(&relayer_account, &context_sk, &alice_sk)
-        .await?
-        .into_result()?;
+        .await?;
 
     // Check the result
     assert!(
@@ -106,7 +97,6 @@ async fn test_create_proposal() -> Result<()> {
     let res: Option<ProposalWithApprovals> = proxy_helper
         .proxy_mutate(&relayer_account, &proposal)
         .await?
-        .into_result()?
         .json()?;
 
     match res {
@@ -134,8 +124,7 @@ async fn test_view_proposal() -> Result<()> {
 
     let _res = proxy_helper
         .proxy_mutate(&relayer_account, &proposal)
-        .await?
-        .into_result()?;
+        .await?;
 
     let view_proposal: Option<Proposal> = proxy_helper
         .view_proposal(&relayer_account, &proposal_id)
@@ -166,13 +155,9 @@ async fn test_create_proposal_with_existing_id() -> Result<()> {
 
     let _res = proxy_helper
         .proxy_mutate(&relayer_account, &proposal)
-        .await?
-        .into_result();
+        .await?;
 
-    let res = proxy_helper
-        .proxy_mutate(&relayer_account, &proposal)
-        .await?
-        .into_result();
+    let res = proxy_helper.proxy_mutate(&relayer_account, &proposal).await;
 
     let error = res.expect_err("Expected an error from the contract");
     assert!(error.to_string().contains("Proposal already exists"));
@@ -191,10 +176,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     let proposal_id = rand::thread_rng().gen();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &bob_sk, &vec![])?;
 
-    let res = proxy_helper
-        .proxy_mutate(&relayer_account, &proposal)
-        .await?
-        .into_result();
+    let res = proxy_helper.proxy_mutate(&relayer_account, &proposal).await;
 
     let error = res.expect_err("Expected an error from the contract");
     assert!(error.to_string().contains("Is not a member"));
@@ -226,7 +208,6 @@ async fn test_create_multiple_proposals() -> Result<()> {
     let res: ProposalWithApprovals = proxy_helper
         .proxy_mutate(&relayer_account, &proposal_1)
         .await?
-        .into_result()?
         .json()?;
 
     assert_eq!(res.proposal_id, proposal_1_id);
@@ -235,7 +216,6 @@ async fn test_create_multiple_proposals() -> Result<()> {
     let res: ProposalWithApprovals = proxy_helper
         .proxy_mutate(&relayer_account, &proposal_2)
         .await?
-        .into_result()?
         .json()?;
 
     assert_eq!(res.proposal_id, proposal_2_id);
@@ -255,8 +235,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
     let bob_sk: SigningKey = common::generate_keypair()?;
     let _res = config_helper
         .add_members(&relayer_account, &alice_sk, &[bob_sk.clone()], &context_sk)
-        .await?
-        .into_result()?;
+        .await?;
 
     let proposal_id = rand::thread_rng().gen();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
@@ -264,13 +243,11 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
     let res: ProposalWithApprovals = proxy_helper
         .proxy_mutate(&relayer_account, &proposal)
         .await?
-        .into_result()?
         .json()?;
 
     let res2: ProposalWithApprovals = proxy_helper
         .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
         .await?
-        .into_result()?
         .json()?;
 
     assert_eq!(res2.proposal_id, proposal_id);
@@ -295,13 +272,11 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     let res: ProposalWithApprovals = proxy_helper
         .proxy_mutate(&relayer_account, &proposal)
         .await?
-        .into_result()?
         .json()?;
 
     let res2 = proxy_helper
         .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
-        .await?
-        .into_result();
+        .await;
 
     let error = res2.expect_err("Expected an error from the contract");
     assert!(error.to_string().contains("Is not a member"));
@@ -331,8 +306,7 @@ async fn setup_action_test(
             &[bob_sk.clone(), charlie_sk.clone()],
             &context_sk,
         )
-        .await?
-        .into_result()?;
+        .await?;
 
     let members = vec![alice_sk, bob_sk, charlie_sk];
     Ok((proxy_helper, relayer_account, members))
@@ -350,7 +324,6 @@ async fn create_and_approve_proposal(
     let res: ProposalWithApprovals = proxy_helper
         .proxy_mutate(&relayer_account, &proposal)
         .await?
-        .into_result()?
         .json()?;
 
     assert_eq!(res.num_approvals, 1);
@@ -359,7 +332,6 @@ async fn create_and_approve_proposal(
     let res: ProposalWithApprovals = proxy_helper
         .approve_proposal(&relayer_account, &members[1], &res.proposal_id)
         .await?
-        .into_result()?
         .json()?;
 
     assert_eq!(res.num_approvals, 2, "Proposal should have 2 approvals");
@@ -367,7 +339,6 @@ async fn create_and_approve_proposal(
     let res: Option<ProposalWithApprovals> = proxy_helper
         .approve_proposal(&relayer_account, &members[2], &res.proposal_id)
         .await?
-        .into_result()?
         .json()?;
 
     assert!(
@@ -398,8 +369,8 @@ async fn test_execute_proposal() -> Result<()> {
         deposit: 0,
         gas: 1_000_000_000_000,
     }];
-    let _res =
-        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+
+    create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
 
     let counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(
@@ -423,8 +394,8 @@ async fn test_action_change_active_proposals_limit() -> Result<()> {
     let actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 6,
     }];
-    let _res =
-        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+
+    create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
 
     let new_active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)
@@ -443,8 +414,8 @@ async fn test_action_change_number_of_approvals() -> Result<()> {
     assert_eq!(default_new_num_approvals, 3);
 
     let actions = vec![ProposalAction::SetNumApprovals { num_approvals: 2 }];
-    let _res =
-        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+
+    create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
 
     let new_num_approvals: u32 = proxy_helper.view_num_approvals(&relayer_account).await?;
     assert_eq!(new_num_approvals, 2);
@@ -469,8 +440,8 @@ async fn test_mutate_storage_value() -> Result<()> {
         key: key_data.clone(),
         value: value_data.clone(),
     }];
-    let _res =
-        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+
+    create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
 
     let storage_value: Box<[u8]> = proxy_helper
         .view_context_value(&relayer_account, key_data.clone())
@@ -489,13 +460,14 @@ async fn test_transfer() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
-    let _res = &worker
+    let _res = worker
         .root_account()?
         .transfer_near(
             &proxy_helper.proxy_contract,
             near_workspaces::types::NearToken::from_near(5),
         )
-        .await?;
+        .await?
+        .into_result()?;
 
     let recipient = create_account_with_balance(&worker, "new_account", 0).await?;
 
@@ -509,8 +481,8 @@ async fn test_transfer() -> Result<()> {
         receiver_id: recipient.id().to_string(),
         amount: 5,
     }];
-    let _res =
-        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+
+    create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
 
     let recipient_balance = recipient.view_account().await?.balance;
     assert_eq!(
@@ -552,8 +524,7 @@ async fn test_combined_proposals() -> Result<()> {
         },
     ];
 
-    let _res =
-        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
 
     let updated_counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(
@@ -600,8 +571,7 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
         },
     ];
 
-    let _res =
-        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
 
     let active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)
@@ -639,13 +609,15 @@ async fn test_view_proposals() -> Result<()> {
     let proposal3 =
         proxy_helper.create_proposal_request(&proposal3_id, &alice_sk, &proposal3_actions)?;
 
-    let _ = proxy_helper
+    let _res = proxy_helper
         .proxy_mutate(&relayer_account, &proposal1)
         .await?;
-    let _ = proxy_helper
+
+    let _res = proxy_helper
         .proxy_mutate(&relayer_account, &proposal2)
         .await?;
-    let _ = proxy_helper
+
+    let _res = proxy_helper
         .proxy_mutate(&relayer_account, &proposal3)
         .await?;
 

@@ -6,11 +6,21 @@ use calimero_context_config::types::{ContextId, Signed, SignerId};
 use calimero_context_config::{Proposal, ProposalId, ProposalWithApprovals};
 use near_sdk::json_types::U128;
 use near_sdk::store::IterableMap;
-use near_sdk::{near, AccountId, PanicOnDefault, PromiseError};
+use near_sdk::{env, near, AccountId, PanicOnDefault, PromiseError};
 
 pub mod ext_config;
 mod mutate;
-pub use crate::ext_config::config_contract;
+
+#[cfg(feature = "__internal_explode_size")]
+const _: () = {
+    const __SIZE: usize = 1 << 16; // 64KB
+    const __PAYLOAD: [u8; __SIZE] = [1; __SIZE];
+
+    #[no_mangle]
+    extern "C" fn __internal_explode_size() -> usize {
+        __PAYLOAD.iter().map(|c| (*c as usize) + 1).sum()
+    }
+};
 
 enum MemberAction {
     Approve {
@@ -22,6 +32,7 @@ enum MemberAction {
         num_proposals: u32,
     },
 }
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct ProxyContract {
@@ -33,6 +44,7 @@ pub struct ProxyContract {
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
     pub context_storage: IterableMap<Box<[u8]>, Box<[u8]>>,
+    pub code_size: (u64, Option<u64>),
 }
 
 #[derive(Clone, Debug)]
@@ -46,16 +58,17 @@ pub struct FunctionCallPermission {
 #[near]
 impl ProxyContract {
     #[init]
-    pub fn init(context_id: Repr<ContextId>, context_config_account_id: AccountId) -> Self {
+    pub fn init(context_id: Repr<ContextId>) -> Self {
         Self {
             context_id: context_id.rt().expect("Invalid context id"),
-            context_config_account_id,
+            context_config_account_id: env::predecessor_account_id(),
             proposals: IterableMap::new(b"r".to_vec()),
             approvals: IterableMap::new(b"c".to_vec()),
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
             num_approvals: 3,
             active_proposals_limit: 10,
             context_storage: IterableMap::new(b"l"),
+            code_size: (env::storage_usage(), None),
         }
     }
 

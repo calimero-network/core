@@ -23,3 +23,6 @@ near-crypto.workspace = true
 calimero-context-config-near = { path = "../context-config" }
 ed25519-dalek.workspace = true
 rand.workspace = true
+
+[features]
+__internal_explode_size = []
