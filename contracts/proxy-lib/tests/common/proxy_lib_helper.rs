@@ -55,7 +55,10 @@ impl ProxyContractHelper {
     }
 
     pub fn generate_proposal_id(&self) -> Repr<ProposalId> {
-        let proposal_id = rand::thread_rng().gen::<[_; 32]>().rt().expect("infallible conversion");
+        let proposal_id = rand::thread_rng()
+            .gen::<[_; 32]>()
+            .rt()
+            .expect("infallible conversion");
         Repr::new(proposal_id)
     }
 
