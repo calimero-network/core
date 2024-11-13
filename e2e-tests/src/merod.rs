@@ -11,6 +11,7 @@ use crate::TestEnvironment;
 
 pub struct Merod {
     pub name: String,
+    test_id: u32,
     process: RefCell<Option<Child>>,
     nodes_dir: Utf8PathBuf,
     log_dir: Utf8PathBuf,
@@ -20,6 +21,7 @@ pub struct Merod {
 impl Merod {
     pub fn new(name: String, environment: &TestEnvironment) -> Self {
         Self {
+            test_id: environment.test_id,
             process: RefCell::new(None),
             nodes_dir: environment.nodes_dir.clone(),
             log_dir: environment.logs_dir.join(&name),
@@ -28,7 +30,7 @@ impl Merod {
         }
     }
 
-    pub async fn init(&self, swarm_port: u32, server_port: u32) -> EyreResult<()> {
+    pub async fn init(&self, swarm_port: u32, server_port: u32, args: &[&str]) -> EyreResult<()> {
         create_dir_all(&self.nodes_dir.join(&self.name)).await?;
         create_dir_all(&self.log_dir).await?;
 
@@ -44,11 +46,22 @@ impl Merod {
                 "init",
             )
             .await?;
-
         let result = child.wait().await?;
-
         if !result.success() {
             bail!("Failed to initialize node '{}'", self.name);
+        }
+
+        let rendezvous_ns_arg = format!(
+            "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
+            self.test_id
+        );
+        let mut config_args = vec!["config", rendezvous_ns_arg.as_str()];
+        config_args.extend(args);
+
+        let mut child = self.run_cmd(&config_args, "config").await?;
+        let result = child.wait().await?;
+        if !result.success() {
+            bail!("Failed to configure node '{}'", self.name);
         }
 
         Ok(())
@@ -85,7 +98,7 @@ impl Merod {
         let log_file = self.log_dir.join(format!("{}.log", log_suffix));
         let mut log_file = File::create(&log_file).await?;
 
-        println!("Running command '{:}' {:?}", &self.binary, root_args);
+        println!("Command: '{:}' {:?}", &self.binary, root_args);
 
         let mut child = Command::new(&self.binary)
             .args(root_args)

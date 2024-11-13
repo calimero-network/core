@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use eyre::{bail, Result as EyreResult};
 use rand::seq::SliceRandom;
+use serde_json::from_slice;
 use tokio::fs::{read, read_dir};
 use tokio::time::sleep;
 
@@ -12,6 +14,32 @@ use crate::meroctl::Meroctl;
 use crate::merod::Merod;
 use crate::steps::{TestScenario, TestStep};
 use crate::TestEnvironment;
+
+pub struct TestContext<'a> {
+    pub inviter: String,
+    pub invitees: Vec<String>,
+    pub meroctl: &'a Meroctl,
+    pub context_id: Option<String>,
+    pub inviter_public_key: Option<String>,
+    pub invitees_public_keys: HashMap<String, String>,
+}
+
+pub trait Test {
+    async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()>;
+}
+
+impl<'a> TestContext<'a> {
+    pub fn new(inviter: String, invitees: Vec<String>, meroctl: &'a Meroctl) -> Self {
+        Self {
+            inviter,
+            invitees,
+            meroctl,
+            context_id: None,
+            inviter_public_key: None,
+            invitees_public_keys: HashMap::new(),
+        }
+    }
+}
 
 pub struct Driver {
     environment: TestEnvironment,
@@ -38,15 +66,11 @@ impl Driver {
 
         self.stop_nodes().await;
 
-        result?;
-
-        Ok(())
+        result
     }
 
     async fn run_tests(&self) -> EyreResult<()> {
         self.boot_nodes().await?;
-
-        use serde_json::from_slice;
 
         let scenarios_dir = self.environment.input_dir.join("scenarios");
         let mut entries = read_dir(scenarios_dir).await?;
@@ -56,14 +80,7 @@ impl Driver {
             if path.is_dir() {
                 let test_file_path = path.join("test.json");
                 if test_file_path.exists() {
-                    let scenario = from_slice(&read(&test_file_path).await?)?;
-
-                    println!(
-                        "Loaded test scenario from file: {:?}\n{:?}",
-                        test_file_path, scenario
-                    );
-
-                    self.run_scenario(scenario).await?;
+                    self.run_scenario(test_file_path).await?;
                 }
             }
         }
@@ -71,51 +88,69 @@ impl Driver {
         Ok(())
     }
 
-    async fn run_scenario(&self, scenario: TestScenario) -> EyreResult<()> {
-        let (inviter_node, invitee_node) = match self.pick_two_nodes() {
-            Some((inviter_node, invitee_node)) => (inviter_node, invitee_node),
+    async fn run_scenario(&self, file_path: PathBuf) -> EyreResult<()> {
+        println!("================= Setting up scenario and context ==================");
+        let scenario: TestScenario = from_slice(&read(&file_path).await?)?;
+
+        println!(
+            "Loaded test scenario from file: {:?}\n{:?}",
+            file_path, scenario
+        );
+
+        let (inviter, invitees) = match self.pick_inviter_node() {
+            Some((inviter, invitees)) => (inviter, invitees),
             None => bail!("Not enough nodes to run the test"),
         };
 
-        let mut ctx = TestContext::new(inviter_node, invitee_node, &self.meroctl);
+        println!("Picked inviter: {}", inviter);
+        println!("Picked invitees: {:?}", invitees);
+
+        let mut ctx = TestContext::new(inviter, invitees, &self.meroctl);
+
+        println!("====================================================================");
 
         for step in scenario.steps.iter() {
-            println!("================= Starting step =================");
+            println!("======================== Starting step =============================");
             println!("Step: {:?}", step);
             match step {
                 TestStep::ContextCreate(step) => step.run_assert(&mut ctx).await?,
                 TestStep::ContextInviteJoin(step) => step.run_assert(&mut ctx).await?,
-                TestStep::JsonRpcExecute(step) => step.run_assert(&mut ctx).await?,
+                TestStep::JsonRpcCall(step) => step.run_assert(&mut ctx).await?,
             };
-            println!("================= Finished step =================");
+            println!("====================================================================");
         }
 
         Ok(())
     }
 
-    fn pick_two_nodes(&self) -> Option<(String, String)> {
+    fn pick_inviter_node(&self) -> Option<(String, Vec<String>)> {
         let merods = self.merods.borrow();
         let mut node_names: Vec<String> = merods.keys().cloned().collect();
-        if node_names.len() < 2 {
+        if node_names.len() < 1 {
             None
         } else {
             let mut rng = rand::thread_rng();
             node_names.shuffle(&mut rng);
-            Some((node_names[0].clone(), node_names[1].clone()))
+            let picked_node = node_names.remove(0);
+            Some((picked_node, node_names))
         }
     }
 
     async fn boot_nodes(&self) -> EyreResult<()> {
-        for i in 0..self.config.network_layout.node_count {
+        println!("========================= Starting nodes ===========================");
+
+        for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
             let mut merods = self.merods.borrow_mut();
             if !merods.contains_key(&node_name) {
                 let merod = Merod::new(node_name.clone(), &self.environment);
+                let args: Vec<&str> = self.config.merod.args.iter().map(|s| s.as_str()).collect();
 
                 merod
                     .init(
-                        self.config.network_layout.start_swarm_port + i,
-                        self.config.network_layout.start_server_port + i,
+                        self.config.network.start_swarm_port + i,
+                        self.config.network.start_server_port + i,
+                        &args,
                     )
                     .await?;
 
@@ -127,6 +162,8 @@ impl Driver {
 
         // TODO: Implement health check?
         sleep(Duration::from_secs(20)).await;
+
+        println!("====================================================================");
 
         Ok(())
     }
@@ -141,29 +178,5 @@ impl Driver {
         }
 
         merods.clear();
-    }
-}
-
-pub struct TestContext<'a> {
-    pub inviter_node: String,
-    pub invitee_node: String,
-    pub meroctl: &'a Meroctl,
-    pub context_id: Option<String>,
-    pub inviter_public_key: Option<String>,
-}
-
-pub trait Test {
-    async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()>;
-}
-
-impl<'a> TestContext<'a> {
-    pub fn new(inviter_node: String, invitee_node: String, meroctl: &'a Meroctl) -> Self {
-        Self {
-            inviter_node,
-            invitee_node,
-            meroctl,
-            context_id: None,
-            inviter_public_key: None,
-        }
     }
 }

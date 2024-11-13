@@ -4,6 +4,7 @@ use config::Config;
 use const_format::concatcp;
 use driver::Driver;
 use eyre::Result as EyreResult;
+use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
 
 mod config;
@@ -54,6 +55,7 @@ pub struct Args {
 
 #[derive(Debug)]
 pub struct TestEnvironment {
+    pub test_id: u32,
     pub merod_binary: Utf8PathBuf,
     pub meroctl_binary: Utf8PathBuf,
     pub input_dir: Utf8PathBuf,
@@ -64,7 +66,10 @@ pub struct TestEnvironment {
 
 impl Into<TestEnvironment> for Args {
     fn into(self) -> TestEnvironment {
+        let mut rng = rand::thread_rng();
+
         TestEnvironment {
+            test_id: rng.gen::<u32>(),
             merod_binary: self.merod_binary,
             meroctl_binary: self.meroctl_binary,
             input_dir: self.input_dir.clone(),
@@ -101,7 +106,7 @@ async fn main() -> EyreResult<()> {
     let config_content = read_to_string(config_path).await?;
     let config: Config = serde_json::from_str(&config_content)?;
 
-    let controller = Driver::new(args.into(), config);
+    let driver = Driver::new(args.into(), config);
 
-    controller.run().await
+    driver.run().await
 }

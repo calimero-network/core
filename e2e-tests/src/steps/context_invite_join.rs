@@ -9,9 +9,6 @@ pub struct InviteJoinContextStep;
 
 impl Test for InviteJoinContextStep {
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
-        let (invitee_public_key, invitee_private_key) =
-            ctx.meroctl.identity_generate(&ctx.invitee_node).await?;
-
         let Some(ref context_id) = ctx.context_id else {
             bail!("Context ID is required for InviteJoinContextStep");
         };
@@ -20,35 +17,47 @@ impl Test for InviteJoinContextStep {
             bail!("Inviter public key is required for InviteJoinContextStep");
         };
 
-        let invitation_payload = ctx
-            .meroctl
-            .context_invite(
-                &ctx.inviter_node,
-                context_id,
-                inviter_public_key,
-                &invitee_public_key,
-            )
-            .await?;
+        for invitee in ctx.invitees.iter() {
+            let (invitee_public_key, invitee_private_key) =
+                ctx.meroctl.identity_generate(invitee).await?;
 
-        let (invitee_context_id, invite_member_public_key) = ctx
-            .meroctl
-            .context_join(&ctx.invitee_node, &invitee_private_key, &invitation_payload)
-            .await?;
+            let invitation_payload = ctx
+                .meroctl
+                .context_invite(
+                    &ctx.inviter,
+                    context_id,
+                    inviter_public_key,
+                    &invitee_public_key,
+                )
+                .await?;
 
-        if *context_id != invitee_context_id {
-            bail!(
-                "Context ID mismatch: {} != {}",
-                context_id,
-                invitee_context_id
+            let (invitee_context_id, invitee_member_public_key) = ctx
+                .meroctl
+                .context_join(invitee, &invitee_private_key, &invitation_payload)
+                .await?;
+
+            if *context_id != invitee_context_id {
+                bail!(
+                    "Context ID mismatch: {} != {}",
+                    context_id,
+                    invitee_context_id
+                );
+            }
+
+            if invitee_public_key != invitee_member_public_key {
+                bail!(
+                    "Invitee public key mismatch: {} != {}",
+                    invitee_public_key,
+                    invitee_member_public_key
+                );
+            }
+
+            drop(
+                ctx.invitees_public_keys
+                    .insert(invitee.clone(), invitee_public_key),
             );
-        }
 
-        if invitee_public_key != invite_member_public_key {
-            bail!(
-                "Invitee public key mismatch: {} != {}",
-                invitee_public_key,
-                invite_member_public_key
-            );
+            println!("Report: Node '{}' joined the context", invitee)
         }
 
         Ok(())

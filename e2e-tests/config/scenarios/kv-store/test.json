@@ -6,17 +6,19 @@
       }
     },
     {
-      "jsonRpcExecute": {
+      "jsonRpcCall": {
         "methodName": "set",
         "argsJson": { "key": "foo", "value": "bar" },
-        "expectedResultJson": null
+        "expectedResultJson": null,
+        "target": "inviter"
       }
     },
     {
-      "jsonRpcExecute": {
+      "jsonRpcCall": {
         "methodName": "get",
         "argsJson": { "key": "foo" },
-        "expectedResultJson": "bar"
+        "expectedResultJson": "bar",
+        "target": "inviter"
       }
     },
     {

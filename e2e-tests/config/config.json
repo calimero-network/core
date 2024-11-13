@@ -1,7 +1,10 @@
 {
-  "networkLayout": {
+  "network": {
     "nodeCount": 2,
     "startSwarmPort": 2427,
     "startServerPort": 2527
+  },
+  "merod": {
+    "args": []
   }
 }

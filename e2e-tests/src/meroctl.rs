@@ -110,18 +110,21 @@ impl Meroctl {
         node_name: &str,
         context_id: &str,
         method_name: &str,
-        args_json: &serde_json::Value,
+        args: &serde_json::Value,
+        public_key: &str,
     ) -> EyreResult<serde_json::Value> {
-        let args_json = serde_json::to_string(args_json)?;
+        let args_json = serde_json::to_string(args)?;
         let json = self
             .run_cmd(
                 node_name,
                 &[
-                    "json-rpc",
+                    "call",
                     context_id,
                     method_name,
-                    "--args-json",
+                    "--args",
                     &args_json,
+                    "--as",
+                    public_key,
                 ],
             )
             .await?;
@@ -145,7 +148,7 @@ impl Meroctl {
 
         root_args.extend(args);
 
-        println!("Running command '{:}' {:?}", &self.binary, root_args);
+        println!("Command: '{:}' {:?}", &self.binary, root_args);
 
         let output = Command::new(&self.binary)
             .args(root_args)

@@ -20,19 +20,17 @@ impl Test for CreateContextStep {
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let app_id = match &self.application {
             ApplicationSource::LocalFile(path) => {
-                ctx.meroctl
-                    .application_install(&ctx.inviter_node, path)
-                    .await?
+                ctx.meroctl.application_install(&ctx.inviter, path).await?
             }
         };
 
-        let (context_id, member_public_key) = ctx
-            .meroctl
-            .context_create(&ctx.inviter_node, &app_id)
-            .await?;
+        let (context_id, member_public_key) =
+            ctx.meroctl.context_create(&ctx.inviter, &app_id).await?;
 
         ctx.context_id = Some(context_id);
         ctx.inviter_public_key = Some(member_public_key);
+
+        println!("Report: Created context on '{}' node", &ctx.inviter);
 
         Ok(())
     }
