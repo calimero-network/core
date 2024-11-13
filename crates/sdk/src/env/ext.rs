@@ -1,3 +1,7 @@
+use core::fmt;
+use std::borrow::Cow;
+use std::str::FromStr;
+
 use borsh::{to_vec as to_borsh_vec, to_vec, BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
@@ -143,14 +147,58 @@ impl External {
     Ord,
     PartialEq,
     PartialOrd,
-    Serialize,
-    Deserialize,
 )]
 pub struct ProposalId(pub [u8; 32]);
 
 impl AsRef<[u8]> for ProposalId {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl ProposalId {
+    pub fn as_str<'a>(&self, buf: &'a mut [u8; 32]) -> &'a str {
+        let len = bs58::encode(&self.0).onto(&mut buf[..]).unwrap();
+        std::str::from_utf8(&buf[..len]).unwrap()
+    }
+}
+
+impl FromStr for ProposalId {
+    type Err = bs58::decode::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut buf = [0; 32];
+        let _len = bs58::decode(s).onto(&mut buf[..])?;
+        Ok(Self(buf))
+    }
+}
+
+impl Serialize for ProposalId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut buf = [0; 32];
+        serializer.serialize_str(self.as_str(&mut buf))
+    }
+}
+
+impl<'de> Deserialize<'de> for ProposalId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Container<'a>(#[serde(borrow)] Cow<'a, str>);
+
+        let encoded = Container::deserialize(deserializer)?;
+        Self::from_str(&*encoded.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl fmt::Display for ProposalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str(&mut [0; 32]))
     }
 }
 

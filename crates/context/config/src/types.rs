@@ -249,6 +249,28 @@ impl ReprBytes for Signature {
     }
 }
 
+
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+pub struct ProposalId(Identity);
+
+impl ReprBytes for ProposalId {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.as_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        ReprBytes::from_bytes(f).map(Self)
+    }
+}
+
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum VerificationKeyParseError {

@@ -1,4 +1,4 @@
-use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::Signed;
 use calimero_context_config::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, ProxyMutateRequest,
@@ -28,7 +28,7 @@ impl ProxyContractHelper {
     ) -> eyre::Result<Signed<ProxyMutateRequest>> {
         let request = ProxyMutateRequest::Propose {
             proposal: Proposal {
-                id: id.clone(),
+                id: Repr::new(id.clone()),
                 author_id: author.verifying_key().rt().expect("Invalid signer"),
                 actions: actions.clone(),
             },
@@ -86,7 +86,7 @@ impl ProxyContractHelper {
     pub async fn view_proposal_confirmations(
         &self,
         caller: &Account,
-        proposal_id: &ProposalId,
+        proposal_id: &Repr<ProposalId>,
     ) -> eyre::Result<ViewResultDetails> {
         let res = caller
             .view(&self.proxy_contract, "get_confirmations_count")
@@ -141,7 +141,7 @@ impl ProxyContractHelper {
     pub async fn view_proposal(
         &self,
         caller: &Account,
-        id: &ProposalId,
+        id: &Repr<ProposalId>,
     ) -> eyre::Result<Option<Proposal>> {
         let res = caller
             .view(&self.proxy_contract, "proposal")
