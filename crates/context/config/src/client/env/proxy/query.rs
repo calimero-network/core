@@ -43,7 +43,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     }
 
     pub async fn get_number_of_active_proposals(&self) -> Result<u16, ClientError<T>> {
-        let params = ActiveProposalRequest {};
+        let params = ActiveProposalRequest;
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }

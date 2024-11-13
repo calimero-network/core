@@ -5,7 +5,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 
 #[derive(Copy, Clone, Debug, Serialize)]
-pub(super) struct ActiveProposalRequest {}
+pub(super) struct ActiveProposalRequest;
 
 impl Method<Near> for ActiveProposalRequest {
     const METHOD: &'static str = "get_active_proposals_limit";
