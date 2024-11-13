@@ -38,13 +38,13 @@ pub enum GetRequest {
 
 impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
-        println!("{}", self.data);
+        println!("{:?}", self.data);
     }
 }
 
 impl Report for GetNumberOfProposalApprovalsResponse {
     fn report(&self) {
-        println!("{}", self.data);
+        println!("{:?}", self.data);
     }
 }
 
