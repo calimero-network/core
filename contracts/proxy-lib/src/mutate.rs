@@ -208,8 +208,6 @@ impl ProxyContract {
 
     #[payable]
     pub fn update_contract(&mut self) -> Promise {
-        env::log_str("suhhh");
-
         require!(
             env::predecessor_account_id() == self.context_config_account_id,
             "Only the context config contract can update the proxy"
