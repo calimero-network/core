@@ -2,8 +2,8 @@ use core::str;
 use std::collections::HashSet;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ContextId, Signed, SignerId};
-use calimero_context_config::{Proposal, ProposalId, ProposalWithApprovals};
+use calimero_context_config::types::{ContextId, Signed, SignerId, ProposalId};
+use calimero_context_config::{Proposal, ProposalWithApprovals};
 use near_sdk::json_types::U128;
 use near_sdk::store::IterableMap;
 use near_sdk::{env, near, AccountId, PanicOnDefault, PromiseError};
