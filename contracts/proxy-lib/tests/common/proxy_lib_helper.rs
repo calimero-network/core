@@ -55,9 +55,8 @@ impl ProxyContractHelper {
     }
 
     pub fn generate_proposal_id(&self) -> Repr<ProposalId> {
-        let mut bytes = [0u8; 32];
-        rand::thread_rng().fill(&mut bytes);
-        Repr::new(bytes).rt().expect("Failed to create ProposalId")
+        let proposal_id = rand::thread_rng().gen::<[_; 32]>().rt().expect("infallible conversion");
+        Repr::new(proposal_id)
     }
 
     pub async fn approve_proposal(
