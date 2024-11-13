@@ -461,8 +461,12 @@ impl Node {
             });
         };
 
+        if outcome.returns.is_err() {
+            return Ok(outcome);
+        }
+
         for (proposal_id, actions) in &outcome.proposals {
-            let actions: Vec<ProposalAction> = from_slice(&actions).map_err(|e| {
+            let actions: Vec<ProposalAction> = from_slice(actions).map_err(|e| {
                 error!(%e, "Failed to deserialize proposal actions.");
                 CallError::InternalError
             })?;
@@ -472,7 +476,7 @@ impl Node {
                     context_id,
                     executor_public_key,
                     proposal_id.clone(),
-                    actions.clone(),
+                    actions,
                 )
                 .await
                 .map_err(|e| {
