@@ -1,13 +1,14 @@
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::Signed;
+use calimero_context_config::types::{Signed, ProposalId};
 use calimero_context_config::{
-    Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, ProxyMutateRequest,
+    Proposal, ProposalAction, ProposalApprovalWithSigner, ProxyMutateRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use near_sdk::AccountId;
 use near_workspaces::result::{ExecutionResult, Value, ViewResultDetails};
 use near_workspaces::Account;
 use serde_json::json;
+use rand::Rng;
 
 pub const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
 
@@ -22,13 +23,13 @@ impl ProxyContractHelper {
 
     pub fn create_proposal_request(
         &self,
-        id: &ProposalId,
+        id: &Repr<ProposalId>,
         author: &SigningKey,
         actions: &Vec<ProposalAction>,
     ) -> eyre::Result<Signed<ProxyMutateRequest>> {
         let request = ProxyMutateRequest::Propose {
             proposal: Proposal {
-                id: Repr::new(id.clone()),
+                id: id.clone(),
                 author_id: author.verifying_key().rt().expect("Invalid signer"),
                 actions: actions.clone(),
             },
@@ -53,11 +54,17 @@ impl ProxyContractHelper {
         Ok(call)
     }
 
+    pub fn generate_proposal_id(&self) -> Repr<ProposalId> {
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut bytes);
+        Repr::new(bytes).rt().expect("Failed to create ProposalId")
+    }
+
     pub async fn approve_proposal(
         &self,
         caller: &Account,
         signer: &SigningKey,
-        proposal_id: &ProposalId,
+        proposal_id: &Repr<ProposalId>,
     ) -> eyre::Result<ExecutionResult<Value>> {
         let signer_id = signer
             .verifying_key()
@@ -149,5 +156,9 @@ impl ProxyContractHelper {
             .await?
             .json()?;
         Ok(res)
+    }
+
+    pub fn proposal_id_from_bytes(&self, bytes: [u8; 32]) -> Repr<ProposalId> {
+        Repr::new(bytes).rt().expect("Failed to create ProposalId")
     }
 }
