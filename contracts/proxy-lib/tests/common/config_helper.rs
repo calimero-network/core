@@ -4,8 +4,7 @@ use calimero_context_config::{ContextRequest, ContextRequestKind, Request, Reque
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::Result;
 use near_workspaces::network::Sandbox;
-use near_workspaces::result::ExecutionFinalResult;
-use near_workspaces::types::NearToken;
+use near_workspaces::result::{ExecutionResult, Value};
 use near_workspaces::{Account, Contract, Worker};
 use rand::Rng;
 use serde_json::json;
@@ -30,7 +29,7 @@ impl ConfigContractHelper {
         caller: &Account,
         context: &SigningKey,
         author: &SigningKey,
-    ) -> Result<ExecutionFinalResult> {
+    ) -> Result<ExecutionResult<Value>> {
         let mut rng = rand::thread_rng();
 
         let application_id = rng.gen::<[_; 32]>().rt()?;
@@ -59,7 +58,9 @@ impl ConfigContractHelper {
             },
             |p| context.sign(p),
         )?;
+
         let res = self.mutate_call(&caller, &signed_request).await?;
+
         Ok(res)
     }
 
@@ -68,7 +69,7 @@ impl ConfigContractHelper {
         caller: &Account,
         context_id: &SigningKey,
         host: &SigningKey,
-    ) -> Result<ExecutionFinalResult> {
+    ) -> Result<ExecutionResult<Value>> {
         let context_id: Repr<ContextId> = Repr::new(context_id.verifying_key().rt()?);
         let host_id: SignerId = host.verifying_key().rt()?;
 
@@ -84,15 +85,8 @@ impl ConfigContractHelper {
             |p| host.sign(p),
         )?;
 
-        let res = caller
-            .call(self.config_contract.id(), "mutate")
-            .args_json(&signed_request)
-            .deposit(NearToken::from_near(20))
-            .max_gas()
-            .transact()
-            .await?;
+        let res = self.mutate_call(caller, &signed_request).await?;
 
-        // Uncomment to print the result
         Ok(res)
     }
 
@@ -102,7 +96,7 @@ impl ConfigContractHelper {
         host: &SigningKey,
         guests: &[SigningKey],
         context: &SigningKey,
-    ) -> Result<ExecutionFinalResult> {
+    ) -> Result<ExecutionResult<Value>> {
         let guest_ids: Vec<Repr<ContextIdentity>> = guests
             .iter()
             .map(|x| Repr::new(x.verifying_key().rt().unwrap()))
@@ -124,6 +118,7 @@ impl ConfigContractHelper {
         )?;
 
         let res = self.mutate_call(caller, &signed_request).await?;
+
         Ok(res)
     }
 
@@ -131,14 +126,15 @@ impl ConfigContractHelper {
         &'a self,
         caller: &'a Account,
         request: &'a Signed<Request<'a>>,
-    ) -> Result<ExecutionFinalResult> {
+    ) -> Result<ExecutionResult<Value>> {
         let res = caller
             .call(self.config_contract.id(), "mutate")
             .args_json(request)
-            .deposit(NearToken::from_near(20))
             .max_gas()
             .transact()
-            .await?;
+            .await?
+            .into_result()?;
+
         Ok(res)
     }
 
@@ -146,12 +142,13 @@ impl ConfigContractHelper {
         &'a self,
         caller: &'a Account,
         context_id: &Repr<ContextId>,
-    ) -> eyre::Result<Option<String>> {
+    ) -> eyre::Result<String> {
         let res = caller
             .view(self.config_contract.id(), "proxy_contract")
             .args_json(json!({ "context_id": context_id }))
             .await?
             .json()?;
+
         Ok(res)
     }
 }

@@ -1,11 +1,11 @@
-use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ContextId, Signed};
+use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::types::Signed;
 use calimero_context_config::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, ProxyMutateRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use near_sdk::AccountId;
-use near_workspaces::result::{ExecutionFinalResult, ViewResultDetails};
+use near_workspaces::result::{ExecutionResult, Value, ViewResultDetails};
 use near_workspaces::Account;
 use serde_json::json;
 
@@ -13,30 +13,11 @@ pub const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
 
 pub struct ProxyContractHelper {
     pub proxy_contract: AccountId,
-    config_contract: AccountId,
 }
 
 impl ProxyContractHelper {
-    pub fn new(proxy_contract: AccountId, config_contract: AccountId) -> eyre::Result<Self> {
-        Ok(Self {
-            proxy_contract,
-            config_contract,
-        })
-    }
-
-    pub async fn initialize(
-        &self,
-        caller: &Account,
-        context_id: &Repr<ContextId>,
-    ) -> eyre::Result<ExecutionFinalResult, near_workspaces::error::Error> {
-        caller
-            .call(&self.proxy_contract, "init")
-            .args_json(json!({
-                "context_id": context_id,
-                "context_config_account_id": self.config_contract,
-            }))
-            .transact()
-            .await
+    pub fn new(proxy_contract: AccountId) -> eyre::Result<Self> {
+        Ok(Self { proxy_contract })
     }
 
     pub fn create_proposal_request(
@@ -60,13 +41,15 @@ impl ProxyContractHelper {
         &self,
         caller: &Account,
         request: &Signed<ProxyMutateRequest>,
-    ) -> eyre::Result<ExecutionFinalResult> {
+    ) -> eyre::Result<ExecutionResult<Value>> {
         let call = caller
             .call(&self.proxy_contract, "mutate")
-            .args_json(json!(request))
+            .args_json(request)
             .max_gas()
             .transact()
-            .await?;
+            .await?
+            .into_result()?;
+
         Ok(call)
     }
 
@@ -75,7 +58,7 @@ impl ProxyContractHelper {
         caller: &Account,
         signer: &SigningKey,
         proposal_id: &ProposalId,
-    ) -> eyre::Result<ExecutionFinalResult> {
+    ) -> eyre::Result<ExecutionResult<Value>> {
         let signer_id = signer
             .verifying_key()
             .to_bytes()
@@ -95,7 +78,8 @@ impl ProxyContractHelper {
             .args_json(signed_request)
             .max_gas()
             .transact()
-            .await?;
+            .await?
+            .into_result()?;
         Ok(res)
     }
 

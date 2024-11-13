@@ -178,7 +178,7 @@ pub struct Proposal {
     pub actions: Vec<ProposalAction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Copy)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalApprovalWithSigner {
     pub proposal_id: ProposalId,
