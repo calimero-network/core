@@ -1,6 +1,7 @@
+use std::collections::HashMap;
+
 use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use crate::driver::{Test, TestContext};
 
