@@ -8,7 +8,6 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use serde::Deserialize;
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
@@ -51,6 +50,7 @@ pub enum InitPayload {
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[expect(variant_size_differences, reason = "'tis fine")]
 pub enum MessagePayload<'a> {
     StateSync { artifact: Cow<'a, [u8]> },
     BlobShare { chunk: Cow<'a, [u8]> },

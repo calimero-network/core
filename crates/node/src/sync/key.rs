@@ -1,7 +1,7 @@
 use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
 use calimero_primitives::context::Context;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
