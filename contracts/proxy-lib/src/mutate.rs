@@ -295,7 +295,10 @@ impl ProxyContract {
             })
     }
 
-    fn build_proposal_response(&self, proposal_id: Repr<ProposalId>) -> Option<ProposalWithApprovals> {
+    fn build_proposal_response(
+        &self,
+        proposal_id: Repr<ProposalId>,
+    ) -> Option<ProposalWithApprovals> {
         let approvals = self.get_confirmations_count(proposal_id);
         match approvals {
             None => None,
