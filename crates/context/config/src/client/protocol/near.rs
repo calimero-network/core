@@ -273,7 +273,7 @@ impl Network {
                 method_name: method,
                 args,
                 gas: 300_000_000_000_000,
-                deposit: 5_000_000_000_000_000_000_000_000,
+                deposit: 0,
             }))],
         });
 

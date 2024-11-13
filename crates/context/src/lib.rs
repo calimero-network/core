@@ -15,7 +15,7 @@ use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
     ApplicationSource as ApplicationSourceConfig,
 };
-use calimero_context_config::{Proposal, ProposalAction, ProposalId};
+use calimero_context_config::{Proposal, ProposalAction, ProposalId, User};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
@@ -1169,7 +1169,7 @@ impl ContextManager {
         &self,
         context_id: ContextId,
         offset: usize,
-        length: usize,
+        limit: usize,
     ) -> EyreResult<Vec<Proposal>> {
         let handle = self.store.handle();
 
@@ -1184,7 +1184,7 @@ impl ContextManager {
                 context_config.network.as_ref().into(),
                 context_config.proxy_contract.as_ref().into(),
             )
-            .proposals(offset, length)
+            .proposals(offset, limit)
             .await;
 
         match response {
@@ -1233,6 +1233,119 @@ impl ContextManager {
             Ok(Some(proposal)) => Ok(proposal),
             Ok(None) => Err(eyre::eyre!("No proposal found with the specified ID")),
             Err(err) => Err(eyre::eyre!("Failed to fetch proposal: {}", err)),
+        }
+    }
+
+    pub async fn get_number_of_active_proposals(&self, context_id: ContextId) -> EyreResult<u16> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .get_number_of_active_proposals()
+            .await;
+
+        match response {
+            Ok(proposals) => Ok(proposals),
+            Err(err) => Err(eyre::eyre!("Failed to fetch proposals: {}", err)),
+        }
+    }
+
+    pub async fn get_number_of_proposal_approvals(
+        &self,
+        context_id: ContextId,
+        proposal_id: String,
+    ) -> EyreResult<u16> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let proposal_id_vec = match bs58::decode(&proposal_id).into_vec() {
+            Ok(vec) => vec,
+            Err(e) => {
+                bail!("Not valid base58 string: {}", e);
+            }
+        };
+
+        let proposal_id: Result<[u8; 32], _> = proposal_id_vec.try_into();
+        let proposal_id = match proposal_id {
+            Ok(arr) => arr,
+            Err(_) => {
+                bail!("Proposal ID must be 32 bytes long");
+            }
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .get_number_of_proposal_approvals(proposal_id)
+            .await;
+
+        match response {
+            Ok(proposals) => Ok(proposals),
+            Err(err) => Err(eyre::eyre!(
+                "Failed to fetch number of proposal approvals: {}",
+                err
+            )),
+        }
+    }
+
+    pub async fn get_proposal_approvers(
+        &self,
+        context_id: ContextId,
+        proposal_id: String,
+    ) -> EyreResult<Vec<User>> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let proposal_id_vec = match bs58::decode(&proposal_id).into_vec() {
+            Ok(vec) => vec,
+            Err(e) => {
+                bail!("Not valid base58 string: {}", e);
+            }
+        };
+
+        let proposal_id: Result<[u8; 32], _> = proposal_id_vec.try_into();
+        let proposal_id = match proposal_id {
+            Ok(arr) => arr,
+            Err(_) => {
+                bail!("Proposal ID must be 32 bytes long");
+            }
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .get_proposal_approvers(proposal_id)
+            .await;
+
+        match response {
+            Ok(proposals) => Ok(proposals),
+            Err(err) => Err(eyre::eyre!(
+                "Failed to fetch proposal approvers: {}",
+                err
+            )),
         }
     }
 }

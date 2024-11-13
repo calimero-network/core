@@ -4,11 +4,10 @@ use std::vec;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_context_config::Proposal as ProposalConfig;
+use calimero_context_config::{Proposal as ProposalConfig, User};
 use calimero_primitives::context::ContextId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tower_sessions::Session;
 
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
@@ -23,12 +22,6 @@ pub enum ActionType {
     SetNumApprovals,
     SetActiveProposalsLimit,
     SetContextValue,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct User {
-    pub identity_public_key: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -120,7 +113,7 @@ pub struct GetProposalResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsRequest {
     pub offset: u32,
-    pub length: u32,
+    pub limit: u32,
 }
 
 pub async fn get_proposals_handler(
@@ -132,7 +125,7 @@ pub async fn get_proposals_handler(
 
     match state
         .ctx_manager
-        .get_proposals(context_id, req.offset as usize, req.length as usize)
+        .get_proposals(context_id, req.offset as usize, req.limit as usize)
         .await
     {
         Ok(context_proposals) => ApiResponse {
@@ -147,7 +140,6 @@ pub async fn get_proposals_handler(
 
 pub async fn get_proposal_handler(
     Path((context_id, proposal_id)): Path<(String, String)>,
-    session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
@@ -167,7 +159,7 @@ pub async fn get_proposal_handler(
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetNumberOfActiveProposalsResponse {
     pub data: u16,
@@ -175,16 +167,26 @@ pub struct GetNumberOfActiveProposalsResponse {
 
 pub async fn get_number_of_active_proposals_handler(
     Path(context_id): Path<String>,
-    session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    ApiResponse {
-        payload: GetNumberOfActiveProposalsResponse { data: 4 },
+    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
+
+    match state
+        .ctx_manager
+        .get_number_of_active_proposals(context_id)
+        .await
+    {
+        Ok(active_proposals_number) => ApiResponse {
+            payload: GetNumberOfActiveProposalsResponse {
+                data: active_proposals_number,
+            },
+        }
+        .into_response(),
+        Err(_) => "failed to fetch proposal".into_response(),
     }
-    .into_response()
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetNumberOfProposalApprovalsResponse {
     pub data: u16,
@@ -192,16 +194,26 @@ pub struct GetNumberOfProposalApprovalsResponse {
 
 pub async fn get_number_of_proposal_approvals_handler(
     Path((context_id, proposal_id)): Path<(String, String)>,
-    session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    ApiResponse {
-        payload: GetNumberOfProposalApprovalsResponse { data: 5 },
+    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
+
+    match state
+        .ctx_manager
+        .get_number_of_proposal_approvals(context_id, proposal_id)
+        .await
+    {
+        Ok(number_of_proposal_approvals) => ApiResponse {
+            payload: GetNumberOfProposalApprovalsResponse {
+                data: number_of_proposal_approvals,
+            },
+        }
+        .into_response(),
+        Err(_) => "failed to fetch proposal".into_response(),
     }
-    .into_response()
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalApproversResponse {
     pub data: Vec<User>,
@@ -209,16 +221,24 @@ pub struct GetProposalApproversResponse {
 
 pub async fn get_proposal_approvers_handler(
     Path((context_id, proposal_id)): Path<(String, String)>,
-    session: Session,
     Extension(state): Extension<Arc<AdminState>>,
     //Json(req): Json<GetProposalApproversResponse>,
 ) -> impl IntoResponse {
-    ApiResponse {
-        payload: GetProposalApproversResponse {
-            data: vec![get_mock_user()],
-        },
+    let context_id: ContextId = context_id.parse().expect("Invalid context_id format");
+
+    match state
+        .ctx_manager
+        .get_proposal_approvers(context_id, proposal_id)
+        .await
+    {
+        Ok(proposal_approvers) => ApiResponse {
+            payload: GetProposalApproversResponse {
+                data: proposal_approvers,
+            },
+        }
+        .into_response(),
+        Err(_) => "failed to fetch proposal".into_response(),
     }
-    .into_response()
 }
 
 pub fn get_mock_user() -> User {
