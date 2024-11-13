@@ -59,14 +59,14 @@ impl Report for GetProposalApproversResponse {
 impl Report for GetProposalsResponse {
     fn report(&self) {
         for proposal in &self.data {
-            println!("{:#?}", proposal.report());
+            println!("{:#?}", proposal);
         }
     }
 }
 
 impl Report for GetProposalResponse {
     fn report(&self) {
-        println!("{:#?}", self.data.report());
+        println!("{:#?}", self.data);
     }
 }
 

@@ -165,6 +165,7 @@ pub struct GetNumberOfActiveProposalsResponse {
     pub data: u16,
 }
 
+// TODO - proxy missing function to fetch number of all
 pub async fn get_number_of_active_proposals_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -192,6 +193,7 @@ pub struct GetNumberOfProposalApprovalsResponse {
     pub data: u16,
 }
 
+// get_confirmations_count proxy
 pub async fn get_number_of_proposal_approvals_handler(
     Path((context_id, proposal_id)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -219,6 +221,7 @@ pub struct GetProposalApproversResponse {
     pub data: Vec<User>,
 }
 
+// return list of users who approved
 pub async fn get_proposal_approvers_handler(
     Path((context_id, proposal_id)): Path<(String, String)>,
     Extension(state): Extension<Arc<AdminState>>,
