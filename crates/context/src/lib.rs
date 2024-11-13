@@ -13,9 +13,8 @@ use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig,
+    ApplicationSource as ApplicationSourceConfig, ProposalId,
 };
-use calimero_context_config::types::ProposalId;
 use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals, User};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;

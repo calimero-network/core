@@ -1,6 +1,6 @@
 use super::{ContextProxyMutate, ContextProxyMutateRequest};
 use crate::repr::Repr;
-use crate::types::{SignerId, ProposalId};
+use crate::types::{ProposalId, SignerId};
 use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProxyMutateRequest};
 
 impl<'a, T> ContextProxyMutate<'a, T> {

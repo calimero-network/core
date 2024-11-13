@@ -4,8 +4,7 @@ use std::vec;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_context_config::repr::Repr;
-use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::ProposalId;
 use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals, User};
 use calimero_primitives::context::ContextId;
@@ -225,10 +224,7 @@ pub async fn get_proposal_approvers_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .get_proposal_approvers(
-            context_id,
-            proposal_id.rt().expect("infallible conversion"),
-        )
+        .get_proposal_approvers(context_id, proposal_id.rt().expect("infallible conversion"))
         .await
     {
         Ok(proposal_approvers) => ApiResponse {
