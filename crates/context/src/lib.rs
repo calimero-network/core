@@ -141,7 +141,7 @@ impl ContextManager {
     }
 
     #[must_use]
-    pub fn new_identity(&self) -> PrivateKey {
+    pub fn new_private_key(&self) -> PrivateKey {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
@@ -175,7 +175,7 @@ impl ContextManager {
                 None => PrivateKey::random(&mut rng),
             };
 
-            let identity_secret = identity_secret.unwrap_or_else(|| self.new_identity());
+            let identity_secret = identity_secret.unwrap_or_else(|| self.new_private_key());
 
             (context_secret, identity_secret)
         };
@@ -312,6 +312,7 @@ impl ContextManager {
             &ContextIdentityKey::new(context.id, identity_secret.public_key()),
             &ContextIdentityValue {
                 private_key: Some(*identity_secret),
+                sender_key: Some(*self.new_private_key()),
             },
         )?;
 
@@ -400,6 +401,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(requester_secret),
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, inviter_id))?
         else {
             return Ok(None);
@@ -498,7 +500,13 @@ impl ContextManager {
                     let key = ContextIdentityKey::new(context_id, member);
 
                     if !handle.has(&key)? {
-                        handle.put(&key, &ContextIdentityValue { private_key: None })?;
+                        handle.put(
+                            &key,
+                            &ContextIdentityValue {
+                                private_key: None,
+                                sender_key: Some(*self.new_private_key()),
+                            },
+                        )?;
                     }
                 }
             }
@@ -778,6 +786,56 @@ impl ContextManager {
         Ok(ids)
     }
 
+    pub fn get_sender_key(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+    ) -> EyreResult<Option<PrivateKey>> {
+        let handle = self.store.handle();
+        let key = handle
+            .get(&ContextIdentityKey::new(*context_id, *public_key))?
+            .and_then(|ctx_identity| ctx_identity.sender_key);
+
+        Ok(key.map(PrivateKey::from))
+    }
+
+    pub fn update_sender_key(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        sender_key: &PrivateKey,
+    ) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+        let mut identity = handle
+            .get(&ContextIdentityKey::new(*context_id, *public_key))?
+            .ok_or_eyre("unknown identity")?;
+
+        identity.sender_key = Some(**sender_key);
+
+        handle.put(
+            &ContextIdentityKey::new(*context_id, *public_key),
+            &identity,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_private_key(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<Option<PrivateKey>> {
+        let handle = self.store.handle();
+
+        let key = ContextIdentityKey::new(context_id, public_key);
+
+        let Some(value) = handle.get(&key)? else {
+            return Ok(None);
+        };
+
+        Ok(value.private_key.map(PrivateKey::from))
+    }
+
     pub fn get_context_members_identities(
         &self,
         context_id: ContextId,
@@ -854,6 +912,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(requester_secret),
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("'{}' is not a member of '{}'", signer_id, context_id)
@@ -1109,6 +1168,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("No private key found for signer");
@@ -1146,6 +1206,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("No private key found for signer");

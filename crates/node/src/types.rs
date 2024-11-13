@@ -7,8 +7,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
-use serde::Deserialize;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
@@ -47,16 +46,13 @@ pub enum InitPayload {
         root_hash: Hash,
         application_id: ApplicationId,
     },
+    KeyShare,
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[expect(variant_size_differences, reason = "'tis fine")]
 pub enum MessagePayload<'a> {
     StateSync { artifact: Cow<'a, [u8]> },
     BlobShare { chunk: Cow<'a, [u8]> },
-}
-
-#[derive(Deserialize)]
-pub struct ProposalRequest {
-    pub sender: String,
-    pub receiver: String,
+    KeyShare { sender_key: PrivateKey },
 }

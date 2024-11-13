@@ -15,6 +15,7 @@ use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
 use calimero_context_config::ProposalAction;
+use calimero_crypto::SharedKey;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -34,7 +35,7 @@ use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
@@ -335,6 +336,16 @@ impl Node {
             return Ok(());
         }
 
+        let Some(sender_key) = self.ctx_manager.get_sender_key(&context_id, &author_id)? else {
+            return self.initiate_sync(context_id, source).await;
+        };
+
+        let shared_key = SharedKey::from_sk(&sender_key);
+
+        let artifact = &shared_key
+            .decrypt(artifact, [0; 12])
+            .ok_or_eyre("failed to decrypt message")?;
+
         let Some(outcome) = self
             .execute(
                 &mut context,
@@ -368,11 +379,22 @@ impl Node {
             .await
             != 0
         {
+            let sender_key = self
+                .ctx_manager
+                .get_sender_key(&context.id, &executor_public_key)?
+                .ok_or_eyre("expected own identity to have sender key")?;
+
+            let shared_key = SharedKey::from_sk(&sender_key);
+
+            let artifact_encrypted = shared_key
+                .encrypt(outcome.artifact.clone(), [0; 12])
+                .ok_or_eyre("encryption failed")?;
+
             let message = to_vec(&BroadcastMessage::StateDelta {
                 context_id: context.id,
                 author_id: executor_public_key,
                 root_hash: context.root_hash,
-                artifact: outcome.artifact.as_slice().into(),
+                artifact: artifact_encrypted.as_slice().into(),
             })?;
 
             let _ignored = self
