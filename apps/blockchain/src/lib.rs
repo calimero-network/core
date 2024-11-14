@@ -1,5 +1,6 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::env::ext::ProposalId;
 use calimero_sdk::env::{self};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::types::Error;
@@ -65,24 +66,24 @@ impl AppState {
         }
     }
 
-    pub fn create_new_proposal(&self, receiver: String) -> Result<bool, Error> {
+    pub fn create_new_proposal(receiver: String) -> Result<env::ext::ProposalId, Error> {
         env::log("env Call in wasm create new proposal");
+
         println!("Call in wasm create new proposal {:?}", receiver);
         let account_id = env::ext::AccountId("vuki.testnet".to_string());
-        let amount = 1;
+        let amount = 1_000_000_000_000_000_000_000;
         let proposal_id = Self::external()
             .propose()
             .transfer(account_id, amount)
             .send();
-
+        let log_message = format!("Proposal ID: {:?}", proposal_id);
+        env::log(&log_message);
         println!("Create new proposal with id: {:?}", proposal_id);
 
-        Ok(true)
+        Ok(proposal_id)
     }
 
-    pub fn approve_proposal(&mut self, proposal_id: String) -> Result<bool, Error> {
-        let proposal_id = env::ext::ProposalId(Self::string_to_u8_32(proposal_id.as_str()));
-
+    pub fn approve_proposal(proposal_id: ProposalId) -> Result<bool, Error> {
         println!("Approve proposal: {:?}", proposal_id);
         let _ = Self::external().approve(proposal_id);
         Ok(true)
@@ -92,13 +93,14 @@ impl AppState {
     pub fn get_proposal_messages(
         &self,
         // request: GetProposalMessagesRequest, I cannot to this??
-        proposal_id: String,
+        proposal_id: ProposalId,
     ) -> Result<Vec<Message>, Error> {
-        env::log("env Get messages for proposal");
-
-        let proposal_id = env::ext::ProposalId(Self::string_to_u8_32(proposal_id.as_str()));
+        env::log(&format!("env Get messages for proposal: {:?}", proposal_id));
         let res = &self.messages.get(&proposal_id).unwrap();
-
+        env::log(&format!(
+            "Get messages for proposal from storage: {:?}",
+            res
+        ));
         match res {
             Some(messages) => Ok(messages.clone()),
             None => Ok(vec![]),
@@ -108,14 +110,12 @@ impl AppState {
     pub fn send_proposal_messages(
         &mut self,
         // request: SendProposalMessageRequest, I cannot to this?? How to use camelCase?
-        proposal_id: String,
+        proposal_id: ProposalId,
         message: Message,
     ) -> Result<bool, Error> {
-        env::log("env send_proposal_messages");
+        env::log(&format!("env send_proposal_messages: {:?}", proposal_id));
+        env::log(&format!("env send_proposal_messages: {:?}", message));
 
-        let proposal_id = env::ext::ProposalId(Self::string_to_u8_32(proposal_id.as_str()));
-
-        println!("Send message to proposal: {:?}", proposal_id);
         let proposal_messages = self.messages.get(&proposal_id).unwrap();
         match proposal_messages {
             Some(mut messages) => {
@@ -128,17 +128,5 @@ impl AppState {
             }
         }
         Ok(true)
-    }
-
-    // todo there's no guarantee a proposal Id will be safely encodable as utf8, use bs58 instead
-    fn string_to_u8_32(s: &str) -> [u8; 32] {
-        let mut array = [0u8; 32]; // Initialize array with 32 zeroes
-        let bytes = s.as_bytes(); // Convert the string to bytes
-
-        // Copy up to 32 bytes from the string slice into the array
-        let len = bytes.len().min(32);
-        array[..len].copy_from_slice(&bytes[..len]);
-
-        array
     }
 }

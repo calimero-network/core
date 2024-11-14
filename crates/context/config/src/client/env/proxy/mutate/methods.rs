@@ -1,7 +1,7 @@
 use super::{ContextProxyMutate, ContextProxyMutateRequest};
 use crate::repr::Repr;
-use crate::types::SignerId;
-use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, ProxyMutateRequest};
+use crate::types::{ProposalId, SignerId};
+use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProxyMutateRequest};
 
 impl<'a, T> ContextProxyMutate<'a, T> {
     pub fn propose(
@@ -14,7 +14,7 @@ impl<'a, T> ContextProxyMutate<'a, T> {
             client: self.client,
             raw_request: ProxyMutateRequest::Propose {
                 proposal: Proposal {
-                    id: proposal_id,
+                    id: Repr::new(proposal_id),
                     author_id: Repr::new(author_id),
                     actions,
                 },
@@ -31,7 +31,7 @@ impl<'a, T> ContextProxyMutate<'a, T> {
             client: self.client,
             raw_request: ProxyMutateRequest::Approve {
                 approval: ProposalApprovalWithSigner {
-                    proposal_id,
+                    proposal_id: Repr::new(proposal_id),
                     signer_id: Repr::new(signer_id),
                     added_timestamp: 0, // TODO: add timestamp
                 },

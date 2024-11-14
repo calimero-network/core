@@ -12,7 +12,6 @@ use eyre::Result;
 use near_sdk::{AccountId, NearToken};
 use near_workspaces::network::Sandbox;
 use near_workspaces::{Account, Worker};
-use rand::Rng;
 
 mod common;
 
@@ -91,7 +90,7 @@ async fn test_create_proposal() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: Option<ProposalWithApprovals> = proxy_helper
@@ -101,11 +100,8 @@ async fn test_create_proposal() -> Result<()> {
 
     match res {
         Some(proposal) => {
-            assert_eq!(
-                proposal.proposal_id, proposal_id,
-                "Expected proposal_id to be 0"
-            );
-            assert_eq!(proposal.num_approvals, 1, "Expected 1 approval");
+            assert_eq!(*proposal.proposal_id, proposal_id);
+            assert_eq!(proposal.num_approvals, 1);
         }
         None => panic!("Expected to create a proposal, but got None"),
     }
@@ -119,7 +115,7 @@ async fn test_view_proposal() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let _res = proxy_helper
@@ -127,18 +123,24 @@ async fn test_view_proposal() -> Result<()> {
         .await?;
 
     let view_proposal: Option<Proposal> = proxy_helper
-        .view_proposal(&relayer_account, &proposal_id)
+        .view_proposal(&relayer_account, proposal_id)
         .await?;
     assert!(view_proposal.is_some());
 
     let result_proposal = view_proposal.unwrap();
-    assert_eq!(result_proposal.id, proposal_id);
+    assert_eq!(*result_proposal.id, proposal_id);
     assert_eq!(result_proposal.actions, vec![]);
-    assert_eq!(result_proposal.author_id, alice_sk.verifying_key().rt()?);
+    assert_eq!(
+        result_proposal.author_id,
+        alice_sk
+            .verifying_key()
+            .rt()
+            .expect("infallible conversion")
+    );
 
-    let non_existent_proposal_id = [2; 32];
+    let non_existent_proposal_id = proxy_helper.generate_proposal_id();
     let view_proposal: Option<Proposal> = proxy_helper
-        .view_proposal(&relayer_account, &non_existent_proposal_id)
+        .view_proposal(&relayer_account, non_existent_proposal_id)
         .await?;
     assert!(view_proposal.is_none());
     Ok(())
@@ -150,7 +152,7 @@ async fn test_create_proposal_with_existing_id() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let _res = proxy_helper
@@ -173,7 +175,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &bob_sk, &vec![])?;
 
     let res = proxy_helper.proxy_mutate(&relayer_account, &proposal).await;
@@ -182,7 +184,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     assert!(error.to_string().contains("Is not a member"));
 
     let view_proposal: Option<ProposalWithApprovals> = proxy_helper
-        .view_proposal_confirmations(&relayer_account, &[0; 32])
+        .view_proposal_confirmations(&relayer_account, &proxy_helper.generate_proposal_id())
         .await?
         .json()?;
 
@@ -199,9 +201,8 @@ async fn test_create_multiple_proposals() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let mut rng = rand::thread_rng();
-    let proposal_1_id = rng.gen();
-    let proposal_2_id = rng.gen();
+    let proposal_1_id = proxy_helper.generate_proposal_id();
+    let proposal_2_id = proxy_helper.generate_proposal_id();
     let proposal_1 = proxy_helper.create_proposal_request(&proposal_1_id, &alice_sk, &vec![])?;
     let proposal_2 = proxy_helper.create_proposal_request(&proposal_2_id, &alice_sk, &vec![])?;
 
@@ -210,7 +211,10 @@ async fn test_create_multiple_proposals() -> Result<()> {
         .await?
         .json()?;
 
-    assert_eq!(res.proposal_id, proposal_1_id);
+    assert_eq!(
+        res.proposal_id,
+        proposal_1_id.rt().expect("infallible conversion")
+    );
     assert_eq!(res.num_approvals, 1);
 
     let res: ProposalWithApprovals = proxy_helper
@@ -218,7 +222,10 @@ async fn test_create_multiple_proposals() -> Result<()> {
         .await?
         .json()?;
 
-    assert_eq!(res.proposal_id, proposal_2_id);
+    assert_eq!(
+        res.proposal_id,
+        proposal_2_id.rt().expect("infallible conversion")
+    );
     assert_eq!(res.num_approvals, 1);
 
     Ok(())
@@ -237,7 +244,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .add_members(&relayer_account, &alice_sk, &[bob_sk.clone()], &context_sk)
         .await?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
@@ -250,7 +257,10 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .await?
         .json()?;
 
-    assert_eq!(res2.proposal_id, proposal_id);
+    assert_eq!(
+        res2.proposal_id,
+        proposal_id.rt().expect("infallible conversion")
+    );
     assert_eq!(res2.num_approvals, 2);
 
     Ok(())
@@ -266,7 +276,7 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
@@ -318,7 +328,7 @@ async fn create_and_approve_proposal(
     actions: &Vec<ProposalAction>,
     members: Vec<SigningKey>,
 ) -> Result<()> {
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &members[0], actions)?;
 
     let res: ProposalWithApprovals = proxy_helper
@@ -327,7 +337,10 @@ async fn create_and_approve_proposal(
         .json()?;
 
     assert_eq!(res.num_approvals, 1);
-    assert_eq!(res.proposal_id, proposal_id);
+    assert_eq!(
+        res.proposal_id,
+        proposal_id.rt().expect("infallible conversion")
+    );
 
     let res: ProposalWithApprovals = proxy_helper
         .approve_proposal(&relayer_account, &members[1], &res.proposal_id)
@@ -479,7 +492,7 @@ async fn test_transfer() -> Result<()> {
 
     let actions = vec![ProposalAction::Transfer {
         receiver_id: recipient.id().to_string(),
-        amount: 5,
+        amount: 5_000_000_000_000_000_000_000_000, // 5 NEAR
     }];
 
     create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
@@ -594,18 +607,18 @@ async fn test_view_proposals() -> Result<()> {
     let proposal1_actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 5,
     }];
-    let proposal1_id = rand::thread_rng().gen();
+    let proposal1_id = proxy_helper.generate_proposal_id();
     let proposal1 =
         proxy_helper.create_proposal_request(&proposal1_id, &alice_sk, &proposal1_actions)?;
     let proposal2_actions = vec![ProposalAction::SetNumApprovals { num_approvals: 2 }];
-    let proposal2_id = rand::thread_rng().gen();
+    let proposal2_id = proxy_helper.generate_proposal_id();
     let proposal2 =
         proxy_helper.create_proposal_request(&proposal2_id, &alice_sk, &proposal2_actions)?;
     let proposal3_actions = vec![ProposalAction::SetContextValue {
         key: b"example_key".to_vec().into_boxed_slice(),
         value: b"example_value".to_vec().into_boxed_slice(),
     }];
-    let proposal3_id = rand::thread_rng().gen();
+    let proposal3_id = proxy_helper.generate_proposal_id();
     let proposal3 =
         proxy_helper.create_proposal_request(&proposal3_id, &alice_sk, &proposal3_actions)?;
 
@@ -626,15 +639,18 @@ async fn test_view_proposals() -> Result<()> {
     assert_eq!(proposals.len(), 3, "Expected to retrieve 3 proposals");
 
     assert_eq!(
-        proposals[0].id, proposal1_id,
+        proposals[0].id,
+        proposal1_id.rt().expect("infallible conversion"),
         "Expected first proposal to have proposal_id 1"
     );
     assert_eq!(
-        proposals[1].id, proposal2_id,
+        proposals[1].id,
+        proposal2_id.rt().expect("infallible conversion"),
         "Expected second proposal to have proposal_id 2"
     );
     assert_eq!(
-        proposals[2].id, proposal3_id,
+        proposals[2].id,
+        proposal3_id.rt().expect("infallible conversion"),
         "Expected third proposal to have proposal_id 3"
     );
 
@@ -661,11 +677,13 @@ async fn test_view_proposals() -> Result<()> {
     );
 
     assert_eq!(
-        proposals[0].id, proposal2_id,
+        proposals[0].id,
+        proposal2_id.rt().expect("infallible conversion"),
         "Expected the first returned proposal to have proposal_id 2"
     );
     assert_eq!(
-        proposals[1].id, proposal3_id,
+        proposals[1].id,
+        proposal3_id.rt().expect("infallible conversion"),
         "Expected the second returned proposal to have proposal_id 3"
     );
 
@@ -687,7 +705,8 @@ async fn test_view_proposals() -> Result<()> {
         "Expected to retrieve 1 proposal starting from offset 3"
     );
     assert_eq!(
-        single_proposal[0].id, proposal3_id,
+        single_proposal[0].id,
+        proposal3_id.rt().expect("infallible conversion"),
         "Expected the proposal to have proposal id 3"
     );
 
