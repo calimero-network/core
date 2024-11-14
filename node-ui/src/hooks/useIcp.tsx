@@ -23,6 +23,7 @@ import { useNavigate } from 'react-router-dom';
 import { setStorageNodeAuthorized } from '../auth/storage';
 import { useServerDown } from '../context/ServerDownContext';
 import translations from '../constants/en.global.json';
+import { getAppEndpointKey } from '../utils/storage';
 
 interface RequestNodeDataProps {
   setErrorMessage: (msg: string) => void;
@@ -189,6 +190,10 @@ export function useIcp(): useIcpReturn {
 
   const signMessageAndLogin = useCallback(
     async (isLogin: boolean, setErrorMessage: (msg: string) => void) => {
+      if (!getAppEndpointKey()) {
+        navigate('/');
+        return;
+      }
       try {
         setErrorMessage('');
         setReady(false);

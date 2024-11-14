@@ -1186,13 +1186,24 @@ dependencies = [
  "calimero-context-config",
  "ed25519-dalek 2.1.1",
  "eyre",
- "hex 0.4.3",
  "near-crypto 0.26.0",
  "near-sdk",
  "near-workspaces",
  "rand 0.8.5",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "calimero-crypto"
+version = "0.1.0"
+dependencies = [
+ "calimero-primitives",
+ "curve25519-dalek 4.1.3",
+ "ed25519-dalek 2.1.1",
+ "eyre",
+ "rand 0.8.5",
+ "ring 0.17.8",
 ]
 
 [[package]]
@@ -1222,7 +1233,7 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context",
- "calimero-context-config",
+ "calimero-crypto",
  "calimero-network",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -1236,7 +1247,6 @@ dependencies = [
  "libp2p",
  "owo-colors",
  "rand 0.8.5",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -2537,6 +2547,21 @@ name = "dyn-clone"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
+
+[[package]]
+name = "e2e-tests"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "clap",
+ "const_format",
+ "eyre",
+ "nix 0.29.0",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "easy-ext"
@@ -6420,6 +6445,18 @@ dependencies = [
  "cfg-if 1.0.0",
  "libc",
  "memoffset 0.7.1",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.6.0",
+ "cfg-if 1.0.0",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]

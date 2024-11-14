@@ -3,6 +3,7 @@ import ContentWrapper from '../components/login/ContentWrapper';
 import { useMetamask } from '../hooks/useMetamask';
 import { MetamaskWallet } from '../components/metamask/MetamaskWallet';
 import { useNavigate } from 'react-router-dom';
+import { getAppEndpointKey } from '../utils/storage';
 
 interface MetamaskLoginProps {
   isLogin: boolean;
@@ -33,6 +34,7 @@ export default function MetamaskLogin({ isLogin }: MetamaskLoginProps) {
   }, [isConnected]);
 
   useEffect(() => {
+    getAppEndpointKey() || navigate('/');
     if (isSignSuccess && walletSignatureData) {
       login({ isLogin, setErrorMessage });
     }

@@ -7,9 +7,15 @@ TARGET="${CARGO_TARGET_DIR:-../../target}"
 
 rustup target add wasm32-unknown-unknown
 
-cargo build --target wasm32-unknown-unknown --profile app-release
-
 mkdir -p res
+
+if [ "$1" = "--test" ]; then
+  cargo build --target wasm32-unknown-unknown --profile app-release --features __internal_explode_size
+
+  cp $TARGET/wasm32-unknown-unknown/app-release/proxy_lib.wasm ./res/proxy_lib_fat.wasm
+fi
+
+cargo build --target wasm32-unknown-unknown --profile app-release
 
 cp $TARGET/wasm32-unknown-unknown/app-release/proxy_lib.wasm ./res/
 

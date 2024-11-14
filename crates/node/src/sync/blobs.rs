@@ -1,8 +1,9 @@
+use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
+use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
 use rand::seq::IteratorRandom;
@@ -30,14 +31,15 @@ impl Node {
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
             },
+            None,
         )
         .await?;
 
-        let Some(ack) = recv(stream, self.sync_config.timeout).await? else {
+        let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
             bail!("connection closed while awaiting blob share handshake");
         };
 
-        let _their_identity = match ack {
+        let their_identity = match ack {
             StreamMessage::Init {
                 party_id,
                 payload:
@@ -63,6 +65,13 @@ impl Node {
             }
         };
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         let (tx, mut rx) = mpsc::channel(1);
 
         let add_task = self.ctx_manager.add_blob(
@@ -74,7 +83,7 @@ impl Node {
         let read_task = async {
             let mut sequencer = Sequencer::default();
 
-            while let Some(msg) = recv(stream, self.sync_config.timeout).await? {
+            while let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? {
                 let (sequence_id, chunk) = match msg {
                     StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                     StreamMessage::Message {
@@ -139,6 +148,13 @@ impl Node {
             bail!("no identities found for context: {}", context.id);
         };
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         send(
             stream,
             &StreamMessage::Init {
@@ -146,6 +162,7 @@ impl Node {
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
             },
+            None,
         )
         .await?;
 
@@ -160,6 +177,7 @@ impl Node {
                         chunk: chunk.into_vec().into(),
                     },
                 },
+                Some(shared_key),
             )
             .await?;
         }
@@ -170,6 +188,7 @@ impl Node {
                 sequence_id: sequencer.next(),
                 payload: MessagePayload::BlobShare { chunk: b"".into() },
             },
+            Some(shared_key),
         )
         .await?;
 
