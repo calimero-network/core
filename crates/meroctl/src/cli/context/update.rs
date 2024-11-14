@@ -40,7 +40,11 @@ pub struct UpdateCommand {
     )]
     path: Option<Utf8PathBuf>,
 
-    #[clap(long, help = "Metadata needed for the application installation")]
+    #[clap(
+        long,
+        conflicts_with = "application_id",
+        help = "Metadata needed for the application installation"
+    )]
     metadata: Option<String>,
 
     #[clap(
@@ -85,82 +89,52 @@ impl UpdateCommand {
                 context_id,
                 application_id: None,
                 path: Some(path),
-                metadata: None,
-                watch: false,
+                metadata,
                 executor: executor_public_key,
+                ..
             } => {
-                install_app_and_update_context(
+                let metadata = metadata.map(String::into_bytes);
+
+                let application_id = install_app(
                     environment,
                     &client,
                     multiaddr,
-                    path,
-                    context_id,
-                    None,
+                    path.clone(),
+                    metadata.clone(),
                     &config.identity,
-                    executor_public_key,
                 )
                 .await?;
+                if self.watch {
+                    watch_app_and_update_context(
+                        environment,
+                        &client,
+                        multiaddr,
+                        context_id,
+                        path,
+                        metadata,
+                        &config.identity,
+                        executor_public_key,
+                    )
+                    .await?;
+                } else {
+                    update_context_application(
+                        environment,
+                        &client,
+                        multiaddr,
+                        context_id,
+                        application_id,
+                        &config.identity,
+                        executor_public_key,
+                    )
+                    .await?;
+                }
             }
 
-            Self {
-                context_id,
-                application_id: None,
-                path: Some(path),
-                metadata,
-                watch: true,
-                executor: executor_public_key,
-            } => {
-                watch_app_and_update_context(
-                    environment,
-                    &client,
-                    multiaddr,
-                    context_id,
-                    path,
-                    metadata.map(String::into_bytes),
-                    &config.identity,
-                    executor_public_key,
-                )
-                .await?;
-            }
             _ => bail!("Invalid command configuration"),
         }
 
         Ok(())
     }
-}
-
-async fn install_app_and_update_context(
-    environment: &Environment,
-    client: &Client,
-    base_multiaddr: &Multiaddr,
-    path: Utf8PathBuf,
-    context_id: ContextId,
-    metadata: Option<Vec<u8>>,
-    keypair: &Keypair,
-    member_public_key: PublicKey,
-) -> EyreResult<()> {
-    let application_id = install_app(
-        environment,
-        client,
-        base_multiaddr,
-        path.clone(),
-        metadata.clone(),
-        keypair,
-    )
-    .await?;
-
-    update_context_application(
-        environment,
-        client,
-        base_multiaddr,
-        context_id,
-        application_id,
-        keypair,
-        member_public_key,
-    )
-    .await?;
-
-    Ok(())
 }
 
 async fn install_app(
