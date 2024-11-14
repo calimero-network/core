@@ -71,7 +71,7 @@ impl AppState {
 
         println!("Call in wasm create new proposal {:?}", receiver);
         let account_id = env::ext::AccountId("vuki.testnet".to_string());
-        let amount = 1;
+        let amount = 1_000_000_000_000_000_000_000;
         let proposal_id = Self::external()
             .propose()
             .transfer(account_id, amount)

@@ -155,7 +155,7 @@ impl ProxyContract {
                 } => {
                     let account_id: AccountId =
                         AccountId::from_str(receiver_id.as_str()).expect("Invalid account ID");
-                    Promise::new(account_id).transfer(NearToken::from_near(amount))
+                    Promise::new(account_id).transfer(NearToken::from_yoctonear(amount))
                 }
                 _ => continue,
             };

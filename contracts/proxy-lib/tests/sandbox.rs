@@ -474,7 +474,7 @@ async fn test_transfer() -> Result<()> {
 
     let actions = vec![ProposalAction::Transfer {
         receiver_id: recipient.id().to_string(),
-        amount: 5,
+        amount: 5_000_000_000_000_000_000_000_000, // 5 NEAR
     }];
 
     create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
