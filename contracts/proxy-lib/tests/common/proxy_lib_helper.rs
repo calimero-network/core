@@ -1,12 +1,13 @@
-use calimero_context_config::repr::ReprTransmute;
-use calimero_context_config::types::Signed;
+use calimero_context_config::repr::{Repr, ReprTransmute};
+use calimero_context_config::types::{ProposalId, Signed, SignerId};
 use calimero_context_config::{
-    Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, ProxyMutateRequest,
+    Proposal, ProposalAction, ProposalApprovalWithSigner, ProxyMutateRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use near_sdk::AccountId;
 use near_workspaces::result::{ExecutionResult, Value, ViewResultDetails};
 use near_workspaces::Account;
+use rand::Rng;
 use serde_json::json;
 
 pub const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
@@ -28,7 +29,7 @@ impl ProxyContractHelper {
     ) -> eyre::Result<Signed<ProxyMutateRequest>> {
         let request = ProxyMutateRequest::Propose {
             proposal: Proposal {
-                id: id.clone(),
+                id: id.rt().expect("infallible conversion"),
                 author_id: author.verifying_key().rt().expect("Invalid signer"),
                 actions: actions.clone(),
             },
@@ -53,6 +54,13 @@ impl ProxyContractHelper {
         Ok(call)
     }
 
+    pub fn generate_proposal_id(&self) -> ProposalId {
+        rand::thread_rng()
+            .gen::<[_; 32]>()
+            .rt()
+            .expect("infallible conversion")
+    }
+
     pub async fn approve_proposal(
         &self,
         caller: &Account,
@@ -68,7 +76,7 @@ impl ProxyContractHelper {
         let request = ProxyMutateRequest::Approve {
             approval: ProposalApprovalWithSigner {
                 signer_id,
-                proposal_id: proposal_id.clone(),
+                proposal_id: proposal_id.rt().expect("infallible conversion"),
                 added_timestamp: 0,
             },
         };
@@ -90,7 +98,7 @@ impl ProxyContractHelper {
     ) -> eyre::Result<ViewResultDetails> {
         let res = caller
             .view(&self.proxy_contract, "get_confirmations_count")
-            .args_json(json!({ "proposal_id": proposal_id }))
+            .args_json(json!({ "proposal_id": Repr::new(*proposal_id) }))
             .await?;
         Ok(res)
     }
@@ -141,11 +149,24 @@ impl ProxyContractHelper {
     pub async fn view_proposal(
         &self,
         caller: &Account,
-        id: &ProposalId,
+        id: ProposalId,
     ) -> eyre::Result<Option<Proposal>> {
         let res = caller
             .view(&self.proxy_contract, "proposal")
-            .args_json(json!({ "proposal_id": id }))
+            .args_json(json!({ "proposal_id": Repr::new(id) }))
+            .await?
+            .json()?;
+        Ok(res)
+    }
+
+    pub async fn view_proposal_approvers(
+        &self,
+        caller: &Account,
+        proposal_id: &Repr<ProposalId>,
+    ) -> eyre::Result<Vec<Repr<SignerId>>> {
+        let res = caller
+            .view(&self.proxy_contract, "get_proposal_approvers")
+            .args_json(json!({ "proposal_id": proposal_id }))
             .await?
             .json()?;
         Ok(res)

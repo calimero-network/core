@@ -2,10 +2,8 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::SignerId;
-use calimero_context_config::{
-    ProposalAction, ProposalId, ProposalWithApprovals, ProxyMutateRequest,
-};
+use calimero_context_config::types::{ProposalId, SignerId};
+use calimero_context_config::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 use near_sdk::{
     env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
     PromiseResult,
@@ -36,7 +34,7 @@ impl ProxyContract {
             ProxyMutateRequest::Approve { approval } => {
                 self.perform_action_by_member(MemberAction::Approve {
                     identity: approval.signer_id,
-                    proposal_id: approval.proposal_id,
+                    proposal_id: approval.proposal_id.rt().expect("Invalid proposal ID"),
                 })
             }
         }
@@ -48,7 +46,7 @@ impl ProxyContract {
     pub fn internal_approve_proposal(
         &mut self,
         signer_id: Repr<SignerId>,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
         #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
     ) -> Option<ProposalWithApprovals> {
         assert_membership(call_result);
@@ -72,7 +70,7 @@ impl ProxyContract {
         self.proposals.insert(proposal.id, proposal.clone());
         self.approvals.insert(proposal.id, HashSet::new());
         self.internal_confirm(
-            proposal.id,
+            proposal.id.rt().expect("Invalid proposal ID"),
             proposal.author_id.rt().expect("Invalid signer"),
         );
         self.build_proposal_response(proposal.id)
@@ -157,7 +155,7 @@ impl ProxyContract {
                 } => {
                     let account_id: AccountId =
                         AccountId::from_str(receiver_id.as_str()).expect("Invalid account ID");
-                    Promise::new(account_id).transfer(NearToken::from_near(amount))
+                    Promise::new(account_id).transfer(NearToken::from_yoctonear(amount))
                 }
                 _ => continue,
             };
@@ -189,7 +187,7 @@ impl ProxyContract {
         self.context_storage.insert(key.clone(), value)
     }
 
-    fn internal_confirm(&mut self, proposal_id: ProposalId, signer_id: SignerId) {
+    fn internal_confirm(&mut self, proposal_id: Repr<ProposalId>, signer_id: SignerId) {
         let approvals = self.approvals.get_mut(&proposal_id).unwrap();
         assert!(
             !approvals.contains(&signer_id),
@@ -295,7 +293,10 @@ impl ProxyContract {
             })
     }
 
-    fn build_proposal_response(&self, proposal_id: ProposalId) -> Option<ProposalWithApprovals> {
+    fn build_proposal_response(
+        &self,
+        proposal_id: Repr<ProposalId>,
+    ) -> Option<ProposalWithApprovals> {
         let approvals = self.get_confirmations_count(proposal_id);
         match approvals {
             None => None,
@@ -306,7 +307,7 @@ impl ProxyContract {
         }
     }
 
-    fn remove_proposal(&mut self, proposal_id: ProposalId) -> Proposal {
+    fn remove_proposal(&mut self, proposal_id: Repr<ProposalId>) -> Proposal {
         self.approvals.remove(&proposal_id);
         let proposal = self
             .proposals

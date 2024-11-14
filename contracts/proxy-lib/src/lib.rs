@@ -2,8 +2,8 @@ use core::str;
 use std::collections::HashSet;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ContextId, Signed, SignerId};
-use calimero_context_config::{Proposal, ProposalId, ProposalWithApprovals};
+use calimero_context_config::types::{ContextId, ProposalId, Signed, SignerId};
+use calimero_context_config::{Proposal, ProposalWithApprovals};
 use near_sdk::json_types::U128;
 use near_sdk::store::IterableMap;
 use near_sdk::{env, near, AccountId, PanicOnDefault, PromiseError};
@@ -25,7 +25,7 @@ const _: () = {
 enum MemberAction {
     Approve {
         identity: Repr<SignerId>,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
     },
     Create {
         proposal: Proposal,
@@ -39,8 +39,8 @@ pub struct ProxyContract {
     pub context_id: ContextId,
     pub context_config_account_id: AccountId,
     pub num_approvals: u32,
-    pub proposals: IterableMap<ProposalId, Proposal>,
-    pub approvals: IterableMap<ProposalId, HashSet<SignerId>>,
+    pub proposals: IterableMap<Repr<ProposalId>, Proposal>,
+    pub approvals: IterableMap<Repr<ProposalId>, HashSet<SignerId>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
     pub context_storage: IterableMap<Box<[u8]>, Box<[u8]>>,
@@ -83,19 +83,28 @@ impl ProxyContract {
         proposals
     }
 
-    pub fn proposal(&self, proposal_id: &ProposalId) -> Option<Proposal> {
+    pub fn proposal(&self, proposal_id: &Repr<ProposalId>) -> Option<Proposal> {
         self.proposals.get(proposal_id).cloned()
     }
 
     pub fn get_confirmations_count(
         &self,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
     ) -> Option<ProposalWithApprovals> {
         let approvals_for_proposal = self.approvals.get(&proposal_id);
         approvals_for_proposal.map(|approvals| ProposalWithApprovals {
             proposal_id,
             num_approvals: approvals.len(),
         })
+    }
+
+    pub fn get_proposal_approvers(
+        &self,
+        proposal_id: Repr<ProposalId>,
+    ) -> Option<Vec<Repr<SignerId>>> {
+        let approvals_for_proposal = self.approvals.get(&proposal_id);
+        let approvals = self.approvals.get(&proposal_id)?;
+        Some(approvals.iter().flat_map(|a| a.rt()).collect())
     }
 
     #[expect(clippy::type_complexity, reason = "Acceptable here")]

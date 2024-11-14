@@ -1,21 +1,16 @@
 use serde::Serialize;
 
-use super::ProposalId;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
-use crate::Proposal;
 
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct ProposalRequest {
-    pub(super) proposal_id: Repr<ProposalId>,
-}
+#[derive(Copy, Clone, Debug, Serialize)]
+pub(super) struct ActiveProposalRequest;
 
-impl Method<Near> for ProposalRequest {
-    const METHOD: &'static str = "proposal";
+impl Method<Near> for ActiveProposalRequest {
+    const METHOD: &'static str = "get_active_proposals_limit";
 
-    type Returns = Option<Proposal>;
+    type Returns = u16;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         serde_json::to_vec(&self).map_err(Into::into)
@@ -26,10 +21,10 @@ impl Method<Near> for ProposalRequest {
     }
 }
 
-impl Method<Starknet> for ProposalRequest {
-    const METHOD: &'static str = "proposals";
+impl Method<Starknet> for ActiveProposalRequest {
+    const METHOD: &'static str = "get_active_proposals_limit";
 
-    type Returns = Option<Proposal>;
+    type Returns = u16;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         todo!()
