@@ -61,28 +61,28 @@ async fn setup_test(
     ))
 }
 
-// #[tokio::test]
-// async fn update_proxy_code() -> Result<()> {
-//     let worker = near_workspaces::sandbox().await?;
+#[tokio::test]
+async fn update_proxy_code() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
 
-//     let (config_helper, _proxy_helper, relayer_account, context_sk, alice_sk) =
-//         setup_test(&worker).await?;
+    let (config_helper, _proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
 
-//     // Call the update function
-//     let res = config_helper
-//         .update_proxy_contract(&relayer_account, &context_sk, &alice_sk)
-//         .await?;
+    // Call the update function
+    let res = config_helper
+        .update_proxy_contract(&relayer_account, &context_sk, &alice_sk)
+        .await?;
 
-//     // Check the result
-//     assert!(
-//         res.logs()
-//             .iter()
-//             .any(|log| log.contains("Successfully updated proxy contract")),
-//         "Expected success message in logs"
-//     );
+    // Check the result
+    assert!(
+        res.logs()
+            .iter()
+            .any(|log| log.contains("Successfully updated proxy contract")),
+        "Expected success message in logs"
+    );
 
-//     Ok(())
-// }
+    Ok(())
+}
 
 #[tokio::test]
 async fn test_create_proposal() -> Result<()> {
@@ -132,7 +132,7 @@ async fn test_view_proposal() -> Result<()> {
     assert_eq!(result_proposal.actions, vec![]);
     assert_eq!(result_proposal.author_id, alice_sk.verifying_key().rt()?);
 
-    let non_existent_proposal_id = proxy_helper.proposal_id_from_bytes([0; 32]);
+    let non_existent_proposal_id = proxy_helper.generate_proposal_id();
     let view_proposal: Option<Proposal> = proxy_helper
         .view_proposal(&relayer_account, &non_existent_proposal_id)
         .await?;
@@ -180,7 +180,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     let view_proposal: Option<ProposalWithApprovals> = proxy_helper
         .view_proposal_confirmations(
             &relayer_account,
-            &proxy_helper.proposal_id_from_bytes([0; 32]),
+            &proxy_helper.generate_proposal_id(),
         )
         .await?
         .json()?;

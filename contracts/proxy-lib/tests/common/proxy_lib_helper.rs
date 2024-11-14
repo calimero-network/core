@@ -1,5 +1,5 @@
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ProposalId, Signed};
+use calimero_context_config::types::{ProposalId, Signed, SignerId};
 use calimero_context_config::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProxyMutateRequest,
 };
@@ -160,7 +160,16 @@ impl ProxyContractHelper {
         Ok(res)
     }
 
-    pub fn proposal_id_from_bytes(&self, bytes: [u8; 32]) -> Repr<ProposalId> {
-        Repr::new(bytes).rt().expect("Failed to create ProposalId")
+    pub async fn view_proposal_approvers(
+        &self,
+        caller: &Account,
+        proposal_id: &Repr<ProposalId>,
+    ) -> eyre::Result<Vec<Repr<SignerId>>> {
+        let res = caller
+            .view(&self.proxy_contract, "get_proposal_approvers")
+            .args_json(json!({ "proposal_id": proposal_id }))
+            .await?
+            .json()?;
+        Ok(res)
     }
 }
