@@ -13,9 +13,9 @@ use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig, ProposalId,
+    ApplicationSource as ApplicationSourceConfig, ContextIdentity, ProposalId,
 };
-use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals, User};
+use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
@@ -1224,20 +1224,15 @@ impl ContextManager {
             bail!("Context not found");
         };
 
-        let response = self
-            .config_client
+        self.config_client
             .query::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.proxy_contract.as_ref().into(),
             )
             .get_number_of_active_proposals()
-            .await;
-
-        match response {
-            Ok(proposals) => Ok(proposals),
-            Err(err) => Err(eyre::eyre!("Failed to fetch proposals: {}", err)),
-        }
+            .await
+            .map_err(|err| eyre::eyre!("Failed to fetch proposals: {}", err))
     }
 
     pub async fn get_number_of_proposal_approvals(
@@ -1251,49 +1246,36 @@ impl ContextManager {
             bail!("Context not found");
         };
 
-        let response = self
-            .config_client
+        self.config_client
             .query::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.proxy_contract.as_ref().into(),
             )
             .get_number_of_proposal_approvals(proposal_id)
-            .await;
-
-        match response {
-            Ok(proposals) => Ok(proposals),
-            Err(err) => Err(eyre::eyre!(
-                "Failed to fetch number of proposal approvals: {}",
-                err
-            )),
-        }
+            .await
+            .map_err(|err| eyre::eyre!("Failed to fetch number of proposal approvals: {}", err))
     }
 
     pub async fn get_proposal_approvers(
         &self,
         context_id: ContextId,
         proposal_id: ProposalId,
-    ) -> EyreResult<Vec<User>> {
+    ) -> EyreResult<Vec<ContextIdentity>> {
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             bail!("Context not found");
         };
 
-        let response = self
-            .config_client
+        self.config_client
             .query::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.proxy_contract.as_ref().into(),
             )
             .get_proposal_approvers(proposal_id)
-            .await;
-
-        match response {
-            Ok(proposals) => Ok(proposals),
-            Err(err) => Err(eyre::eyre!("Failed to fetch proposal approvers: {}", err)),
-        }
+            .await
+            .map_err(|err| eyre::eyre!("Failed to fetch proposal approvers: {}", err))
     }
 }

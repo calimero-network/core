@@ -8,7 +8,8 @@ use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
-use crate::{Proposal, ProposalId, ProposalWithApprovals, User};
+use crate::types::ContextIdentity;
+use crate::{Proposal, ProposalId, ProposalWithApprovals};
 
 mod active_proposals;
 mod proposal;
@@ -65,7 +66,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     pub async fn get_proposal_approvers(
         &self,
         proposal_id: ProposalId,
-    ) -> Result<Vec<User>, ClientError<T>> {
+    ) -> Result<Vec<ContextIdentity>, ClientError<T>> {
         let params = ProposalApproversRequest {
             proposal_id: Repr::new(proposal_id),
         };

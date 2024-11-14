@@ -4,9 +4,9 @@ use std::vec;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::ProposalId;
-use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals, User};
+use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::types::{ContextIdentity, ProposalId};
+use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals};
 use calimero_primitives::context::ContextId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,7 +39,7 @@ pub enum Action {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExternalFunctionCall {
-    pub(crate) receiver_id: User,
+    pub(crate) receiver_id: Repr<ContextIdentity>,
     pub(crate) method_name: String,
     pub(crate) args: Value,
     pub(crate) deposit: String,
@@ -76,7 +76,7 @@ pub struct SetContextValue {
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
     pub id: String,
-    pub author: User,
+    pub author: Repr<ContextIdentity>,
     pub(crate) actions: Vec<Action>,
     pub title: String,
     pub description: String,
@@ -214,7 +214,7 @@ pub async fn get_number_of_proposal_approvals_handler(
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalApproversResponse {
-    pub data: Vec<User>,
+    pub data: Vec<Repr<ContextIdentity>>,
 }
 
 // return list of users who approved
@@ -229,7 +229,7 @@ pub async fn get_proposal_approvers_handler(
     {
         Ok(proposal_approvers) => ApiResponse {
             payload: GetProposalApproversResponse {
-                data: proposal_approvers,
+                data: proposal_approvers.into_iter().map(Repr::new).collect(),
             },
         }
         .into_response(),
@@ -237,10 +237,8 @@ pub async fn get_proposal_approvers_handler(
     }
 }
 
-pub fn get_mock_user() -> User {
-    User {
-        identity_public_key: "sample_public_key".to_owned(),
-    }
+pub fn get_mock_user() -> Repr<ContextIdentity> {
+    [0; 32].rt().expect("infallible conversion")
 }
 
 pub fn get_mock_actions() -> Vec<Action> {

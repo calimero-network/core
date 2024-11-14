@@ -205,9 +205,3 @@ pub struct ProposalWithApprovals {
     pub proposal_id: Repr<ProposalId>,
     pub num_approvals: usize,
 }
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct User {
-    pub identity_public_key: String,
-}
