@@ -7,17 +7,25 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
+use notify::event::ModifyKind;
+use notify::{EventKind, RecursiveMode, Watcher};
 use reqwest::Client;
+use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Update app in context")]
 pub struct UpdateCommand {
+    #[clap(long, short = 'c', help = "ContextId where to install the application")]
+    context_id: ContextId,
+
     #[clap(
         long,
         short = 'a',
@@ -25,24 +33,26 @@ pub struct UpdateCommand {
     )]
     application_id: Option<ApplicationId>,
 
-    #[clap(long, short = 'c', help = "ContextId where to install the application")]
-    context_id: ContextId,
-
     #[clap(
         long,
-        short = 'p',
-        help = "PublicKey needed for the application installation"
-    )]
-    member_public_key: PublicKey,
-
-    #[clap(
-        long,
+        conflicts_with = "application_id",
         help = "Path to the application file to watch and install locally"
     )]
-    path: Utf8PathBuf,
+    path: Option<Utf8PathBuf>,
 
     #[clap(long, help = "Metadata needed for the application installation")]
     metadata: Option<String>,
+
+    #[clap(
+        long,
+        short = 'w',
+        conflicts_with = "application_id",
+        requires = "path"
+    )]
+    watch: bool,
+
+    #[arg(long = "as", help = "Public key of the executor")]
+    pub executor: PublicKey,
 }
 
 impl UpdateCommand {
@@ -51,19 +61,69 @@ impl UpdateCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
-        let metadata = self.metadata.map(String::into_bytes);
+        match self {
+            Self {
+                context_id,
+                application_id: Some(application_id),
+                path: None,
+                metadata: None,
+                watch: false,
+                executor: executor_public_key,
+            } => {
+                update_context_application(
+                    environment,
+                    &client,
+                    multiaddr,
+                    context_id,
+                    application_id,
+                    &config.identity,
+                    executor_public_key,
+                )
+                .await?;
+            }
+            Self {
+                context_id,
+                application_id: None,
+                path: Some(path),
+                metadata: None,
+                watch: false,
+                executor: executor_public_key,
+            } => {
+                install_app_and_update_context(
+                    environment,
+                    &client,
+                    multiaddr,
+                    path,
+                    context_id,
+                    None,
+                    &config.identity,
+                    executor_public_key,
+                )
+                .await?;
+            }
 
-        install_app_and_update_context(
-            environment,
-            &client,
-            multiaddr,
-            self.path,
-            self.context_id,
-            metadata,
-            &config.identity,
-            self.member_public_key,
-        )
-        .await?;
+            Self {
+                context_id,
+                application_id: None,
+                path: Some(path),
+                metadata,
+                watch: true,
+                executor: executor_public_key,
+            } => {
+                watch_app_and_update_context(
+                    environment,
+                    &client,
+                    multiaddr,
+                    context_id,
+                    path,
+                    metadata.map(String::into_bytes),
+                    &config.identity,
+                    executor_public_key,
+                )
+                .await?;
+            }
+            _ => bail!("Invalid command configuration"),
+        }
 
         Ok(())
     }
@@ -143,6 +203,80 @@ async fn update_context_application(
         do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
+
+    Ok(())
+}
+
+async fn watch_app_and_update_context(
+    environment: &Environment,
+    client: &Client,
+    base_multiaddr: &Multiaddr,
+    context_id: ContextId,
+    path: Utf8PathBuf,
+    metadata: Option<Vec<u8>>,
+    keypair: &Keypair,
+    member_public_key: PublicKey,
+) -> EyreResult<()> {
+    let (tx, mut rx) = mpsc::channel(1);
+
+    let handle = Handle::current();
+    let mut watcher = notify::recommended_watcher(move |evt| {
+        handle.block_on(async {
+            drop(tx.send(evt).await);
+        });
+    })?;
+
+    watcher.watch(path.as_std_path(), RecursiveMode::NonRecursive)?;
+
+    environment
+        .output
+        .write(&InfoLine(&format!("Watching for changes to {path}")));
+
+    while let Some(event) = rx.recv().await {
+        let event = match event {
+            Ok(event) => event,
+            Err(err) => {
+                environment.output.write(&ErrorLine(&format!("{err:?}")));
+                continue;
+            }
+        };
+
+        match event.kind {
+            EventKind::Modify(ModifyKind::Data(_)) => {}
+            EventKind::Remove(_) => {
+                environment
+                    .output
+                    .write(&ErrorLine("File removed, ignoring.."));
+                continue;
+            }
+            EventKind::Any
+            | EventKind::Access(_)
+            | EventKind::Create(_)
+            | EventKind::Modify(_)
+            | EventKind::Other => continue,
+        }
+
+        let application_id = install_app(
+            environment,
+            client,
+            base_multiaddr,
+            path.clone(),
+            metadata.clone(),
+            keypair,
+        )
+        .await?;
+
+        update_context_application(
+            environment,
+            client,
+            base_multiaddr,
+            context_id,
+            application_id,
+            keypair,
+            member_public_key,
+        )
+        .await?;
+    }
 
     Ok(())
 }
