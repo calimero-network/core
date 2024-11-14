@@ -95,11 +95,9 @@ impl AppState {
         // request: GetProposalMessagesRequest, I cannot to this??
         proposal_id: ProposalId,
     ) -> Result<Vec<Message>, Error> {
-        env::log("env Get messages for proposal");
-
-        println!("Get messages for proposal: {:?}", proposal_id);
+        env::log(&format!("env Get messages for proposal: {:?}", proposal_id));
         let res = &self.messages.get(&proposal_id).unwrap();
-
+        env::log(&format!("Get messages for proposal from storage: {:?}", res));
         match res {
             Some(messages) => Ok(messages.clone()),
             None => Ok(vec![]),
@@ -112,9 +110,9 @@ impl AppState {
         proposal_id: ProposalId,
         message: Message,
     ) -> Result<bool, Error> {
-        env::log("env send_proposal_messages");
+        env::log(&format!("env send_proposal_messages: {:?}", proposal_id));
+        env::log(&format!("env send_proposal_messages: {:?}", message));
 
-        println!("Send message to proposal: {:?}", proposal_id);
         let proposal_messages = self.messages.get(&proposal_id).unwrap();
         match proposal_messages {
             Some(mut messages) => {

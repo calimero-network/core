@@ -100,10 +100,7 @@ async fn test_create_proposal() -> Result<()> {
 
     match res {
         Some(proposal) => {
-            assert_eq!(
-                proposal.proposal_id,
-                proposal_id.rt().expect("infallible conversion")
-            );
+            assert_eq!(*proposal.proposal_id, proposal_id);
             assert_eq!(proposal.num_approvals, 1);
         }
         None => panic!("Expected to create a proposal, but got None"),
@@ -131,10 +128,7 @@ async fn test_view_proposal() -> Result<()> {
     assert!(view_proposal.is_some());
 
     let result_proposal = view_proposal.unwrap();
-    assert_eq!(
-        result_proposal.id,
-        proposal_id.rt().expect("infallible conversion")
-    );
+    assert_eq!(*result_proposal.id, proposal_id);
     assert_eq!(result_proposal.actions, vec![]);
     assert_eq!(
         result_proposal.author_id,
