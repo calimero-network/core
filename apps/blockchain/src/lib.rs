@@ -66,7 +66,7 @@ impl AppState {
         }
     }
 
-    pub fn create_new_proposal(&self, receiver: String) -> Result<env::ext::ProposalId, Error> {
+    pub fn create_new_proposal(receiver: String) -> Result<env::ext::ProposalId, Error> {
         env::log("env Call in wasm create new proposal");
 
         println!("Call in wasm create new proposal {:?}", receiver);
