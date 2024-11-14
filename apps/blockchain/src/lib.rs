@@ -97,7 +97,10 @@ impl AppState {
     ) -> Result<Vec<Message>, Error> {
         env::log(&format!("env Get messages for proposal: {:?}", proposal_id));
         let res = &self.messages.get(&proposal_id).unwrap();
-        env::log(&format!("Get messages for proposal from storage: {:?}", res));
+        env::log(&format!(
+            "Get messages for proposal from storage: {:?}",
+            res
+        ));
         match res {
             Some(messages) => Ok(messages.clone()),
             None => Ok(vec![]),
