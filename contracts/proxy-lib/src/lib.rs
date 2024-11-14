@@ -103,12 +103,8 @@ impl ProxyContract {
         proposal_id: Repr<ProposalId>,
     ) -> Option<Vec<Repr<SignerId>>> {
         let approvals_for_proposal = self.approvals.get(&proposal_id);
-        approvals_for_proposal.map(|approvals| {
-            approvals
-                .iter()
-                .filter_map(|a| a.rt().ok().map(Repr::new))
-                .collect()
-        })
+        let approvals = self.approvals.get(&proposal_id)?;
+        Some(approvals.iter().flat_map(|a| a.rt()).collect())
     }
 
     #[expect(clippy::type_complexity, reason = "Acceptable here")]

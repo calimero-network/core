@@ -55,11 +55,10 @@ impl ProxyContractHelper {
     }
 
     pub fn generate_proposal_id(&self) -> Repr<ProposalId> {
-        let proposal_id = rand::thread_rng()
+        rand::thread_rng()
             .gen::<[_; 32]>()
             .rt()
-            .expect("infallible conversion");
-        Repr::new(proposal_id)
+            .expect("infallible conversion")
     }
 
     pub async fn approve_proposal(
@@ -95,11 +94,11 @@ impl ProxyContractHelper {
     pub async fn view_proposal_confirmations(
         &self,
         caller: &Account,
-        proposal_id: &Repr<ProposalId>,
+        proposal_id: &ProposalId,
     ) -> eyre::Result<ViewResultDetails> {
         let res = caller
             .view(&self.proxy_contract, "get_confirmations_count")
-            .args_json(json!({ "proposal_id": proposal_id }))
+            .args_json(json!({ "proposal_id": Repr::new(*proposal_id) }))
             .await?;
         Ok(res)
     }
@@ -150,11 +149,11 @@ impl ProxyContractHelper {
     pub async fn view_proposal(
         &self,
         caller: &Account,
-        id: &Repr<ProposalId>,
+        id: ProposalId,
     ) -> eyre::Result<Option<Proposal>> {
         let res = caller
             .view(&self.proxy_contract, "proposal")
-            .args_json(json!({ "proposal_id": id }))
+            .args_json(json!({ "proposal_id": Repr::new(id) }))
             .await?
             .json()?;
         Ok(res)

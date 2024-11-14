@@ -123,7 +123,7 @@ async fn test_view_proposal() -> Result<()> {
         .await?;
 
     let view_proposal: Option<Proposal> = proxy_helper
-        .view_proposal(&relayer_account, &proposal_id)
+        .view_proposal(&relayer_account, *proposal_id)
         .await?;
     assert!(view_proposal.is_some());
 
@@ -134,7 +134,7 @@ async fn test_view_proposal() -> Result<()> {
 
     let non_existent_proposal_id = proxy_helper.generate_proposal_id();
     let view_proposal: Option<Proposal> = proxy_helper
-        .view_proposal(&relayer_account, &non_existent_proposal_id)
+        .view_proposal(&relayer_account, *non_existent_proposal_id)
         .await?;
     assert!(view_proposal.is_none());
     Ok(())
