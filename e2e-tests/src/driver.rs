@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eyre::{bail, Result as EyreResult};
+use near_workspaces::network::Sandbox;
+use near_workspaces::types::NearToken;
+use near_workspaces::{Account, Contract, Worker};
 use rand::seq::SliceRandom;
 use serde_json::from_slice;
 use tokio::fs::{read, read_dir};
@@ -45,7 +48,14 @@ pub struct Driver {
     environment: TestEnvironment,
     config: Config,
     meroctl: Meroctl,
-    merods: RefCell<HashMap<String, Merod>>,
+    merods: HashMap<String, Merod>,
+    near: Option<NearSandboxEnvironment>,
+}
+
+pub struct NearSandboxEnvironment {
+    pub worker: Worker<Sandbox>,
+    pub root_account: Account,
+    pub contract: Contract,
 }
 
 impl Driver {
@@ -55,23 +65,138 @@ impl Driver {
             environment,
             config,
             meroctl,
-            merods: RefCell::new(HashMap::new()),
+            merods: HashMap::new(),
+            near: None,
         }
     }
 
-    pub async fn run(&self) -> EyreResult<()> {
+    pub async fn run(&mut self) -> EyreResult<()> {
         self.environment.init().await?;
 
-        let result = self.run_tests().await;
+        self.init_near_environment().await?;
 
-        self.stop_nodes().await;
+        let result = {
+            self.boot_merods().await?;
+            self.run_scenarios().await
+        };
+
+        self.stop_merods().await;
 
         result
     }
 
-    async fn run_tests(&self) -> EyreResult<()> {
-        self.boot_nodes().await?;
+    async fn init_near_environment(&mut self) -> EyreResult<()> {
+        let worker = near_workspaces::sandbox().await?;
 
+        let wasm = read(&self.config.near.context_config_contract).await?;
+        let context_config_contract = worker.dev_deploy(&wasm).await?;
+
+        let proxy_lib_contract = read(&self.config.near.proxy_lib_contract).await?;
+        drop(
+            context_config_contract
+                .call("set_proxy_code")
+                .args(proxy_lib_contract)
+                .max_gas()
+                .transact()
+                .await?
+                .into_result()?,
+        );
+
+        let root_account = worker.root_account()?;
+
+        self.near = Some(NearSandboxEnvironment {
+            worker,
+            root_account,
+            contract: context_config_contract,
+        });
+
+        Ok(())
+    }
+
+    async fn boot_merods(&mut self) -> EyreResult<()> {
+        println!("========================= Starting nodes ===========================");
+
+        for i in 0..self.config.network.node_count {
+            let node_name = format!("node{}", i + 1);
+            if !self.merods.contains_key(&node_name) {
+                let mut args = vec![format!(
+                    "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
+                    self.environment.test_id
+                )];
+
+                if let Some(ref near) = self.near {
+                    let near_account = near
+                        .root_account
+                        .create_subaccount(&node_name)
+                        .initial_balance(NearToken::from_near(30))
+                        .transact()
+                        .await?
+                        .into_result()?;
+                    let near_secret_key = near_account.secret_key();
+
+                    args.extend(vec![
+                        format!(
+                            "context.config.new.contract_id=\"{}\"",
+                            near.contract.as_account().id()
+                        ),
+                        format!("context.config.signer.use=\"{}\"", "self"),
+                        format!(
+                            "context.config.signer.self.near.testnet.rpc_url=\"{}\"",
+                            near.worker.rpc_addr()
+                        ),
+                        format!(
+                            "context.config.signer.self.near.testnet.account_id=\"{}\"",
+                            near_account.id()
+                        ),
+                        format!(
+                            "context.config.signer.self.near.testnet.public_key=\"{}\"",
+                            near_secret_key.public_key()
+                        ),
+                        format!(
+                            "context.config.signer.self.near.testnet.secret_key=\"{}\"",
+                            near_secret_key
+                        ),
+                    ]);
+                }
+
+                let mut config_args = vec![];
+                config_args.extend(args.iter().map(|arg| &**arg));
+
+                let merod = Merod::new(node_name.clone(), &self.environment);
+
+                merod
+                    .init(
+                        self.config.network.start_swarm_port + i,
+                        self.config.network.start_server_port + i,
+                        &config_args,
+                    )
+                    .await?;
+
+                merod.run().await?;
+
+                drop(self.merods.insert(node_name, merod));
+            }
+        }
+
+        // TODO: Implement health check?
+        sleep(Duration::from_secs(20)).await;
+
+        println!("====================================================================");
+
+        Ok(())
+    }
+
+    async fn stop_merods(&mut self) {
+        for (_, merod) in self.merods.iter() {
+            if let Err(err) = merod.stop().await {
+                eprintln!("Error stopping merod: {:?}", err);
+            }
+        }
+
+        self.merods.clear();
+    }
+
+    async fn run_scenarios(&self) -> EyreResult<()> {
         let scenarios_dir = self.environment.input_dir.join("scenarios");
         let mut entries = read_dir(scenarios_dir).await?;
 
@@ -124,8 +249,7 @@ impl Driver {
     }
 
     fn pick_inviter_node(&self) -> Option<(String, Vec<String>)> {
-        let merods = self.merods.borrow();
-        let mut node_names: Vec<String> = merods.keys().cloned().collect();
+        let mut node_names: Vec<String> = self.merods.keys().cloned().collect();
         if node_names.len() < 1 {
             None
         } else {
@@ -134,49 +258,5 @@ impl Driver {
             let picked_node = node_names.remove(0);
             Some((picked_node, node_names))
         }
-    }
-
-    async fn boot_nodes(&self) -> EyreResult<()> {
-        println!("========================= Starting nodes ===========================");
-
-        for i in 0..self.config.network.node_count {
-            let node_name = format!("node{}", i + 1);
-            let mut merods = self.merods.borrow_mut();
-            if !merods.contains_key(&node_name) {
-                let merod = Merod::new(node_name.clone(), &self.environment);
-                let args: Vec<&str> = self.config.merod.args.iter().map(|s| s.as_str()).collect();
-
-                merod
-                    .init(
-                        self.config.network.start_swarm_port + i,
-                        self.config.network.start_server_port + i,
-                        &args,
-                    )
-                    .await?;
-
-                merod.run().await?;
-
-                drop(merods.insert(node_name, merod));
-            }
-        }
-
-        // TODO: Implement health check?
-        sleep(Duration::from_secs(20)).await;
-
-        println!("====================================================================");
-
-        Ok(())
-    }
-
-    async fn stop_nodes(&self) {
-        let mut merods = self.merods.borrow_mut();
-
-        for (_, merod) in merods.iter_mut() {
-            if let Err(err) = merod.stop().await {
-                eprintln!("Error stopping merod: {:?}", err);
-            }
-        }
-
-        merods.clear();
     }
 }

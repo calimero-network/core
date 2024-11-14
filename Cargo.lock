@@ -2556,6 +2556,7 @@ dependencies = [
  "clap",
  "const_format",
  "eyre",
+ "near-workspaces",
  "nix 0.29.0",
  "rand 0.8.5",
  "serde",
