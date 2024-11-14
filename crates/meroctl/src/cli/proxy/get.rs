@@ -51,7 +51,7 @@ impl Report for GetNumberOfProposalApprovalsResponse {
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
         for user in &self.data {
-            println!("{}", user.identity_public_key);
+            println!("{}", user);
         }
     }
 }
