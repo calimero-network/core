@@ -54,7 +54,7 @@ impl ProxyContractHelper {
         Ok(call)
     }
 
-    pub fn generate_proposal_id(&self) -> Repr<ProposalId> {
+    pub fn generate_proposal_id(&self) -> ProposalId {
         rand::thread_rng()
             .gen::<[_; 32]>()
             .rt()

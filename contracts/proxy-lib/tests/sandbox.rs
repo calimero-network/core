@@ -100,7 +100,10 @@ async fn test_create_proposal() -> Result<()> {
 
     match res {
         Some(proposal) => {
-            assert_eq!(proposal.proposal_id, proposal_id);
+            assert_eq!(
+                proposal.proposal_id,
+                proposal_id.rt().expect("infallible conversion")
+            );
             assert_eq!(proposal.num_approvals, 1);
         }
         None => panic!("Expected to create a proposal, but got None"),
@@ -123,18 +126,24 @@ async fn test_view_proposal() -> Result<()> {
         .await?;
 
     let view_proposal: Option<Proposal> = proxy_helper
-        .view_proposal(&relayer_account, *proposal_id)
+        .view_proposal(&relayer_account, proposal_id)
         .await?;
     assert!(view_proposal.is_some());
 
     let result_proposal = view_proposal.unwrap();
-    assert_eq!(result_proposal.id, proposal_id);
+    assert_eq!(
+        result_proposal.id,
+        proposal_id.rt().expect("infallible conversion")
+    );
     assert_eq!(result_proposal.actions, vec![]);
-    assert_eq!(result_proposal.author_id, alice_sk.verifying_key().rt()?);
+    assert_eq!(
+        result_proposal.author_id,
+        alice_sk.verifying_key().rt().expect("infallible conversion")
+    );
 
     let non_existent_proposal_id = proxy_helper.generate_proposal_id();
     let view_proposal: Option<Proposal> = proxy_helper
-        .view_proposal(&relayer_account, *non_existent_proposal_id)
+        .view_proposal(&relayer_account, non_existent_proposal_id)
         .await?;
     assert!(view_proposal.is_none());
     Ok(())
@@ -205,7 +214,10 @@ async fn test_create_multiple_proposals() -> Result<()> {
         .await?
         .json()?;
 
-    assert_eq!(res.proposal_id, proposal_1_id);
+    assert_eq!(
+        res.proposal_id,
+        proposal_1_id.rt().expect("infallible conversion")
+    );
     assert_eq!(res.num_approvals, 1);
 
     let res: ProposalWithApprovals = proxy_helper
@@ -213,7 +225,10 @@ async fn test_create_multiple_proposals() -> Result<()> {
         .await?
         .json()?;
 
-    assert_eq!(res.proposal_id, proposal_2_id);
+    assert_eq!(
+        res.proposal_id,
+        proposal_2_id.rt().expect("infallible conversion")
+    );
     assert_eq!(res.num_approvals, 1);
 
     Ok(())
@@ -245,7 +260,10 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .await?
         .json()?;
 
-    assert_eq!(res2.proposal_id, proposal_id);
+    assert_eq!(
+        res2.proposal_id,
+        proposal_id.rt().expect("infallible conversion")
+    );
     assert_eq!(res2.num_approvals, 2);
 
     Ok(())
@@ -322,7 +340,10 @@ async fn create_and_approve_proposal(
         .json()?;
 
     assert_eq!(res.num_approvals, 1);
-    assert_eq!(res.proposal_id, proposal_id);
+    assert_eq!(
+        res.proposal_id,
+        proposal_id.rt().expect("infallible conversion")
+    );
 
     let res: ProposalWithApprovals = proxy_helper
         .approve_proposal(&relayer_account, &members[1], &res.proposal_id)
@@ -621,15 +642,15 @@ async fn test_view_proposals() -> Result<()> {
     assert_eq!(proposals.len(), 3, "Expected to retrieve 3 proposals");
 
     assert_eq!(
-        proposals[0].id, proposal1_id,
+        proposals[0].id, proposal1_id.rt().expect("infallible conversion"),
         "Expected first proposal to have proposal_id 1"
     );
     assert_eq!(
-        proposals[1].id, proposal2_id,
+        proposals[1].id, proposal2_id.rt().expect("infallible conversion"),
         "Expected second proposal to have proposal_id 2"
     );
     assert_eq!(
-        proposals[2].id, proposal3_id,
+        proposals[2].id, proposal3_id.rt().expect("infallible conversion"),
         "Expected third proposal to have proposal_id 3"
     );
 
@@ -656,11 +677,11 @@ async fn test_view_proposals() -> Result<()> {
     );
 
     assert_eq!(
-        proposals[0].id, proposal2_id,
+        proposals[0].id, proposal2_id.rt().expect("infallible conversion"),
         "Expected the first returned proposal to have proposal_id 2"
     );
     assert_eq!(
-        proposals[1].id, proposal3_id,
+        proposals[1].id, proposal3_id.rt().expect("infallible conversion"),
         "Expected the second returned proposal to have proposal_id 3"
     );
 
@@ -682,7 +703,7 @@ async fn test_view_proposals() -> Result<()> {
         "Expected to retrieve 1 proposal starting from offset 3"
     );
     assert_eq!(
-        single_proposal[0].id, proposal3_id,
+        single_proposal[0].id, proposal3_id.rt().expect("infallible conversion"),
         "Expected the proposal to have proposal id 3"
     );
 

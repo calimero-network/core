@@ -236,32 +236,3 @@ pub async fn get_proposal_approvers_handler(
         Err(err) => parse_api_error(err).into_response(),
     }
 }
-
-pub fn get_mock_user() -> Repr<ContextIdentity> {
-    [0; 32].rt().expect("infallible conversion")
-}
-
-pub fn get_mock_actions() -> Vec<Action> {
-    vec![
-        Action::ExternalFunctionCall(ExternalFunctionCall {
-            receiver_id: get_mock_user(),
-            method_name: "sampleMethod".to_owned(),
-            args: serde_json::json!({"example": "value"}),
-            deposit: "100".to_owned(),
-            gas: "5000".to_owned(),
-        }),
-        Action::Transfer(Transfer {
-            amount: "250".to_owned(),
-        }),
-        Action::SetNumApprovals(SetNumApprovals {
-            num_of_approvals: 3,
-        }),
-        Action::SetActiveProposalsLimit(SetActiveProposalsLimit {
-            active_proposals_limit: 10,
-        }),
-        Action::SetContextValue(SetContextValue {
-            key: "sampleKey".to_owned(),
-            value: serde_json::json!({"example": "value"}), // Using serde_json::Value for any JSON-compatible structure
-        }),
-    ]
-}

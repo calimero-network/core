@@ -1,10 +1,11 @@
 use serde::Serialize;
+use std::mem;
 
 use super::ProposalId;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprTransmute};
+use crate::repr::Repr;
 use crate::types::ContextIdentity;
 
 #[derive(Clone, Debug, Serialize)]
@@ -22,13 +23,18 @@ impl Method<Near> for ProposalApproversRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let signers: Option<Vec<Repr<ContextIdentity>>> = serde_json::from_slice(&response)?;
+        let members: Vec<Repr<ContextIdentity>> = serde_json::from_slice(&response)?;
 
-        Ok(signers
-            .unwrap_or_default()
-            .into_iter()
-            .map(|signer_id| signer_id.rt().expect("infallible conversion"))
-            .collect())
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        #[expect(
+            clippy::transmute_undefined_repr,
+            reason = "Repr<T> is a transparent wrapper around T"
+        )]
+        let members = unsafe { 
+            mem::transmute::<Vec<Repr<ContextIdentity>>, Vec<ContextIdentity>>(members) 
+        };
+
+        Ok(members)
     }
 }
 
