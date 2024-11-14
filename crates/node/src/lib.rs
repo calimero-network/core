@@ -14,7 +14,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
-use calimero_context_config::ProposalAction;
+use calimero_crypto::SharedKey;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -34,7 +34,7 @@ use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
@@ -335,6 +335,16 @@ impl Node {
             return Ok(());
         }
 
+        let Some(sender_key) = self.ctx_manager.get_sender_key(&context_id, &author_id)? else {
+            return self.initiate_sync(context_id, source).await;
+        };
+
+        let shared_key = SharedKey::from_sk(&sender_key);
+
+        let artifact = &shared_key
+            .decrypt(artifact, [0; 12])
+            .ok_or_eyre("failed to decrypt message")?;
+
         let Some(outcome) = self
             .execute(
                 &mut context,
@@ -368,11 +378,22 @@ impl Node {
             .await
             != 0
         {
+            let sender_key = self
+                .ctx_manager
+                .get_sender_key(&context.id, &executor_public_key)?
+                .ok_or_eyre("expected own identity to have sender key")?;
+
+            let shared_key = SharedKey::from_sk(&sender_key);
+
+            let artifact_encrypted = shared_key
+                .encrypt(outcome.artifact.clone(), [0; 12])
+                .ok_or_eyre("encryption failed")?;
+
             let message = to_vec(&BroadcastMessage::StateDelta {
                 context_id: context.id,
                 author_id: executor_public_key,
                 root_hash: context.root_hash,
-                artifact: outcome.artifact.as_slice().into(),
+                artifact: artifact_encrypted.as_slice().into(),
             })?;
 
             let _ignored = self
@@ -439,8 +460,12 @@ impl Node {
             });
         };
 
+        if outcome.returns.is_err() {
+            return Ok(outcome);
+        }
+
         for (proposal_id, actions) in &outcome.proposals {
-            let actions: Vec<ProposalAction> = from_slice(&actions).map_err(|e| {
+            let actions = from_slice(actions).map_err(|e| {
                 error!(%e, "Failed to deserialize proposal actions.");
                 CallError::InternalError
             })?;
@@ -450,7 +475,7 @@ impl Node {
                     context_id,
                     executor_public_key,
                     proposal_id.clone(),
-                    actions.clone(),
+                    actions,
                 )
                 .await
                 .map_err(|e| {
@@ -549,20 +574,19 @@ impl Node {
 // TODO: move this into the config
 // TODO: also this would be nice to have global default with per application customization
 fn get_runtime_limits() -> EyreResult<VMLimits> {
-    Ok(VMLimits::new(
-        /*max_stack_size:*/ 200 << 10, // 200 KiB
-        /*max_memory_pages:*/ 1 << 10, // 1 KiB
-        /*max_registers:*/ 100,
-        /*max_register_size:*/ (100 << 20).validate()?, // 100 MiB
-        /*max_registers_capacity:*/ 1 << 30, // 1 GiB
-        /*max_logs:*/ 100,
-        /*max_log_size:*/ 16 << 10, // 16 KiB
-        /*max_events:*/ 100,
-        /*max_event_kind_size:*/ 100,
-        /*max_event_data_size:*/ 16 << 10, // 16 KiB
-        /*max_storage_key_size:*/ (1 << 20).try_into()?, // 1 MiB
-        /*max_storage_value_size:*/
-        (10 << 20).try_into()?, // 10 MiB
-                                // can_write: writes, // todo!
-    ))
+    Ok(VMLimits {
+        max_memory_pages: 1 << 10, // 1 KiB
+        max_stack_size: 200 << 10, // 200 KiB
+        max_registers: 100,
+        max_register_size: (100 << 20).validate()?, // 100 MiB
+        max_registers_capacity: 1 << 30,            // 1 GiB
+        max_logs: 100,
+        max_log_size: 16 << 10, // 16 KiB
+        max_events: 100,
+        max_event_kind_size: 100,
+        max_event_data_size: 16 << 10,               // 16 KiB
+        max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
+        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
+                                                     // can_write: writes, // todo!
+    })
 }

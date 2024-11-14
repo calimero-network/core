@@ -3,6 +3,7 @@ import ContentWrapper from '../components/login/ContentWrapper';
 import { useNavigate } from 'react-router-dom';
 import { StarknetWallet } from '../components/starknet/StarknetWallet';
 import { useStarknet } from '../hooks/useStarknet';
+import { getAppEndpointKey } from '../utils/storage';
 
 interface StarknetLoginProps {
   isLogin: boolean;
@@ -32,6 +33,7 @@ export default function StarknetLogin({ isLogin }: StarknetLoginProps) {
   }, [starknetInstance, requestNodeData]);
 
   useEffect(() => {
+    getAppEndpointKey() || navigate('/');
     if (starknetInstance && signData) {
       login({ isLogin, setErrorMessage });
     }

@@ -23,6 +23,7 @@ import { getWalletType } from '../utils/starknetWalletType';
 import { getStarknet, StarknetWindowObject } from 'get-starknet-core';
 import { constants, Signature } from 'starknet';
 import translations from '../constants/en.global.json';
+import { getAppEndpointKey } from '../utils/storage';
 
 interface LoginProps {
   setErrorMessage: (msg: string) => void;
@@ -69,6 +70,9 @@ export function useStarknet(): useStarknetReturn {
 
   const walletLogin = useCallback(
     async (walletType: string, setErrorMessage: (msg: string) => void) => {
+      if (!getAppEndpointKey()) {
+        navigate('/');
+      }
       try {
         setReady(false);
         const starknetInstance = getStarknet();
