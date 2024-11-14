@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use calimero_config::{ConfigFile, CONFIG_FILE};
 use camino::Utf8PathBuf;
-use clap::{value_parser, Parser};
+use clap::Parser;
 use eyre::{bail, eyre, Result as EyreResult};
 use toml_edit::{Item, Value};
 use tracing::info;
@@ -17,8 +17,8 @@ use crate::cli;
 #[derive(Debug, Parser)]
 pub struct ConfigCommand {
     /// Key-value pairs to be added or updated in the TOML file
-    #[clap(short, long, value_parser = value_parser!(KeyValuePair))]
-    arg: Vec<KeyValuePair>,
+    #[clap(value_name = "ARGS")]
+    args: Vec<KeyValuePair>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,7 +58,7 @@ impl ConfigCommand {
         let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
         // Update the TOML document
-        for kv in self.arg.iter() {
+        for kv in self.args.iter() {
             let key_parts: Vec<&str> = kv.key.split('.').collect();
 
             let mut current = doc.as_item_mut();

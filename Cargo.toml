@@ -35,10 +35,12 @@ members = [
     "./apps/visited",
     "./apps/blockchain",
 
-  "./contracts/context-config",
-  "./contracts/registry",
-  "./contracts/proxy-lib",
-  "./contracts/test-counter",
+    "./contracts/context-config",
+    "./contracts/registry",
+    "./contracts/proxy-lib",
+    "./contracts/test-counter",
+
+    "./e2e-tests",
 ]
 
 [workspace.dependencies]
