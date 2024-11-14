@@ -24,12 +24,12 @@ impl Method<Near> for ProposalApproversRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let signers: Option<Vec<Repr<SignerId>>> = serde_json::from_slice(&response)?;
-        
+
         Ok(signers
             .unwrap_or_default()
             .into_iter()
             .map(|signer_id| User {
-                identity_public_key: signer_id.to_string()
+                identity_public_key: signer_id.to_string(),
             })
             .collect())
     }

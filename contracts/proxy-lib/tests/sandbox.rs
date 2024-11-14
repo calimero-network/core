@@ -178,10 +178,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     assert!(error.to_string().contains("Is not a member"));
 
     let view_proposal: Option<ProposalWithApprovals> = proxy_helper
-        .view_proposal_confirmations(
-            &relayer_account,
-            &proxy_helper.generate_proposal_id(),
-        )
+        .view_proposal_confirmations(&relayer_account, &proxy_helper.generate_proposal_id())
         .await?
         .json()?;
 
