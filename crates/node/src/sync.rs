@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use calimero_crypto::SharedKey;
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
 use eyre::{bail, Result as EyreResult};
@@ -15,6 +16,7 @@ use crate::types::{InitPayload, StreamMessage};
 use crate::Node;
 
 mod blobs;
+mod key;
 mod state;
 
 #[derive(Copy, Clone, Debug)]
@@ -23,25 +25,47 @@ pub struct SyncConfig {
     pub interval: Duration,
 }
 
-async fn send(stream: &mut Stream, message: &StreamMessage<'_>) -> EyreResult<()> {
-    let message = borsh::to_vec(message)?;
+async fn send(
+    stream: &mut Stream,
+    message: &StreamMessage<'_>,
+    shared_key: Option<SharedKey>,
+) -> EyreResult<()> {
+    let base_data = borsh::to_vec(message)?;
 
-    stream.send(Message::new(message)).await?;
+    let data = match shared_key {
+        Some(key) => match key.encrypt(base_data, [0; 12]) {
+            Some(data) => data,
+            None => bail!("encryption failed"),
+        },
+        None => base_data,
+    };
 
+    stream.send(Message::new(data)).await?;
     Ok(())
 }
 
 async fn recv(
     stream: &mut Stream,
     duration: Duration,
+    shared_key: Option<SharedKey>,
 ) -> EyreResult<Option<StreamMessage<'static>>> {
     let Some(message) = timeout(duration, stream.next()).await? else {
         return Ok(None);
     };
 
-    let message = borsh::from_slice(&message?.data)?;
+    let message_data = message?.data.into_owned();
 
-    Ok(Some(message))
+    let data = match shared_key {
+        Some(key) => match key.decrypt(message_data, [0; 12]) {
+            Some(data) => data,
+            None => bail!("decryption failed"),
+        },
+        None => message_data,
+    };
+
+    let decoded = borsh::from_slice::<StreamMessage<'static>>(&data)?;
+
+    Ok(Some(decoded))
 }
 
 #[derive(Default)]
@@ -95,6 +119,9 @@ impl Node {
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
+        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
+            .await?;
+
         if !self.ctx_manager.has_blob_available(application.blob)? {
             self.initiate_blob_share_process(
                 &context,
@@ -118,7 +145,7 @@ impl Node {
                 Err(err) => {
                     error!(%err, "Failed to handle stream message");
 
-                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
+                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError, None).await {
                         error!(%err, "Failed to send error message");
                     }
                 }
@@ -127,7 +154,7 @@ impl Node {
     }
 
     async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> EyreResult<Option<()>> {
-        let Some(message) = recv(stream, self.sync_config.timeout).await? else {
+        let Some(message) = recv(stream, self.sync_config.timeout, None).await? else {
             return Ok(None);
         };
 
@@ -167,6 +194,10 @@ impl Node {
         }
 
         match payload {
+            InitPayload::KeyShare => {
+                self.handle_key_share_request(context, their_identity, stream)
+                    .await?
+            }
             InitPayload::BlobShare { blob_id } => {
                 self.handle_blob_share_request(context, their_identity, blob_id, stream)
                     .await?

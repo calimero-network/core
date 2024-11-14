@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
@@ -31,10 +32,11 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
+            None,
         )
         .await?;
 
-        let Some(ack) = recv(stream, self.sync_config.timeout).await? else {
+        let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
             bail!("connection closed while awaiting state sync handshake");
         };
 
@@ -71,6 +73,13 @@ impl Node {
 
         let mut sqx_out = Sequencer::default();
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         send(
             stream,
             &StreamMessage::Message {
@@ -79,11 +88,19 @@ impl Node {
                     artifact: b"".into(),
                 },
             },
+            Some(shared_key),
         )
         .await?;
 
-        self.bidirectional_sync(context, our_identity, their_identity, &mut sqx_out, stream)
-            .await?;
+        self.bidirectional_sync(
+            context,
+            our_identity,
+            their_identity,
+            &mut sqx_out,
+            stream,
+            shared_key,
+        )
+        .await?;
 
         Ok(())
     }
@@ -110,6 +127,13 @@ impl Node {
             bail!("no identities found for context: {}", context.id);
         };
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         send(
             stream,
             &StreamMessage::Init {
@@ -120,6 +144,7 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
+            None,
         )
         .await?;
 
@@ -136,6 +161,7 @@ impl Node {
             their_identity,
             &mut sqx_out,
             stream,
+            shared_key,
         )
         .await
 
@@ -149,6 +175,7 @@ impl Node {
         their_identity: PublicKey,
         sqx_out: &mut Sequencer,
         stream: &mut Stream,
+        shared_key: SharedKey,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -160,7 +187,7 @@ impl Node {
 
         let mut sqx_in = Sequencer::default();
 
-        while let Some(msg) = recv(stream, self.sync_config.timeout).await? {
+        while let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? {
             let (sequence_id, artifact) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
@@ -202,6 +229,7 @@ impl Node {
                         artifact: Cow::from(&outcome.artifact),
                     },
                 },
+                Some(shared_key),
             )
             .await?;
         }
