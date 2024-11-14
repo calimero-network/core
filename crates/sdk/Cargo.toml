@@ -12,7 +12,12 @@ bs58 = { workspace = true }
 cfg-if.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
+
 calimero-sdk-macros = { path = "./macros" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rand.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true

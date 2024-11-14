@@ -4,6 +4,7 @@ pub mod env;
 pub mod event;
 mod returns;
 pub mod state;
+pub mod store;
 mod sys;
 pub mod types;
 
