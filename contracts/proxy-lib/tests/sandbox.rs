@@ -138,7 +138,10 @@ async fn test_view_proposal() -> Result<()> {
     assert_eq!(result_proposal.actions, vec![]);
     assert_eq!(
         result_proposal.author_id,
-        alice_sk.verifying_key().rt().expect("infallible conversion")
+        alice_sk
+            .verifying_key()
+            .rt()
+            .expect("infallible conversion")
     );
 
     let non_existent_proposal_id = proxy_helper.generate_proposal_id();
@@ -642,15 +645,18 @@ async fn test_view_proposals() -> Result<()> {
     assert_eq!(proposals.len(), 3, "Expected to retrieve 3 proposals");
 
     assert_eq!(
-        proposals[0].id, proposal1_id.rt().expect("infallible conversion"),
+        proposals[0].id,
+        proposal1_id.rt().expect("infallible conversion"),
         "Expected first proposal to have proposal_id 1"
     );
     assert_eq!(
-        proposals[1].id, proposal2_id.rt().expect("infallible conversion"),
+        proposals[1].id,
+        proposal2_id.rt().expect("infallible conversion"),
         "Expected second proposal to have proposal_id 2"
     );
     assert_eq!(
-        proposals[2].id, proposal3_id.rt().expect("infallible conversion"),
+        proposals[2].id,
+        proposal3_id.rt().expect("infallible conversion"),
         "Expected third proposal to have proposal_id 3"
     );
 
@@ -677,11 +683,13 @@ async fn test_view_proposals() -> Result<()> {
     );
 
     assert_eq!(
-        proposals[0].id, proposal2_id.rt().expect("infallible conversion"),
+        proposals[0].id,
+        proposal2_id.rt().expect("infallible conversion"),
         "Expected the first returned proposal to have proposal_id 2"
     );
     assert_eq!(
-        proposals[1].id, proposal3_id.rt().expect("infallible conversion"),
+        proposals[1].id,
+        proposal3_id.rt().expect("infallible conversion"),
         "Expected the second returned proposal to have proposal_id 3"
     );
 
@@ -703,7 +711,8 @@ async fn test_view_proposals() -> Result<()> {
         "Expected to retrieve 1 proposal starting from offset 3"
     );
     assert_eq!(
-        single_proposal[0].id, proposal3_id.rt().expect("infallible conversion"),
+        single_proposal[0].id,
+        proposal3_id.rt().expect("infallible conversion"),
         "Expected the proposal to have proposal id 3"
     );
 

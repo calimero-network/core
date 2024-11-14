@@ -1,5 +1,6 @@
-use serde::Serialize;
 use std::mem;
+
+use serde::Serialize;
 
 use super::ProposalId;
 use crate::client::env::Method;
@@ -30,9 +31,8 @@ impl Method<Near> for ProposalApproversRequest {
             clippy::transmute_undefined_repr,
             reason = "Repr<T> is a transparent wrapper around T"
         )]
-        let members = unsafe { 
-            mem::transmute::<Vec<Repr<ContextIdentity>>, Vec<ContextIdentity>>(members) 
-        };
+        let members =
+            unsafe { mem::transmute::<Vec<Repr<ContextIdentity>>, Vec<ContextIdentity>>(members) };
 
         Ok(members)
     }
