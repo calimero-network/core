@@ -24,12 +24,6 @@ where
 {
     /// Create a new map collection.
     ///
-    /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
-    ///
     pub fn new() -> Self {
         Self {
             inner: Collection::new(),
@@ -78,11 +72,7 @@ where
     /// returned.
     ///
     pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
-        let iter = self.inner.entries()?;
-
-        let iter = iter.flat_map(|entry| entry.ok());
-
-        Ok(iter.fuse())
+        Ok(self.inner.entries()?.flatten().fuse())
     }
 
     /// Get the number of entries in the map.
@@ -94,7 +84,7 @@ where
     /// returned.
     ///
     pub fn len(&self) -> Result<usize, StoreError> {
-        Ok(self.inner.entries()?.len())
+        self.inner.len()
     }
 
     /// Get the value for a key in the map.

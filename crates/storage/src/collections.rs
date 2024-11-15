@@ -12,8 +12,8 @@ pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
 pub mod unordered_set;
 pub use unordered_set::UnorderedSet;
-// pub mod vector;
-// pub use vector::Vector;
+pub mod vector;
+pub use vector::Vector;
 pub mod error;
 pub use error::StoreError;
 
@@ -146,7 +146,13 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
         }))
     }
 
-    fn entries(&self) -> StoreResult<impl ExactSizeIterator<Item = StoreResult<T>> + '_> {
+    fn len(&self) -> StoreResult<usize> {
+        Ok(self.children_cache()?.len())
+    }
+
+    fn entries(
+        &self,
+    ) -> StoreResult<impl ExactSizeIterator<Item = StoreResult<T>> + DoubleEndedIterator + '_> {
         let iter = self.children_cache()?.iter().copied().map(|child| {
             let entry = Interface::find_by_id::<Entry<_>>(child)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
@@ -155,6 +161,14 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
         });
 
         Ok(iter)
+    }
+
+    fn nth(&self, index: usize) -> StoreResult<Option<Id>> {
+        Ok(self.children_cache()?.get_index(index).copied())
+    }
+
+    fn last(&self) -> StoreResult<Option<Id>> {
+        Ok(self.children_cache()?.last().copied())
     }
 
     fn clear(&mut self) -> StoreResult<()> {
