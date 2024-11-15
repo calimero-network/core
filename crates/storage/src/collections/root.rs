@@ -103,9 +103,9 @@ where
 
     /// Fetches the root collection.
     pub fn fetch() -> Option<Self> {
-        employ_root_guard();
-
         let inner = Interface::root().unwrap()?;
+
+        employ_root_guard();
 
         Some(Self {
             inner,
