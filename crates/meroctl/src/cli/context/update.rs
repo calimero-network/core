@@ -104,6 +104,18 @@ impl UpdateCommand {
                     &config.identity,
                 )
                 .await?;
+
+                update_context_application(
+                    environment,
+                    &client,
+                    multiaddr,
+                    context_id,
+                    application_id,
+                    &config.identity,
+                    executor_public_key,
+                )
+                .await?;
+
                 if self.watch {
                     watch_app_and_update_context(
                         environment,
@@ -112,17 +124,6 @@ impl UpdateCommand {
                         context_id,
                         path,
                         metadata,
-                        &config.identity,
-                        executor_public_key,
-                    )
-                    .await?;
-                } else {
-                    update_context_application(
-                        environment,
-                        &client,
-                        multiaddr,
-                        context_id,
-                        application_id,
                         &config.identity,
                         executor_public_key,
                     )
