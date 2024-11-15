@@ -14,7 +14,8 @@ pub mod unordered_set;
 pub use unordered_set::UnorderedSet;
 pub mod vector;
 pub use vector::Vector;
-pub mod root;
+mod root;
+#[doc(hidden)]
 pub use root::Root;
 pub mod error;
 pub use error::StoreError;
@@ -323,6 +324,5 @@ where
 {
     fn drop(&mut self) {
         self.collection.element_mut().update();
-        let _ignored = Interface::save(self.collection);
     }
 }

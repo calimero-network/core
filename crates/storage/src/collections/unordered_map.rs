@@ -202,9 +202,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_basic_operations() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
@@ -253,9 +251,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_insert_and_get() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
@@ -278,9 +274,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_update_value() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
@@ -299,9 +293,7 @@ mod tests {
 
     #[test]
     fn test_remove() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
@@ -317,9 +309,7 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
@@ -338,9 +328,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_len() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert_eq!(map.len().expect("len failed"), 0);
 
@@ -369,9 +357,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_contains() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
@@ -384,9 +370,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entries() {
-        let _root = Root::new(());
-
-        let mut map = UnorderedMap::<String, String>::new();
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())

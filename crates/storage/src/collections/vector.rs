@@ -11,6 +11,7 @@ use crate::collections::error::StoreError;
 /// A vector collection that stores key-value pairs.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct Vector<V> {
+    // Borrow/ToOwned
     inner: Collection<V>,
 }
 
@@ -163,9 +164,8 @@ mod tests {
 
     #[test]
     fn test_vector_push() {
-        let _root = Root::new(());
+        let mut vector = Root::new(|| Vector::new());
 
-        let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let result = vector.push(value.clone());
         assert!(result.is_ok());
@@ -174,9 +174,8 @@ mod tests {
 
     #[test]
     fn test_vector_get() {
-        let _root = Root::new(());
+        let mut vector = Root::new(|| Vector::new());
 
-        let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
         let retrieved_value = vector.get(0).unwrap();
@@ -185,9 +184,8 @@ mod tests {
 
     #[test]
     fn test_vector_update() {
-        let _root = Root::new(());
+        let mut vector = Root::new(|| Vector::new());
 
-        let mut vector: Vector<String> = Vector::new();
         let value1 = "test_data1".to_string();
         let value2 = "test_data2".to_string();
         let _ = vector.push(value1.clone()).unwrap();
@@ -199,9 +197,8 @@ mod tests {
 
     #[test]
     fn test_vector_get_non_existent() {
-        let _root = Root::new(());
+        let vector = Root::new(|| Vector::<String>::new());
 
-        let vector: Vector<String> = Vector::new();
         match vector.get(0) {
             Ok(retrieved_value) => assert_eq!(retrieved_value, None),
             Err(e) => panic!("Error occurred: {:?}", e),
@@ -210,9 +207,8 @@ mod tests {
 
     #[test]
     fn test_vector_pop() {
-        let _root = Root::new(());
+        let mut vector = Root::new(|| Vector::new());
 
-        let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
         let popped_value = vector.pop().unwrap();
@@ -222,9 +218,8 @@ mod tests {
 
     #[test]
     fn test_vector_entries() {
-        let _root = Root::new(());
+        let mut vector = Root::new(|| Vector::new());
 
-        let mut vector: Vector<String> = Vector::new();
         let value1 = "test_data1".to_string();
         let value2 = "test_data2".to_string();
         let _ = vector.push(value1.clone()).unwrap();
@@ -235,9 +230,8 @@ mod tests {
 
     #[test]
     fn test_vector_contains() {
-        let _root = Root::new(());
+        let mut vector = Root::new(|| Vector::new());
 
-        let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
         assert!(vector.contains(&value).unwrap());
@@ -247,9 +241,8 @@ mod tests {
 
     #[test]
     fn test_vector_clear() {
-        let _root = Root::new(());
+        let mut vector = Root::new(|| Vector::new());
 
-        let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
         vector.clear().unwrap();
