@@ -5,7 +5,6 @@ use core::marker::PhantomData;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-// fixme! macro expects `calimero_storage` to be in deps
 use crate::address::{Id, Path};
 use crate::collections::error::StoreError;
 use crate::entities::{Data, Element};

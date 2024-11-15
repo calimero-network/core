@@ -6,18 +6,20 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use super::Collection;
-// fixme! macro expects `calimero_storage` to be in deps
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 
 /// A set collection that stores unqiue values once.
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct UnorderedSet<V> {
     inner: Collection<V>,
 }
 
-impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
+impl<V> UnorderedSet<V>
+where
+    V: BorshSerialize + BorshDeserialize,
+{
     /// Create a new set collection.
     ///
     /// # Errors
@@ -71,7 +73,7 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = V>, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
         let iter = self.inner.entries()?;
 
         let iter = iter.flat_map(|entry| entry.ok());
@@ -143,6 +145,37 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
     ///
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.inner.clear()
+    }
+}
+
+impl<V> Eq for UnorderedSet<V> where V: Eq + BorshSerialize + BorshDeserialize {}
+
+impl<V> PartialEq for UnorderedSet<V>
+where
+    V: PartialEq + BorshSerialize + BorshDeserialize,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.entries().unwrap().eq(other.entries().unwrap())
+    }
+}
+
+impl<V> Ord for UnorderedSet<V>
+where
+    V: Ord + BorshSerialize + BorshDeserialize,
+{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.entries().unwrap().cmp(other.entries().unwrap())
+    }
+}
+
+impl<V> PartialOrd for UnorderedSet<V>
+where
+    V: PartialOrd + BorshSerialize + BorshDeserialize,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.entries()
+            .unwrap()
+            .partial_cmp(other.entries().unwrap())
     }
 }
 

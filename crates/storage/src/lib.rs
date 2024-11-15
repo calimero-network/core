@@ -6,11 +6,11 @@
 
 #![forbid(
     unreachable_pub,
-    unsafe_code,
     unsafe_op_in_unsafe_fn,
     clippy::missing_docs_in_private_items
 )]
 #![deny(
+    unsafe_code,
     clippy::expect_used,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,

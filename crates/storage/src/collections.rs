@@ -12,8 +12,8 @@ pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
 pub mod unordered_set;
 pub use unordered_set::UnorderedSet;
-pub mod vector;
-pub use vector::Vector;
+// pub mod vector;
+// pub use vector::Vector;
 pub mod error;
 pub use error::StoreError;
 
@@ -24,7 +24,7 @@ use crate::entities::{Data, Element};
 use crate::interface::{Interface, StorageError};
 use crate::{AtomicUnit, Collection};
 
-#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
+#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug)]
 #[type_id(255)]
 #[root]
 struct Collection<T> {
@@ -41,6 +41,35 @@ struct Collection<T> {
     children_ids: RefCell<Option<IndexSet<Id>>>,
 }
 
+impl<T: Eq + BorshSerialize + BorshDeserialize> Eq for Collection<T> {}
+
+impl<T: PartialEq + BorshSerialize + BorshDeserialize> PartialEq for Collection<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries()
+            .unwrap()
+            .flatten()
+            .eq(other.entries().unwrap().flatten())
+    }
+}
+
+impl<T: Ord + BorshSerialize + BorshDeserialize> Ord for Collection<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.entries()
+            .unwrap()
+            .flatten()
+            .cmp(other.entries().unwrap().flatten())
+    }
+}
+
+impl<T: PartialOrd + BorshSerialize + BorshDeserialize> PartialOrd for Collection<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.entries()
+            .unwrap()
+            .flatten()
+            .partial_cmp(other.entries().unwrap().flatten())
+    }
+}
+
 /// A collection of entries in a map.
 #[derive(Collection, Copy, Clone, Debug, Eq, PartialEq)]
 #[children(Entry<T>)]
@@ -50,7 +79,7 @@ struct Entries<T> {
 }
 
 /// An entry in a map.
-#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
+#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug)]
 #[type_id(254)]
 struct Entry<T> {
     /// The item in the entry.
@@ -71,6 +100,7 @@ struct EntryMut<'a, T: BorshSerialize + BorshDeserialize> {
     entry: Entry<T>,
 }
 
+#[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]
 type StoreResult<T> = std::result::Result<T, StoreError>;
 
 impl<T: BorshSerialize + BorshDeserialize> Collection<T> {

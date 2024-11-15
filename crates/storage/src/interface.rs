@@ -385,7 +385,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     ///
     pub fn add_child_to<C: Collection, D: Data>(
         parent_id: Id,
-        collection: &mut C,
+        collection: &C,
         child: &mut D,
     ) -> Result<bool, StorageError> {
         let own_hash = child.calculate_merkle_hash()?;
@@ -950,7 +950,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     ///
     pub fn remove_child_from<C: Collection>(
         parent_id: Id,
-        collection: &mut C,
+        collection: &C,
         child_id: Id,
     ) -> Result<bool, StorageError> {
         let child_exists = <Index<S>>::get_children_of(parent_id, collection.name())?

@@ -1,6 +1,6 @@
 use borsh as _;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields, LitInt, Type};
 
 #[cfg(test)]
@@ -189,60 +189,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         .expect("You must designate one field with #[storage] for the Element");
 
     let storage_ident = storage_field.ident.as_ref().unwrap();
-    let storage_ty = &storage_field.ty;
-
-    let field_implementations = named_fields
-        .iter()
-        .filter_map(|f| {
-            let ident = f.ident.as_ref().unwrap();
-            let ty = &f.ty;
-
-            let private = f.attrs.iter().any(|attr| attr.path().is_ident("private"));
-            let skip = f.attrs.iter().any(|attr| attr.path().is_ident("skip"));
-
-            if skip || ident == storage_ident {
-                None
-            } else {
-                let setter = format_ident!("set_{}", ident);
-
-                let setter_action = if private {
-                    quote! {
-                        self.#ident = value;
-                    }
-                } else {
-                    quote! {
-                        self.#ident = value;
-                        self.#storage_ident.update();
-                    }
-                };
-
-                Some(quote! {
-                    #[doc = "Setter for the "]
-                    #[doc = stringify!(#ident)]
-                    #[doc = " field."]
-                    pub fn #setter(&mut self, value: #ty) -> bool {
-                        if self.#ident == value {
-                            false
-                        } else {
-                            #setter_action
-                            true
-                        }
-                    }
-                })
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let serializable_fields: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            !f.attrs
-                .iter()
-                .any(|attr| attr.path().is_ident("skip") || attr.path().is_ident("private"))
-                && f.ident.as_ref().unwrap() != storage_ident
-        })
-        .map(|f| f.ident.as_ref().unwrap())
-        .collect();
 
     let regular_fields: Vec<_> = named_fields
         .iter()
@@ -277,48 +223,15 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         .map(|f| f.ty.clone())
         .collect();
 
-    let skipped_fields: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            f.attrs
-                .iter()
-                .any(|attr| attr.path().is_ident("skip") || attr.path().is_ident("private"))
-        })
-        .map(|f| f.ident.as_ref().unwrap())
-        .collect();
-
-    let mut data_where_clause = where_clause.clone();
+    let mut serde_where_clause = where_clause.clone();
 
     for ty in input.generics.type_params() {
         let ident = &ty.ident;
-        data_where_clause.predicates.push(syn::parse_quote!(
+        serde_where_clause.predicates.push(syn::parse_quote!(
             #ident: calimero_sdk::borsh::BorshSerialize
                 + calimero_sdk::borsh::BorshDeserialize
         ));
     }
-
-    let deserialize_impl = quote! {
-        impl #impl_generics calimero_sdk::borsh::BorshDeserialize for #name #ty_generics #data_where_clause {
-            fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-                let #storage_ident = #storage_ty::deserialize_reader(reader)?;
-                Ok(Self {
-                    #storage_ident,
-                    #(#serializable_fields: calimero_sdk::borsh::BorshDeserialize::deserialize_reader(reader)?,)*
-                    #(#skipped_fields: Default::default(),)*
-                })
-            }
-        }
-    };
-
-    let serialize_impl = quote! {
-        impl #impl_generics calimero_sdk::borsh::BorshSerialize for #name #ty_generics #data_where_clause {
-            fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-                calimero_sdk::borsh::BorshSerialize::serialize(&self.#storage_ident, writer)?;
-                #(calimero_sdk::borsh::BorshSerialize::serialize(&self.#serializable_fields, writer)?;)*
-                Ok(())
-            }
-        }
-    };
 
     let root_impl = if is_root {
         quote! {
@@ -334,21 +247,8 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         }
     };
 
-    let mut local_where_clause = where_clause;
-
-    for ty in input.generics.type_params() {
-        let ident = &ty.ident;
-        local_where_clause.predicates.push(syn::parse_quote!(
-            #ident: PartialEq
-        ));
-    }
-
     let expanded = quote! {
-        impl #impl_generics #name #ty_generics #local_where_clause {
-            #(#field_implementations)*
-        }
-
-        impl #impl_generics calimero_storage::entities::Data for #name #ty_generics #data_where_clause {
+        impl #impl_generics calimero_storage::entities::Data for #name #ty_generics #serde_where_clause {
             fn calculate_merkle_hash(&self) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
                 use calimero_storage::exports::Digest;
                 let mut hasher = calimero_storage::exports::Sha256::new();
@@ -375,7 +275,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 match collection {
                     #(
                         stringify!(#collection_fields) => {
-                            let child = <#collection_field_types #ty_generics as calimero_storage::entities::Collection>::Child::try_from_slice(slice)
+                            let child = <#collection_field_types as calimero_storage::entities::Collection>::Child::try_from_slice(slice)
                                 .map_err(|e| calimero_storage::interface::StorageError::DeserializationError(e))?;
                             child.calculate_merkle_hash()
                         },
@@ -411,14 +311,15 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             }
         }
 
-        impl #impl_generics calimero_storage::entities::AtomicUnit for #name #ty_generics #data_where_clause {}
-
-        #deserialize_impl
-
-        #serialize_impl
+        impl #impl_generics calimero_storage::entities::AtomicUnit for #name #ty_generics #serde_where_clause {}
     };
 
-    TokenStream::from(expanded)
+    TokenStream::from(quote! {
+        #[allow(unused_mut)]
+        const _: () = {
+            #expanded
+        };
+    })
 }
 
 /// Derives the [`Collection`](calimero_storage::entities::Collection) trait for
@@ -540,7 +441,7 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     let data = (!data.is_empty()).then(|| quote! { { #(#data)* } });
 
     let default_impl = quote! {
-        impl #impl_generics ::core::default::Default for #name #ty_generics #where_clause {
+        impl #impl_generics ::core::default::Default for #name #ty_generics {
             fn default() -> Self {
                 Self #data
             }

@@ -12,18 +12,15 @@ use crate::collections::error::StoreError;
 use crate::entities::Data;
 
 /// A map collection that stores key-value pairs.
-#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct UnorderedMap<K, V> {
-    #[borsh(bound(
-        serialize = "K: BorshSerialize, V: BorshSerialize",
-        deserialize = "K: BorshDeserialize, V: BorshDeserialize"
-    ))]
-    // rename to inner?
     inner: Collection<(K, V)>,
 }
 
-impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
-    UnorderedMap<K, V>
+impl<K, V> UnorderedMap<K, V>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
 {
     /// Create a new map collection.
     ///
@@ -35,14 +32,14 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     ///
     pub fn new() -> Self {
         Self {
-            entries: Collection::new(),
+            inner: Collection::new(),
         }
     }
 
     /// Compute the ID for a key.
     fn compute_id(&self, key: &[u8]) -> Id {
         let mut hasher = Sha256::new();
-        hasher.update(self.entries.id().as_bytes());
+        hasher.update(self.inner.id().as_bytes());
         hasher.update(key);
         Id::new(hasher.finalize().into())
     }
@@ -61,8 +58,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     {
         let id = self.compute_id(key.as_ref());
 
-        if let Some(mut entry) = self.entries.get_mut(id)? {
-            dbg!(&entry);
+        if let Some(mut entry) = self.inner.get_mut(id)? {
             let (_, v) = &mut *entry;
 
             return Ok(Some(mem::replace(v, value)));
@@ -81,7 +77,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError> {
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
         let iter = self.inner.entries()?;
 
         let iter = iter.flat_map(|entry| entry.ok());
@@ -170,24 +166,48 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     }
 }
 
+impl<K, V> Eq for UnorderedMap<K, V>
+where
+    K: Eq + BorshSerialize + BorshDeserialize,
+    V: Eq + BorshSerialize + BorshDeserialize,
+{
+}
+
+impl<K, V> PartialEq for UnorderedMap<K, V>
+where
+    K: PartialEq + BorshSerialize + BorshDeserialize,
+    V: PartialEq + BorshSerialize + BorshDeserialize,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.entries().unwrap().eq(other.entries().unwrap())
+    }
+}
+
+impl<K, V> Ord for UnorderedMap<K, V>
+where
+    K: Ord + BorshSerialize + BorshDeserialize,
+    V: Ord + BorshSerialize + BorshDeserialize,
+{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.entries().unwrap().cmp(other.entries().unwrap())
+    }
+}
+
+impl<K, V> PartialOrd for UnorderedMap<K, V>
+where
+    K: PartialOrd + BorshSerialize + BorshDeserialize,
+    V: PartialOrd + BorshSerialize + BorshDeserialize,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.entries()
+            .unwrap()
+            .partial_cmp(other.entries().unwrap())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::unordered_map::UnorderedMap;
-    use crate::entities::Data;
-
-    #[test]
-    fn doo() {
-        let mut map = UnorderedMap::<String, String>::new();
-
-        dbg!(map.entries.element().merkle_hash());
-
-        assert!(map
-            .insert("key".to_string(), "value".to_string())
-            .expect("insert failed")
-            .is_none());
-
-        dbg!(map.entries.element().merkle_hash());
-    }
 
     #[test]
     fn test_unordered_map_basic_operations() {
