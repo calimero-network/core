@@ -115,11 +115,11 @@ impl ToTokens for PublicLogicMethod<'_> {
             None => (
                 if init_method {
                     quote_spanned! {name.span()=>
-                        if let Some(mut app) = ::calimero_storage::collections::Root::<#self_>::fetch() {
+                        if ::calimero_storage::collections::Root::<#self_>::fetch().is_some() {
                             ::calimero_sdk::env::panic_str("Cannot initialize over already existing state.")
                         };
 
-                        let mut app =
+                        let app =
                     }
                 } else {
                     quote! {}
