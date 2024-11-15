@@ -106,6 +106,11 @@ impl Id {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
+
+    /// Checks if the ID is the root.
+    pub fn is_root(&self) -> bool {
+        self.bytes == context_id()
+    }
 }
 
 impl Display for Id {

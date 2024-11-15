@@ -11,7 +11,8 @@ use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::ChildInfo;
+use crate::entities::{ChildInfo, Metadata};
+use crate::env;
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
@@ -35,11 +36,8 @@ struct EntityIndex {
     /// the hashes of its children to form the full hash.
     own_hash: [u8; 32],
 
-    /// Type identifier of the entity. This is noted so that the entity can be
-    /// deserialised correctly in the absence of other semantic information. It
-    /// is intended that the [`Path`](crate::address::Path) will be used to help
-    /// with this at some point, but at present paths are not fully utilised.
-    type_id: u8,
+    /// Metadata about the entity.
+    metadata: Metadata,
 }
 
 /// Manages the indexing system for efficient tree navigation.
@@ -73,7 +71,6 @@ impl<S: StorageAdaptor> Index<S> {
         parent_id: Id,
         collection: &str,
         child: ChildInfo,
-        type_id: u8,
     ) -> Result<(), StorageError> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
@@ -84,7 +81,7 @@ impl<S: StorageAdaptor> Index<S> {
             children: BTreeMap::new(),
             full_hash: [0; 32],
             own_hash: [0; 32],
-            type_id,
+            metadata: child.metadata,
         });
         child_index.parent_id = Some(parent_id);
         child_index.own_hash = child.merkle_hash();
@@ -96,7 +93,11 @@ impl<S: StorageAdaptor> Index<S> {
             .children
             .entry(collection.to_owned())
             .or_insert_with(Vec::new)
-            .push(ChildInfo::new(child.id(), child_index.full_hash));
+            .push(ChildInfo::new(
+                child.id(),
+                child_index.full_hash,
+                child.metadata,
+            ));
         Self::save_index(&parent_index)?;
         parent_index.full_hash = Self::calculate_full_merkle_hash_for(parent_id, false)?;
         Self::save_index(&parent_index)?;
@@ -123,14 +124,14 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// * [`add_child_to()`](Index::add_child_to())
     ///
-    pub(crate) fn add_root(root: ChildInfo, type_id: u8) -> Result<(), StorageError> {
+    pub(crate) fn add_root(root: ChildInfo) -> Result<(), StorageError> {
         let mut index = Self::get_index(root.id())?.unwrap_or_else(|| EntityIndex {
             id: root.id(),
             parent_id: None,
             children: BTreeMap::new(),
             full_hash: [0; 32],
             own_hash: [0; 32],
-            type_id,
+            metadata: root.metadata,
         });
         index.own_hash = root.merkle_hash();
         Self::save_index(&index)?;
@@ -231,11 +232,17 @@ impl<S: StorageAdaptor> Index<S> {
         while let Some(parent_id) = Self::get_parent_id(current_id)? {
             let (parent_full_hash, _) =
                 Self::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
-            ancestors.push(ChildInfo::new(parent_id, parent_full_hash));
+            let metadata =
+                Self::get_metadata(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+            ancestors.push(ChildInfo::new(parent_id, parent_full_hash, metadata));
             current_id = parent_id;
         }
 
         Ok(ancestors)
+    }
+
+    pub(crate) fn get_metadata(id: Id) -> Result<Option<Metadata>, StorageError> {
+        Ok(Self::get_index(id)?.map(|index| index.metadata))
     }
 
     /// Retrieves the children of a given entity.
@@ -341,23 +348,6 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(Self::get_index(child_id)?.and_then(|index| index.parent_id))
     }
 
-    /// Retrieves the type of the given entity.
-    ///
-    /// # Parameters
-    ///
-    /// * `id` - The [`Id`] of the entity whose type is to be retrieved.
-    ///
-    /// # Errors
-    ///
-    /// If there's an issue retrieving or deserialising the index information,
-    /// an error will be returned.
-    ///
-    pub(crate) fn get_type_id(id: Id) -> Result<u8, StorageError> {
-        Ok(Self::get_index(id)?
-            .ok_or(StorageError::IndexNotFound(id))?
-            .type_id)
-    }
-
     /// Whether the collection has children.
     ///
     /// # Parameters
@@ -404,7 +394,7 @@ impl<S: StorageAdaptor> Index<S> {
                 if let Some(child) = children.iter_mut().find(|c| c.id() == current_id) {
                     let new_child_hash = Self::calculate_full_merkle_hash_for(current_id, false)?;
                     if child.merkle_hash() != new_child_hash {
-                        *child = ChildInfo::new(current_id, new_child_hash);
+                        *child = ChildInfo::new(current_id, new_child_hash, child.metadata);
                     }
                     break;
                 }
@@ -513,6 +503,7 @@ impl<S: StorageAdaptor> Index<S> {
         index.own_hash = merkle_hash;
         Self::save_index(&index)?;
         index.full_hash = Self::calculate_full_merkle_hash_for(id, false)?;
+        index.metadata.updated_at = env::time_now().into();
         Self::save_index(&index)?;
         Ok(index.full_hash)
     }

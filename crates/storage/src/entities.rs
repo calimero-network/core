@@ -214,13 +214,12 @@ mod tests;
 
 use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use serde::{Deserialize, Serialize};
 
 use crate::address::{Id, Path};
 use crate::env::time_now;
-use crate::interface::StorageError;
 
 /// Represents an atomic unit in the storage system.
 ///
@@ -233,10 +232,11 @@ use crate::interface::StorageError;
 /// # Examples
 ///
 /// ```
+/// use borsh::{BorshSerialize, BorshDeserialize};
 /// use calimero_storage::entities::Element;
 /// use calimero_storage_macros::AtomicUnit;
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// #[type_id(43)]
 /// struct Page {
 ///     title: String,
@@ -258,10 +258,11 @@ pub trait AtomicUnit: Data {}
 /// # Examples
 ///
 /// ```
+/// use borsh::{BorshSerialize, BorshDeserialize};
 /// use calimero_storage_macros::{AtomicUnit, Collection};
 /// use calimero_storage::entities::{ChildInfo, Data, Element};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// #[type_id(42)]
 /// struct Book {
 ///     title: String,
@@ -274,7 +275,7 @@ pub trait AtomicUnit: Data {}
 /// #[children(Page)]
 /// struct Pages;
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// #[type_id(43)]
 /// struct Page {
 ///     content: String,
@@ -314,56 +315,6 @@ pub trait Collection {
 /// contentious methods are included, to keep the interface simple and focused.
 ///
 pub trait Data: BorshDeserialize + BorshSerialize {
-    /// Calculates the Merkle hash of the [`Element`].
-    ///
-    /// This method calculates the Merkle hash of the [`Data`] for the
-    /// [`Element`], which should be based on any regular fields, but ignore
-    /// skipped fields, private fields, collections, and the storage field (but
-    /// include the metadata).
-    ///
-    /// **IMPORTANT NOTE**: Collection fields do need to be included in the hash
-    /// calculation, but that is a job for the caller to combine, and this
-    /// method therefore only calculates the hash of available data (as hashing
-    /// the children would involve recursive lookups).
-    ///
-    /// # Errors
-    ///
-    /// This method will return an error if there is a problem calculating the
-    /// hash.
-    ///
-    /// # See also
-    ///
-    /// * [`calculate_merkle_hash_for_child()`](Data::calculate_merkle_hash_for_child())
-    ///
-    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError>;
-
-    /// Calculates the Merkle hash of a child of the [`Element`].
-    ///
-    /// This method calculates the Merkle hash of the specified child of the
-    /// [`Element`].
-    ///
-    /// # Parameters
-    ///
-    /// * `collection` - The name of the collection to calculate the hash for.
-    /// * `slice`      - The slice of data to calculate the hash for. This will
-    ///                  get deserialised into the appropriate type, and the
-    ///                  hash will be calculated based on the data.
-    ///
-    /// # Errors
-    ///
-    /// This method will return an error if there is a problem calculating the
-    /// hash, or looking up children.
-    ///
-    /// # See also
-    ///
-    /// * [`calculate_merkle_hash()`](Data::calculate_merkle_hash())
-    ///
-    fn calculate_merkle_hash_for_child(
-        &self,
-        collection: &str,
-        slice: &[u8],
-    ) -> Result<[u8; 32], StorageError>;
-
     /// Information about the [`Collection`]s present in the [`Data`].
     ///
     /// This method allows details about the subtree structure and children to
@@ -409,14 +360,6 @@ pub trait Data: BorshDeserialize + BorshSerialize {
         self.element().id()
     }
 
-    /// Whether the [`Element`] is a root.
-    ///
-    /// This should return `true` for any types that should sit at the top of
-    /// the hierarchy; and `false` for all other types, i.e. ones that can have
-    /// parents.
-    ///
-    fn is_root() -> bool;
-
     /// The path to the [`Element`] in the hierarchy.
     ///
     /// This is a convenience function that passes through to
@@ -430,19 +373,6 @@ pub trait Data: BorshDeserialize + BorshSerialize {
     fn path(&self) -> Path {
         self.element().path()
     }
-
-    /// The type identifier of the entity.
-    ///
-    /// This is noted so that the entity can be deserialised correctly in the
-    /// absence of other semantic information. It is intended that the [`Path`]
-    /// will be used to help with this at some point, but at present paths are
-    /// not fully utilised.
-    ///
-    /// The value returned is arbitrary, and is up to the implementer to decide
-    /// what it should be. It is recommended that it be unique for each type of
-    /// entity.
-    ///
-    fn type_id() -> u8;
 }
 
 /// Summary information for the child of an [`Element`] in the storage.
@@ -454,18 +384,7 @@ pub trait Data: BorshDeserialize + BorshSerialize {
 /// and prevent the need for repeated lookups.
 ///
 #[derive(
-    BorshDeserialize,
-    BorshSerialize,
-    Clone,
-    Copy,
-    Debug,
-    Deserialize,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
+    BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
 )]
 #[non_exhaustive]
 pub struct ChildInfo {
@@ -476,13 +395,19 @@ pub struct ChildInfo {
     /// of the significant data in the "scope" of the child [`Element`], and is
     /// used to determine whether the data has changed and is valid.
     pub(crate) merkle_hash: [u8; 32],
+
+    pub(crate) metadata: Metadata,
 }
 
 impl ChildInfo {
     /// Creates a new [`ChildInfo`].
     #[must_use]
-    pub const fn new(id: Id, merkle_hash: [u8; 32]) -> Self {
-        Self { id, merkle_hash }
+    pub const fn new(id: Id, merkle_hash: [u8; 32], metadata: Metadata) -> Self {
+        Self {
+            id,
+            merkle_hash,
+            metadata,
+        }
     }
 
     /// The unique identifier for the child [`Element`].
@@ -501,6 +426,18 @@ impl ChildInfo {
     #[must_use]
     pub const fn merkle_hash(&self) -> [u8; 32] {
         self.merkle_hash
+    }
+
+    /// The timestamp when the child was created.
+    #[must_use]
+    pub const fn created_at(&self) -> u64 {
+        self.metadata.created_at
+    }
+
+    /// The timestamp when the child was last updated.
+    #[must_use]
+    pub fn updated_at(&self) -> u64 {
+        *self.metadata.updated_at
     }
 }
 
@@ -602,6 +539,7 @@ pub struct Element {
 
     /// Whether the [`Element`] is dirty, i.e. has been modified since it was
     /// last saved.
+    #[borsh(skip)]
     pub(crate) is_dirty: bool,
 
     /// The Merkle hash of the [`Element`]. This is a cryptographic hash of the
@@ -610,8 +548,10 @@ pub struct Element {
     /// hashing the substantive data in the [`Element`], along with the hashes
     /// of the children of the [`Element`], thereby representing the state of
     /// the entire hierarchy below the [`Element`].
+    #[borsh(skip)]
     pub(crate) merkle_hash: [u8; 32],
 
+    #[borsh(skip)]
     /// The metadata for the [`Element`]. This represents a range of
     /// system-managed properties that are used to process the [`Element`], but
     /// are not part of the primary data.
@@ -660,7 +600,7 @@ impl Element {
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
-                updated_at: timestamp,
+                updated_at: timestamp.into(),
             },
             merkle_hash: [0; 32],
             path: path.clone(),
@@ -677,7 +617,7 @@ impl Element {
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
-                updated_at: timestamp,
+                updated_at: timestamp.into(),
             },
             merkle_hash: [0; 32],
             #[expect(clippy::unwrap_used, reason = "This is expected to be valid")]
@@ -780,13 +720,13 @@ impl Element {
     ///
     pub fn update(&mut self) {
         self.is_dirty = true;
-        self.metadata.updated_at = time_now();
+        *self.metadata.updated_at = time_now();
     }
 
     /// The timestamp when the [`Element`] was last updated.
     #[must_use]
-    pub const fn updated_at(&self) -> u64 {
-        self.metadata.updated_at
+    pub fn updated_at(&self) -> u64 {
+        *self.metadata.updated_at
     }
 }
 
@@ -821,26 +761,61 @@ impl Display for Element {
 /// Using a [`u64`] timestamp allows for 585 years from the Unix epoch, at
 /// nanosecond precision. This is more than sufficient for our current needs.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
 #[non_exhaustive]
 pub struct Metadata {
     /// When the [`Element`] was first created. Note that this is a global
     /// creation time, and does not reflect the time that the [`Element`] was
     /// added to the local storage.
-    created_at: u64,
+    pub(crate) created_at: u64,
 
     /// When the [`Element`] was last updated. This is the time that the
     /// [`Element`] was last modified in any way, and is used to determine the
     /// freshness of the data. It is critical for the "last write wins" strategy
     /// that is used to resolve conflicts.
-    pub(crate) updated_at: u64,
+    pub(crate) updated_at: UpdatedAt,
 }
 
-#[cfg(test)]
-impl Metadata {
-    /// Sets the created timestamp of the [`Element`]. This is **ONLY** for use
-    /// in tests.
-    pub fn set_created_at(&mut self, created_at: u64) {
-        self.created_at = created_at;
+#[derive(
+    BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialOrd,
+)]
+pub struct UpdatedAt(u64);
+
+impl PartialEq for UpdatedAt {
+    fn eq(&self, _other: &Self) -> bool {
+        // we don't care
+        true
+    }
+}
+
+impl Deref for UpdatedAt {
+    type Target = u64;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for UpdatedAt {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<u64> for UpdatedAt {
+    fn from(value: u64) -> Self {
+        Self(value)
     }
 }

@@ -1,7 +1,7 @@
 use borsh as _;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, LitInt, Type};
+use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 
 #[cfg(test)]
 mod integration_tests_package_usage {
@@ -160,15 +160,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     let name = &input.ident;
     let where_clause = input.generics.make_where_clause().clone();
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
-    let is_root = input.attrs.iter().any(|attr| attr.path().is_ident("root"));
-    let type_id = input
-        .attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("type_id"))
-        .and_then(|attr| attr.parse_args::<LitInt>().ok())
-        .expect("AtomicUnit derive requires a #[type_id(n)] attribute, where n is a u8")
-        .base10_parse::<u8>()
-        .expect("type_id must be a valid u8");
 
     let fields = match &input.data {
         Data::Struct(data) => &data.fields,
@@ -190,19 +181,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 
     let storage_ident = storage_field.ident.as_ref().unwrap();
 
-    let regular_fields: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            !f.attrs.iter().any(|attr| {
-                attr.path().is_ident("skip")
-                    || attr.path().is_ident("private")
-                    || attr.path().is_ident("collection")
-                    || attr.path().is_ident("storage")
-            })
-        })
-        .map(|f| f.ident.as_ref().unwrap())
-        .collect();
-
     let collection_fields: Vec<_> = named_fields
         .iter()
         .filter(|f| {
@@ -211,16 +189,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 .any(|attr| attr.path().is_ident("collection"))
         })
         .map(|f| f.ident.as_ref().unwrap())
-        .collect();
-
-    let collection_field_types: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            f.attrs
-                .iter()
-                .any(|attr| attr.path().is_ident("collection"))
-        })
-        .map(|f| f.ty.clone())
         .collect();
 
     let mut serde_where_clause = where_clause.clone();
@@ -233,57 +201,8 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         ));
     }
 
-    let root_impl = if is_root {
-        quote! {
-            fn is_root() -> bool {
-                true
-            }
-        }
-    } else {
-        quote! {
-            fn is_root() -> bool {
-                false
-            }
-        }
-    };
-
     let expanded = quote! {
         impl #impl_generics calimero_storage::entities::Data for #name #ty_generics #serde_where_clause {
-            fn calculate_merkle_hash(&self) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
-                use calimero_storage::exports::Digest;
-                let mut hasher = calimero_storage::exports::Sha256::new();
-                hasher.update(self.element().id().as_bytes());
-                #(
-                    hasher.update(
-                        &calimero_sdk::borsh::to_vec(&self.#regular_fields)
-                            .map_err(calimero_storage::interface::StorageError::SerializationError)?
-                    );
-                )*
-                hasher.update(
-                    &calimero_sdk::borsh::to_vec(&self.element().metadata())
-                        .map_err(calimero_storage::interface::StorageError::SerializationError)?
-                );
-                Ok(hasher.finalize().into())
-            }
-
-            fn calculate_merkle_hash_for_child(
-                &self,
-                collection: &str,
-                slice: &[u8],
-            ) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
-                use calimero_sdk::borsh::BorshDeserialize;
-                match collection {
-                    #(
-                        stringify!(#collection_fields) => {
-                            let child = <#collection_field_types as calimero_storage::entities::Collection>::Child::try_from_slice(slice)
-                                .map_err(|e| calimero_storage::interface::StorageError::DeserializationError(e))?;
-                            child.calculate_merkle_hash()
-                        },
-                    )*
-                    _ => Err(calimero_storage::interface::StorageError::UnknownCollectionType(collection.to_owned())),
-                }
-            }
-
             fn collections(&self) -> std::collections::BTreeMap<String, Vec<calimero_storage::entities::ChildInfo>> {
                 use calimero_storage::entities::Collection;
                 let mut collections = std::collections::BTreeMap::new();
@@ -302,12 +221,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 
             fn element_mut(&mut self) -> &mut calimero_storage::entities::Element {
                 &mut self.#storage_ident
-            }
-
-            #root_impl
-
-            fn type_id() -> u8 {
-                #type_id
             }
         }
 

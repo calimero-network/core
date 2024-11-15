@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 
-use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use sha2::{Digest, Sha256};
+use borsh::{BorshDeserialize, BorshSerialize};
 use velcro::btree_map;
 
 use crate::entities::{AtomicUnit, ChildInfo, Collection, Data, Element};
-use crate::interface::{Interface, StorageError};
+use crate::interface::Interface;
 
 /// For tests against empty data structs.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
@@ -14,21 +13,6 @@ pub struct EmptyData {
 }
 
 impl Data for EmptyData {
-    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
-        let mut hasher = Sha256::new();
-        hasher.update(self.element().id().as_bytes());
-        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
-        Ok(hasher.finalize().into())
-    }
-
-    fn calculate_merkle_hash_for_child(
-        &self,
-        collection: &str,
-        _slice: &[u8],
-    ) -> Result<[u8; 32], StorageError> {
-        Err(StorageError::UnknownCollectionType(collection.to_owned()))
-    }
-
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         BTreeMap::new()
     }
@@ -39,14 +23,6 @@ impl Data for EmptyData {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
-    }
-
-    fn is_root() -> bool {
-        true
-    }
-
-    fn type_id() -> u8 {
-        101
     }
 }
 
@@ -72,29 +48,6 @@ impl Page {
 impl AtomicUnit for Page {}
 
 impl Data for Page {
-    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
-        let mut hasher = Sha256::new();
-        hasher.update(self.element().id().as_bytes());
-        hasher.update(&to_vec(&self.title).map_err(StorageError::SerializationError)?);
-        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
-        Ok(hasher.finalize().into())
-    }
-
-    fn calculate_merkle_hash_for_child(
-        &self,
-        collection: &str,
-        slice: &[u8],
-    ) -> Result<[u8; 32], StorageError> {
-        match collection {
-            "Paragraphs" => {
-                let child = <Paragraphs as Collection>::Child::try_from_slice(slice)
-                    .map_err(|e| StorageError::DeserializationError(e))?;
-                child.calculate_merkle_hash()
-            }
-            _ => Err(StorageError::UnknownCollectionType(collection.to_owned())),
-        }
-    }
-
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         btree_map! {
             "Paragraphs".to_owned(): Interface::child_info_for(self.id(), &self.paragraphs).unwrap_or_default(),
@@ -107,14 +60,6 @@ impl Data for Page {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
-    }
-
-    fn is_root() -> bool {
-        true
-    }
-
-    fn type_id() -> u8 {
-        102
     }
 }
 
@@ -138,22 +83,6 @@ impl Paragraph {
 impl AtomicUnit for Paragraph {}
 
 impl Data for Paragraph {
-    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
-        let mut hasher = Sha256::new();
-        hasher.update(self.element().id().as_bytes());
-        hasher.update(&to_vec(&self.text).map_err(StorageError::SerializationError)?);
-        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
-        Ok(hasher.finalize().into())
-    }
-
-    fn calculate_merkle_hash_for_child(
-        &self,
-        collection: &str,
-        _slice: &[u8],
-    ) -> Result<[u8; 32], StorageError> {
-        Err(StorageError::UnknownCollectionType(collection.to_owned()))
-    }
-
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         BTreeMap::new()
     }
@@ -164,14 +93,6 @@ impl Data for Paragraph {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
-    }
-
-    fn is_root() -> bool {
-        false
-    }
-
-    fn type_id() -> u8 {
-        103
     }
 }
 
@@ -203,23 +124,6 @@ pub struct Person {
 }
 
 impl Data for Person {
-    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
-        let mut hasher = Sha256::new();
-        hasher.update(self.element().id().as_bytes());
-        hasher.update(&to_vec(&self.name).map_err(StorageError::SerializationError)?);
-        hasher.update(&to_vec(&self.age).map_err(StorageError::SerializationError)?);
-        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
-        Ok(hasher.finalize().into())
-    }
-
-    fn calculate_merkle_hash_for_child(
-        &self,
-        collection: &str,
-        _slice: &[u8],
-    ) -> Result<[u8; 32], StorageError> {
-        Err(StorageError::UnknownCollectionType(collection.to_owned()))
-    }
-
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         BTreeMap::new()
     }
@@ -230,13 +134,5 @@ impl Data for Person {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
-    }
-
-    fn is_root() -> bool {
-        true
-    }
-
-    fn type_id() -> u8 {
-        104
     }
 }
