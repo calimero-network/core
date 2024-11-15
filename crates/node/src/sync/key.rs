@@ -50,7 +50,7 @@ impl Node {
 
     pub(super) async fn handle_key_share_request(
         &self,
-        context: Context,
+        context: &Context,
         our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
@@ -72,21 +72,19 @@ impl Node {
         )
         .await?;
 
-        let mut context = context;
-        self.bidirectional_key_sync(&mut context, our_identity, their_identity, stream)
+        self.bidirectional_key_sync(context, our_identity, their_identity, stream)
             .await
     }
 
     async fn bidirectional_key_sync(
         &self,
-        context: &mut Context,
+        context: &Context,
         our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
-            our_root_hash=%context.root_hash,
             our_identity=%our_identity,
             their_identity=%their_identity,
             "Starting bidirectional key sync",
@@ -138,6 +136,13 @@ impl Node {
 
         self.ctx_manager
             .update_sender_key(&context.id, &their_identity, &sender_key)?;
+
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            "Key sync completed",
+        );
 
         Ok(())
     }

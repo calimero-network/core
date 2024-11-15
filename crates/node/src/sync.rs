@@ -201,12 +201,12 @@ impl Node {
 
         match payload {
             InitPayload::KeyShare => {
-                self.handle_key_share_request(context, our_identity, their_identity, stream)
+                self.handle_key_share_request(&context, our_identity, their_identity, stream)
                     .await?
             }
             InitPayload::BlobShare { blob_id } => {
                 self.handle_blob_share_request(
-                    context,
+                    &context,
                     our_identity,
                     their_identity,
                     blob_id,
@@ -234,8 +234,21 @@ impl Node {
                     context = updated;
                 }
 
+                if let Some(application) = self.ctx_manager.get_application(&application_id)? {
+                    if !self.ctx_manager.has_blob_available(application.blob)? {
+                        self.initiate_blob_share_process(
+                            &context,
+                            our_identity,
+                            application.blob,
+                            application.size,
+                            stream,
+                        )
+                        .await?;
+                    }
+                }
+
                 self.handle_state_sync_request(
-                    context,
+                    &mut context,
                     our_identity,
                     their_identity,
                     root_hash,

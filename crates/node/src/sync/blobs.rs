@@ -122,7 +122,7 @@ impl Node {
 
     pub(super) async fn handle_blob_share_request(
         &self,
-        context: Context,
+        context: &Context,
         our_identity: PublicKey,
         their_identity: PublicKey,
         blob_id: BlobId,
@@ -185,6 +185,14 @@ impl Node {
             Some(shared_key),
         )
         .await?;
+
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            blob_id=%blob_id,
+            "Blob share completed",
+        );
 
         Ok(())
     }

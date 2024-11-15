@@ -34,35 +34,63 @@ impl Node {
         )
         .await?;
 
-        let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
-            bail!("connection closed while awaiting state sync handshake");
-        };
+        let mut pair = None;
 
-        let (root_hash, their_identity) = match ack {
-            StreamMessage::Init {
-                party_id,
-                payload:
-                    InitPayload::StateSync {
-                        root_hash,
-                        application_id,
-                    },
-                ..
-            } => {
-                if application_id != context.application_id {
-                    bail!(
-                        "unexpected application id: expected {}, got {}",
-                        context.application_id,
-                        application_id
-                    );
+        for _ in 1..=2 {
+            let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
+                bail!("connection closed while awaiting state sync handshake");
+            };
+
+            let (root_hash, their_identity) = match ack {
+                StreamMessage::Init {
+                    party_id,
+                    payload:
+                        InitPayload::StateSync {
+                            root_hash,
+                            application_id,
+                        },
+                    ..
+                } => {
+                    if application_id != context.application_id {
+                        bail!(
+                            "unexpected application id: expected {}, got {}",
+                            context.application_id,
+                            application_id
+                        );
+                    }
+
+                    (root_hash, party_id)
                 }
+                StreamMessage::Init {
+                    party_id: their_identity,
+                    payload: InitPayload::BlobShare { blob_id },
+                    ..
+                } => {
+                    self.handle_blob_share_request(
+                        context,
+                        our_identity,
+                        their_identity,
+                        blob_id,
+                        stream,
+                    )
+                    .await?;
 
-                (root_hash, party_id)
-            }
-            unexpected @ (StreamMessage::Init { .. }
-            | StreamMessage::Message { .. }
-            | StreamMessage::OpaqueError) => {
-                bail!("unexpected message: {:?}", unexpected)
-            }
+                    continue;
+                }
+                unexpected @ (StreamMessage::Init { .. }
+                | StreamMessage::Message { .. }
+                | StreamMessage::OpaqueError) => {
+                    bail!("unexpected message: {:?}", unexpected)
+                }
+            };
+
+            pair = Some((root_hash, their_identity));
+
+            break;
+        }
+
+        let Some((root_hash, their_identity)) = pair else {
+            bail!("expected two state sync handshakes, got none");
         };
 
         if root_hash == context.root_hash {
@@ -105,7 +133,7 @@ impl Node {
 
     pub(super) async fn handle_state_sync_request(
         &self,
-        context: Context,
+        context: &mut Context,
         our_identity: PublicKey,
         their_identity: PublicKey,
         root_hash: Hash,
@@ -148,9 +176,8 @@ impl Node {
 
         let mut sqx_out = Sequencer::default();
 
-        let mut context = context;
         self.bidirectional_sync(
-            &mut context,
+            context,
             our_identity,
             their_identity,
             &mut sqx_out,
@@ -227,6 +254,14 @@ impl Node {
             )
             .await?;
         }
+
+        debug!(
+            context_id=%context.id,
+            our_root_hash=%context.root_hash,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            "State sync completed",
+        );
 
         Ok(())
     }
