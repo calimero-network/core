@@ -1139,7 +1139,6 @@ dependencies = [
 name = "calimero-context"
 version = "0.1.0"
 dependencies = [
- "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-network",
