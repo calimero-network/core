@@ -26,7 +26,7 @@ where
     ///
     pub fn new() -> Self {
         Self {
-            inner: Collection::new(),
+            inner: Collection::new(None),
         }
     }
 
@@ -198,9 +198,12 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::unordered_map::UnorderedMap;
+    use crate::collections::Root;
 
     #[test]
     fn test_unordered_map_basic_operations() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert!(map
@@ -250,6 +253,8 @@ mod tests {
 
     #[test]
     fn test_unordered_map_insert_and_get() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert!(map
@@ -273,6 +278,8 @@ mod tests {
 
     #[test]
     fn test_unordered_map_update_value() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert!(map
@@ -292,6 +299,8 @@ mod tests {
 
     #[test]
     fn test_remove() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert!(map
@@ -308,6 +317,8 @@ mod tests {
 
     #[test]
     fn test_clear() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert!(map
@@ -327,6 +338,8 @@ mod tests {
 
     #[test]
     fn test_unordered_map_len() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert_eq!(map.len().expect("len failed"), 0);
@@ -356,6 +369,8 @@ mod tests {
 
     #[test]
     fn test_unordered_map_contains() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert!(map
@@ -369,6 +384,8 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entries() {
+        let _root = Root::new(());
+
         let mut map = UnorderedMap::<String, String>::new();
 
         assert!(map

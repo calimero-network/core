@@ -20,15 +20,12 @@ pub mod error;
 pub use error::StoreError;
 
 // fixme! macro expects `calimero_storage` to be in deps
-use crate as calimero_storage;
 use crate::address::{Id, Path};
 use crate::entities::{Data, Element};
 use crate::interface::{Interface, StorageError};
-use crate::{AtomicUnit, Collection};
+use crate::{self as calimero_storage, AtomicUnit, Collection};
 
 #[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug)]
-#[type_id(255)]
-#[root]
 struct Collection<T> {
     /// The entries in the collection.
     #[collection]
@@ -82,7 +79,6 @@ struct Entries<T> {
 
 /// An entry in a map.
 #[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug)]
-#[type_id(254)]
 struct Entry<T> {
     /// The item in the entry.
     item: T,
@@ -107,14 +103,24 @@ type StoreResult<T> = std::result::Result<T, StoreError>;
 
 impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
     /// Creates a new collection.
-    fn new() -> Self {
+    fn new(id: Option<Id>) -> Self {
+        let id = id.unwrap_or_else(|| Id::random());
+
         let mut this = Self {
             entries: Entries::default(),
             children_ids: RefCell::new(None),
-            storage: Element::new(&Path::new("::unused").expect("valid path"), None),
+            storage: Element::new(&Path::new("::unused").expect("valid path"), Some(id)),
         };
 
-        let _ = Interface::save(&mut this).expect("save collection");
+        if id.is_root() {
+            let _ignored = Interface::save(&mut this).expect("save");
+        } else {
+            let root = root::ROOT
+                .with(|root| root.borrow().clone())
+                .expect("no root??");
+
+            let _ = Interface::add_child_to(root.id, &root, &mut this).expect("add child");
+        }
 
         this
     }

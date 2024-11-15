@@ -24,7 +24,7 @@ where
     ///
     pub fn new() -> Self {
         Self {
-            inner: Collection::new(),
+            inner: Collection::new(None),
         }
     }
 
@@ -171,10 +171,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::UnorderedSet;
+    use crate::collections::{Root, UnorderedSet};
 
     #[test]
     fn test_unordered_set_operations() {
+        let _root = Root::new(());
+
         let mut set = UnorderedSet::<String>::new();
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
@@ -203,6 +205,8 @@ mod tests {
 
     #[test]
     fn test_unordered_set_len() {
+        let _root = Root::new(());
+
         let mut set = UnorderedSet::<String>::new();
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
@@ -218,6 +222,8 @@ mod tests {
 
     #[test]
     fn test_unordered_set_clear() {
+        let _root = Root::new(());
+
         let mut set = UnorderedSet::<String>::new();
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
@@ -234,6 +240,8 @@ mod tests {
 
     #[test]
     fn test_unordered_set_entries() {
+        let _root = Root::new(());
+
         let mut set = UnorderedSet::<String>::new();
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));

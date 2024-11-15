@@ -788,6 +788,7 @@ pub struct Metadata {
     pub(crate) updated_at: UpdatedAt,
 }
 
+/// The timestamp when the [`Element`] was last updated.
 #[derive(
     BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialOrd,
 )]

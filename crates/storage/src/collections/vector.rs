@@ -22,7 +22,7 @@ where
     ///
     pub fn new() -> Self {
         Self {
-            inner: Collection::new(),
+            inner: Collection::new(None),
         }
     }
 
@@ -159,9 +159,12 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::vector::Vector;
+    use crate::collections::Root;
 
     #[test]
     fn test_vector_push() {
+        let _root = Root::new(());
+
         let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let result = vector.push(value.clone());
@@ -171,6 +174,8 @@ mod tests {
 
     #[test]
     fn test_vector_get() {
+        let _root = Root::new(());
+
         let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
@@ -180,6 +185,8 @@ mod tests {
 
     #[test]
     fn test_vector_update() {
+        let _root = Root::new(());
+
         let mut vector: Vector<String> = Vector::new();
         let value1 = "test_data1".to_string();
         let value2 = "test_data2".to_string();
@@ -192,6 +199,8 @@ mod tests {
 
     #[test]
     fn test_vector_get_non_existent() {
+        let _root = Root::new(());
+
         let vector: Vector<String> = Vector::new();
         match vector.get(0) {
             Ok(retrieved_value) => assert_eq!(retrieved_value, None),
@@ -201,6 +210,8 @@ mod tests {
 
     #[test]
     fn test_vector_pop() {
+        let _root = Root::new(());
+
         let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
@@ -211,6 +222,8 @@ mod tests {
 
     #[test]
     fn test_vector_entries() {
+        let _root = Root::new(());
+
         let mut vector: Vector<String> = Vector::new();
         let value1 = "test_data1".to_string();
         let value2 = "test_data2".to_string();
@@ -222,6 +235,8 @@ mod tests {
 
     #[test]
     fn test_vector_contains() {
+        let _root = Root::new(());
+
         let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
@@ -232,6 +247,8 @@ mod tests {
 
     #[test]
     fn test_vector_clear() {
+        let _root = Root::new(());
+
         let mut vector: Vector<String> = Vector::new();
         let value = "test_data".to_string();
         let _ = vector.push(value.clone()).unwrap();
