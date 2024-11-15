@@ -1,6 +1,7 @@
 //! This module provides functionality for the unordered map data structure.
 
 use core::borrow::Borrow;
+use core::fmt;
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -12,7 +13,7 @@ use crate::collections::error::StoreError;
 use crate::entities::Data;
 
 /// A map collection that stores key-value pairs.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub struct UnorderedMap<K, V> {
     inner: Collection<(K, V)>,
 }
@@ -192,6 +193,22 @@ where
         self.entries()
             .unwrap()
             .partial_cmp(other.entries().unwrap())
+    }
+}
+
+impl<K, V> fmt::Debug for UnorderedMap<K, V>
+where
+    K: fmt::Debug + BorshSerialize + BorshDeserialize,
+    V: fmt::Debug + BorshSerialize + BorshDeserialize,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            f.debug_struct("UnorderedMap")
+                .field("entries", &self.inner)
+                .finish()
+        } else {
+            f.debug_map().entries(self.entries().unwrap()).finish()
+        }
     }
 }
 

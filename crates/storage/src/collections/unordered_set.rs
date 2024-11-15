@@ -1,6 +1,7 @@
 //! This module provides functionality for the unordered set data structure.
 
 use core::borrow::Borrow;
+use core::fmt;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
@@ -11,7 +12,7 @@ use crate::collections::error::StoreError;
 use crate::entities::Data;
 
 /// A set collection that stores unqiue values once.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub struct UnorderedSet<V> {
     inner: Collection<V>,
 }
@@ -166,6 +167,21 @@ where
         self.entries()
             .unwrap()
             .partial_cmp(other.entries().unwrap())
+    }
+}
+
+impl<V> fmt::Debug for UnorderedSet<V>
+where
+    V: fmt::Debug + BorshSerialize + BorshDeserialize,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            f.debug_struct("UnorderedSet")
+                .field("entries", &self.inner)
+                .finish()
+        } else {
+            f.debug_set().entries(self.entries().unwrap()).finish()
+        }
     }
 }
 

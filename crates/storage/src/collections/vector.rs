@@ -1,6 +1,7 @@
 //! This module provides functionality for the vector data structure.
 
 use core::borrow::Borrow;
+use core::fmt;
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -9,7 +10,7 @@ use super::Collection;
 use crate::collections::error::StoreError;
 
 /// A vector collection that stores key-value pairs.
-#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub struct Vector<V> {
     // Borrow/ToOwned
     inner: Collection<V>,
@@ -154,6 +155,52 @@ where
     ///
     pub fn clear(&mut self) -> Result<(), StoreError> {
         self.inner.clear()
+    }
+}
+
+impl<V> Eq for Vector<V> where V: Eq + BorshSerialize + BorshDeserialize {}
+
+impl<V> PartialEq for Vector<V>
+where
+    V: PartialEq + BorshSerialize + BorshDeserialize,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.entries().unwrap().eq(other.entries().unwrap())
+    }
+}
+
+impl<V> Ord for Vector<V>
+where
+    V: Ord + BorshSerialize + BorshDeserialize,
+{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.entries().unwrap().cmp(other.entries().unwrap())
+    }
+}
+
+impl<V> PartialOrd for Vector<V>
+where
+    V: PartialOrd + BorshSerialize + BorshDeserialize,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.entries()
+            .unwrap()
+            .partial_cmp(other.entries().unwrap())
+    }
+}
+
+impl<V> fmt::Debug for Vector<V>
+where
+    V: fmt::Debug + BorshSerialize + BorshDeserialize,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            f.debug_struct("Vector")
+                .field("entries", &self.inner)
+                .finish()
+        } else {
+            f.debug_list().entries(self.entries().unwrap()).finish()
+        }
     }
 }
 
