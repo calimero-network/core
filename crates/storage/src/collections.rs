@@ -14,6 +14,8 @@ pub mod unordered_set;
 pub use unordered_set::UnorderedSet;
 pub mod vector;
 pub use vector::Vector;
+pub mod root;
+pub use root::Root;
 pub mod error;
 pub use error::StoreError;
 
@@ -118,17 +120,19 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
     }
 
     /// Inserts an item into the collection.
-    fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<()> {
+    fn insert(&mut self, id: Option<Id>, item: T) -> StoreResult<T> {
         let path = self.path();
 
         let mut collection = CollectionMut::new(self);
 
-        collection.insert(Entry {
+        let mut entry = Entry {
             item,
             storage: Element::new(&path, id),
-        })?;
+        };
 
-        Ok(())
+        collection.insert(&mut entry)?;
+
+        Ok(entry.item)
     }
 
     fn get(&self, id: Id) -> StoreResult<Option<T>> {
@@ -192,7 +196,7 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
 
         let children = cache.as_mut().expect("children");
 
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code, reason = "necessary for caching")]
         let children = unsafe { &mut *ptr::from_mut(children) };
 
         Ok(children)
@@ -264,10 +268,8 @@ where
         Self { collection }
     }
 
-    fn insert(&mut self, item: Entry<T>) -> StoreResult<()> {
-        let mut item = item;
-
-        let _ = Interface::add_child_to(self.collection.id(), &self.entries, &mut item)?;
+    fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
+        let _ = Interface::add_child_to(self.collection.id(), &self.entries, item)?;
 
         let _ignored = self.collection.children_cache()?.insert(item.id());
 

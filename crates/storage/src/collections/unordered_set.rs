@@ -54,7 +54,7 @@ where
             return Ok(false);
         };
 
-        self.inner.insert(Some(id), value)?;
+        let _ignored = self.inner.insert(Some(id), value)?;
 
         Ok(true)
     }

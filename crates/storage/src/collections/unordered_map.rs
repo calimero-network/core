@@ -58,7 +58,7 @@ where
             return Ok(Some(mem::replace(v, value)));
         }
 
-        self.inner.insert(Some(id), (key, value))?;
+        let _ignored = self.inner.insert(Some(id), (key, value))?;
 
         Ok(None)
     }

@@ -5,9 +5,8 @@ use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::collections::error::StoreError;
-
 use super::Collection;
+use crate::collections::error::StoreError;
 
 /// A vector collection that stores key-value pairs.
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
@@ -36,7 +35,9 @@ where
     /// returned.
     ///
     pub fn push(&mut self, value: V) -> Result<(), StoreError> {
-        self.inner.insert(None, value)
+        let _ignored = self.inner.insert(None, value)?;
+
+        Ok(())
     }
 
     /// Remove and return the last value from the vector.
