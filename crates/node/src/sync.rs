@@ -193,14 +193,26 @@ impl Node {
             }
         }
 
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
         match payload {
             InitPayload::KeyShare => {
-                self.handle_key_share_request(context, their_identity, stream)
+                self.handle_key_share_request(context, our_identity, their_identity, stream)
                     .await?
             }
             InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(context, their_identity, blob_id, stream)
-                    .await?
+                self.handle_blob_share_request(
+                    context,
+                    our_identity,
+                    their_identity,
+                    blob_id,
+                    stream,
+                )
+                .await?
             }
             InitPayload::StateSync {
                 root_hash,
@@ -224,6 +236,7 @@ impl Node {
 
                 self.handle_state_sync_request(
                     context,
+                    our_identity,
                     their_identity,
                     root_hash,
                     application_id,

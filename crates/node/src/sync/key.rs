@@ -3,8 +3,6 @@ use calimero_network::stream::Stream;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
-use rand::seq::IteratorRandom;
-use rand::thread_rng;
 use tracing::debug;
 
 use crate::sync::{recv, send, Sequencer};
@@ -53,6 +51,7 @@ impl Node {
     pub(super) async fn handle_key_share_request(
         &self,
         context: Context,
+        our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
@@ -61,12 +60,6 @@ impl Node {
             their_identity=%their_identity,
             "Received key share request",
         );
-
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
 
         send(
             stream,

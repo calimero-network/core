@@ -7,8 +7,6 @@ use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
-use rand::seq::IteratorRandom;
-use rand::thread_rng;
 use tracing::debug;
 
 use crate::sync::{recv, send, Sequencer};
@@ -108,6 +106,7 @@ impl Node {
     pub(super) async fn handle_state_sync_request(
         &self,
         context: Context,
+        our_identity: PublicKey,
         their_identity: PublicKey,
         root_hash: Hash,
         application_id: ApplicationId,
@@ -115,17 +114,12 @@ impl Node {
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
+            our_identity=%our_identity,
             their_identity=%their_identity,
             their_root_hash=%root_hash,
             their_application_id=%application_id,
             "Received state sync request",
         );
-
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
 
         let private_key = self
             .ctx_manager
@@ -182,7 +176,7 @@ impl Node {
             our_root_hash=%context.root_hash,
             our_identity=%our_identity,
             their_identity=%their_identity,
-            "Starting bidirectional sync",
+            "Starting bidirectional state sync",
         );
 
         let mut sqx_in = Sequencer::default();
