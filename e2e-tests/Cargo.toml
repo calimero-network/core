@@ -13,6 +13,7 @@ camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 const_format.workspace = true
 eyre.workspace = true
+near-workspaces.workspace = true
 nix = { version = "0.29.0", features = ["signal"] }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
