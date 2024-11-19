@@ -93,7 +93,7 @@ impl Node {
             context_id=%context.id,
             our_identity=%our_identity,
             their_identity=%their_identity,
-            "Starting bidirectional key sync",
+            "Starting bidirectional key share",
         );
 
         let private_key = self
@@ -147,7 +147,7 @@ impl Node {
             context_id=%context.id,
             our_identity=%our_identity,
             their_identity=%their_identity,
-            "Key sync completed",
+            "Key share completed",
         );
 
         Ok(())
