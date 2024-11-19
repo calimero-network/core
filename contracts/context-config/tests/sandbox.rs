@@ -994,7 +994,10 @@ async fn test_deploy() -> eyre::Result<()> {
     );
 
     // Create proposal
-    let proposal_id = rand::thread_rng().gen();
+    let proposal_id = rand::thread_rng()
+        .gen::<[_; 32]>()
+        .rt()
+        .expect("infallible conversion");
     let actions = vec![ProposalAction::ExternalFunctionCall {
         receiver_id: contract.id().to_string(),
         method_name: "increment".to_string(),

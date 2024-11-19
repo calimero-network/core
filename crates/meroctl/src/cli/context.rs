@@ -9,6 +9,7 @@ use crate::cli::context::get::GetCommand;
 use crate::cli::context::invite::InviteCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
+use crate::cli::context::update::UpdateCommand;
 use crate::cli::context::watch::WatchCommand;
 use crate::cli::Environment;
 use crate::output::Report;
@@ -19,6 +20,7 @@ mod get;
 mod invite;
 mod join;
 mod list;
+mod update;
 mod watch;
 
 pub const EXAMPLES: &str = r"
@@ -55,6 +57,7 @@ pub enum ContextSubCommands {
     Delete(DeleteCommand),
     #[command(alias = "ws")]
     Watch(WatchCommand),
+    Update(UpdateCommand),
 }
 
 impl Report for Context {
@@ -75,6 +78,7 @@ impl ContextCommand {
             ContextSubCommands::Join(join) => join.run(environment).await,
             ContextSubCommands::List(list) => list.run(environment).await,
             ContextSubCommands::Watch(watch) => watch.run(environment).await,
+            ContextSubCommands::Update(update) => update.run(environment).await,
         }
     }
 }

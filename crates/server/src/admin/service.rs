@@ -136,6 +136,15 @@ pub(crate) fn setup(
         )
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
+        .layer(AuthSignatureLayer::new(store))
+        .layer(Extension(Arc::clone(&shared_state)));
+
+    let unprotected_router = Router::new()
+        .route("/health", get(health_check_handler))
+        .route("/certificate", get(certificate_handler))
+        .route("/request-challenge", post(request_challenge_handler))
+        .route("/add-client-key", post(add_client_key_handler))
+        .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
         .route(
             "/contexts/:context_id/proposals/:proposal_id/approvals/count",
             get(get_number_of_proposal_approvals_handler),
@@ -150,21 +159,12 @@ pub(crate) fn setup(
         )
         .route(
             "/contexts/:context_id/proposals",
-            get(get_proposals_handler),
+            post(get_proposals_handler),
         )
         .route(
             "/contexts/:context_id/proposals/:proposal_id",
             get(get_proposal_handler),
-        )
-        .layer(AuthSignatureLayer::new(store))
-        .layer(Extension(Arc::clone(&shared_state)));
-
-    let unprotected_router = Router::new()
-        .route("/health", get(health_check_handler))
-        .route("/certificate", get(certificate_handler))
-        .route("/request-challenge", post(request_challenge_handler))
-        .route("/add-client-key", post(add_client_key_handler))
-        .route("/refresh-jwt-token", post(refresh_jwt_token_handler));
+        );
 
     let dev_router = Router::new()
         .route(

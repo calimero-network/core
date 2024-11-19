@@ -8,10 +8,10 @@ license.workspace = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
+bs58 = { workspace = true }
 cfg-if.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-
 calimero-sdk-macros = { path = "./macros" }
 
 [dev-dependencies]

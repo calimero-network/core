@@ -14,6 +14,8 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
+use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::ProposalAction;
 use calimero_crypto::SharedKey;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
@@ -431,9 +433,9 @@ impl Node {
             return Err(CallError::ContextNotFound);
         };
 
-        if method != "init" && &*context.root_hash == &[0; 32] {
-            return Err(CallError::Uninitialized);
-        }
+        // if method != "init" && &*context.root_hash == &[0; 32] {
+        //     return Err(CallError::Uninitialized);
+        // }
 
         if !self
             .ctx_manager
@@ -465,17 +467,19 @@ impl Node {
         }
 
         for (proposal_id, actions) in &outcome.proposals {
-            let actions = from_slice(actions).map_err(|e| {
+            let actions: Vec<ProposalAction> = from_slice(actions).map_err(|e| {
                 error!(%e, "Failed to deserialize proposal actions.");
                 CallError::InternalError
             })?;
+
+            let proposal_id = proposal_id.rt().expect("infallible conversion");
 
             self.ctx_manager
                 .propose(
                     context_id,
                     executor_public_key,
-                    proposal_id.clone(),
-                    actions,
+                    proposal_id,
+                    actions.clone(),
                 )
                 .await
                 .map_err(|e| {
@@ -485,8 +489,10 @@ impl Node {
         }
 
         for proposal_id in &outcome.approvals {
+            let proposal_id = proposal_id.rt().expect("infallible conversion");
+
             self.ctx_manager
-                .approve(context_id, executor_public_key, *proposal_id)
+                .approve(context_id, executor_public_key, proposal_id)
                 .await
                 .map_err(|e| {
                     error!(%e, "Failed to approve proposal {:?}", proposal_id);

@@ -1233,6 +1233,7 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context",
+ "calimero-context-config",
  "calimero-crypto",
  "calimero-network",
  "calimero-node-primitives",
@@ -1316,6 +1317,7 @@ name = "calimero-sdk"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "bs58 0.5.1",
  "calimero-sdk-macros",
  "cfg-if 1.0.0",
  "serde",
@@ -1358,6 +1360,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "calimero-context",
+ "calimero-context-config",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server-primitives",

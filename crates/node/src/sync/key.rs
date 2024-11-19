@@ -3,8 +3,6 @@ use calimero_network::stream::Stream;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
-use rand::seq::IteratorRandom;
-use rand::thread_rng;
 use tracing::debug;
 
 use crate::sync::{recv, send, Sequencer};
@@ -18,6 +16,12 @@ impl Node {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            "Initiating key share",
+        );
+
         send(
             stream,
             &StreamMessage::Init {
@@ -46,13 +50,14 @@ impl Node {
             }
         };
 
-        self.bidirectional_key_sync(context, our_identity, their_identity, stream)
+        self.bidirectional_key_share(context, our_identity, their_identity, stream)
             .await
     }
 
     pub(super) async fn handle_key_share_request(
         &self,
-        context: Context,
+        context: &Context,
+        our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
@@ -61,12 +66,6 @@ impl Node {
             their_identity=%their_identity,
             "Received key share request",
         );
-
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
 
         send(
             stream,
@@ -79,24 +78,22 @@ impl Node {
         )
         .await?;
 
-        let mut context = context;
-        self.bidirectional_key_sync(&mut context, our_identity, their_identity, stream)
+        self.bidirectional_key_share(context, our_identity, their_identity, stream)
             .await
     }
 
-    async fn bidirectional_key_sync(
+    async fn bidirectional_key_share(
         &self,
-        context: &mut Context,
+        context: &Context,
         our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
-            our_root_hash=%context.root_hash,
             our_identity=%our_identity,
             their_identity=%their_identity,
-            "Starting bidirectional key sync",
+            "Starting bidirectional key share",
         );
 
         let private_key = self
@@ -145,6 +142,13 @@ impl Node {
 
         self.ctx_manager
             .update_sender_key(&context.id, &their_identity, &sender_key)?;
+
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            "Key share completed",
+        );
 
         Ok(())
     }
