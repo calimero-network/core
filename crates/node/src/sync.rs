@@ -215,44 +215,23 @@ impl Node {
                 .await?
             }
             InitPayload::StateSync {
-                root_hash,
-                application_id,
+                root_hash: their_root_hash,
+                application_id: their_application_id,
             } => {
-                if updated.is_none() && context.application_id != application_id {
+                if updated.is_none() && context.application_id != their_application_id {
                     updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
                 }
 
                 if let Some(updated) = updated {
-                    if application_id != updated.application_id {
-                        bail!(
-                            "application mismatch: expected {}, got {}",
-                            updated.application_id,
-                            application_id
-                        );
-                    }
-
                     context = updated;
-                }
-
-                if let Some(application) = self.ctx_manager.get_application(&application_id)? {
-                    if !self.ctx_manager.has_blob_available(application.blob)? {
-                        self.initiate_blob_share_process(
-                            &context,
-                            our_identity,
-                            application.blob,
-                            application.size,
-                            stream,
-                        )
-                        .await?;
-                    }
                 }
 
                 self.handle_state_sync_request(
                     &mut context,
                     our_identity,
                     their_identity,
-                    root_hash,
-                    application_id,
+                    their_root_hash,
+                    their_application_id,
                     stream,
                 )
                 .await?

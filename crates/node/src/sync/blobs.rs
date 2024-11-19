@@ -22,6 +22,13 @@ impl Node {
         size: u64,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            blob_id=%blob_id,
+            "Initiating blob share",
+        );
+
         send(
             stream,
             &StreamMessage::Init {
@@ -116,6 +123,14 @@ impl Node {
                 received_blob_id
             );
         }
+
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            blob_id=%blob_id,
+            "Blob share completed",
+        );
 
         Ok(())
     }

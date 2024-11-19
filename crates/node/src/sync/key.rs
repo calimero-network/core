@@ -16,6 +16,12 @@ impl Node {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            "Initiating key share",
+        );
+
         send(
             stream,
             &StreamMessage::Init {

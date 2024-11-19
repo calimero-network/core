@@ -20,6 +20,14 @@ impl Node {
         our_identity: PublicKey,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            our_root_hash=?context.root_hash,
+            our_application_id=%context.application_id,
+            "Initiating state sync",
+        );
+
         send(
             stream,
             &StreamMessage::Init {
@@ -136,25 +144,52 @@ impl Node {
         context: &mut Context,
         our_identity: PublicKey,
         their_identity: PublicKey,
-        root_hash: Hash,
-        application_id: ApplicationId,
+        their_root_hash: Hash,
+        their_application_id: ApplicationId,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
             our_identity=%our_identity,
+            our_root_hash=?context.root_hash,
+            our_application_id=%context.application_id,
             their_identity=%their_identity,
-            their_root_hash=%root_hash,
-            their_application_id=%application_id,
+            their_root_hash=%their_root_hash,
+            their_application_id=%their_application_id,
             "Received state sync request",
         );
 
-        let private_key = self
-            .ctx_manager
-            .get_private_key(context.id, our_identity)?
-            .ok_or_eyre("expected own identity to have private key")?;
+        if their_application_id != context.application_id {
+            bail!(
+                "application mismatch: expected {}, got {}",
+                context.application_id,
+                their_application_id
+            );
+        }
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let application = self
+            .ctx_manager
+            .get_application(&context.application_id)?
+            .ok_or_eyre("fatal: the application (even if just a sparse reference) should exist")?;
+
+        if !self.ctx_manager.has_blob_available(application.blob)? {
+            debug!(
+                context_id=%context.id,
+                application_id=%context.application_id,
+                "The application blob is not available, attempting to receive it from the other peer",
+            );
+
+            self.initiate_blob_share_process(
+                &context,
+                our_identity,
+                application.blob,
+                application.size,
+                stream,
+            )
+            .await?;
+
+            debug!(context_id=%context.id, "Resuming state sync");
+        }
 
         send(
             stream,
@@ -170,9 +205,16 @@ impl Node {
         )
         .await?;
 
-        if root_hash == context.root_hash {
+        if their_root_hash == context.root_hash {
             return Ok(());
         }
+
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
 
         let mut sqx_out = Sequencer::default();
 
@@ -200,7 +242,6 @@ impl Node {
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
-            our_root_hash=%context.root_hash,
             our_identity=%our_identity,
             their_identity=%their_identity,
             "Starting bidirectional state sync",
