@@ -1,9 +1,7 @@
-name: Configure Issue and PR labels
+name: Apply label on issue or pr comment
 
 on:
   issue_comment:
-    types: [created]
-  pull_request_review_comment:
     types: [created]
 
 jobs:
