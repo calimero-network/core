@@ -50,7 +50,7 @@ impl Node {
             }
         };
 
-        self.bidirectional_key_sync(context, our_identity, their_identity, stream)
+        self.bidirectional_key_share(context, our_identity, their_identity, stream)
             .await
     }
 
@@ -78,11 +78,11 @@ impl Node {
         )
         .await?;
 
-        self.bidirectional_key_sync(context, our_identity, their_identity, stream)
+        self.bidirectional_key_share(context, our_identity, their_identity, stream)
             .await
     }
 
-    async fn bidirectional_key_sync(
+    async fn bidirectional_key_share(
         &self,
         context: &Context,
         our_identity: PublicKey,
