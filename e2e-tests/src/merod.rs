@@ -11,7 +11,6 @@ use crate::TestEnvironment;
 
 pub struct Merod {
     pub name: String,
-    test_id: u32,
     process: RefCell<Option<Child>>,
     nodes_dir: Utf8PathBuf,
     log_dir: Utf8PathBuf,
@@ -21,7 +20,6 @@ pub struct Merod {
 impl Merod {
     pub fn new(name: String, environment: &TestEnvironment) -> Self {
         Self {
-            test_id: environment.test_id,
             process: RefCell::new(None),
             nodes_dir: environment.nodes_dir.clone(),
             log_dir: environment.logs_dir.join(&name),
@@ -51,11 +49,7 @@ impl Merod {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        let rendezvous_ns_arg = format!(
-            "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
-            self.test_id
-        );
-        let mut config_args = vec!["config", rendezvous_ns_arg.as_str()];
+        let mut config_args = vec!["config"];
         config_args.extend(args);
 
         let mut child = self.run_cmd(&config_args, "config").await?;
