@@ -57,7 +57,7 @@ jobs:
 
       # Install and build node-ui
       - name: Install node-ui dependencies with pnpm
-        run: pnpm install --prefix ./node-ui
+        run: cd ./node-ui && pnpm install
 
       - name: Build node-ui
         run: cd ./node-ui && pnpm build

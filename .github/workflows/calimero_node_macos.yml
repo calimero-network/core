@@ -38,11 +38,11 @@ jobs:
 
       # Install and build node-ui
       - name: Install node-ui dependencies with pnpm
-        run: pnpm install --prefix ./node-ui
+        run: cd ./node-ui && pnpm install
 
       - name: Build node-ui
-        run: pnpm --filter ./node-ui run build
-      
+        run: cd ./node-ui && pnpm build
+
       - name: Install rustup and Rust toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
