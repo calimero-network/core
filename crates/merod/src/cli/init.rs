@@ -24,7 +24,6 @@ use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::Store;
 use clap::{Parser, ValueEnum};
-use cli::config::ConfigProtocol;
 use eyre::{bail, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
@@ -34,6 +33,21 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::{cli, defaults};
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ConfigProtocol {
+    Near,
+    Starknet,
+}
+
+impl ConfigProtocol {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ConfigProtocol::Near => "near",
+            ConfigProtocol::Starknet => "starknet",
+        }
+    }
+}
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]

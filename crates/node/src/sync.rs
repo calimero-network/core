@@ -1,12 +1,13 @@
 use std::time::Duration;
 
+use calimero_crypto::SharedKey;
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
-use rand::seq::SliceRandom;
+use rand::seq::{IteratorRandom, SliceRandom};
 use rand::thread_rng;
 use tokio::time::timeout;
 use tracing::{debug, error};
@@ -15,6 +16,7 @@ use crate::types::{InitPayload, StreamMessage};
 use crate::Node;
 
 mod blobs;
+mod key;
 mod state;
 
 #[derive(Copy, Clone, Debug)]
@@ -23,21 +25,47 @@ pub struct SyncConfig {
     pub interval: Duration,
 }
 
-async fn send(stream: &mut Stream, message: &StreamMessage<'_>) -> EyreResult<()> {
-    let message = borsh::to_vec(message)?;
-    stream.send(Message::new(message)).await?;
+async fn send(
+    stream: &mut Stream,
+    message: &StreamMessage<'_>,
+    shared_key: Option<SharedKey>,
+) -> EyreResult<()> {
+    let base_data = borsh::to_vec(message)?;
+
+    let data = match shared_key {
+        Some(key) => match key.encrypt(base_data, [0; 12]) {
+            Some(data) => data,
+            None => bail!("encryption failed"),
+        },
+        None => base_data,
+    };
+
+    stream.send(Message::new(data)).await?;
     Ok(())
 }
 
 async fn recv(
     stream: &mut Stream,
     duration: Duration,
+    shared_key: Option<SharedKey>,
 ) -> EyreResult<Option<StreamMessage<'static>>> {
     let Some(message) = timeout(duration, stream.next()).await? else {
         return Ok(None);
     };
 
-    Ok(borsh::from_slice(&message?.data)?)
+    let message_data = message?.data.into_owned();
+
+    let data = match shared_key {
+        Some(key) => match key.decrypt(message_data, [0; 12]) {
+            Some(data) => data,
+            None => bail!("decryption failed"),
+        },
+        None => message_data,
+    };
+
+    let decoded = borsh::from_slice::<StreamMessage<'static>>(&data)?;
+
+    Ok(Some(decoded))
 }
 
 #[derive(Default)]
@@ -46,9 +74,11 @@ struct Sequencer {
 }
 
 impl Sequencer {
-    fn test(&mut self, idx: usize) -> eyre::Result<()> {
-        self.current += 1;
+    fn current(&self) -> usize {
+        self.current
+    }
 
+    fn test(&mut self, idx: usize) -> eyre::Result<()> {
         if self.current != idx {
             bail!(
                 "out of sequence message: expected {}, got {}",
@@ -56,6 +86,8 @@ impl Sequencer {
                 idx
             );
         }
+
+        self.current += 1;
 
         Ok(())
     }
@@ -68,43 +100,63 @@ impl Sequencer {
 }
 
 impl Node {
-    async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
+    pub(crate) async fn initiate_sync(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+    ) -> EyreResult<()> {
         let mut context = self.ctx_manager.sync_context_config(context_id).await?;
         println!("initiating sync for context: {:?}", context);
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
             bail!("application not found: {}", context.application_id);
         };
-        println!("application found: {:?}", application);
+
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
+        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+
+        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
+            .await?;
+
         if !self.ctx_manager.has_blob_available(application.blob)? {
             println!("blob not available, initiating blob share process");
             self.initiate_blob_share_process(
                 &context,
+                our_identity,
                 application.blob,
                 application.size,
-                chosen_peer,
+                &mut stream,
             )
             .await?;
         }
 
-        println!("blob available, initiating state sync process");
-
-        self.initiate_state_sync_process(&mut context, chosen_peer)
+        self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
             .await
     }
 
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
-        if let Err(err) = self.internal_handle_opened_stream(&mut stream).await {
-            error!(%err, "Failed to handle stream message");
+        loop {
+            match self.internal_handle_opened_stream(&mut stream).await {
+                Ok(None) => break,
+                Ok(Some(())) => {}
+                Err(err) => {
+                    error!(%err, "Failed to handle stream message");
 
-            if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
-                error!(%err, "Failed to send error message");
+                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError, None).await {
+                        error!(%err, "Failed to send error message");
+                    }
+                }
             }
         }
     }
 
-    async fn internal_handle_opened_stream(&self, mut stream: &mut Stream) -> EyreResult<()> {
-        let Some(message) = recv(&mut stream, self.sync_config.timeout).await? else {
-            bail!("stream closed unexpectedly")
+    async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> EyreResult<Option<()>> {
+        let Some(message) = recv(stream, self.sync_config.timeout, None).await? else {
+            return Ok(None);
         };
 
         let (context_id, their_identity, payload) = match message {
@@ -142,56 +194,71 @@ impl Node {
             }
         }
 
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
         match payload {
-            InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(context, their_identity, blob_id, &mut stream)
+            InitPayload::KeyShare => {
+                self.handle_key_share_request(&context, our_identity, their_identity, stream)
                     .await?
             }
+            InitPayload::BlobShare { blob_id } => {
+                self.handle_blob_share_request(
+                    &context,
+                    our_identity,
+                    their_identity,
+                    blob_id,
+                    stream,
+                )
+                .await?
+            }
             InitPayload::StateSync {
-                root_hash,
-                application_id,
+                root_hash: their_root_hash,
+                application_id: their_application_id,
             } => {
-                if updated.is_none() && context.application_id != application_id {
+                if updated.is_none() && context.application_id != their_application_id {
                     updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
                 }
 
                 if let Some(updated) = updated {
-                    if application_id != updated.application_id {
-                        bail!(
-                            "application mismatch: expected {}, got {}",
-                            updated.application_id,
-                            application_id
-                        );
-                    }
-
                     context = updated;
                 }
 
                 self.handle_state_sync_request(
-                    context,
+                    &mut context,
+                    our_identity,
                     their_identity,
-                    root_hash,
-                    application_id,
-                    &mut stream,
+                    their_root_hash,
+                    their_application_id,
+                    stream,
                 )
                 .await?
             }
         };
 
-        Ok(())
+        Ok(Some(()))
     }
 
     pub async fn perform_interval_sync(&self) {
-        if let Err(err) = timeout(self.sync_config.interval, async {
-            for context in self.ctx_manager.get_n_pending_sync_context(3).await {
-                if self.internal_perform_interval_sync(context).await.is_some() {
+        let task = async {
+            for context_id in self.ctx_manager.get_n_pending_sync_context(3).await {
+                if self
+                    .internal_perform_interval_sync(context_id)
+                    .await
+                    .is_some()
+                {
                     break;
                 }
+
+                debug!(%context_id, "Unable to perform interval sync for context, trying another..");
             }
-        })
-        .await
-        {
-            error!(%err, "Timeout while performing interval sync");
+        };
+
+        if timeout(self.sync_config.interval, task).await.is_err() {
+            error!("Timeout while performing interval sync");
         }
     }
 

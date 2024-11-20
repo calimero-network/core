@@ -34,9 +34,12 @@ impl ContextConfigs {
         env::log_str("Erasing contract");
 
         for (_, context) in self.contexts.drain() {
-            drop(context.application.into_inner());
+            let _ignored = context.application.into_inner();
             context.members.into_inner().clear();
+            let _ignored = context.proxy.into_inner();
         }
+
+        self.proxy_code.set(None);
 
         env::log_str(&format!(
             "Post-erase storage usage: {}",
@@ -82,6 +85,12 @@ impl ContextConfigs {
         for (context_id, _) in state.contexts.iter_mut() {
             env::log_str(&format!("Migrating context `{}`", Repr::new(*context_id)));
         }
+    }
+
+    #[private]
+    pub fn set_proxy_code(&mut self) {
+        self.proxy_code
+            .set(Some(env::input().expect("Expected proxy code")));
     }
 }
 

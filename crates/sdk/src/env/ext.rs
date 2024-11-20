@@ -1,4 +1,9 @@
+use core::fmt;
+use std::borrow::Cow;
+use std::str::FromStr;
+
 use borsh::{to_vec as to_borsh_vec, to_vec, BorshDeserialize, BorshSerialize};
+use serde::{Deserialize, Serialize};
 
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
 use crate::sys;
@@ -35,7 +40,7 @@ pub enum ProposalAction {
         receiver_id: AccountId,
 
         /// The amount of tokens to transfer.
-        amount: u64,
+        amount: u128,
     },
 
     /// Set the number of approvals required for a proposal to be executed.
@@ -62,7 +67,7 @@ pub enum ProposalAction {
 
 /// Unique identifier for an account.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct AccountId(String);
+pub struct AccountId(pub String);
 
 /// A draft proposal.
 ///
@@ -74,6 +79,7 @@ pub struct DraftProposal {
     /// The actions to be executed by the proposal. One proposal can contain
     /// multiple actions to execute.
     actions: Vec<ProposalAction>,
+    approval: Option<ProposalId>,
 }
 
 impl DraftProposal {
@@ -82,12 +88,13 @@ impl DraftProposal {
     pub const fn new() -> Self {
         Self {
             actions: Vec::new(),
+            approval: None,
         }
     }
 
     /// Add an action to transfer tokens to an account.
     #[must_use]
-    pub fn transfer(mut self, receiver: AccountId, amount: u64) -> Self {
+    pub fn transfer(mut self, receiver: AccountId, amount: u128) -> Self {
         self.actions.push(ProposalAction::Transfer {
             receiver_id: receiver,
             amount,
@@ -123,11 +130,67 @@ impl External {
     pub const fn propose(self) -> DraftProposal {
         DraftProposal::new()
     }
+
+    pub fn approve(self, proposal_id: ProposalId) {
+        unsafe { sys::approve_proposal(BufferMut::new(&proposal_id)) }
+    }
 }
 
 /// Unique identifier for a proposal.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ProposalId(pub [u8; 32]);
+
+impl AsRef<[u8]> for ProposalId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl ProposalId {
+    pub fn as_str<'a>(&self, buf: &'a mut [u8; 44]) -> &'a str {
+        let len = bs58::encode(&self.0).onto(&mut buf[..]).unwrap();
+        std::str::from_utf8(&buf[..len]).unwrap()
+    }
+}
+
+impl FromStr for ProposalId {
+    type Err = bs58::decode::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut buf = [0; 32];
+        let _len = bs58::decode(s).onto(&mut buf[..])?;
+        Ok(Self(buf))
+    }
+}
+
+impl Serialize for ProposalId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut buf = [0; 44];
+        serializer.serialize_str(self.as_str(&mut buf))
+    }
+}
+
+impl<'de> Deserialize<'de> for ProposalId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Container<'a>(#[serde(borrow)] Cow<'a, str>);
+
+        let encoded = Container::deserialize(deserializer)?;
+        Self::from_str(&*encoded.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl fmt::Display for ProposalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str(&mut [0; 44]))
+    }
+}
 
 #[doc(hidden)]
 pub unsafe fn fetch(

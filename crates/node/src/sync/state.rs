@@ -1,14 +1,12 @@
 use std::borrow::Cow;
 
+use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
-use libp2p::PeerId;
-use rand::seq::IteratorRandom;
-use rand::thread_rng;
 use tracing::debug;
 
 use crate::sync::{recv, send, Sequencer};
@@ -16,21 +14,22 @@ use crate::types::{InitPayload, MessagePayload, StreamMessage};
 use crate::Node;
 
 impl Node {
-    pub async fn initiate_state_sync_process(
+    pub(super) async fn initiate_state_sync_process(
         &self,
         context: &mut Context,
-        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
     ) -> eyre::Result<()> {
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
-
-        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            our_root_hash=?context.root_hash,
+            our_application_id=%context.application_id,
+            "Initiating state sync",
+        );
 
         send(
-            &mut stream,
+            stream,
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
@@ -39,38 +38,67 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
+            None,
         )
         .await?;
 
-        let Some(ack) = recv(&mut stream, self.sync_config.timeout).await? else {
-            bail!("no response to state sync request");
-        };
+        let mut pair = None;
 
-        let (root_hash, their_identity) = match ack {
-            StreamMessage::Init {
-                party_id,
-                payload:
-                    InitPayload::StateSync {
-                        root_hash,
-                        application_id,
-                    },
-                ..
-            } => {
-                if application_id != context.application_id {
-                    bail!(
-                        "unexpected application id: expected {}, got {}",
-                        context.application_id,
-                        application_id
-                    );
+        for _ in 1..=2 {
+            let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
+                bail!("connection closed while awaiting state sync handshake");
+            };
+
+            let (root_hash, their_identity) = match ack {
+                StreamMessage::Init {
+                    party_id,
+                    payload:
+                        InitPayload::StateSync {
+                            root_hash,
+                            application_id,
+                        },
+                    ..
+                } => {
+                    if application_id != context.application_id {
+                        bail!(
+                            "unexpected application id: expected {}, got {}",
+                            context.application_id,
+                            application_id
+                        );
+                    }
+
+                    (root_hash, party_id)
                 }
+                StreamMessage::Init {
+                    party_id: their_identity,
+                    payload: InitPayload::BlobShare { blob_id },
+                    ..
+                } => {
+                    self.handle_blob_share_request(
+                        context,
+                        our_identity,
+                        their_identity,
+                        blob_id,
+                        stream,
+                    )
+                    .await?;
 
-                (root_hash, party_id)
-            }
-            unexpected @ (StreamMessage::Init { .. }
-            | StreamMessage::Message { .. }
-            | StreamMessage::OpaqueError) => {
-                bail!("unexpected message: {:?}", unexpected)
-            }
+                    continue;
+                }
+                unexpected @ (StreamMessage::Init { .. }
+                | StreamMessage::Message { .. }
+                | StreamMessage::OpaqueError) => {
+                    bail!("unexpected message: {:?}", unexpected)
+                }
+            };
+
+            pair = Some((root_hash, their_identity));
+
+            break;
+        }
+
+        let Some((root_hash, their_identity)) = pair else {
+            bail!("expected two state sync handshakes, got none");
         };
 
         if root_hash == context.root_hash {
@@ -79,14 +107,22 @@ impl Node {
 
         let mut sqx_out = Sequencer::default();
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         send(
-            &mut stream,
+            stream,
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
                 payload: MessagePayload::StateSync {
-                    artifact: Cow::from(&[]),
+                    artifact: b"".into(),
                 },
             },
+            Some(shared_key),
         )
         .await?;
 
@@ -95,34 +131,65 @@ impl Node {
             our_identity,
             their_identity,
             &mut sqx_out,
-            &mut stream,
+            stream,
+            shared_key,
         )
         .await?;
 
         Ok(())
     }
 
-    pub async fn handle_state_sync_request(
+    pub(super) async fn handle_state_sync_request(
         &self,
-        context: Context,
+        context: &mut Context,
+        our_identity: PublicKey,
         their_identity: PublicKey,
-        root_hash: Hash,
-        application_id: ApplicationId,
+        their_root_hash: Hash,
+        their_application_id: ApplicationId,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
+            our_identity=%our_identity,
+            our_root_hash=?context.root_hash,
+            our_application_id=%context.application_id,
             their_identity=%their_identity,
-            their_root_hash=%root_hash,
-            their_application_id=%application_id,
+            their_root_hash=%their_root_hash,
+            their_application_id=%their_application_id,
             "Received state sync request",
         );
 
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+        if their_application_id != context.application_id {
+            bail!(
+                "application mismatch: expected {}, got {}",
+                context.application_id,
+                their_application_id
+            );
+        }
 
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
+        let application = self
+            .ctx_manager
+            .get_application(&context.application_id)?
+            .ok_or_eyre("fatal: the application (even if just a sparse reference) should exist")?;
+
+        if !self.ctx_manager.has_blob_available(application.blob)? {
+            debug!(
+                context_id=%context.id,
+                application_id=%context.application_id,
+                "The application blob is not available, attempting to receive it from the other peer",
+            );
+
+            self.initiate_blob_share_process(
+                &context,
+                our_identity,
+                application.blob,
+                application.size,
+                stream,
+            )
+            .await?;
+
+            debug!(context_id=%context.id, "Resuming state sync");
+        }
 
         send(
             stream,
@@ -134,22 +201,30 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
+            None,
         )
         .await?;
 
-        if root_hash == context.root_hash {
+        if their_root_hash == context.root_hash {
             return Ok(());
         }
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         let mut sqx_out = Sequencer::default();
 
-        let mut context = context;
         self.bidirectional_sync(
-            &mut context,
+            context,
             our_identity,
             their_identity,
             &mut sqx_out,
             stream,
+            shared_key,
         )
         .await
 
@@ -163,18 +238,18 @@ impl Node {
         their_identity: PublicKey,
         sqx_out: &mut Sequencer,
         stream: &mut Stream,
+        shared_key: SharedKey,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
-            our_root_hash=%context.root_hash,
             our_identity=%our_identity,
             their_identity=%their_identity,
-            "Starting bidirectional sync",
+            "Starting bidirectional state sync",
         );
 
         let mut sqx_in = Sequencer::default();
 
-        while let Some(msg) = recv(stream, self.sync_config.timeout).await? {
+        while let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? {
             let (sequence_id, artifact) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
@@ -187,6 +262,10 @@ impl Node {
             };
 
             sqx_in.test(sequence_id)?;
+
+            if artifact.is_empty() && sqx_out.current() != 0 {
+                break;
+            }
 
             let outcome = self
                 .execute(
@@ -204,10 +283,6 @@ impl Node {
                 "State sync outcome",
             );
 
-            if outcome.artifact.is_empty() {
-                break;
-            }
-
             send(
                 stream,
                 &StreamMessage::Message {
@@ -216,9 +291,18 @@ impl Node {
                         artifact: Cow::from(&outcome.artifact),
                     },
                 },
+                Some(shared_key),
             )
             .await?;
         }
+
+        debug!(
+            context_id=%context.id,
+            our_root_hash=%context.root_hash,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            "State sync completed",
+        );
 
         Ok(())
     }

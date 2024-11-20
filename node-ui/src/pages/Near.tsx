@@ -9,6 +9,7 @@ import '@near-wallet-selector/modal-ui/styles.css';
 import ContentWrapper from '../components/login/ContentWrapper';
 import NearWallet, { Account } from '../components/near/NearWallet';
 import { useServerDown } from '../context/ServerDownContext';
+import { getAppEndpointKey } from '../utils/storage';
 
 export interface Message {
   premium: boolean;
@@ -38,6 +39,7 @@ export default function NearLogin({ isLogin }: NearLoginProps) {
   const appName = 'me';
 
   useEffect(() => {
+    getAppEndpointKey() || navigate('/');
     const timeoutId = setTimeout(() => {
       verifyMessageBrowserWallet(isLogin, setErrorMessage, showServerDownPopup);
     }, 500);
@@ -86,14 +88,15 @@ export default function NearLogin({ isLogin }: NearLoginProps) {
           })
         }
         handleSwitchWallet={() => handleSwitchWallet(modal)}
-        handleSignMessage={() =>
+        handleSignMessage={() => {
+          getAppEndpointKey() || navigate('/');
           handleSignMessage({
             selector,
             appName,
             setErrorMessage,
             showServerDownPopup,
-          })
-        }
+          });
+        }}
         handleSwitchAccount={() =>
           handleSwitchAccount({ accounts, accountId, selector })
         }

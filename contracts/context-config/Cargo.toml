@@ -10,8 +10,7 @@ license.workspace = true
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-near-sdk.workspace = true
-
+near-sdk = { workspace = true, features = ["unstable"] }
 calimero-context-config = { path = "../../crates/context/config" }
 
 [dev-dependencies]

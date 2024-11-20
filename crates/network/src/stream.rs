@@ -7,7 +7,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use eyre::{bail, Result as EyreResult};
-use futures_util::{Sink as FuturesSink, SinkExt, Stream as FuturesStream};
+use futures_util::{Sink as FuturesSink, SinkExt, Stream as FuturesStream, StreamExt};
 use libp2p::{PeerId, Stream as P2pStream, StreamProtocol};
 use tokio::io::BufStream;
 use tokio_util::codec::Framed;
@@ -43,9 +43,8 @@ impl Stream {
 impl FuturesStream for Stream {
     type Item = Result<Message<'static>, CodecError>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let inner = Pin::new(&mut self.get_mut().inner);
-        inner.poll_next(cx)
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
     }
 }
 

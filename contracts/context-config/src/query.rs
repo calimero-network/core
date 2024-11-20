@@ -4,7 +4,7 @@ use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Revision, SignerId,
 };
-use near_sdk::near;
+use near_sdk::{near, AccountId};
 
 use super::{ContextConfigs, ContextConfigsExt};
 
@@ -26,6 +26,15 @@ impl ContextConfigs {
             .expect("context does not exist");
 
         context.application.revision()
+    }
+
+    pub fn proxy_contract(&self, context_id: Repr<ContextId>) -> &AccountId {
+        let context = self
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
+
+        &context.proxy
     }
 
     pub fn members(

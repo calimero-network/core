@@ -1,51 +1,50 @@
+use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
+use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
-use libp2p::PeerId;
-use rand::seq::IteratorRandom;
-use rand::thread_rng;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{recv, send, Sequencer};
 use crate::types::{InitPayload, MessagePayload, StreamMessage};
 use crate::Node;
 
 impl Node {
-    pub async fn initiate_blob_share_process(
+    pub(super) async fn initiate_blob_share_process(
         &self,
         context: &Context,
+        our_identity: PublicKey,
         blob_id: BlobId,
         size: u64,
-        chosen_peer: PeerId,
+        stream: &mut Stream,
     ) -> eyre::Result<()> {
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
-
-        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            blob_id=%blob_id,
+            "Initiating blob share",
+        );
 
         send(
-            &mut stream,
+            stream,
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
             },
+            None,
         )
         .await?;
 
-        let Some(ack) = recv(&mut stream, self.sync_config.timeout).await? else {
-            bail!("no response to blob share request");
+        let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
+            bail!("connection closed while awaiting blob share handshake");
         };
 
-        let _their_identity = match ack {
+        let their_identity = match ack {
             StreamMessage::Init {
                 party_id,
                 payload:
@@ -71,6 +70,13 @@ impl Node {
             }
         };
 
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
+
+        let shared_key = SharedKey::new(&private_key, &their_identity);
+
         let (tx, mut rx) = mpsc::channel(1);
 
         let add_task = self.ctx_manager.add_blob(
@@ -82,7 +88,7 @@ impl Node {
         let read_task = async {
             let mut sequencer = Sequencer::default();
 
-            while let Some(msg) = recv(&mut stream, self.sync_config.timeout).await? {
+            while let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? {
                 let (sequence_id, chunk) = match msg {
                     StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                     StreamMessage::Message {
@@ -96,8 +102,14 @@ impl Node {
 
                 sequencer.test(sequence_id)?;
 
+                if chunk.is_empty() {
+                    break;
+                }
+
                 tx.send(Ok(chunk)).await?;
             }
+
+            drop(tx);
 
             Ok(())
         };
@@ -112,32 +124,45 @@ impl Node {
             );
         }
 
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            blob_id=%blob_id,
+            "Blob share completed",
+        );
+
         Ok(())
     }
 
-    pub async fn handle_blob_share_request(
+    pub(super) async fn handle_blob_share_request(
         &self,
-        context: Context,
+        context: &Context,
+        our_identity: PublicKey,
         their_identity: PublicKey,
         blob_id: BlobId,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
+            our_identity=%our_identity,
             their_identity=%their_identity,
             blob_id=%blob_id,
             "Received blob share request",
         );
 
         let Some(mut blob) = self.ctx_manager.get_blob(blob_id)? else {
-            bail!("blob not found: {}", blob_id);
+            warn!(%blob_id, "blob not found");
+
+            return Ok(());
         };
 
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+        let private_key = self
+            .ctx_manager
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
 
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
+        let shared_key = SharedKey::new(&private_key, &their_identity);
 
         send(
             stream,
@@ -146,6 +171,7 @@ impl Node {
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
             },
+            None,
         )
         .await?;
 
@@ -160,9 +186,28 @@ impl Node {
                         chunk: chunk.into_vec().into(),
                     },
                 },
+                Some(shared_key),
             )
             .await?;
         }
+
+        send(
+            stream,
+            &StreamMessage::Message {
+                sequence_id: sequencer.next(),
+                payload: MessagePayload::BlobShare { chunk: b"".into() },
+            },
+            Some(shared_key),
+        )
+        .await?;
+
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            blob_id=%blob_id,
+            "Blob share completed",
+        );
 
         Ok(())
     }

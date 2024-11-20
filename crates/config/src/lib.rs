@@ -11,7 +11,7 @@ use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 
-const CONFIG_FILE: &str = "config.toml";
+pub const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]

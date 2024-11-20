@@ -38,6 +38,7 @@ wasm_imports! {
         fn time_now(buf: BufferMut<'_>);
         // --
         fn send_proposal(value: Buffer<'_>, buf: BufferMut<'_>);
+        fn approve_proposal(value: Buffer<'_>);
     }
 }
 

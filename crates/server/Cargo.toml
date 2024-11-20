@@ -44,6 +44,7 @@ web3.workspace = true
 x509-parser.workspace = true
 
 calimero-context = { path = "../context" }
+calimero-context-config = { path = "../context/config" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
 calimero-server-primitives = { path = "../server-primitives" }
