@@ -22,6 +22,8 @@ impl WasmerTunables {
             dynamic_memory_offset_guard_size: u64::from(WASM_MAX_PAGES),
         };
 
+
+        
         let vmconfig = VMConfig {
             wasm_stack_size: Some(limits.max_stack_size),
         };
