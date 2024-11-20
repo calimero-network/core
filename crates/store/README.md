@@ -30,7 +30,8 @@ different storage backends.
 
 Key features of the store library include:
 
-- Support for potentially multiple storage backends (currently just [RocksDB][])
+- Support for potentially multiple storage backends (currently just
+  [RocksDB][RocksDB])
 - Transactional operations with atomic commits
 - Flexible key-value structure with custom data types
 - Iteration and range queries
@@ -53,7 +54,7 @@ Key operations:
 - `apply()`: Apply a transaction to the database
 
 The `RocksDB` struct implements this trait, providing a concrete implementation
-using the [RocksDB][] storage engine.
+using the [RocksDB][RocksDB] storage engine.
 
 ### Key structure
 
@@ -106,7 +107,7 @@ The library provides a flexible iteration system:
 
 ## Operation flow
 
-1. Initialise the store with a specific backend (e.g., [RocksDB][])
+1. Initialise the store with a specific backend (e.g., [RocksDB][RocksDB])
 2. Create a `StoreHandle` to interact with the store
 3. Perform read/write operations directly on the store
 4. For atomic write operations:
@@ -223,8 +224,8 @@ While the interface defines the contract that any database implementation must
 fulfill, it doesn't prescribe how these operations should be implemented. This
 abstraction allows the library to support different storage backends without
 changing the core logic of the store system. Currently, the library provides an
-implementation for [RocksDB][], a high-performance key-value store, but the
-design allows for easy addition of other backends in the future.
+implementation for [RocksDB][RocksDB], a high-performance key-value store, but
+the design allows for easy addition of other backends in the future.
 
 ### Key structure
 
@@ -462,7 +463,7 @@ adding or modifying functionality at each level.
 The `Store` struct serves as the foundational layer in this architecture. It
 implements both `ReadLayer` and `WriteLayer`, providing direct access to the
 underlying database. The `Store` is typically backed by a concrete database
-implementation, such as [RocksDB][].
+implementation, such as [RocksDB][RocksDB].
 
 #### Specialised layers
 

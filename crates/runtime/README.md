@@ -201,7 +201,7 @@ process of loading, preparing, and executing a Wasm module, while ensuring that
 all operations occur within the defined constraints and security boundaries of
 the runtime environment.
 
-At the core of the `run()` function's operation is [Wasmer][], a
+At the core of the `run()` function's operation is [Wasmer][Wasmer], a
 high-performance WebAssembly runtime. Wasmer is an open-source project that
 allows for the execution of Wasm modules outside of web browsers. It provides a
 sandboxed environment for running Wasm code, handling tasks such as module
@@ -286,11 +286,12 @@ the guest Wasm code and the host system, ensuring safe and deterministic
 execution.
 
 At its core, `VMLogic` encapsulates several crucial elements: a mutable
-reference to the storage system, a [Wasmer][] memory instance, the execution
-context, resource limits, a register system for temporary data storage, and
-collections for logs and events. This comprehensive set of components allows
-`VMLogic` to maintain full control over the execution environment, mediating all
-interactions between the guest code and the host system.
+reference to the storage system, a [Wasmer][Wasmer] memory instance, the
+execution context, resource limits, a register system for temporary data
+storage, and collections for logs and events. This comprehensive set of
+components allows `VMLogic` to maintain full control over the execution
+environment, mediating all interactions between the guest code and the host
+system.
 
 One of the key responsibilities of `VMLogic` is to enforce resource limits
 defined in the `VMLimits` struct. These limits cover various aspects of
@@ -389,7 +390,8 @@ a high level of security and predictability.
 
 ### Memory management
 
-The `memory.rs` file contains custom memory tuning for the [Wasmer][] runtime:
+The `memory.rs` file contains custom memory tuning for the [Wasmer][Wasmer]
+runtime:
 
 - Sets memory limits based on the provided `VMLimits`
 - Configures memory styles and table styles

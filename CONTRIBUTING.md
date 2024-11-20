@@ -9,20 +9,20 @@ Thank you for dedicating your time to contribute to our project.
 This guide outlines the contribution workflow to make the process smooth and
 effective for everyone.
 
-Start by reading the [README][] to understand the project better.
+Start by reading the [README][README] to understand the project better.
 
 ## Project Status
 
 This project is actively being developed.
 
-You can check out the open [Issues][], monitor the development progress, and
-contribute.
+You can check out the open [Issues][Issues], monitor the development progress,
+and contribute.
 
 ## Getting Started
 
-There are several ways you can contribute:
+There are several ways you can contribute :
 
-- Solve open [Issues][]
+- Solve open [Issues][Issues]
 - Report bugs or suggest features
 - Enhance the documentation
 
@@ -39,12 +39,12 @@ general guidelines:
 
 - Follow the repository’s formatting guidelines.
 
-- Update the [README][] file if your changes affect it.
+- Update the [README][README] file if your changes affect it.
 
 ## Issues
 
-Use [Issues][] to report problems, request features, or discuss changes before
-creating a PR.
+Use [Issues][Issues] to report problems, request features, or discuss changes
+before creating a PR.
 
 ### Solving an Issue
 

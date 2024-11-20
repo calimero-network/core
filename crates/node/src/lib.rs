@@ -119,10 +119,6 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-
-
-    
-
     let ctx_manager = ContextManager::start(
         &config.context,
         store.clone(),

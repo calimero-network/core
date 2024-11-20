@@ -23,9 +23,9 @@ participating contexts.
 
 Node Server component is split into 3 parts:
 
-1.  [Admin API](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/admin/service.rs)
-2.  [JSON rpc](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/jsonrpc.rs)
-3.  [Websocket](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/ws.rs)
+1. [Admin API](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/admin/service.rs)
+2. [JSON rpc](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/jsonrpc.rs)
+3. [Websocket](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/ws.rs)
 
 ### 1. Admin API
 
@@ -191,12 +191,12 @@ generated using `createAuthHeader` function from the `calimero sdk` library.
 
 Parts of the Auth Headers
 
-1.  `wallet_type`: Specifies the type of wallet used (e.g., NEAR).
-2.  `signing_key`: Encoded public key used for signing the request.
-3.  `signature`: Encoded signature generated from the payload hash.
-4.  `challenge`: Encoded hash of the payload, serving as a challenge.
-5.  `context_id`: Context identifier for additional request context. Optional
-    for Admin Dashboard but mandatory for applications.
+1. `wallet_type`: Specifies the type of wallet used (e.g., NEAR).
+2. `signing_key`: Encoded public key used for signing the request.
+3. `signature`: Encoded signature generated from the payload hash.
+4. `challenge`: Encoded hash of the payload, serving as a challenge.
+5. `context_id`: Context identifier for additional request context. Optional for
+   Admin Dashboard but mandatory for applications.
 
 **1. Create Root Key**
 

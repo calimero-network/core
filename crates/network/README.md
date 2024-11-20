@@ -98,7 +98,7 @@ the perspective of a single node. It manages connections, protocols, and peer
 interactions. In our implementation, the Swarm is defined as:
 
 ```rust
- Swarm<Behaviour>
+Swarm<Behaviour>
 ```
 
 Where `Behaviour` is a custom type that implements the `NetworkBehaviour` trait.

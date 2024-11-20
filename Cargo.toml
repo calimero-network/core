@@ -139,6 +139,7 @@ x509-parser = "0.16.0"
 axum-server = { version = "0.6", features = ["tls-rustls"] }
 axum-server-dual-protocol = "0.6.0"
 husky-rs = "0.1.1"
+dprint = "0.46.0"
 
 [profile.release]
 strip = "symbols"

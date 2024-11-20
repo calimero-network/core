@@ -1,12 +1,11 @@
 #!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
 
 echo "Running pre-commit hook..."
 
 # Check for changes in Markdown or MDX files
 if git diff --cached --name-only | grep -qE '\.mdx?$'; then
   echo "Markdown or MDX files have been changed."
-  pnpm format:md
+  dprint fmt
 fi
 
 # Check for changes in Rust files
