@@ -30,6 +30,7 @@ impl Node {
                 payload: InitPayload::KeyShare,
             },
             None,
+            None,
         )
         .await?;
 
@@ -75,6 +76,7 @@ impl Node {
                 payload: InitPayload::KeyShare,
             },
             None,
+            None,
         )
         .await?;
 
@@ -101,7 +103,7 @@ impl Node {
             .get_private_key(context.id, our_identity)?
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let (shared_key, nonce) = SharedKey::new(&private_key, &their_identity);
 
         let sender_key = self
             .ctx_manager
@@ -117,6 +119,7 @@ impl Node {
                 payload: MessagePayload::KeyShare { sender_key },
             },
             Some(shared_key),
+            Some(nonce),
         )
         .await?;
 

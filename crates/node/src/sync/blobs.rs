@@ -37,6 +37,7 @@ impl Node {
                 payload: InitPayload::BlobShare { blob_id },
             },
             None,
+            None,
         )
         .await?;
 
@@ -75,7 +76,7 @@ impl Node {
             .get_private_key(context.id, our_identity)?
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let (shared_key, _) = SharedKey::new(&private_key, &their_identity);
 
         let (tx, mut rx) = mpsc::channel(1);
 
@@ -162,7 +163,7 @@ impl Node {
             .get_private_key(context.id, our_identity)?
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let (shared_key, nonce) = SharedKey::new(&private_key, &their_identity);
 
         send(
             stream,
@@ -171,6 +172,7 @@ impl Node {
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
             },
+            None,
             None,
         )
         .await?;
@@ -187,6 +189,7 @@ impl Node {
                     },
                 },
                 Some(shared_key),
+                Some(nonce),
             )
             .await?;
         }
@@ -198,6 +201,7 @@ impl Node {
                 payload: MessagePayload::BlobShare { chunk: b"".into() },
             },
             Some(shared_key),
+            Some(nonce),
         )
         .await?;
 

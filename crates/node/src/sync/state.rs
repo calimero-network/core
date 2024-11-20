@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use calimero_crypto::SharedKey;
+use calimero_crypto::{SharedKey, NONCE_LEN};
 use calimero_network::stream::Stream;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
@@ -38,6 +38,7 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
+            None,
             None,
         )
         .await?;
@@ -112,7 +113,7 @@ impl Node {
             .get_private_key(context.id, our_identity)?
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let (shared_key, nonce) = SharedKey::new(&private_key, &their_identity);
 
         send(
             stream,
@@ -123,6 +124,7 @@ impl Node {
                 },
             },
             Some(shared_key),
+            Some(nonce),
         )
         .await?;
 
@@ -133,6 +135,7 @@ impl Node {
             &mut sqx_out,
             stream,
             shared_key,
+            nonce,
         )
         .await?;
 
@@ -202,6 +205,7 @@ impl Node {
                 },
             },
             None,
+            None,
         )
         .await?;
 
@@ -214,7 +218,7 @@ impl Node {
             .get_private_key(context.id, our_identity)?
             .ok_or_eyre("expected own identity to have private key")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let (shared_key, nonce) = SharedKey::new(&private_key, &their_identity);
 
         let mut sqx_out = Sequencer::default();
 
@@ -225,6 +229,7 @@ impl Node {
             &mut sqx_out,
             stream,
             shared_key,
+            nonce,
         )
         .await
 
@@ -239,6 +244,7 @@ impl Node {
         sqx_out: &mut Sequencer,
         stream: &mut Stream,
         shared_key: SharedKey,
+        nonce: [u8; NONCE_LEN],
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -292,6 +298,7 @@ impl Node {
                     },
                 },
                 Some(shared_key),
+                Some(nonce),
             )
             .await?;
         }

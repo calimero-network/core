@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_crypto::NONCE_LEN;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -18,6 +19,7 @@ pub enum BroadcastMessage<'a> {
         author_id: PublicKey,
         root_hash: Hash,
         artifact: Cow<'a, [u8]>,
+        nonce: [u8; NONCE_LEN],
     },
 }
 

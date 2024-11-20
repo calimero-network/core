@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use calimero_crypto::SharedKey;
+use calimero_crypto::{SharedKey, NONCE_LEN};
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -29,15 +29,19 @@ async fn send(
     stream: &mut Stream,
     message: &StreamMessage<'_>,
     shared_key: Option<SharedKey>,
+    nonce: Option<[u8; NONCE_LEN]>,
 ) -> EyreResult<()> {
     let base_data = borsh::to_vec(message)?;
 
-    let data = match shared_key {
-        Some(key) => match key.encrypt(base_data, [0; 12]) {
-            Some(data) => data,
-            None => bail!("encryption failed"),
-        },
-        None => base_data,
+    let data = match (shared_key, nonce) {
+        (Some(key), Some(nonce)) => key
+            .encrypt(base_data, nonce)
+            .ok_or_eyre("encryption failed")?
+            .into_iter()
+            .chain(nonce.into_iter())
+            .collect(),
+        (Some(_), None) => bail!("nonce must be provided when encrypting"),
+        (None, _) => base_data,
     };
 
     stream.send(Message::new(data)).await?;
@@ -56,10 +60,18 @@ async fn recv(
     let message_data = message?.data.into_owned();
 
     let data = match shared_key {
-        Some(key) => match key.decrypt(message_data, [0; 12]) {
-            Some(data) => data,
-            None => bail!("decryption failed"),
-        },
+        Some(key) => {
+            let (message, nonce) = message_data.split_at(message_data.len() - NONCE_LEN);
+            match key.decrypt(
+                message.to_vec(),
+                nonce
+                    .try_into()
+                    .map_err(|_| eyre!("nonce must be 12 bytes"))?,
+            ) {
+                Some(data) => data,
+                None => bail!("decryption failed"),
+            }
+        }
         None => message_data,
     };
 
@@ -145,7 +157,9 @@ impl Node {
                 Err(err) => {
                     error!(%err, "Failed to handle stream message");
 
-                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError, None).await {
+                    if let Err(err) =
+                        send(&mut stream, &StreamMessage::OpaqueError, None, None).await
+                    {
                         error!(%err, "Failed to send error message");
                     }
                 }
