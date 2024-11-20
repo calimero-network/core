@@ -3,24 +3,25 @@
 [Serde]: https://serde.rs/
 [Wasmer]: https://wasmer.io/
 
-- [Introduction](#introduction)
-- [Core components](#core-components)
-  - [Overview](#overview)
-  - [VMLogic](#vmlogic)
-  - [Host functions](#host-functions)
-  - [Resource limits](#resource-limits)
-  - [Storage](#storage)
-  - [Error handling](#error-handling)
-  - [Serialisation and deserialisation](#serialisation-and-deserialisation)
-- [Operational flow](#operational-flow)
-- [Detailed component descriptions](#detailed-component-descriptions)
-  - [Wasm module execution (`run()` function)](#wasm-module-execution-run-function)
-  - [VMLogic](#vmlogic-1)
-  - [Host functions](#host-functions-1)
-  - [Memory management](#memory-management)
-  - [Storage](#storage-1)
-  - [Error handling](#error-handling-1)
-- [Usage examples](#usage-examples)
+- [Calimero runtime](#calimero-runtime)
+  - [Introduction](#introduction)
+  - [Core components](#core-components)
+    - [Overview](#overview)
+    - [VMLogic](#vmlogic)
+    - [Host functions](#host-functions)
+    - [Resource limits](#resource-limits)
+    - [Storage](#storage)
+    - [Error handling](#error-handling)
+  - [Operational flow](#operational-flow)
+  - [Detailed component descriptions](#detailed-component-descriptions)
+    - [Topology](#topology)
+    - [Wasm module execution (`run()` function)](#wasm-module-execution-run-function)
+    - [VMLogic](#vmlogic-1)
+    - [Host functions](#host-functions-1)
+    - [Memory management](#memory-management)
+    - [Storage](#storage-1)
+    - [Error handling](#error-handling-1)
+  - [Usage examples](#usage-examples)
 
 ## Introduction
 
@@ -28,6 +29,7 @@ The Calimero runtime is a lightweight, sandboxed execution environment for
 WebAssembly (Wasm) modules. It provides a secure and controlled platform for
 running untrusted code with defined resource limits and a set of host-provided
 functions. The runtime is designed to facilitate the execution of smart
+
 contracts or similar applications in a blockchain-like environment. Its modular
 design allows for easy extension and customisation, making it suitable for
 various applications requiring sandboxed execution of untrusted code.
