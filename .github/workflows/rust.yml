@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: ['master']
+    branches: ["master"]
   pull_request:
-    branches: ['master']
+    branches: ["master"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -50,7 +50,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v2
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install pnpm
         run: npm install -g pnpm
@@ -60,7 +60,7 @@ jobs:
         run: pnpm install --prefix ./node-ui
 
       - name: Build node-ui
-        run: pnpm --filter ./node-ui run build
+        run: cd ./node-ui && pnpm build
 
       - name: Setup rust toolchain
         run: rustup toolchain install stable --profile minimal
