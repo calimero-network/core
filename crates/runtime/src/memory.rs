@@ -26,6 +26,11 @@ impl WasmerTunables {
             wasm_stack_size: Some(limits.max_stack_size),
         };
 
+
+
+
+        
+
         Self { base, vmconfig }
     }
 }
