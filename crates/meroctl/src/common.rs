@@ -27,7 +27,6 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url
     let ip = ip.ok_or_else(|| eyre!("No IP address found in Multiaddr"))?;
     let port = port.ok_or_else(|| eyre!("No TCP port found in Multiaddr"))?;
 
-
     let scheme = scheme.unwrap_or("http");
 
     let mut url = Url::parse(&format!("{scheme}://{ip}:{port}"))?;

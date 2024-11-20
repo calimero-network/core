@@ -36,6 +36,7 @@ calimero-node = { path = "../node" }
 calimero-network = { path = "../network" }
 calimero-server = { path = "../server", features = ["jsonrpc", "websocket", "admin"] }
 calimero-store = { path = "../store" }
+husky-rs.workspace = true
 
 [lints]
 workspace = true

@@ -3674,6 +3674,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 
 [[package]]
+name = "husky-rs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ddfac7246a1c6d67c96502a5668a70b7aa6c0c454dca96527af90bfcaf15218"
+
+[[package]]
 name = "hyper"
 version = "0.14.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5300,6 +5306,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "hex 0.4.3",
+ "husky-rs",
  "libp2p",
  "multiaddr",
  "near-crypto 0.26.0",
