@@ -95,8 +95,9 @@ mod integration_tests_package_usage {
 /// ```
 /// use calimero_storage::entities::Element;
 /// use calimero_storage_macros::AtomicUnit;
+/// use borsh::{BorshSerialize, BorshDeserialize};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// #[type_id(43)]
 /// struct Page {
 ///     title: String,
@@ -110,8 +111,9 @@ mod integration_tests_package_usage {
 /// ```
 /// use calimero_storage::entities::Element;
 /// use calimero_storage_macros::{AtomicUnit, Collection};
+/// use borsh::{BorshSerialize, BorshDeserialize};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// #[type_id(44)]
 /// struct Person {
 ///     name: String,
@@ -209,7 +211,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 #(
                     collections.insert(
                         stringify!(#collection_fields).to_owned(),
-                        calimero_storage::interface::Interface::child_info_for(self.id(), &self.#collection_fields).unwrap_or_default()
+                        calimero_storage::interface::MainInterface::child_info_for(self.id(), &self.#collection_fields).unwrap_or_default()
                     );
                 )*
                 collections
@@ -273,9 +275,9 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// ```
 /// use calimero_storage_macros::{AtomicUnit, Collection};
 /// use calimero_storage::entities::{Data, Element};
+/// use borsh::{BorshSerialize, BorshDeserialize};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-/// #[type_id(42)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// struct Book {
 ///     title: String,
 ///     pages: Pages,
@@ -287,8 +289,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// #[children(Page)]
 /// struct Pages;
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-/// #[type_id(43)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// struct Page {
 ///     content: String,
 ///     #[storage]
