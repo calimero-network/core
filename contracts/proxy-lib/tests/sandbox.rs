@@ -38,12 +38,12 @@ async fn setup_test(
     SigningKey,
     SigningKey,
 )> {
-    let config_helper = ConfigContractHelper::new(&worker).await?;
+    let config_helper = ConfigContractHelper::new(worker).await?;
     let bytes = fs::read(common::proxy_lib_helper::PROXY_CONTRACT_WASM)?;
     let alice_sk: SigningKey = common::generate_keypair()?;
     let context_sk = common::generate_keypair()?;
     let relayer_account =
-        common::create_account_with_balance(&worker, generate_near_account_id()?.as_str(), 1000)
+        common::create_account_with_balance(worker, generate_near_account_id()?.as_str(), 1000)
             .await?;
 
     let _test = config_helper
@@ -431,8 +431,9 @@ async fn test_action_change_active_proposals_limit() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_action_change_number_of_approvals(worker: &Worker<Sandbox>) -> Result<()> {
-    let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
+async fn test_action_change_number_of_approvals() -> Result<()> {
+    let worker = get_sandbox_worker().await;
+    let (proxy_helper, relayer_account, members) = setup_action_test(worker).await?;
 
     let default_new_num_approvals: u32 = proxy_helper.view_num_approvals(&relayer_account).await?;
     assert_eq!(default_new_num_approvals, 3);
@@ -450,7 +451,7 @@ async fn test_action_change_number_of_approvals(worker: &Worker<Sandbox>) -> Res
 #[tokio::test]
 async fn test_mutate_storage_value() -> Result<()> {
     let worker = get_sandbox_worker().await;
-    let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
+    let (proxy_helper, relayer_account, members) = setup_action_test(worker).await?;
 
     let key_data = b"example_key".to_vec().into_boxed_slice();
     let value_data = b"example_value".to_vec().into_boxed_slice();
@@ -482,7 +483,7 @@ async fn test_mutate_storage_value() -> Result<()> {
 #[tokio::test]
 async fn test_transfer() -> Result<()> {
     let worker = get_sandbox_worker().await;
-    let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
+    let (proxy_helper, relayer_account, members) = setup_action_test(worker).await?;
 
     let _res = worker
         .root_account()?
@@ -493,7 +494,7 @@ async fn test_transfer() -> Result<()> {
         .await?
         .into_result()?;
 
-    let recipient = create_account_with_balance(&worker, "new_account", 0).await?;
+    let recipient = create_account_with_balance(worker, "new_account", 0).await?;
 
     let recipient_balance = recipient.view_account().await?.balance;
     assert_eq!(
@@ -520,9 +521,9 @@ async fn test_transfer() -> Result<()> {
 #[tokio::test]
 async fn test_combined_proposals() -> Result<()> {
     let worker = get_sandbox_worker().await;
-    let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
+    let (proxy_helper, relayer_account, members) = setup_action_test(worker).await?;
 
-    let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
+    let counter_helper = CounterContractHelper::deploy_and_initialize(worker).await?;
 
     let initial_counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(initial_counter_value, 0, "Counter should start at zero");
@@ -570,9 +571,9 @@ async fn test_combined_proposals() -> Result<()> {
 #[tokio::test]
 async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
     let worker = get_sandbox_worker().await;
-    let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
+    let (proxy_helper, relayer_account, members) = setup_action_test(worker).await?;
 
-    let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
+    let counter_helper = CounterContractHelper::deploy_and_initialize(worker).await?;
 
     let initial_active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)
