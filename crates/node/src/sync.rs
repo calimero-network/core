@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use calimero_crypto::{SharedKey, NONCE_LEN};
+use calimero_crypto::{Nonce, SharedKey};
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
@@ -28,20 +28,15 @@ pub struct SyncConfig {
 async fn send(
     stream: &mut Stream,
     message: &StreamMessage<'_>,
-    shared_key: Option<SharedKey>,
-    nonce: Option<[u8; NONCE_LEN]>,
+    shared_key: Option<(SharedKey, Nonce)>,
 ) -> EyreResult<()> {
     let base_data = borsh::to_vec(message)?;
 
-    let data = match (shared_key, nonce) {
-        (Some(key), Some(nonce)) => key
+    let data = match shared_key {
+        Some((key, nonce)) => key
             .encrypt(base_data, nonce)
-            .ok_or_eyre("encryption failed")?
-            .into_iter()
-            .chain(nonce.into_iter())
-            .collect(),
-        (Some(_), None) => bail!("nonce must be provided when encrypting"),
-        (None, _) => base_data,
+            .ok_or_eyre("encryption failed")?,
+        None => base_data,
     };
 
     stream.send(Message::new(data)).await?;
@@ -51,7 +46,7 @@ async fn send(
 async fn recv(
     stream: &mut Stream,
     duration: Duration,
-    shared_key: Option<SharedKey>,
+    shared_key: Option<(SharedKey, Nonce)>,
 ) -> EyreResult<Option<StreamMessage<'static>>> {
     let Some(message) = timeout(duration, stream.next()).await? else {
         return Ok(None);
@@ -60,10 +55,9 @@ async fn recv(
     let message_data = message?.data.into_owned();
 
     let data = match shared_key {
-        Some(key) => {
-            let (message, nonce) = message_data.split_at(message_data.len() - NONCE_LEN);
+        Some((key, nonce)) => {
             match key.decrypt(
-                message.to_vec(),
+                message_data,
                 nonce
                     .try_into()
                     .map_err(|_| eyre!("nonce must be 12 bytes"))?,
@@ -157,9 +151,7 @@ impl Node {
                 Err(err) => {
                     error!(%err, "Failed to handle stream message");
 
-                    if let Err(err) =
-                        send(&mut stream, &StreamMessage::OpaqueError, None, None).await
-                    {
+                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError, None).await {
                         error!(%err, "Failed to send error message");
                     }
                 }
@@ -172,12 +164,14 @@ impl Node {
             return Ok(None);
         };
 
-        let (context_id, their_identity, payload) = match message {
+        let (context_id, their_identity, payload, nonce) = match message {
             StreamMessage::Init {
                 context_id,
                 party_id,
                 payload,
-            } => (context_id, party_id, payload),
+                nonce,
+                ..
+            } => (context_id, party_id, payload, nonce),
             unexpected @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError) => {
                 bail!("expected initialization handshake, got {:?}", unexpected)
             }
@@ -215,7 +209,7 @@ impl Node {
 
         match payload {
             InitPayload::KeyShare => {
-                self.handle_key_share_request(&context, our_identity, their_identity, stream)
+                self.handle_key_share_request(&context, our_identity, their_identity, stream, nonce)
                     .await?
             }
             InitPayload::BlobShare { blob_id } => {
@@ -247,6 +241,7 @@ impl Node {
                     their_root_hash,
                     their_application_id,
                     stream,
+                    nonce,
                 )
                 .await?
             }

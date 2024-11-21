@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_crypto::NONCE_LEN;
+use calimero_crypto::{Nonce, NONCE_LEN};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -30,10 +30,12 @@ pub enum StreamMessage<'a> {
         party_id: PublicKey,
         // nonce: usize,
         payload: InitPayload,
+        nonce: Nonce,
     },
     Message {
         sequence_id: usize,
         payload: MessagePayload<'a>,
+        nonce: Nonce,
     },
     /// Other peers must not learn anything about the node's state if anything goes wrong.
     OpaqueError,

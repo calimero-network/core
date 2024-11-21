@@ -16,7 +16,7 @@ use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::ProposalAction;
-use calimero_crypto::{SharedKey, NONCE_LEN};
+use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -344,7 +344,7 @@ impl Node {
             return self.initiate_sync(context_id, source).await;
         };
 
-        let (shared_key, _) = SharedKey::from_sk(&sender_key);
+        let shared_key = SharedKey::from_sk(&sender_key);
 
         let artifact = &shared_key
             .decrypt(artifact, nonce)
@@ -388,7 +388,8 @@ impl Node {
                 .get_sender_key(&context.id, &executor_public_key)?
                 .ok_or_eyre("expected own identity to have sender key")?;
 
-            let (shared_key, nonce) = SharedKey::from_sk(&sender_key);
+            let shared_key = SharedKey::from_sk(&sender_key);
+            let nonce = thread_rng().gen::<Nonce>();
 
             let artifact_encrypted = shared_key
                 .encrypt(outcome.artifact.clone(), nonce)
