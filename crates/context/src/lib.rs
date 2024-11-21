@@ -580,7 +580,7 @@ impl ContextManager {
             |meta| {
                 let context = Context::new(
                     context_id,
-                    meta.application.application_id(),
+                    application_id.unwrap_or_else(|| meta.application.application_id()),
                     meta.root_hash.into(),
                 );
 

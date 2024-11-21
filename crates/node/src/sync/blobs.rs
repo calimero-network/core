@@ -6,8 +6,6 @@ use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
-use rand::seq::IteratorRandom;
-use rand::thread_rng;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -24,6 +22,13 @@ impl Node {
         size: u64,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            blob_id=%blob_id,
+            "Initiating blob share",
+        );
+
         send(
             stream,
             &StreamMessage::Init {
@@ -119,18 +124,28 @@ impl Node {
             );
         }
 
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            blob_id=%blob_id,
+            "Blob share completed",
+        );
+
         Ok(())
     }
 
     pub(super) async fn handle_blob_share_request(
         &self,
-        context: Context,
+        context: &Context,
+        our_identity: PublicKey,
         their_identity: PublicKey,
         blob_id: BlobId,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
+            our_identity=%our_identity,
             their_identity=%their_identity,
             blob_id=%blob_id,
             "Received blob share request",
@@ -140,12 +155,6 @@ impl Node {
             warn!(%blob_id, "blob not found");
 
             return Ok(());
-        };
-
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
         };
 
         let private_key = self
@@ -191,6 +200,14 @@ impl Node {
             Some(shared_key),
         )
         .await?;
+
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            blob_id=%blob_id,
+            "Blob share completed",
+        );
 
         Ok(())
     }

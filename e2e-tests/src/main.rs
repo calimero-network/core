@@ -106,7 +106,7 @@ async fn main() -> EyreResult<()> {
     let config_content = read_to_string(config_path).await?;
     let config: Config = serde_json::from_str(&config_content)?;
 
-    let driver = Driver::new(args.into(), config);
+    let mut driver = Driver::new(args.into(), config);
 
     driver.run().await
 }

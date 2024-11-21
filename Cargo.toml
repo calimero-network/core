@@ -33,7 +33,6 @@ members = [
     "./apps/only-peers",
     "./apps/gen-ext",
     "./apps/visited",
-    "./apps/blockchain",
 
     "./contracts/context-config",
     "./contracts/registry",
@@ -80,12 +79,12 @@ libp2p-stream = "0.1.0-alpha.1"
 libp2p-identity = "0.2.9"
 multiaddr = "0.18.1"
 near-account-id = "1.0.0"
-near-crypto = "0.26.0"
-near-jsonrpc-client = "0.13.0"
-near-jsonrpc-primitives = "0.26.0"
-near-primitives = "0.26.0"
+near-crypto = "0.27.0"
+near-jsonrpc-client = "0.14.0"
+near-jsonrpc-primitives = "0.27.0"
+near-primitives = "0.27.0"
 near-sdk = "5.5.0"
-near-workspaces = "0.10.0"
+near-workspaces = "0.15.0"
 notify = "6.1.1"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
