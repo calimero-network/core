@@ -383,9 +383,7 @@ pub trait Data: BorshDeserialize + BorshSerialize {
 /// purpose is to make information such as the Merkle hash trivially available
 /// and prevent the need for repeated lookups.
 ///
-#[derive(
-    BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
-)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub struct ChildInfo {
     /// The unique identifier for the child [`Element`].
@@ -397,6 +395,20 @@ pub struct ChildInfo {
     pub(crate) merkle_hash: [u8; 32],
 
     pub(crate) metadata: Metadata,
+}
+
+impl Ord for ChildInfo {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.created_at()
+            .cmp(&other.created_at())
+            .then_with(|| self.id.cmp(&other.id))
+    }
+}
+
+impl PartialOrd for ChildInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl ChildInfo {
@@ -535,7 +547,7 @@ impl Display for ChildInfo {
 #[non_exhaustive]
 pub struct Element {
     /// The unique identifier for the [`Element`].
-    id: Id,
+    pub(crate) id: Id,
 
     /// Whether the [`Element`] is dirty, i.e. has been modified since it was
     /// last saved.
@@ -551,10 +563,10 @@ pub struct Element {
     #[borsh(skip)]
     pub(crate) merkle_hash: [u8; 32],
 
-    #[borsh(skip)]
     /// The metadata for the [`Element`]. This represents a range of
     /// system-managed properties that are used to process the [`Element`], but
     /// are not part of the primary data.
+    #[borsh(skip)]
     pub(crate) metadata: Metadata,
 
     /// The path to the [`Element`] in the hierarchy of the storage.

@@ -10,7 +10,7 @@ use calimero_storage::collections::UnorderedMap;
 mod __private;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Clone, Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     items: UnorderedMap<String, String>,

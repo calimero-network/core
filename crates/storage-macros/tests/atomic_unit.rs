@@ -29,7 +29,7 @@ use borsh::{to_vec, BorshDeserialize};
 use calimero_storage::address::Path;
 use calimero_storage::entities::{Data, Element};
 use calimero_storage::exports::{Digest, Sha256};
-use calimero_storage::interface::Interface;
+use calimero_storage::interface::MainInterface;
 use calimero_storage_macros::AtomicUnit;
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
@@ -161,7 +161,7 @@ mod basics {
     fn setters__confirm_set_dirty() {
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert!(Interface::save(&mut unit).unwrap());
+        assert!(MainInterface::save(&mut unit).unwrap());
         assert!(!unit.element().is_dirty());
 
         assert!(unit.set_name("Test Name".to_owned()));
@@ -172,12 +172,12 @@ mod basics {
     fn setters__confirm_not_set_not_dirty() {
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert!(Interface::save(&mut unit).unwrap());
+        assert!(MainInterface::save(&mut unit).unwrap());
         assert!(!unit.element().is_dirty());
 
         assert!(unit.set_name("Test Name".to_owned()));
         assert!(unit.element().is_dirty());
-        assert!(Interface::save(&mut unit).unwrap());
+        assert!(MainInterface::save(&mut unit).unwrap());
         assert!(!unit.set_name("Test Name".to_owned()));
         assert!(!unit.element().is_dirty());
     }

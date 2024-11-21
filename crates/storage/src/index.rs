@@ -5,14 +5,13 @@
 mod tests;
 
 use core::marker::PhantomData;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::{ChildInfo, Metadata};
-use crate::env;
+use crate::entities::{ChildInfo, Metadata, UpdatedAt};
 use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
@@ -89,15 +88,21 @@ impl<S: StorageAdaptor> Index<S> {
         child_index.full_hash = Self::calculate_full_merkle_hash_for(child.id(), false)?;
         Self::save_index(&child_index)?;
 
-        parent_index
+        let children = parent_index
             .children
             .entry(collection.to_owned())
-            .or_insert_with(Vec::new)
-            .push(ChildInfo::new(
-                child.id(),
-                child_index.full_hash,
-                child.metadata,
-            ));
+            .or_insert_with(Vec::new);
+
+        let mut ordered = children.drain(..).collect::<BTreeSet<_>>();
+
+        let _ignored = ordered.replace(ChildInfo::new(
+            child.id(),
+            child_index.full_hash,
+            child.metadata,
+        ));
+
+        children.extend(ordered.into_iter());
+
         Self::save_index(&parent_index)?;
         parent_index.full_hash = Self::calculate_full_merkle_hash_for(parent_id, false)?;
         Self::save_index(&parent_index)?;
@@ -284,9 +289,8 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     pub(crate) fn get_collection_names_for(parent_id: Id) -> Result<Vec<String>, StorageError> {
         Ok(Self::get_index(parent_id)?
-            .ok_or(StorageError::IndexNotFound(parent_id))?
-            .children
-            .keys()
+            .iter()
+            .flat_map(|e| e.children.keys())
             .cloned()
             .collect())
     }
@@ -498,13 +502,20 @@ impl<S: StorageAdaptor> Index<S> {
     /// If there's an issue updating or saving the index, an error will be
     /// returned.
     ///
-    pub(crate) fn update_hash_for(id: Id, merkle_hash: [u8; 32]) -> Result<[u8; 32], StorageError> {
+    pub(crate) fn update_hash_for(
+        id: Id,
+        merkle_hash: [u8; 32],
+        updated_at: Option<UpdatedAt>,
+    ) -> Result<[u8; 32], StorageError> {
         let mut index = Self::get_index(id)?.ok_or(StorageError::IndexNotFound(id))?;
         index.own_hash = merkle_hash;
         Self::save_index(&index)?;
         index.full_hash = Self::calculate_full_merkle_hash_for(id, false)?;
-        index.metadata.updated_at = env::time_now().into();
+        if let Some(updated_at) = updated_at {
+            index.metadata.updated_at = updated_at;
+        }
         Self::save_index(&index)?;
+        <Index<S>>::recalculate_ancestor_hashes_for(id)?;
         Ok(index.full_hash)
     }
 }

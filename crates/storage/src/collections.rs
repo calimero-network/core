@@ -1,9 +1,12 @@
 //! High-level data structures for storage.
 
+use core::fmt;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
+use std::sync::LazyLock;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use indexmap::IndexSet;
@@ -21,52 +24,74 @@ pub mod error;
 pub use error::StoreError;
 
 // fixme! macro expects `calimero_storage` to be in deps
+use crate as calimero_storage;
 use crate::address::{Id, Path};
-use crate::entities::{Data, Element};
+use crate::entities::{ChildInfo, Data, Element};
 use crate::interface::{Interface, StorageError};
-use crate::{self as calimero_storage, AtomicUnit, Collection};
+use crate::store::{MainStorage, StorageAdaptor};
+use crate::{AtomicUnit, Collection};
 
-#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug)]
-struct Collection<T> {
-    /// The entries in the collection.
-    #[collection]
-    entries: Entries<T>,
+mod compat {
+    use std::collections::BTreeMap;
 
-    /// The storage element for the map.
-    #[storage]
+    use borsh::{BorshDeserialize, BorshSerialize};
+
+    use crate::entities::{ChildInfo, Collection, Data, Element};
+
+    /// Thing.
+    #[derive(Copy, Clone, Debug)]
+    pub(super) struct RootHandle;
+
+    #[derive(BorshSerialize, BorshDeserialize)]
+    pub(super) struct RootChildDud;
+
+    impl Data for RootChildDud {
+        fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
+            unimplemented!()
+        }
+
+        fn element(&self) -> &Element {
+            unimplemented!()
+        }
+
+        fn element_mut(&mut self) -> &mut Element {
+            unimplemented!()
+        }
+    }
+
+    impl Collection for RootHandle {
+        type Child = RootChildDud;
+
+        fn name(&self) -> &str {
+            "no collection, remove this nonsense"
+        }
+    }
+}
+
+use compat::RootHandle;
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct Collection<T, S: StorageAdaptor = MainStorage> {
     storage: Element,
 
-    #[skip]
     #[borsh(skip)]
     children_ids: RefCell<Option<IndexSet<Id>>>,
+
+    #[borsh(skip)]
+    _priv: PhantomData<(T, S)>,
 }
 
-impl<T: Eq + BorshSerialize + BorshDeserialize> Eq for Collection<T> {}
-
-impl<T: PartialEq + BorshSerialize + BorshDeserialize> PartialEq for Collection<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.entries()
-            .unwrap()
-            .flatten()
-            .eq(other.entries().unwrap().flatten())
+impl<T, S: StorageAdaptor> Data for Collection<T, S> {
+    fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
+        BTreeMap::new()
     }
-}
 
-impl<T: Ord + BorshSerialize + BorshDeserialize> Ord for Collection<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.entries()
-            .unwrap()
-            .flatten()
-            .cmp(other.entries().unwrap().flatten())
+    fn element(&self) -> &Element {
+        &self.storage
     }
-}
 
-impl<T: PartialOrd + BorshSerialize + BorshDeserialize> PartialOrd for Collection<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.entries()
-            .unwrap()
-            .flatten()
-            .partial_cmp(other.entries().unwrap().flatten())
+    fn element_mut(&mut self) -> &mut Element {
+        &mut self.storage
     }
 }
 
@@ -88,39 +113,27 @@ struct Entry<T> {
     storage: Element,
 }
 
-#[derive(Debug)]
-struct CollectionMut<'a, T: BorshSerialize + BorshDeserialize> {
-    collection: &'a mut Collection<T>,
-}
-
-#[derive(Debug)]
-struct EntryMut<'a, T: BorshSerialize + BorshDeserialize> {
-    collection: CollectionMut<'a, T>,
-    entry: Entry<T>,
-}
-
 #[expect(unused_qualifications, reason = "AtomicUnit macro is unsanitized")]
 type StoreResult<T> = std::result::Result<T, StoreError>;
 
-impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
+static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
+
+impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Creates a new collection.
     fn new(id: Option<Id>) -> Self {
         let id = id.unwrap_or_else(|| Id::random());
 
         let mut this = Self {
-            entries: Entries::default(),
             children_ids: RefCell::new(None),
             storage: Element::new(&Path::new("::unused").expect("valid path"), Some(id)),
+            _priv: PhantomData,
         };
 
         if id.is_root() {
-            let _ignored = Interface::save(&mut this).expect("save");
+            let _ignored = <Interface<S>>::save(&mut this).expect("save");
         } else {
-            let root = root::ROOT
-                .with(|root| root.borrow().clone())
-                .expect("no root??");
-
-            let _ = Interface::add_child_to(root.id, &root, &mut this).expect("add child");
+            let _ =
+                <Interface<S>>::add_child_to(*ROOT_ID, &RootHandle, &mut this).expect("add child");
         }
 
         this
@@ -142,14 +155,15 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
         Ok(entry.item)
     }
 
+    #[inline(never)]
     fn get(&self, id: Id) -> StoreResult<Option<T>> {
-        let entry = Interface::find_by_id::<Entry<_>>(id)?;
+        let entry = <Interface<S>>::find_by_id::<Entry<_>>(id)?;
 
         Ok(entry.map(|entry| entry.item))
     }
 
-    fn get_mut(&mut self, id: Id) -> StoreResult<Option<EntryMut<'_, T>>> {
-        let entry = Interface::find_by_id::<Entry<_>>(id)?;
+    fn get_mut(&mut self, id: Id) -> StoreResult<Option<EntryMut<'_, T, S>>> {
+        let entry = <Interface<S>>::find_by_id::<Entry<_>>(id)?;
 
         Ok(entry.map(|entry| EntryMut {
             collection: CollectionMut::new(self),
@@ -165,7 +179,7 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
         &self,
     ) -> StoreResult<impl ExactSizeIterator<Item = StoreResult<T>> + DoubleEndedIterator + '_> {
         let iter = self.children_cache()?.iter().copied().map(|child| {
-            let entry = Interface::find_by_id::<Entry<_>>(child)?
+            let entry = <Interface<S>>::find_by_id::<Entry<_>>(child)?
                 .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
 
             Ok(entry.item)
@@ -194,7 +208,7 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
         let mut cache = self.children_ids.borrow_mut();
 
         if cache.is_none() {
-            let children = Interface::child_info_for(self.id(), &self.entries)?;
+            let children = <Interface<S>>::child_info_for(self.id(), &RootHandle)?;
 
             let children = children.into_iter().map(|c| c.id()).collect();
 
@@ -210,9 +224,16 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
     }
 }
 
-impl<T> EntryMut<'_, T>
+#[derive(Debug)]
+struct EntryMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
+    collection: CollectionMut<'a, T, S>,
+    entry: Entry<T>,
+}
+
+impl<T, S> EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn remove(self) -> StoreResult<T> {
         let old = self
@@ -222,11 +243,8 @@ where
                 self.entry.id(),
             )))?;
 
-        let _ = Interface::remove_child_from(
-            self.collection.id(),
-            &self.collection.entries,
-            self.entry.id(),
-        )?;
+        let _ =
+            <Interface<S>>::remove_child_from(self.collection.id(), &RootHandle, self.entry.id())?;
 
         let _ = self
             .collection
@@ -237,9 +255,10 @@ where
     }
 }
 
-impl<T> Deref for EntryMut<'_, T>
+impl<T, S> Deref for EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     type Target = T;
 
@@ -248,7 +267,7 @@ where
     }
 }
 
-impl<T> DerefMut for EntryMut<'_, T>
+impl<T, S: StorageAdaptor> DerefMut for EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -257,26 +276,33 @@ where
     }
 }
 
-impl<T> Drop for EntryMut<'_, T>
+impl<T, S> Drop for EntryMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn drop(&mut self) {
         self.entry.element_mut().update();
-        let _ignored = Interface::save(&mut self.entry);
+        let _ignored = <Interface<S>>::save(&mut self.entry);
     }
 }
 
-impl<'a, T> CollectionMut<'a, T>
+#[derive(Debug)]
+struct CollectionMut<'a, T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> {
+    collection: &'a mut Collection<T, S>,
+}
+
+impl<'a, T, S> CollectionMut<'a, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
-    fn new(collection: &'a mut Collection<T>) -> Self {
+    fn new(collection: &'a mut Collection<T, S>) -> Self {
         Self { collection }
     }
 
     fn insert(&mut self, item: &mut Entry<T>) -> StoreResult<()> {
-        let _ = Interface::add_child_to(self.collection.id(), &self.entries, item)?;
+        let _ = <Interface<S>>::add_child_to(self.collection.id(), &RootHandle, item)?;
 
         let _ignored = self.collection.children_cache()?.insert(item.id());
 
@@ -287,42 +313,82 @@ where
         let children = self.collection.children_cache()?;
 
         for child in children.drain(..) {
-            let _ = Interface::remove_child_from(
-                self.collection.id(),
-                &self.collection.entries,
-                child,
-            )?;
+            let _ = <Interface<S>>::remove_child_from(self.collection.id(), &RootHandle, child)?;
         }
 
         Ok(())
     }
 }
 
-impl<T> Deref for CollectionMut<'_, T>
+impl<T, S> Deref for CollectionMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
-    type Target = Collection<T>;
+    type Target = Collection<T, S>;
 
     fn deref(&self) -> &Self::Target {
         self.collection
     }
 }
 
-impl<T> DerefMut for CollectionMut<'_, T>
+impl<T, S> DerefMut for CollectionMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.collection
     }
 }
 
-impl<T> Drop for CollectionMut<'_, T>
+impl<T, S> Drop for CollectionMut<'_, T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn drop(&mut self) {
         self.collection.element_mut().update();
+    }
+}
+
+impl<T, S: StorageAdaptor> fmt::Debug for Collection<T, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Collection")
+            .field("element", &self.storage)
+            .finish()
+    }
+}
+
+impl<T: Eq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Eq for Collection<T, S> {}
+
+impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialEq
+    for Collection<T, S>
+{
+    fn eq(&self, other: &Self) -> bool {
+        let l = self.entries().unwrap().flatten();
+        let r = other.entries().unwrap().flatten();
+
+        l.eq(r)
+    }
+}
+
+impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Ord for Collection<T, S> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let l = self.entries().unwrap().flatten();
+        let r = other.entries().unwrap().flatten();
+
+        l.cmp(r)
+    }
+}
+
+impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialOrd
+    for Collection<T, S>
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        let l = self.entries().unwrap().flatten();
+        let r = other.entries().unwrap().flatten();
+
+        l.partial_cmp(r)
     }
 }

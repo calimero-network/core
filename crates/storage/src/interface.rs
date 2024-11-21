@@ -232,7 +232,7 @@ use crate::store::{Key, MainStorage, StorageAdaptor};
 use crate::sync;
 
 /// Convenient type alias for the main storage system.
-pub type Interface = MainInterface<MainStorage>;
+pub type MainInterface = Interface<MainStorage>;
 
 /// Actions to be taken during synchronisation.
 ///
@@ -343,12 +343,10 @@ pub struct ComparisonData {
 
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
-#[expect(private_bounds, reason = "The StorageAdaptor is for internal use only")]
 #[non_exhaustive]
-pub struct MainInterface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
+pub struct Interface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
-#[expect(private_bounds, reason = "The StorageAdaptor is for internal use only")]
-impl<S: StorageAdaptor> MainInterface<S> {
+impl<S: StorageAdaptor> Interface<S> {
     /// Adds a child to a collection.
     ///
     /// # Parameters
@@ -420,11 +418,12 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// If there is an error when deserialising into the specified type, or when
     /// applying the [`Action`], an error will be returned.
     ///
-    pub fn apply_action(action: Action) -> Result<Option<Id>, StorageError> {
-        let ancestors = match action {
+    pub fn apply_action(action: Action) -> Result<(), StorageError> {
+        match action {
             Action::Add {
                 id,
                 data,
+                // todo! we only need parent_id
                 ancestors,
                 metadata,
             }
@@ -434,26 +433,35 @@ impl<S: StorageAdaptor> MainInterface<S> {
                 ancestors,
                 metadata,
             } => {
-                _ = Self::save_raw(id, data, metadata)?;
-                ancestors
+                if let Some(parent) = ancestors.first() {
+                    let own_hash = Sha256::digest(&data).into();
+
+                    <Index<S>>::add_child_to(
+                        parent.id(),
+                        "no collection, remove this nonsense",
+                        ChildInfo::new(id, own_hash, metadata),
+                    )?;
+                }
+
+                if Self::save_internal(id, &data, metadata)?.is_none() {
+                    // we didn't save anything, so we skip updating the ancestors
+                    return Ok(());
+                }
+
+                sync::push_action(Action::Compare { id });
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
-            Action::Delete { id, ancestors, .. } => {
-                _ = S::storage_remove(Key::Entry(id));
-                ancestors
+            Action::Delete {
+                id, ancestors: _, ..
+            } => {
+                // todo! remove_child_from here
+                let _ignored = S::storage_remove(Key::Entry(id));
             }
         };
 
-        for ancestor in &ancestors {
-            let (current_hash, _) = <Index<S>>::get_hashes_for(ancestor.id())?
-                .ok_or(StorageError::IndexNotFound(ancestor.id()))?;
-            if current_hash != ancestor.merkle_hash() {
-                return Ok(Some(ancestor.id()));
-            }
-        }
-        Ok(None)
+        Ok(())
     }
 
     /// The children of the [`Collection`].
@@ -573,7 +581,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     ///
     pub fn compare_trees(
         foreign_entity_data: Option<Vec<u8>>,
-        foreign_index_data: &ComparisonData,
+        foreign_index_data: ComparisonData,
     ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
         let mut actions = (vec![], vec![]);
 
@@ -581,13 +589,13 @@ impl<S: StorageAdaptor> MainInterface<S> {
 
         let local_metadata = <Index<S>>::get_metadata(id)?;
 
-        let Some(local_entity) = Self::find_by_id_raw(id)? else {
+        let Some(local_entity) = Self::find_by_id_raw(id) else {
             if let Some(foreign_entity) = foreign_entity_data {
                 // Local entity doesn't exist, so we need to add it
                 actions.0.push(Action::Add {
                     id,
                     data: foreign_entity,
-                    ancestors: foreign_index_data.ancestors.clone(),
+                    ancestors: foreign_index_data.ancestors,
                     metadata: foreign_index_data.metadata,
                 });
             }
@@ -614,7 +622,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
                     actions.0.push(Action::Update {
                         id,
                         data: foreign_entity_data,
-                        ancestors: foreign_index_data.ancestors.clone(),
+                        ancestors: foreign_index_data.ancestors,
                         metadata: foreign_index_data.metadata,
                     });
                 }
@@ -635,10 +643,10 @@ impl<S: StorageAdaptor> MainInterface<S> {
         let local_collection_names = <Index<S>>::get_collection_names_for(id)?;
 
         let local_collections = local_collection_names
-            .iter()
+            .into_iter()
             .map(|name| {
-                let children = <Index<S>>::get_children_of(id, name)?;
-                Ok((name.clone(), children))
+                let children = <Index<S>>::get_children_of(id, &name)?;
+                Ok((name, children))
             })
             .collect::<Result<BTreeMap<_, _>, StorageError>>()?;
 
@@ -661,7 +669,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
                             actions.1.push(Action::Compare { id: *child_id });
                         }
                         None => {
-                            if let Some(local_child) = Self::find_by_id_raw(*child_id)? {
+                            if let Some(local_child) = Self::find_by_id_raw(*child_id) {
                                 let metadata = <Index<S>>::get_metadata(*child_id)?
                                     .ok_or(StorageError::IndexNotFound(*child_id))?;
 
@@ -689,7 +697,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
             } else {
                 // The entire collection is missing from the foreign entity
                 for child in local_children {
-                    if let Some(local_child) = Self::find_by_id_raw(child.id())? {
+                    if let Some(local_child) = Self::find_by_id_raw(child.id()) {
                         let metadata = <Index<S>>::get_metadata(child.id())?
                             .ok_or(StorageError::IndexNotFound(child.id()))?;
 
@@ -729,10 +737,14 @@ impl<S: StorageAdaptor> MainInterface<S> {
         data: Option<Vec<u8>>,
         comparison_data: ComparisonData,
     ) -> Result<(), StorageError> {
-        let (local, remote) = Interface::compare_trees(data, &comparison_data)?;
+        let (local, remote) = <Interface<S>>::compare_trees(data, comparison_data)?;
 
         for action in local {
-            let _ignored = Interface::apply_action(action)?;
+            if let Action::Compare { .. } = &action {
+                continue;
+            }
+
+            <Interface<S>>::apply_action(action)?;
         }
 
         for action in remote {
@@ -793,13 +805,8 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
     ///          to find.
     ///
-    /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
-    ///
-    pub fn find_by_id_raw(id: Id) -> Result<Option<Vec<u8>>, StorageError> {
-        Ok(S::storage_read(Key::Entry(id)))
+    pub fn find_by_id_raw(id: Id) -> Option<Vec<u8>> {
+        S::storage_read(Key::Entry(id))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -874,21 +881,11 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// will be returned.
     ///
     pub fn generate_comparison_data(id: Option<Id>) -> Result<ComparisonData, StorageError> {
-        let Some(id) = id else {
-            return Ok(ComparisonData {
-                id: Id::root(),
-                own_hash: [0; 32],
-                full_hash: [0; 32],
-                ancestors: Vec::new(),
-                children: BTreeMap::new(),
-                metadata: Metadata::default(),
-            });
-        };
+        let id = id.unwrap_or_else(Id::root);
 
-        let (full_hash, own_hash) =
-            <Index<S>>::get_hashes_for(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let (full_hash, own_hash) = <Index<S>>::get_hashes_for(id)?.unwrap_or_default();
 
-        let metadata = <Index<S>>::get_metadata(id)?.ok_or(StorageError::IndexNotFound(id))?;
+        let metadata = <Index<S>>::get_metadata(id)?.unwrap_or_default();
 
         let ancestors = <Index<S>>::get_ancestors_of(id)?;
 
@@ -1022,21 +1019,28 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// This function will return an error if there are issues accessing local
     /// data or if there are problems during the comparison process.
     ///
-    pub fn commit_root<D: Data>(root: D) -> Result<(), StorageError> {
-        if root.id() != Id::root() {
-            return Err(StorageError::UnexpectedId(root.id()));
+    pub fn commit_root<D: Data>(root: Option<D>) -> Result<(), StorageError> {
+        let id: Id = Id::root();
+
+        let hash = if let Some(root) = root {
+            if root.id() != id {
+                return Err(StorageError::UnexpectedId(root.id()));
+            }
+
+            if !root.element().is_dirty() {
+                return Ok(());
+            }
+
+            let data = to_vec(&root).map_err(|e| StorageError::SerializationError(e.into()))?;
+
+            Self::save_raw(id, data, root.element().metadata)?
+        } else {
+            <Index<S>>::get_hashes_for(id)?.map(|(full_hash, _)| full_hash)
+        };
+
+        if let Some(hash) = hash {
+            sync::commit_root(&hash)?;
         }
-
-        if !root.element().is_dirty() {
-            return Ok(());
-        }
-
-        let data = to_vec(&root).map_err(|e| StorageError::SerializationError(e.into()))?;
-
-        let hash = Self::save_raw(root.id(), data, root.element().metadata)?
-            .expect("root should always be successfully committed");
-
-        sync::commit_root(&hash)?;
 
         Ok(())
     }
@@ -1127,18 +1131,12 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// If an error occurs when serialising data or interacting with the storage
     /// system, an error will be returned.
     ///
-    pub fn save_raw(
+    fn save_internal(
         id: Id,
-        data: Vec<u8>,
+        data: &[u8],
         metadata: Metadata,
-    ) -> Result<Option<[u8; 32]>, StorageError> {
-        if !id.is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
-            return Err(StorageError::CannotCreateOrphan(id));
-        }
-
+    ) -> Result<Option<(bool, [u8; 32])>, StorageError> {
         let last_metadata = <Index<S>>::get_metadata(id)?;
-
-        let is_new = last_metadata.is_none();
 
         if let Some(last_metadata) = &last_metadata {
             if last_metadata.updated_at > metadata.updated_at {
@@ -1148,11 +1146,36 @@ impl<S: StorageAdaptor> MainInterface<S> {
             <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32], metadata))?;
         }
 
-        let own_hash = Sha256::digest(&data).into();
+        let own_hash = Sha256::digest(data).into();
 
-        let full_hash = <Index<S>>::update_hash_for(id, own_hash)?;
+        let full_hash = <Index<S>>::update_hash_for(id, own_hash, Some(metadata.updated_at))?;
 
-        _ = S::storage_write(Key::Entry(id), &data);
+        _ = S::storage_write(Key::Entry(id), data);
+
+        let is_new = metadata.created_at == *metadata.updated_at;
+
+        Ok(Some((is_new, full_hash)))
+    }
+
+    /// Saves raw data to the storage system.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when serialising data or interacting with the storage
+    /// system, an error will be returned.
+    ///
+    pub fn save_raw(
+        id: Id,
+        data: Vec<u8>,
+        metadata: Metadata,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        if !id.is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
+            return Err(StorageError::CannotCreateOrphan(id));
+        }
+
+        let Some((is_new, full_hash)) = Self::save_internal(id, &data, metadata)? else {
+            return Ok(None);
+        };
 
         let ancestors = <Index<S>>::get_ancestors_of(id)?;
 

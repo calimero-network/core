@@ -343,17 +343,12 @@ impl Node {
 
         let shared_key = SharedKey::from_sk(&sender_key);
 
-        let artifact = &shared_key
+        let artifact = shared_key
             .decrypt(artifact, [0; 12])
             .ok_or_eyre("failed to decrypt message")?;
 
         let Some(outcome) = self
-            .execute(
-                &mut context,
-                "apply_state_delta",
-                to_vec(&artifact)?,
-                author_id,
-            )
+            .execute(&mut context, "__calimero_sync_next", artifact, author_id)
             .await?
         else {
             bail!("application not installed");
@@ -500,11 +495,13 @@ impl Node {
                 })?;
         }
 
-        if let Err(err) = self
-            .send_state_delta(&context, &outcome, executor_public_key)
-            .await
-        {
-            error!(%err, "Failed to send state delta.");
+        if !outcome.artifact.is_empty() {
+            if let Err(err) = self
+                .send_state_delta(&context, &outcome, executor_public_key)
+                .await
+            {
+                error!(%err, "Failed to send state delta.");
+            }
         }
 
         Ok(outcome)
@@ -539,7 +536,7 @@ impl Node {
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
-                if outcome.artifact.is_empty() {
+                if outcome.artifact.is_empty() && method != "__calimero_sync_next" {
                     eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
                 }
 

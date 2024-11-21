@@ -102,6 +102,13 @@ impl Node {
         };
 
         if root_hash == context.root_hash {
+            debug!(
+                context_id=%context.id,
+                our_identity=%our_identity,
+                their_identity=%their_identity,
+                "Root hashes match, up to date",
+            );
+
             return Ok(());
         }
 
@@ -206,6 +213,13 @@ impl Node {
         .await?;
 
         if their_root_hash == context.root_hash {
+            debug!(
+                context_id=%context.id,
+                our_identity=%our_identity,
+                their_identity=%their_identity,
+                "Root hashes match, up to date",
+            );
+
             return Ok(());
         }
 
@@ -294,6 +308,10 @@ impl Node {
                 Some(shared_key),
             )
             .await?;
+
+            if outcome.artifact.is_empty() {
+                break;
+            }
         }
 
         debug!(

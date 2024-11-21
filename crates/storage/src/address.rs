@@ -13,7 +13,6 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::serde::{Deserialize, Serialize};
 use fixedstr::Flexstr;
 use thiserror::Error as ThisError;
 
@@ -40,15 +39,13 @@ use crate::env::{context_id, random_bytes};
     Copy,
     Clone,
     Debug,
-    Deserialize,
     Eq,
     PartialEq,
     Hash,
     Ord,
     PartialOrd,
-    Serialize,
+    Default,
 )]
-#[serde(crate = "calimero_sdk::serde")]
 pub struct Id {
     /// The byte array representation of the ID.
     bytes: [u8; 32],

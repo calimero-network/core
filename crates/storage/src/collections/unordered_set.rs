@@ -10,20 +10,32 @@ use super::Collection;
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
+use crate::store::{MainStorage, StorageAdaptor};
 
 /// A set collection that stores unqiue values once.
-#[derive(Clone, BorshSerialize, BorshDeserialize)]
-pub struct UnorderedSet<V> {
-    inner: Collection<V>,
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct UnorderedSet<V, S: StorageAdaptor = MainStorage> {
+    #[borsh(bound(serialize = "", deserialize = ""))]
+    inner: Collection<V, S>,
 }
 
-impl<V> UnorderedSet<V>
+impl<V> UnorderedSet<V, MainStorage>
 where
     V: BorshSerialize + BorshDeserialize,
 {
     /// Create a new set collection.
-    ///
     pub fn new() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<V, S> UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Create a new set collection.
+    fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
         }

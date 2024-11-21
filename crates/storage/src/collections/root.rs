@@ -1,77 +1,56 @@
 //! A root collection that stores a single value.
 
+use core::fmt;
 use std::cell::RefCell;
-use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
-use std::sync::LazyLock;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use super::{Collection, Entry};
+use super::{Collection, ROOT_ID};
 use crate::address::Id;
-use crate::entities::Data;
-use crate::env;
 use crate::interface::Interface;
-
-/// Thing.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(super) struct RootHandle<T> {
-    /// The ID of the root collection.
-    pub id: Id,
-    _priv: PhantomData<T>,
-}
-
-impl<T: Data> RootHandle<T> {
-    fn new(id: Id) -> Self {
-        Self {
-            id,
-            _priv: PhantomData,
-        }
-    }
-}
-
-impl<T: Data> crate::entities::Collection for RootHandle<T> {
-    type Child = T;
-
-    fn name(&self) -> &str {
-        "RootHandle"
-    }
-}
-
-thread_local! {
-    /// The root collection handle.
-    pub static ROOT: RefCell<Option<RootHandle<Entry<()>>>> = RefCell::new(None);
-}
-
-static ID: LazyLock<Id> = LazyLock::new(|| Id::new(env::context_id()));
-
-/// Prepares the root collection.
-fn employ_root_guard() {
-    let old = ROOT.with(|root| root.borrow_mut().replace(RootHandle::new(*ID)));
-
-    if old.is_some() {
-        panic!("root collection already defined");
-    }
-}
+use crate::store::{MainStorage, StorageAdaptor};
 
 /// A set collection that stores unqiue values once.
-#[derive(Debug)]
-pub struct Root<T> {
-    inner: Collection<T>,
+pub struct Root<T, S: StorageAdaptor = MainStorage> {
+    inner: Collection<T, S>,
     value: RefCell<Option<T>>,
     dirty: bool,
 }
 
-impl<T> Root<T>
+impl<T, S> fmt::Debug for Root<T, S>
+where
+    T: BorshSerialize + BorshDeserialize + fmt::Debug,
+    S: StorageAdaptor,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Root")
+            .field("inner", &self.inner)
+            .field("value", &self.value)
+            .field("dirty", &self.dirty)
+            .finish()
+    }
+}
+
+impl<T> Root<T, MainStorage>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     /// Creates a new root collection with the given value.
     pub fn new<F: FnOnce() -> T>(f: F) -> Self {
-        employ_root_guard();
+        Self::new_internal(f)
+    }
+}
 
-        let mut inner = Collection::new(Some(*ID));
+impl<T, S> Root<T, S>
+where
+    T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Creates a new root collection with the given value.
+    pub fn new_internal<F: FnOnce() -> T>(f: F) -> Self {
+        let mut inner = Collection::new(Some(*ROOT_ID));
 
         let id = Self::entry_id();
 
@@ -103,9 +82,7 @@ where
 
     /// Fetches the root collection.
     pub fn fetch() -> Option<Self> {
-        let inner = Interface::root().unwrap()?;
-
-        employ_root_guard();
+        let inner = <Interface<S>>::root().unwrap()?;
 
         Some(Self {
             inner,
@@ -116,8 +93,6 @@ where
 
     /// Commits the root collection.
     pub fn commit(mut self) {
-        let _ignored = ROOT.with(|root| root.borrow_mut().take());
-
         if self.dirty {
             if let Some(value) = self.value.into_inner() {
                 if let Some(mut entry) = self.inner.get_mut(Self::entry_id()).unwrap() {
@@ -126,13 +101,19 @@ where
             }
         }
 
-        Interface::commit_root(self.inner).unwrap();
+        <Interface<S>>::commit_root(Some(self.inner)).unwrap();
+    }
+
+    /// Commits the root collection without an instance of the root state.
+    pub fn commit_headless() {
+        <Interface<S>>::commit_root::<Collection<T>>(None).unwrap();
     }
 }
 
-impl<T> Deref for Root<T>
+impl<T, S> Deref for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     type Target = T;
 
@@ -141,9 +122,10 @@ where
     }
 }
 
-impl<T> DerefMut for Root<T>
+impl<T, S> DerefMut for Root<T, S>
 where
     T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.dirty = true;

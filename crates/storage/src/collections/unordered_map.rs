@@ -7,25 +7,38 @@ use std::mem;
 use borsh::{BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
-use super::Collection;
+use super::{Collection, StorageAdaptor};
 use crate::address::Id;
 use crate::collections::error::StoreError;
 use crate::entities::Data;
+use crate::store::MainStorage;
 
 /// A map collection that stores key-value pairs.
-#[derive(Clone, BorshSerialize, BorshDeserialize)]
-pub struct UnorderedMap<K, V> {
-    inner: Collection<(K, V)>,
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
+    #[borsh(bound(serialize = "", deserialize = ""))]
+    inner: Collection<(K, V), S>,
 }
 
-impl<K, V> UnorderedMap<K, V>
+impl<K, V> UnorderedMap<K, V, MainStorage>
 where
     K: BorshSerialize + BorshDeserialize,
     V: BorshSerialize + BorshDeserialize,
 {
     /// Create a new map collection.
-    ///
     pub fn new() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<K, V, S> UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Create a new map collection.
+    fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
         }
@@ -157,37 +170,41 @@ where
     }
 }
 
-impl<K, V> Eq for UnorderedMap<K, V>
+impl<K, V, S> Eq for UnorderedMap<K, V, S>
 where
     K: Eq + BorshSerialize + BorshDeserialize,
     V: Eq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
 }
 
-impl<K, V> PartialEq for UnorderedMap<K, V>
+impl<K, V, S> PartialEq for UnorderedMap<K, V, S>
 where
     K: PartialEq + BorshSerialize + BorshDeserialize,
     V: PartialEq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn eq(&self, other: &Self) -> bool {
         self.entries().unwrap().eq(other.entries().unwrap())
     }
 }
 
-impl<K, V> Ord for UnorderedMap<K, V>
+impl<K, V, S> Ord for UnorderedMap<K, V, S>
 where
     K: Ord + BorshSerialize + BorshDeserialize,
     V: Ord + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.entries().unwrap().cmp(other.entries().unwrap())
     }
 }
 
-impl<K, V> PartialOrd for UnorderedMap<K, V>
+impl<K, V, S> PartialOrd for UnorderedMap<K, V, S>
 where
     K: PartialOrd + BorshSerialize + BorshDeserialize,
     V: PartialOrd + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.entries()
@@ -196,10 +213,11 @@ where
     }
 }
 
-impl<K, V> fmt::Debug for UnorderedMap<K, V>
+impl<K, V, S> fmt::Debug for UnorderedMap<K, V, S>
 where
     K: fmt::Debug + BorshSerialize + BorshDeserialize,
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
@@ -214,8 +232,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::unordered_map::UnorderedMap;
-    use crate::collections::Root;
+    use crate::collections::{Root, UnorderedMap};
 
     #[test]
     fn test_unordered_map_basic_operations() {

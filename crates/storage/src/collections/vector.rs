@@ -8,21 +8,33 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::Collection;
 use crate::collections::error::StoreError;
+use crate::store::{MainStorage, StorageAdaptor};
 
 /// A vector collection that stores key-value pairs.
-#[derive(Clone, BorshSerialize, BorshDeserialize)]
-pub struct Vector<V> {
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct Vector<V, S: StorageAdaptor = MainStorage> {
     // Borrow/ToOwned
-    inner: Collection<V>,
+    #[borsh(bound(serialize = "", deserialize = ""))]
+    inner: Collection<V, S>,
 }
 
-impl<V> Vector<V>
+impl<V> Vector<V, MainStorage>
 where
     V: BorshSerialize + BorshDeserialize,
 {
     /// Create a new vector collection.
-    ///
     pub fn new() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<V, S> Vector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Create a new vector collection.
+    fn new_internal() -> Self {
         Self {
             inner: Collection::new(None),
         }
@@ -206,8 +218,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::vector::Vector;
-    use crate::collections::Root;
+    use crate::collections::{Root, Vector};
 
     #[test]
     fn test_vector_push() {

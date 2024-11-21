@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use velcro::btree_map;
 
 use super::*;
-use crate::interface::Interface;
+use crate::interface::MainInterface;
 use crate::tests::common::{Page, Paragraph, Paragraphs, Person};
 
 #[cfg(test)]
@@ -30,7 +30,7 @@ mod data__public_methods {
         assert_eq!(
             page.collections(),
             btree_map! {
-                "Paragraphs".to_owned(): Interface::child_info_for(page.id(), &page.paragraphs).unwrap_or_default(),
+                "Paragraphs".to_owned(): MainInterface::child_info_for(page.id(), &page.paragraphs).unwrap_or_default(),
             }
         );
 
@@ -223,7 +223,7 @@ mod element__public_methods {
             age: 30,
             storage: element,
         };
-        assert!(Interface::save(&mut person).unwrap());
+        assert!(MainInterface::save(&mut person).unwrap());
         assert!(!person.element().is_dirty());
 
         person.element_mut().update();
@@ -252,7 +252,7 @@ mod element__public_methods {
             age: 40,
             storage: element,
         };
-        assert!(Interface::save(&mut person).unwrap());
+        assert!(MainInterface::save(&mut person).unwrap());
         assert!(!person.element().is_dirty);
 
         person.element_mut().update();

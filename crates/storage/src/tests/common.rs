@@ -4,7 +4,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use velcro::btree_map;
 
 use crate::entities::{AtomicUnit, ChildInfo, Collection, Data, Element};
-use crate::interface::Interface;
+use crate::interface::MainInterface;
 
 /// For tests against empty data structs.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
@@ -50,7 +50,7 @@ impl AtomicUnit for Page {}
 impl Data for Page {
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         btree_map! {
-            "Paragraphs".to_owned(): Interface::child_info_for(self.id(), &self.paragraphs).unwrap_or_default(),
+            "Paragraphs".to_owned(): MainInterface::child_info_for(self.id(), &self.paragraphs).unwrap_or_default(),
         }
     }
 

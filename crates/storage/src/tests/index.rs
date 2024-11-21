@@ -170,7 +170,7 @@ mod index__public_methods {
         .is_ok());
 
         let collection_name = "Books";
-        let child1_id = Id::random();
+        let child1_id = Id::from([2; 32]);
         let child1_own_hash = [2_u8; 32];
         let child1_full_hash: [u8; 32] =
             hex::decode("75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a")
@@ -178,7 +178,7 @@ mod index__public_methods {
                 .try_into()
                 .unwrap();
 
-        let child2_id = Id::random();
+        let child2_id = Id::from([3; 32]);
         let child2_own_hash = [3_u8; 32];
         let child2_full_hash: [u8; 32] =
             hex::decode("648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b")
@@ -213,7 +213,7 @@ mod index__public_methods {
 
     #[test]
     fn get_children_of__two_collections() {
-        let root_id = Id::random();
+        let root_id = Id::from([1; 32]);
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
@@ -224,14 +224,14 @@ mod index__public_methods {
         .is_ok());
 
         let collection1_name = "Pages";
-        let child1_id = Id::random();
+        let child1_id = Id::from([2; 32]);
         let child1_own_hash = [2_u8; 32];
         let child1_full_hash: [u8; 32] =
             hex::decode("75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a")
                 .unwrap()
                 .try_into()
                 .unwrap();
-        let child2_id = Id::random();
+        let child2_id = Id::from([3; 32]);
         let child2_own_hash = [3_u8; 32];
         let child2_full_hash: [u8; 32] =
             hex::decode("648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b")
@@ -240,7 +240,7 @@ mod index__public_methods {
                 .unwrap();
 
         let collection2_name = "Reviews";
-        let child3_id = Id::random();
+        let child3_id = Id::from([4; 32]);
         let child3_own_hash = [4_u8; 32];
         let child3_full_hash: [u8; 32] =
             hex::decode("9f4fb68f3e1dac82202f9aa581ce0bbf1f765df0e9ac3c8c57e20f685abab8ed")
@@ -498,7 +498,7 @@ mod hashing {
 
     #[test]
     fn calculate_full_merkle_hash_for__with_children() {
-        let root_id = Id::random();
+        let root_id = Id::from([0; 32]);
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(
             root_id,
             [0_u8; 32],
@@ -507,15 +507,15 @@ mod hashing {
         .is_ok());
 
         let collection_name = "Children";
-        let child1_id = Id::random();
+        let child1_id = Id::from([1; 32]);
         let child1_hash = [1_u8; 32];
         let child1_info = ChildInfo::new(child1_id, child1_hash, Metadata::default());
         assert!(<Index<MainStorage>>::add_child_to(root_id, collection_name, child1_info).is_ok());
-        let child2_id = Id::random();
+        let child2_id = Id::from([2; 32]);
         let child2_hash = [2_u8; 32];
         let child2_info = ChildInfo::new(child2_id, child2_hash, Metadata::default());
         assert!(<Index<MainStorage>>::add_child_to(root_id, collection_name, child2_info).is_ok());
-        let child3_id = Id::random();
+        let child3_id = Id::from([3; 32]);
         let child3_hash = [3_u8; 32];
         let child3_info = ChildInfo::new(child3_id, child3_hash, Metadata::default());
         assert!(<Index<MainStorage>>::add_child_to(root_id, collection_name, child3_info).is_ok());
@@ -750,7 +750,7 @@ mod hashing {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.full_hash, root_hash0);
 
-        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2).is_ok());
+        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None).is_ok());
         let updated_root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(updated_root_index.id, root_id);
         assert_eq!(updated_root_index.full_hash, root_full_hash);
@@ -773,7 +773,7 @@ mod hashing {
         assert_eq!(root_index.id, root_id);
         assert_eq!(root_index.own_hash, root_hash1);
 
-        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2).is_ok());
+        assert!(<Index<MainStorage>>::update_hash_for(root_id, root_hash2, None).is_ok());
         let updated_root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(updated_root_index.id, root_id);
         assert_eq!(updated_root_index.own_hash, root_hash2);
