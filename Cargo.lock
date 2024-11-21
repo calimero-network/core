@@ -2589,6 +2589,7 @@ version = "0.1.0"
 dependencies = [
  "calimero-sdk",
  "calimero-sdk-near",
+ "calimero-storage",
 ]
 
 [[package]]
@@ -5494,6 +5495,7 @@ name = "only-peers"
 version = "0.1.0"
 dependencies = [
  "calimero-sdk",
+ "calimero-storage",
 ]
 
 [[package]]

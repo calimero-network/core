@@ -134,7 +134,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             call = quote_spanned! {ret.ty.span()=>
                 let output = #call;
                 let output = {
-                    #[expect(unused_imports)]
+                    #[allow(unused_imports)]
                     use ::calimero_sdk::__private::IntoResult;
                     match ::calimero_sdk::__private::WrappedReturn::new(output)
                         .into_result()
