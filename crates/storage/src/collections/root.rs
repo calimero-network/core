@@ -49,6 +49,7 @@ where
     S: StorageAdaptor,
 {
     /// Creates a new root collection with the given value.
+    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
     pub fn new_internal<F: FnOnce() -> T>(f: F) -> Self {
         let mut inner = Collection::new(Some(*ROOT_ID));
 
@@ -67,6 +68,8 @@ where
         Id::new([118; 32])
     }
 
+    #[expect(clippy::mut_from_ref, reason = "'tis fine")]
+    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
     fn get(&self) -> &mut T {
         let mut value = self.value.borrow_mut();
 
@@ -81,6 +84,11 @@ where
     }
 
     /// Fetches the root collection.
+    #[expect(
+        clippy::unwrap_used,
+        clippy::unwrap_in_result,
+        reason = "fatal error if it happens"
+    )]
     pub fn fetch() -> Option<Self> {
         let inner = <Interface<S>>::root().unwrap()?;
 
@@ -92,6 +100,7 @@ where
     }
 
     /// Commits the root collection.
+    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
     pub fn commit(mut self) {
         if self.dirty {
             if let Some(value) = self.value.into_inner() {
@@ -105,6 +114,7 @@ where
     }
 
     /// Commits the root collection without an instance of the root state.
+    #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
     pub fn commit_headless() {
         <Interface<S>>::commit_root::<Collection<T>>(None).unwrap();
     }

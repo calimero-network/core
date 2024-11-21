@@ -5,7 +5,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use crate::interface::ComparisonData;
 
 /// Comparison data for synchronisation.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[expect(clippy::exhaustive_structs, reason = "Exhaustive")]
 pub struct Comparison {
     /// The serialised data of the entity.

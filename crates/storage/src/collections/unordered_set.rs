@@ -157,8 +157,12 @@ impl<V> PartialEq for UnorderedSet<V>
 where
     V: PartialEq + BorshSerialize + BorshDeserialize,
 {
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        self.entries().unwrap().eq(other.entries().unwrap())
+        let l = self.entries().unwrap();
+        let r = other.entries().unwrap();
+
+        l.eq(r)
     }
 }
 
@@ -166,8 +170,12 @@ impl<V> Ord for UnorderedSet<V>
 where
     V: Ord + BorshSerialize + BorshDeserialize,
 {
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.entries().unwrap().cmp(other.entries().unwrap())
+        let l = self.entries().unwrap();
+        let r = other.entries().unwrap();
+
+        l.cmp(r)
     }
 }
 
@@ -176,9 +184,10 @@ where
     V: PartialOrd + BorshSerialize + BorshDeserialize,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.entries()
-            .unwrap()
-            .partial_cmp(other.entries().unwrap())
+        let l = self.entries().ok()?;
+        let r = other.entries().ok()?;
+
+        l.partial_cmp(r)
     }
 }
 
@@ -186,6 +195,7 @@ impl<V> fmt::Debug for UnorderedSet<V>
 where
     V: fmt::Debug + BorshSerialize + BorshDeserialize,
 {
+    #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_struct("UnorderedSet")

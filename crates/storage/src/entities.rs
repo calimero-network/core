@@ -383,7 +383,7 @@ pub trait Data: BorshDeserialize + BorshSerialize {
 /// purpose is to make information such as the Merkle hash trivially available
 /// and prevent the need for repeated lookups.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ChildInfo {
     /// The unique identifier for the child [`Element`].
@@ -394,6 +394,7 @@ pub struct ChildInfo {
     /// used to determine whether the data has changed and is valid.
     pub(crate) merkle_hash: [u8; 32],
 
+    /// The metadata for the child [`Element`].
     pub(crate) metadata: Metadata,
 }
 
@@ -543,7 +544,7 @@ impl Display for ChildInfo {
 /// key-value stores. Therefore, this approach and other similar patterns are
 /// not suitable for our use case.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Element {
     /// The unique identifier for the [`Element`].
@@ -774,17 +775,7 @@ impl Display for Element {
 /// nanosecond precision. This is more than sufficient for our current needs.
 ///
 #[derive(
-    BorshDeserialize,
-    BorshSerialize,
-    Copy,
-    Clone,
-    Debug,
-    Default,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
+    BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd,
 )]
 #[non_exhaustive]
 pub struct Metadata {
@@ -801,9 +792,7 @@ pub struct Metadata {
 }
 
 /// The timestamp when the [`Element`] was last updated.
-#[derive(
-    BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialOrd,
-)]
+#[derive(BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Default, Eq, Ord, PartialOrd)]
 pub struct UpdatedAt(u64);
 
 impl PartialEq for UpdatedAt {

@@ -263,7 +263,7 @@ pub type MainInterface = Interface<MainStorage>;
 /// Note: This enum contains the entity type, for passing to the guest for
 /// processing along with the ID and data.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[expect(clippy::exhaustive_enums, reason = "Exhaustive")]
 pub enum Action {
     /// Add an entity with the given ID, type, and data.
@@ -317,7 +317,7 @@ pub enum Action {
 }
 
 /// Data that is used for comparison between two nodes.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ComparisonData {
     /// The unique identifier of the entity being compared.
     id: Id,

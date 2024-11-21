@@ -120,6 +120,7 @@ static ROOT_ID: LazyLock<Id> = LazyLock::new(|| Id::root());
 
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     /// Creates a new collection.
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn new(id: Option<Id>) -> Self {
         let id = id.unwrap_or_else(|| Id::random());
 
@@ -204,6 +205,11 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         Ok(())
     }
 
+    #[expect(
+        clippy::unwrap_in_result,
+        clippy::expect_used,
+        reason = "fatal error if it happens"
+    )]
     fn children_cache(&self) -> StoreResult<&mut IndexSet<Id>> {
         let mut cache = self.children_ids.borrow_mut();
 
@@ -365,6 +371,7 @@ impl<T: Eq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Eq for Collec
 impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialEq
     for Collection<T, S>
 {
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
         let l = self.entries().unwrap().flatten();
         let r = other.entries().unwrap().flatten();
@@ -374,6 +381,7 @@ impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Partia
 }
 
 impl<T: Ord + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Ord for Collection<T, S> {
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let l = self.entries().unwrap().flatten();
         let r = other.entries().unwrap().flatten();
@@ -386,8 +394,8 @@ impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Parti
     for Collection<T, S>
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.entries().unwrap().flatten();
-        let r = other.entries().unwrap().flatten();
+        let l = self.entries().ok()?.flatten();
+        let r = other.entries().ok()?.flatten();
 
         l.partial_cmp(r)
     }

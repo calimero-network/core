@@ -16,7 +16,7 @@ use crate::interface::StorageError;
 use crate::store::{Key, StorageAdaptor};
 
 /// Stored index information for an entity in the storage system.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct EntityIndex {
     /// Unique identifier of the entity.
     id: Id,
@@ -246,6 +246,7 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(ancestors)
     }
 
+    /// Retrieves the metadata of a given entity.
     pub(crate) fn get_metadata(id: Id) -> Result<Option<Metadata>, StorageError> {
         Ok(Self::get_index(id)?.map(|index| index.metadata))
     }
