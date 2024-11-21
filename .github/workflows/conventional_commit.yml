@@ -3,7 +3,7 @@ name: Check Conventional Commit Messages
 on:
   push:
     branches:
-      - chore--add-commitizen
+      - "chore: add commitizen"
 
 jobs:
   validate-commit:
