@@ -1124,7 +1124,6 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
 
     let node1_balance = worker.view_account(&node1.id()).await?.balance;
 
-    // Deploy proxy contract
     let res = node1
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
@@ -1155,10 +1154,14 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let expected_log = format!("Context `{}` added", context_id);
     assert!(res.logs().iter().any(|log| log == &expected_log));
 
+    time::sleep(time::Duration::from_secs(1)).await;
+
     let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
 
     let diff = node1_balance.saturating_sub(node1_balance_after);
     let node1_balance = node1_balance_after;
+
+    println!("Node1 balance diff: {}", diff);
 
     assert!(
         diff < NearToken::from_millinear(10),
@@ -1185,6 +1188,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     println!("Initial storage usage: {}", initial_storage);
     println!("Initial WASM size: {}", initial_code_size);
     println!("Initial Balance: {}", initial_balance);
+    println!("Initial Node1 Balance: {}", node1_balance);
 
     let res = contract
         .call("set_proxy_code")
@@ -1216,10 +1220,14 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
 
     assert!(res.failures().is_empty(), "{:#?}", res.failures());
 
+    time::sleep(time::Duration::from_secs(1)).await;
+
     let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
 
     let diff = node1_balance.saturating_sub(node1_balance_after);
     let node1_balance = node1_balance_after;
+
+    println!("Node1 balance diff: {}", diff);
 
     assert!(
         diff < NearToken::from_millinear(10),
@@ -1236,6 +1244,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     println!("Intermediate storage usage: {}", intermediate_storage);
     println!("Intermediate WASM size: {}", intermediate_code_size);
     println!("Intermediate Balance: {}", intermediate_balance);
+    println!("Intermediate Node1 Balance: {}", node1_balance);
 
     // Calculate raw differences (can be negative)
     let storage_change = intermediate_storage as i64 - initial_storage as i64;
@@ -1291,9 +1300,13 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
 
     assert!(res.failures().is_empty(), "{:#?}", res.failures());
 
+    time::sleep(time::Duration::from_secs(1)).await;
+
     let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
 
     let diff = node1_balance.saturating_sub(node1_balance_after);
+
+    println!("Node1 balance diff: {}", diff);
 
     assert!(
         diff < NearToken::from_millinear(10),
@@ -1310,6 +1323,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     println!("Final storage usage: {}", final_storage);
     println!("Final WASM size: {}", final_code_size);
     println!("Final Balance: {}", final_balance);
+    println!("Final Node1 Balance: {}", node1_balance);
 
     // Calculate raw differences (can be negative)
     let storage_change = final_storage as i64 - intermediate_storage as i64;
