@@ -5,15 +5,29 @@ use calimero_context_config::types::ContextId;
 use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use common::config_helper::ConfigContractHelper;
 use common::counter_helper::CounterContractHelper;
-use common::create_account_with_balance;
 use common::proxy_lib_helper::ProxyContractHelper;
+use common::{create_account_with_balance, generate_near_account_id};
 use ed25519_dalek::SigningKey;
-use eyre::Result;
+use eyre::{Ok, Result};
 use near_sdk::{AccountId, NearToken};
 use near_workspaces::network::Sandbox;
 use near_workspaces::{Account, Worker};
+use tokio;
+use tokio::sync::OnceCell;
 
 mod common;
+
+static SANDBOX_WORKER: OnceCell<Worker<Sandbox>> = OnceCell::const_new();
+
+async fn get_sandbox_worker() -> &'static Worker<Sandbox> {
+    SANDBOX_WORKER
+        .get_or_init(|| async {
+            near_workspaces::sandbox()
+                .await
+                .expect("Failed to initialize sandbox")
+        })
+        .await
+}
 
 async fn setup_test(
     worker: &Worker<Sandbox>,
@@ -28,7 +42,9 @@ async fn setup_test(
     let bytes = fs::read(common::proxy_lib_helper::PROXY_CONTRACT_WASM)?;
     let alice_sk: SigningKey = common::generate_keypair()?;
     let context_sk = common::generate_keypair()?;
-    let relayer_account = common::create_account_with_balance(&worker, "account", 1000).await?;
+    let relayer_account =
+        common::create_account_with_balance(&worker, generate_near_account_id()?.as_str(), 1000)
+            .await?;
 
     let _test = config_helper
         .config_contract
@@ -63,8 +79,7 @@ async fn setup_test(
 
 #[tokio::test]
 async fn update_proxy_code() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
-
+    let worker = get_sandbox_worker().await;
     let (config_helper, _proxy_helper, relayer_account, context_sk, alice_sk) =
         setup_test(&worker).await?;
 
@@ -80,13 +95,12 @@ async fn update_proxy_code() -> Result<()> {
             .any(|log| log.contains("Successfully updated proxy contract")),
         "Expected success message in logs"
     );
-
     Ok(())
 }
 
 #[tokio::test]
 async fn test_create_proposal() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
@@ -105,13 +119,12 @@ async fn test_create_proposal() -> Result<()> {
         }
         None => panic!("Expected to create a proposal, but got None"),
     }
-
     Ok(())
 }
 
 #[tokio::test]
 async fn test_view_proposal() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
@@ -148,7 +161,7 @@ async fn test_view_proposal() -> Result<()> {
 
 #[tokio::test]
 async fn test_create_proposal_with_existing_id() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
@@ -233,7 +246,7 @@ async fn test_create_multiple_proposals() -> Result<()> {
 
 #[tokio::test]
 async fn test_create_proposal_and_approve_by_member() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
 
     let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
         setup_test(&worker).await?;
@@ -266,10 +279,8 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
 async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
-
+    let worker = get_sandbox_worker().await;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
@@ -364,7 +375,7 @@ async fn create_and_approve_proposal(
 
 #[tokio::test]
 async fn test_execute_proposal() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
     let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
@@ -396,7 +407,7 @@ async fn test_execute_proposal() -> Result<()> {
 
 #[tokio::test]
 async fn test_action_change_active_proposals_limit() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
     let default_active_proposals_limit: u32 = proxy_helper
@@ -418,9 +429,7 @@ async fn test_action_change_active_proposals_limit() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_action_change_number_of_approvals() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+async fn test_action_change_number_of_approvals(worker: &Worker<Sandbox>) -> Result<()> {
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
     let default_new_num_approvals: u32 = proxy_helper.view_num_approvals(&relayer_account).await?;
@@ -438,7 +447,7 @@ async fn test_action_change_number_of_approvals() -> Result<()> {
 
 #[tokio::test]
 async fn test_mutate_storage_value() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
     let key_data = b"example_key".to_vec().into_boxed_slice();
@@ -470,7 +479,7 @@ async fn test_mutate_storage_value() -> Result<()> {
 
 #[tokio::test]
 async fn test_transfer() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
     let _res = worker
@@ -508,7 +517,7 @@ async fn test_transfer() -> Result<()> {
 
 #[tokio::test]
 async fn test_combined_proposals() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
     let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
@@ -558,7 +567,7 @@ async fn test_combined_proposals() -> Result<()> {
 
 #[tokio::test]
 async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
     let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
@@ -599,10 +608,10 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
 
 #[tokio::test]
 async fn test_view_proposals() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = get_sandbox_worker().await;
 
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(worker).await?;
 
     let proposal1_actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 5,
