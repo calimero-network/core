@@ -1,0 +1,34 @@
+name: Check Conventional Commit Messages
+
+on:
+  push:
+    branches:
+      - "chore: add commitizen"
+
+jobs:
+  validate-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install commitlint
+        run: |
+          npm install --global @commitlint/cli @commitlint/config-conventional
+
+      - name: Fetch last commit
+        run: |
+          LAST_COMMIT=$(git log -1 --pretty=format:"%s")
+          echo "Commit message: $LAST_COMMIT"
+          echo "commit_message=$LAST_COMMIT" >> $GITHUB_ENV
+
+      - name: Validate commit message
+        run: commitlint --env-commit-message
+        env:
+          commit_message: ${{ env.commit_message }}
