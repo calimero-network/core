@@ -199,6 +199,7 @@ pub enum ContextRequestKind {
     RemoveMembers(Vec<ContextIdentity>),
     Grant(Vec<CapabilityAssignment>),
     Revoke(Vec<CapabilityAssignment>),
+    UpdateProxyContract,
 }
 
 impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
@@ -235,6 +236,9 @@ impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
                     })
                     .collect(),
             ),
+            crate::ContextRequestKind::UpdateProxyContract => {
+                ContextRequestKind::UpdateProxyContract
+            }
         }
     }
 }

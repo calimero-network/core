@@ -10,9 +10,12 @@ use starknet::core::utils::get_selector_from_name;
 use starknet::providers::jsonrpc::HttpTransport;
 use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet::signers::{LocalWallet, SigningKey};
+use starknet::core::codec::Decode;
+use starknet::accounts::ConnectedAccount;
 use thiserror::Error;
 
 use super::Protocol;
+use crate::client::env::proxy::starknet::StarknetProposalWithApprovals;
 use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
 
 #[derive(Copy, Clone, Debug)]
@@ -237,7 +240,8 @@ impl Network {
             .client
             .call(&function_call, BlockId::Tag(BlockTag::Latest))
             .await;
-
+        println!("function call: {:?}", method);
+        println!("response {:?}", response);
         response.map_or(
             Err(StarknetError::InvalidResponse {
                 operation: ErrorOperation::Query,
@@ -310,7 +314,40 @@ impl Network {
             .await
             .unwrap();
 
-        let transaction_hash: Vec<u8> = vec![response.transaction_hash.to_bytes_be()[0]];
-        Ok(transaction_hash)
+        let receipt = account.provider().get_transaction_receipt(response.transaction_hash).await.unwrap();
+
+        match receipt.receipt {
+            starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) => {
+                match invoke_receipt.execution_result {
+                    starknet::core::types::ExecutionResult::Succeeded => {
+                        for event in invoke_receipt.events.iter() {
+                            if event.from_address == contract_id {
+                                let result = StarknetProposalWithApprovals::decode(&event.data)
+                                    .map_err(|e| StarknetError::Custom {
+                                        operation: ErrorOperation::Query,
+                                        reason: format!("Failed to decode event: {:?}", e),
+                                    })?;
+                                
+                                println!("Event decoded: {:?}", result);
+                                
+                                // Add length prefix (32 bytes)
+                                let mut encoded = vec![0u8; 32];
+                                
+                                // Add proposal_id low part (32 bytes)
+                                encoded.extend_from_slice(&result.proposal_id.low.to_bytes_be());
+                                
+                                // Add num_approvals (32 bytes)
+                                encoded.extend_from_slice(&result.num_approvals.to_bytes_be());
+                                
+                                return Ok(encoded);
+                            }
+                        }
+                        Ok(vec![])
+                    },
+                    _ => Ok(vec![0])
+                }
+            },
+            _ => Ok(vec![0])
+        }
     }
 }

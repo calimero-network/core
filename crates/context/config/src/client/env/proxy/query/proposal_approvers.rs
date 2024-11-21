@@ -3,11 +3,14 @@ use std::mem;
 use serde::Serialize;
 
 use super::ProposalId;
+use crate::client::env::proxy::types::starknet::{StarknetProposalId, StarknetApprovers};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::repr::Repr;
 use crate::types::ContextIdentity;
+use starknet::core::types::Felt;
+use starknet::core::codec::Decode;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalApproversRequest {
@@ -44,10 +47,38 @@ impl Method<Starknet> for ProposalApproversRequest {
     type Returns = Vec<ContextIdentity>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        // Convert ProposalId to StarknetProposalId
+        let starknet_id: StarknetProposalId = self.proposal_id.into();
+        
+        // Encode both high and low parts
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(&starknet_id.high.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.low.to_bytes_be());
+        
+        Ok(encoded)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        // Convert bytes to Felts
+        let mut felts = Vec::new();
+        for chunk in response.chunks(32) {
+            if chunk.len() == 32 {
+                felts.push(Felt::from_bytes_be(chunk.try_into().unwrap()));
+            }
+        }
+        println!("Felts for decoding: {:?}", felts);
+
+        // First felt should be array length
+        if !felts.is_empty() {
+            let array_len = u32::from_be_bytes(felts[0].to_bytes_be()[28..32].try_into().unwrap());
+            println!("Array length from felt: {}", array_len);
+        }
+
+        // Decode the array of approvers
+        let approvers = StarknetApprovers::decode(&felts)
+            .map_err(|e| eyre::eyre!("Failed to decode approvers: {:?}", e))?;
+        println!("Decoded approvers: {:?}", approvers);
+        
+        Ok(approvers.into())
     }
 }

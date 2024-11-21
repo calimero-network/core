@@ -1,12 +1,21 @@
 use ed25519_dalek::{Signer, SigningKey};
+use starknet_crypto::{poseidon_hash_many, Felt};
+use starknet::signers::SigningKey as StarknetSigningKey;
+use starknet::core::codec::Encode;
+use crate::client::env::proxy::starknet::StarknetProposalWithApprovals;
+use crate::Repr;
+use crate::repr::ReprBytes;
 
 use crate::client::env::{utils, Method};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::types::Signed;
+use crate::types::{ProposalId, Signed, SignerId};
 use crate::{ProposalWithApprovals, ProxyMutateRequest};
+use starknet::core::codec::Decode;
+
+use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
 
 pub mod methods;
 
@@ -49,21 +58,70 @@ impl Method<Near> for Mutate {
 
 impl Method<Starknet> for Mutate {
     type Returns = Option<ProposalWithApprovals>;
-
     const METHOD: &'static str = "mutate";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        // sign the params, encode it and return
-        // since you will have a `Vec<Felt>` here, you can
-        // `Vec::with_capacity(32 * calldata.len())` and then
-        // extend the `Vec` with each `Felt::to_bytes_le()`
-        // when this `Vec<u8>` makes it to `StarknetTransport`,
-        // reconstruct the `Vec<Felt>` from it
-        todo!()
+        // Derive ECDSA key for signing
+        let secret_scalar = Felt::from_bytes_be(&self.signing_key);
+        let signing_key = StarknetSigningKey::from_secret_scalar(secret_scalar);
+        let verifying_key = signing_key.verifying_key().scalar();
+        let verifying_key_bytes = verifying_key.to_bytes_be();
+
+        // Create signer_id from ECDSA verifying key for signature verification
+        let signer_id = Repr::new(SignerId::from_bytes(|bytes| {
+            bytes.copy_from_slice(&verifying_key_bytes);
+            Ok(32)
+        })?);
+
+        // Create request with signer_id
+        let request = StarknetProxyMutateRequest::from((signer_id, self.raw_request));
+
+        // Serialize -> Hash -> Sign with ECDSA
+        let mut serialized_request = vec![];
+        request.encode(&mut serialized_request)?;
+        let hash = poseidon_hash_many(&serialized_request);
+        let signature = signing_key.sign(&hash)?;
+
+        let signed_request = StarknetSignedRequest {
+            payload: serialized_request,
+            signature_r: signature.r,
+            signature_s: signature.s,
+        };
+
+        let mut signed_request_serialized = vec![];
+        signed_request.encode(&mut signed_request_serialized)?;
+
+        let bytes: Vec<u8> = signed_request_serialized
+            .iter()
+            .flat_map(|felt| felt.to_bytes_be())
+            .collect();
+
+        Ok(bytes)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        println!("response: {:?}", response);
+        if response.is_empty() {
+            return Ok(None);
+        }
+
+        // Skip first 32 bytes (array length)
+        let response = &response[32..];
+
+        // Get proposal_id from the next 32 bytes (using only low part)
+        let proposal_id = Repr::new(ProposalId::from_bytes(|bytes| {
+            bytes.copy_from_slice(&response[..32]);
+            Ok(32)
+        })?);
+
+        // Get num_approvals from the last 32 bytes
+        let num_approvals = u32::from_be_bytes(response[32..][28..32].try_into()?)
+            as usize;
+
+        Ok(Some(ProposalWithApprovals {
+            proposal_id,
+            num_approvals,
+        }))
     }
 }
 

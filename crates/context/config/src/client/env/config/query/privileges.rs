@@ -89,39 +89,39 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() {
-            return Ok(BTreeMap::new());
-        }
+        // if response.is_empty() {
+        //     return Ok(BTreeMap::new());
+        // }
 
-        let mut result = BTreeMap::new();
-        let mut offset = 0;
+        // let mut result = BTreeMap::new();
+        // let mut offset = 0;
 
-        // First felt is array length
-        let array_len = u64::from_be_bytes(response[24..32].try_into()?);
-        offset += 32;
+        // // First felt is array length
+        // let array_len = u64::from_be_bytes(response[24..32].try_into()?);
+        // offset += 32;
 
-        // Process each (identity, capabilities) pair
-        for _ in 0..array_len {
-            // Read identity (2 felts)
-            let identity_bytes = &response[offset..offset + 64];
-            let identity = SignerId::from_bytes(identity_bytes)?;
-            offset += 64;
+        // // Process each (identity, capabilities) pair
+        // for _ in 0..array_len {
+        //     // Read identity from 2 felts (32 bytes each)
+        //     let identity = SignerId::from_bytes(|bytes| {
+        //         // Take the second felt (low part) for SignerId
+        //         bytes.copy_from_slice(&response[offset + 32..offset + 64]);
+        //         Ok(32) // Return successful result with number of bytes written
+        //     })?;
+        //     offset += 64; // Skip both felts (high and low parts)
 
-            // Read capabilities array length
-            let cap_len = u64::from_be_bytes(response[offset + 24..offset + 32].try_into()?);
-            offset += 32;
+        //     // Read capability (1 felt)
+        //     let cap_value = u64::from_be_bytes(response[offset + 24..offset + 32].try_into()?);
+        //     offset += 32;
 
-            // Read capabilities
-            let mut capabilities = Vec::new();
-            for _ in 0..cap_len {
-                let cap_value = u64::from_be_bytes(response[offset + 24..offset + 32].try_into()?);
-                capabilities.push(Capability::from_u64(cap_value)?);
-                offset += 32;
-            }
+        //     // Create capabilities vector with single capability
+        //     let capabilities = vec![Capability::from(cap_value)];
 
-            result.insert(identity, capabilities);
-        }
+        //     result.insert(identity, capabilities);
+        // }
 
-        Ok(result)
+        // Ok(result)
+
+        todo!()
     }
 }

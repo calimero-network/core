@@ -27,10 +27,18 @@ impl Method<Starknet> for ActiveProposalRequest {
     type Returns = u16;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        // No parameters needed for this call
+        Ok(Vec::new())
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Err(eyre::eyre!("Empty response"));
+        }
+
+        // Take the last byte which contains our value
+        let value = response[31] as u16;  // Get the last byte (index 31)
+
+        Ok(value)
     }
 }

@@ -1,4 +1,6 @@
 use serde::Serialize;
+use starknet::core::types::Felt;
+use crate::client::env::proxy::types::starknet::{StarknetProposalId, StarknetProposalWithApprovals};
 
 use super::ProposalId;
 use crate::client::env::Method;
@@ -6,6 +8,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::repr::Repr;
 use crate::ProposalWithApprovals;
+use starknet::core::codec::Decode;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalApprovalsRequest {
@@ -32,10 +35,32 @@ impl Method<Starknet> for ProposalApprovalsRequest {
     type Returns = ProposalWithApprovals;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        // Convert ProposalId to StarknetProposalId
+        let starknet_id: StarknetProposalId = self.proposal_id.into();
+        
+        // Encode both high and low parts
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(&starknet_id.high.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.low.to_bytes_be());
+        
+        Ok(encoded)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        // Convert bytes to Felts
+        let mut felts = Vec::new();
+        for chunk in response.chunks(32) {
+            if chunk.len() == 32 {
+                felts.push(Felt::from_bytes_be(chunk.try_into().unwrap()));
+            }
+        }
+        println!("Felts: {:?}", felts);
+
+        // Decode and convert in one go
+        let approvals = StarknetProposalWithApprovals::decode(&felts)
+            .map_err(|e| eyre::eyre!("Failed to decode approvals: {:?}", e))?;
+        println!("Decoded approvals: {:?}", approvals);
+
+        Ok(approvals.into())
     }
 }
