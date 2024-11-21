@@ -7,8 +7,6 @@ use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
 use calimero_storage::collections::UnorderedMap;
 
-mod __private;
-
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]

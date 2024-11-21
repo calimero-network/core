@@ -5,12 +5,14 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{from_slice, BorshDeserialize, BorshSerialize};
 
 use super::{Collection, ROOT_ID};
 use crate::address::Id;
-use crate::interface::Interface;
+use crate::integration::Comparison;
+use crate::interface::{Action, Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
+use crate::sync::{self, SyncArtifact};
 
 /// A set collection that stores unqiue values once.
 pub struct Root<T, S: StorageAdaptor = MainStorage> {
@@ -117,6 +119,53 @@ where
     #[expect(clippy::unwrap_used, reason = "fatal error if it happens")]
     pub fn commit_headless() {
         <Interface<S>>::commit_root::<Collection<T>>(None).unwrap();
+    }
+
+    /// Syncs the root collection.
+    #[expect(clippy::missing_errors_doc, reason = "NO")]
+    pub fn sync(args: &[u8]) -> Result<(), StorageError> {
+        let artifact =
+            from_slice::<SyncArtifact>(args).map_err(StorageError::DeserializationError)?;
+
+        match artifact {
+            SyncArtifact::Actions(actions) => {
+                for action in actions {
+                    let _ignored = match action {
+                        Action::Compare { id } => {
+                            sync::push_comparison(Comparison {
+                                data: <Interface<S>>::find_by_id_raw(id),
+                                comparison_data: <Interface<S>>::generate_comparison_data(Some(
+                                    id,
+                                ))?,
+                            });
+                        }
+                        Action::Add { .. } | Action::Update { .. } | Action::Delete { .. } => {
+                            <Interface<S>>::apply_action(action)?;
+                        }
+                    };
+                }
+            }
+            SyncArtifact::Comparisons(comparisons) => {
+                if comparisons.is_empty() {
+                    sync::push_comparison(Comparison {
+                        data: <Interface<S>>::find_by_id_raw(Id::root()),
+                        comparison_data: <Interface<S>>::generate_comparison_data(None)?,
+                    });
+                }
+
+                for Comparison {
+                    data,
+                    comparison_data,
+                } in comparisons
+                {
+                    <Interface<S>>::compare_affective(data, comparison_data)?;
+                }
+            }
+        }
+
+        Self::commit_headless();
+
+        Ok(())
     }
 }
 

@@ -164,6 +164,16 @@ impl ToTokens for PublicLogicMethod<'_> {
             };
 
             quote_spanned! {name.span()=>
+                #[cfg(target_arch = "wasm32")]
+                #[no_mangle]
+                pub extern "C" fn __calimero_sync_next() {
+                    let Some(args) = ::calimero_sdk::env::input() else {
+                        ::calimero_sdk::env::panic_str("Expected payload to sync method.")
+                    };
+
+                    ::calimero_storage::collections::Root::<#self_>::sync(&args).expect("fatal: sync failed");
+                }
+
                 impl ::calimero_sdk::state::AppStateInit for #self_ {
                     type Return = #ret;
                 }
