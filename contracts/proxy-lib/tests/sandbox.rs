@@ -279,6 +279,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
 async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     let worker = get_sandbox_worker().await;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
@@ -429,6 +430,7 @@ async fn test_action_change_active_proposals_limit() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
 async fn test_action_change_number_of_approvals(worker: &Worker<Sandbox>) -> Result<()> {
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
