@@ -683,14 +683,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blockchain"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
-]
-
-[[package]]
 name = "blst"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
