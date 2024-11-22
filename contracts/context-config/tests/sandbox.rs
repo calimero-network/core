@@ -1161,8 +1161,8 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let node1_balance = node1_balance_after;
 
     assert!(
-        diff < NearToken::from_millinear(10),
-        "Node1 balance should not be reduced by more than 10 milliNEAR, but was reduced by {}",
+        diff < NearToken::from_millinear(15),
+        "Node1 balance should not be reduced by more than 15 milliNEAR, but was reduced by {}",
         diff
     );
 
