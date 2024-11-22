@@ -6,12 +6,13 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use starknet::accounts::{Account, ConnectedAccount, ExecutionEncoding, SingleOwnerAccount};
 use starknet::core::codec::Decode;
-use starknet::core::types::{BlockId, BlockTag, Call, Felt, FunctionCall};
+use starknet::core::types::{BlockId, BlockTag, Call, ExecutionResult, Felt, FunctionCall, TransactionFinalityStatus};
 use starknet::core::utils::get_selector_from_name;
 use starknet::providers::jsonrpc::HttpTransport;
 use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
+use std::time::{Instant, Duration};
 
 use super::Protocol;
 use crate::client::env::proxy::starknet::StarknetProposalWithApprovals;
@@ -310,18 +311,50 @@ impl Network {
             }])
             .send()
             .await
-            .unwrap();
+            .map_err(|e| StarknetError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to send transaction: {}", e),
+            })?;
 
-        let receipt = account
-            .provider()
-            .get_transaction_receipt(response.transaction_hash)
-            .await
-            .unwrap();
+        let sent_at = Instant::now();
+        let timeout = Duration::from_secs(60); // Same 60-second timeout as NEAR
 
+        let receipt = loop {
+            match account
+                .provider()
+                .get_transaction_receipt(response.transaction_hash)
+                .await
+            {
+                Ok(receipt) => {
+                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) = &receipt.receipt {
+                        if matches!(invoke_receipt.finality_status, 
+                            TransactionFinalityStatus::AcceptedOnL2 | 
+                            TransactionFinalityStatus::AcceptedOnL1) {
+                            break receipt;
+                        }
+                        
+                        if sent_at.elapsed() > timeout {
+                            return Err(StarknetError::TransactionTimeout);
+                        }
+                        continue;
+                    }
+                },
+                Err(err) => {
+                    return Err(StarknetError::Custom {
+                        operation: ErrorOperation::Mutate,
+                        reason: err.to_string(),
+                    });
+                }
+            }
+        };
+  
+
+        // Process the receipt
         match receipt.receipt {
             starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) => {
                 match invoke_receipt.execution_result {
-                    starknet::core::types::ExecutionResult::Succeeded => {
+                    ExecutionResult::Succeeded => {
+                        // Process events and return result
                         for event in invoke_receipt.events.iter() {
                             if event.from_address == contract_id {
                                 let result = StarknetProposalWithApprovals::decode(&event.data)
@@ -329,23 +362,23 @@ impl Network {
                                         operation: ErrorOperation::Query,
                                         reason: format!("Failed to decode event: {:?}", e),
                                     })?;
-                                // Add length prefix (32 bytes)
                                 let mut encoded = vec![0u8; 32];
-                                // Add proposal_id high part (32 bytes)
                                 encoded.extend_from_slice(&result.proposal_id.high.to_bytes_be());
-                                // Add proposal_id low part (32 bytes)
                                 encoded.extend_from_slice(&result.proposal_id.low.to_bytes_be());
-                                // Add num_approvals (32 bytes)
                                 encoded.extend_from_slice(&result.num_approvals.to_bytes_be());
-
                                 return Ok(encoded);
                             }
                         }
                         Ok(vec![])
+                    },
+                    ExecutionResult::Reverted { reason } => {
+                        Err(StarknetError::Custom {
+                            operation: ErrorOperation::Mutate,
+                            reason: format!("Transaction reverted: {}", reason),
+                        })
                     }
-                    _ => Ok(vec![0]),
                 }
-            }
+            },
             _ => Ok(vec![0]),
         }
     }
