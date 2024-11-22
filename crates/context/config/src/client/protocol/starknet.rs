@@ -2,17 +2,19 @@ use core::str::FromStr;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use starknet::accounts::{Account, ConnectedAccount, ExecutionEncoding, SingleOwnerAccount};
 use starknet::core::codec::Decode;
-use starknet::core::types::{BlockId, BlockTag, Call, ExecutionResult, Felt, FunctionCall, TransactionFinalityStatus};
+use starknet::core::types::{
+    BlockId, BlockTag, Call, ExecutionResult, Felt, FunctionCall, TransactionFinalityStatus,
+};
 use starknet::core::utils::get_selector_from_name;
 use starknet::providers::jsonrpc::HttpTransport;
 use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
-use std::time::{Instant, Duration};
 
 use super::Protocol;
 use crate::client::env::proxy::starknet::StarknetProposalWithApprovals;
@@ -326,19 +328,23 @@ impl Network {
                 .await
             {
                 Ok(receipt) => {
-                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) = &receipt.receipt {
-                        if matches!(invoke_receipt.finality_status, 
-                            TransactionFinalityStatus::AcceptedOnL2 | 
-                            TransactionFinalityStatus::AcceptedOnL1) {
+                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) =
+                        &receipt.receipt
+                    {
+                        if matches!(
+                            invoke_receipt.finality_status,
+                            TransactionFinalityStatus::AcceptedOnL2
+                                | TransactionFinalityStatus::AcceptedOnL1
+                        ) {
                             break receipt;
                         }
-                        
+
                         if sent_at.elapsed() > timeout {
                             return Err(StarknetError::TransactionTimeout);
                         }
                         continue;
                     }
-                },
+                }
                 Err(err) => {
                     return Err(StarknetError::Custom {
                         operation: ErrorOperation::Mutate,
@@ -347,7 +353,6 @@ impl Network {
                 }
             }
         };
-  
 
         // Process the receipt
         match receipt.receipt {
@@ -370,15 +375,13 @@ impl Network {
                             }
                         }
                         Ok(vec![])
-                    },
-                    ExecutionResult::Reverted { reason } => {
-                        Err(StarknetError::Custom {
-                            operation: ErrorOperation::Mutate,
-                            reason: format!("Transaction reverted: {}", reason),
-                        })
                     }
+                    ExecutionResult::Reverted { reason } => Err(StarknetError::Custom {
+                        operation: ErrorOperation::Mutate,
+                        reason: format!("Transaction reverted: {}", reason),
+                    }),
                 }
-            },
+            }
             _ => Ok(vec![0]),
         }
     }

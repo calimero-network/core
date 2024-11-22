@@ -164,23 +164,23 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 deposit,
                 gas,
             } => {
-              // Parse the args string (which is a JSON array of strings) into Felts
-                let args_vec: Vec<String> = serde_json::from_str(&args)
-                    .unwrap_or_else(|_| Vec::new());
+                // Parse the args string (which is a JSON array of strings) into Felts
+                let args_vec: Vec<String> =
+                    serde_json::from_str(&args).unwrap_or_else(|_| Vec::new());
 
                 let felt_args: Vec<Felt> = args_vec
                     .iter()
                     .map(|arg| {
-                      // If the arg starts with "0x", parse as hex
-                      if arg.starts_with("0x") {
-                          // Use from_hex_unchecked for hex strings
-                          Felt::from_hex_unchecked(arg)
-                      } else {
-                          // Otherwise parse as bytes
-                          Felt::from_bytes_be_slice(arg.as_bytes())
-                      }
-                  })
-                  .collect();
+                        // If the arg starts with "0x", parse as hex
+                        if arg.starts_with("0x") {
+                            // Use from_hex_unchecked for hex strings
+                            Felt::from_hex_unchecked(arg)
+                        } else {
+                            // Otherwise parse as bytes
+                            Felt::from_bytes_be_slice(arg.as_bytes())
+                        }
+                    })
+                    .collect();
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
