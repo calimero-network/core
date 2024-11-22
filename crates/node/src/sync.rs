@@ -169,9 +169,9 @@ impl Node {
                 context_id,
                 party_id,
                 payload,
-                nonce,
+                next_nonce,
                 ..
-            } => (context_id, party_id, payload, nonce),
+            } => (context_id, party_id, payload, next_nonce),
             unexpected @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError) => {
                 bail!("expected initialization handshake, got {:?}", unexpected)
             }

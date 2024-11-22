@@ -38,7 +38,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
-                nonce,
+                next_nonce: nonce,
             },
             None,
         )
@@ -55,7 +55,7 @@ impl Node {
                     InitPayload::BlobShare {
                         blob_id: ack_blob_id,
                     },
-                nonce,
+                next_nonce,
                 ..
             } => {
                 if ack_blob_id != blob_id {
@@ -66,7 +66,7 @@ impl Node {
                     );
                 }
 
-                (party_id, nonce)
+                (party_id, next_nonce)
             }
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
@@ -101,8 +101,8 @@ impl Node {
                     StreamMessage::Message {
                         sequence_id,
                         payload: MessagePayload::BlobShare { chunk },
-                        nonce,
-                    } => (sequence_id, chunk, nonce),
+                        next_nonce,
+                    } => (sequence_id, chunk, next_nonce),
                     unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
                         bail!("unexpected message: {:?}", unexpected)
                     }
@@ -181,7 +181,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
-                nonce,
+                next_nonce: nonce,
             },
             None,
         )
@@ -198,7 +198,7 @@ impl Node {
                     payload: MessagePayload::BlobShare {
                         chunk: chunk.into_vec().into(),
                     },
-                    nonce: new_nonce,
+                    next_nonce: new_nonce,
                 },
                 Some((shared_key, nonce)),
             )
@@ -214,7 +214,7 @@ impl Node {
             &StreamMessage::Message {
                 sequence_id: sequencer.next(),
                 payload: MessagePayload::BlobShare { chunk: b"".into() },
-                nonce: new_nonce,
+                next_nonce: new_nonce,
             },
             Some((shared_key, nonce)),
         )

@@ -31,7 +31,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::KeyShare,
-                nonce,
+                next_nonce: nonce,
             },
             None,
         )
@@ -45,9 +45,9 @@ impl Node {
             StreamMessage::Init {
                 party_id,
                 payload: InitPayload::KeyShare,
-                nonce,
+                next_nonce,
                 ..
-            } => (party_id, nonce),
+            } => (party_id, next_nonce),
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
             | StreamMessage::OpaqueError) => {
@@ -90,7 +90,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::KeyShare,
-                nonce: nonce,
+                next_nonce: nonce,
             },
             None,
         )
@@ -129,7 +129,6 @@ impl Node {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
-        let new_nonce = thread_rng().gen::<Nonce>();
 
         let sender_key = self
             .ctx_manager
@@ -143,7 +142,7 @@ impl Node {
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
                 payload: MessagePayload::KeyShare { sender_key },
-                nonce: new_nonce,
+                next_nonce: sending_nonce, // the next nonce will not be used
             },
             Some((shared_key, sending_nonce)),
         )

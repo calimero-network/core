@@ -28,14 +28,13 @@ pub enum StreamMessage<'a> {
     Init {
         context_id: ContextId,
         party_id: PublicKey,
-        // nonce: usize,
         payload: InitPayload,
-        nonce: Nonce,
+        next_nonce: Nonce,
     },
     Message {
         sequence_id: usize,
         payload: MessagePayload<'a>,
-        nonce: Nonce,
+        next_nonce: Nonce,
     },
     /// Other peers must not learn anything about the node's state if anything goes wrong.
     OpaqueError,

@@ -40,7 +40,7 @@ impl Node {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
-                nonce,
+                next_nonce: nonce,
             },
             None,
         )
@@ -61,7 +61,7 @@ impl Node {
                             root_hash,
                             application_id,
                         },
-                    nonce,
+                    next_nonce,
                     ..
                 } => {
                     if application_id != context.application_id {
@@ -72,7 +72,7 @@ impl Node {
                         );
                     }
 
-                    (root_hash, party_id, nonce)
+                    (root_hash, party_id, next_nonce)
                 }
                 StreamMessage::Init {
                     party_id: their_identity,
@@ -127,7 +127,7 @@ impl Node {
                 payload: MessagePayload::StateSync {
                     artifact: b"".into(),
                 },
-                nonce: new_nonce,
+                next_nonce: new_nonce,
             },
             Some((shared_key, nonce)),
         )
@@ -213,7 +213,7 @@ impl Node {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
-                nonce,
+                next_nonce: nonce,
             },
             None,
         )
@@ -283,8 +283,8 @@ impl Node {
                 StreamMessage::Message {
                     sequence_id,
                     payload: MessagePayload::StateSync { artifact },
-                    nonce,
-                } => (sequence_id, artifact, nonce),
+                    next_nonce,
+                } => (sequence_id, artifact, next_nonce),
                 unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
                     bail!("unexpected message: {:?}", unexpected)
                 }
@@ -323,7 +323,7 @@ impl Node {
                     payload: MessagePayload::StateSync {
                         artifact: Cow::from(&outcome.artifact),
                     },
-                    nonce: new_sending_nonce,
+                    next_nonce: new_sending_nonce,
                 },
                 Some((shared_key, sending_nonce)),
             )
