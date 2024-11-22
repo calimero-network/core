@@ -1,21 +1,17 @@
 use ed25519_dalek::{Signer, SigningKey};
-use starknet_crypto::{poseidon_hash_many, Felt};
-use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet::core::codec::Encode;
-use crate::client::env::proxy::starknet::StarknetProposalWithApprovals;
-use crate::Repr;
-use crate::repr::ReprBytes;
+use starknet::signers::SigningKey as StarknetSigningKey;
+use starknet_crypto::{poseidon_hash_many, Felt};
 
+use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
 use crate::client::env::{utils, Method};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
+use crate::repr::ReprBytes;
 use crate::types::{ProposalId, Signed, SignerId};
-use crate::{ProposalWithApprovals, ProxyMutateRequest};
-use starknet::core::codec::Decode;
-
-use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
+use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
 pub mod methods;
 
@@ -100,24 +96,24 @@ impl Method<Starknet> for Mutate {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        println!("response: {:?}", response);
         if response.is_empty() {
             return Ok(None);
         }
-
+    
         // Skip first 32 bytes (array length)
         let response = &response[32..];
-
-        // Get proposal_id from the next 32 bytes (using only low part)
+    
+        // Get proposal_id from the next 64 bytes (32 for high, 32 for low)
         let proposal_id = Repr::new(ProposalId::from_bytes(|bytes| {
-            bytes.copy_from_slice(&response[..32]);
+            // Take 16 bytes from high and 16 bytes from low
+            bytes[..16].copy_from_slice(&response[16..32]);    // Last 16 bytes of high
+            bytes[16..].copy_from_slice(&response[48..64]);    // Last 16 bytes of low
             Ok(32)
         })?);
-
+    
         // Get num_approvals from the last 32 bytes
-        let num_approvals = u32::from_be_bytes(response[32..][28..32].try_into()?)
-            as usize;
-
+        let num_approvals = u32::from_be_bytes(response[64..][28..32].try_into()?) as usize;
+    
         Ok(Some(ProposalWithApprovals {
             proposal_id,
             num_approvals,

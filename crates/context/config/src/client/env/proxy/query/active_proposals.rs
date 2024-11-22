@@ -37,7 +37,7 @@ impl Method<Starknet> for ActiveProposalRequest {
         }
 
         // Take the last byte which contains our value
-        let value = response[31] as u16;  // Get the last byte (index 31)
+        let value = response[31] as u16; // Get the last byte (index 31)
 
         Ok(value)
     }

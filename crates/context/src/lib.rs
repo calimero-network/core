@@ -1336,7 +1336,6 @@ impl ContextManager {
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             bail!("Context not found");
         };
-
         self.config_client
             .query::<ContextProxy>(
                 context_config.protocol.as_ref().into(),

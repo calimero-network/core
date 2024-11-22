@@ -4,8 +4,7 @@ use starknet_crypto::Felt;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
-use crate::repr::ReprBytes;
+use crate::repr::{Repr, ReprBytes};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -39,7 +38,7 @@ impl Method<Starknet> for HasMemberRequest {
         // Encode context_id (2 felts)
         let context_bytes = self.context_id.as_bytes();
         let (context_high, context_low) = context_bytes.split_at(context_bytes.len() / 2);
-        
+
         // Convert to Felts and add to result
         let context_high_felt = Felt::from_bytes_be_slice(context_high);
         let context_low_felt = Felt::from_bytes_be_slice(context_low);
@@ -49,7 +48,7 @@ impl Method<Starknet> for HasMemberRequest {
         // Encode member identity (2 felts)
         let identity_bytes = self.identity.as_bytes();
         let (identity_high, identity_low) = identity_bytes.split_at(identity_bytes.len() / 2);
-        
+
         // Convert to Felts and add to result
         let identity_high_felt = Felt::from_bytes_be_slice(identity_high);
         let identity_low_felt = Felt::from_bytes_be_slice(identity_low);

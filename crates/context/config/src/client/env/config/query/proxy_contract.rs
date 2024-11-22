@@ -4,8 +4,7 @@ use starknet_crypto::Felt;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
-use crate::repr::ReprBytes;
+use crate::repr::{Repr, ReprBytes};
 use crate::types::ContextId;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -61,7 +60,7 @@ impl Method<Starknet> for ProxyContractRequest {
 
         // Convert the Felt to a hex string representing the contract address
         let hex_string = format!("0x{}", hex::encode(&response));
-        
+
         Ok(hex_string)
     }
 }
