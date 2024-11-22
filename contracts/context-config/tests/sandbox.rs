@@ -1154,7 +1154,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let expected_log = format!("Context `{}` added", context_id);
     assert!(res.logs().iter().any(|log| log == &expected_log));
 
-    time::sleep(time::Duration::from_secs(1)).await;
+    worker.fast_forward(1).await?;
 
     let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
 
@@ -1220,7 +1220,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
 
     assert!(res.failures().is_empty(), "{:#?}", res.failures());
 
-    time::sleep(time::Duration::from_secs(1)).await;
+    worker.fast_forward(1).await?;
 
     let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
 
@@ -1300,7 +1300,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
 
     assert!(res.failures().is_empty(), "{:#?}", res.failures());
 
-    time::sleep(time::Duration::from_secs(1)).await;
+    worker.fast_forward(1).await?;
 
     let node1_balance_after = worker.view_account(&node1.id()).await?.balance;
 
