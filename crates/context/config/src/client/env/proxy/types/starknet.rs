@@ -1,8 +1,7 @@
 use starknet::core::codec::{Decode, Encode};
 use starknet::core::types::{Felt, U256};
 
-use crate::repr::{Repr, ReprBytes};
-use crate::repr::ReprTransmute;
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{ContextIdentity, ProposalId, SignerId};
 use crate::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest,
@@ -311,7 +310,7 @@ impl From<StarknetApprovers> for Vec<ContextIdentity> {
                 ContextIdentity::from_bytes(|bytes| {
                     let mut combined = [0u8; 32];
                     combined[..16].copy_from_slice(&identity.high.to_bytes_be()[16..]);
-                    combined[16..].copy_from_slice(&identity.low.to_bytes_be()[16..]);  // Changed this line
+                    combined[16..].copy_from_slice(&identity.low.to_bytes_be()[16..]); // Changed this line
                     bytes.copy_from_slice(&combined);
                     Ok(32)
                 })
