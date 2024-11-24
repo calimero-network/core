@@ -1,4 +1,5 @@
 use serde::Serialize;
+use starknet::core::codec::Decode;
 use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::Application as StarknetApplication;
@@ -7,7 +8,6 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::repr::{Repr, ReprBytes};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
-use starknet::core::codec::Decode;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct ApplicationRequest {

@@ -2,8 +2,8 @@ use core::{mem, ptr};
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use starknet_crypto::Felt;
 use starknet::core::codec::Decode;
+use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::StarknetPrivileges;
 use crate::client::env::Method;

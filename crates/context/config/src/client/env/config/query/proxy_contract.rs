@@ -59,7 +59,7 @@ impl Method<Starknet> for ProxyContractRequest {
 
         // Parse bytes as Felt
         let felt = Felt::from_bytes_be_slice(&response);
-        
+
         // Format felt as hex string with 0x prefix
         Ok(format!("0x{:x}", felt))
     }

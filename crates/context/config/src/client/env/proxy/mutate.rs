@@ -9,8 +9,8 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::types::Signed;
 use crate::repr::ReprTransmute;
+use crate::types::Signed;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
 pub mod methods;

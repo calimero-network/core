@@ -1,8 +1,11 @@
 use starknet::core::codec::{Decode, Encode};
 use starknet::core::types::{Felt, U256};
-use crate::repr::{Repr, ReprTransmute, ReprBytes};
+
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{ContextIdentity, ProposalId, SignerId};
-use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest};
+use crate::{
+    Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest,
+};
 
 #[derive(Debug, Encode, Decode)]
 pub struct FeltPair {
@@ -74,13 +77,13 @@ pub struct StarknetApprovers {
 
 #[derive(Debug, Decode)]
 pub struct StarknetProposals {
-    pub proposals: Vec<StarknetProposal>
+    pub proposals: Vec<StarknetProposal>,
 }
 
 impl From<StarknetProposals> for Vec<Proposal> {
-  fn from(value: StarknetProposals) -> Self {
-      value.proposals.into_iter().map(Into::into).collect()
-  }
+    fn from(value: StarknetProposals) -> Self {
+        value.proposals.into_iter().map(Into::into).collect()
+    }
 }
 
 // Conversions for StarknetIdentity
@@ -204,17 +207,28 @@ impl From<ProposalApprovalWithSigner> for StarknetConfirmationRequest {
 // Conversions for Actions
 impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
     fn from(actions: Vec<ProposalAction>) -> Self {
-        let action = actions.into_iter().next().expect("At least one action required");
+        let action = actions
+            .into_iter()
+            .next()
+            .expect("At least one action required");
         match action {
-            ProposalAction::ExternalFunctionCall { receiver_id, method_name, args, .. } => {
+            ProposalAction::ExternalFunctionCall {
+                receiver_id,
+                method_name,
+                args,
+                ..
+            } => {
                 let args_vec: Vec<String> = serde_json::from_str(&args).unwrap_or_default();
-                let felt_args = args_vec.iter().map(|arg| {
-                    if arg.starts_with("0x") {
-                        Felt::from_hex_unchecked(arg)
-                    } else {
-                        Felt::from_bytes_be_slice(arg.as_bytes())
-                    }
-                }).collect();
+                let felt_args = args_vec
+                    .iter()
+                    .map(|arg| {
+                        if arg.starts_with("0x") {
+                            Felt::from_hex_unchecked(arg)
+                        } else {
+                            Felt::from_bytes_be_slice(arg.as_bytes())
+                        }
+                    })
+                    .collect();
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
@@ -222,18 +236,21 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                     felt_args,
                 )
             }
-            ProposalAction::Transfer { receiver_id, amount } => {
-                StarknetProposalActionWithArgs::Transfer(
-                    Felt::from_bytes_be_slice(receiver_id.as_bytes()),
-                    amount.into(),
-                )
-            }
+            ProposalAction::Transfer {
+                receiver_id,
+                amount,
+            } => StarknetProposalActionWithArgs::Transfer(
+                Felt::from_bytes_be_slice(receiver_id.as_bytes()),
+                amount.into(),
+            ),
             ProposalAction::SetNumApprovals { num_approvals } => {
                 StarknetProposalActionWithArgs::SetNumApprovals(Felt::from(num_approvals))
             }
-            ProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
-                StarknetProposalActionWithArgs::SetActiveProposalsLimit(Felt::from(active_proposals_limit))
-            }
+            ProposalAction::SetActiveProposalsLimit {
+                active_proposals_limit,
+            } => StarknetProposalActionWithArgs::SetActiveProposalsLimit(Felt::from(
+                active_proposals_limit,
+            )),
             ProposalAction::SetContextValue { key, value } => {
                 StarknetProposalActionWithArgs::SetContextValue(
                     key.chunks(16).map(Felt::from_bytes_be_slice).collect(),
@@ -251,7 +268,8 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                 ProposalAction::ExternalFunctionCall {
                     receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
                     method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
-                    args: calldata.iter()
+                    args: calldata
+                        .iter()
                         .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
                         .collect::<Vec<_>>()
                         .join(","),
@@ -263,18 +281,23 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                 let FeltPair { high, low } = amount.0;
                 ProposalAction::Transfer {
                     receiver_id: format!("0x{}", hex::encode(receiver.to_bytes_be())),
-                    amount: u128::from_be_bytes(low.to_bytes_be()[16..32].try_into().unwrap()) +
-                           (u128::from_be_bytes(high.to_bytes_be()[16..32].try_into().unwrap()) << 64),
+                    amount: u128::from_be_bytes(low.to_bytes_be()[16..32].try_into().unwrap())
+                        + (u128::from_be_bytes(high.to_bytes_be()[16..32].try_into().unwrap())
+                            << 64),
                 }
             }
             StarknetProposalActionWithArgs::SetNumApprovals(num) => {
                 ProposalAction::SetNumApprovals {
-                    num_approvals: u32::from_be_bytes(num.to_bytes_be()[28..32].try_into().unwrap()),
+                    num_approvals: u32::from_be_bytes(
+                        num.to_bytes_be()[28..32].try_into().unwrap(),
+                    ),
                 }
             }
             StarknetProposalActionWithArgs::SetActiveProposalsLimit(limit) => {
                 ProposalAction::SetActiveProposalsLimit {
-                    active_proposals_limit: u32::from_be_bytes(limit.to_bytes_be()[28..32].try_into().unwrap()),
+                    active_proposals_limit: u32::from_be_bytes(
+                        limit.to_bytes_be()[28..32].try_into().unwrap(),
+                    ),
                 }
             }
             StarknetProposalActionWithArgs::SetContextValue(key, value) => {
@@ -291,14 +314,19 @@ impl From<StarknetProposalWithApprovals> for ProposalWithApprovals {
     fn from(value: StarknetProposalWithApprovals) -> Self {
         ProposalWithApprovals {
             proposal_id: Repr::new(value.proposal_id.into()),
-            num_approvals: u32::from_be_bytes(value.num_approvals.to_bytes_be()[28..32].try_into().unwrap()) as usize,
+            num_approvals: u32::from_be_bytes(
+                value.num_approvals.to_bytes_be()[28..32]
+                    .try_into()
+                    .unwrap(),
+            ) as usize,
         }
     }
 }
 
 impl From<StarknetApprovers> for Vec<ContextIdentity> {
     fn from(value: StarknetApprovers) -> Self {
-        value.approvers
+        value
+            .approvers
             .into_iter()
             .map(|identity| {
                 let mut bytes = [0u8; 32];

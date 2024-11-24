@@ -1,10 +1,11 @@
-use hex;
-use starknet::core::codec::{Encode, Decode, Error, FeltWriter};
-use starknet::core::types::Felt;
-use crate::repr::{Repr, ReprBytes};
-use crate::types::SignerId;
-use crate::repr::ReprTransmute;
 use std::collections::BTreeMap;
+
+use hex;
+use starknet::core::codec::{Decode, Encode, Error, FeltWriter};
+use starknet::core::types::Felt;
+
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::types::SignerId;
 
 // Base type for all Starknet Felt pairs
 #[derive(Debug, Clone, Copy, Encode, Decode)]
@@ -206,30 +207,42 @@ pub enum ContextRequestKind {
 impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
     fn from(value: crate::ContextRequestKind<'_>) -> Self {
         match value {
-            crate::ContextRequestKind::Add { author_id, application } => 
-                ContextRequestKind::Add(author_id.into_inner().into(), application.into()),
-            crate::ContextRequestKind::UpdateApplication { application } => 
-                ContextRequestKind::UpdateApplication(application.into()),
-            crate::ContextRequestKind::AddMembers { members } => 
-                ContextRequestKind::AddMembers(members.into_iter().map(|m| m.into_inner().into()).collect()),
-            crate::ContextRequestKind::RemoveMembers { members } => 
-                ContextRequestKind::RemoveMembers(members.into_iter().map(|m| m.into_inner().into()).collect()),
-            crate::ContextRequestKind::Grant { capabilities } => 
-                ContextRequestKind::Grant(capabilities.into_iter()
+            crate::ContextRequestKind::Add {
+                author_id,
+                application,
+            } => ContextRequestKind::Add(author_id.into_inner().into(), application.into()),
+            crate::ContextRequestKind::UpdateApplication { application } => {
+                ContextRequestKind::UpdateApplication(application.into())
+            }
+            crate::ContextRequestKind::AddMembers { members } => ContextRequestKind::AddMembers(
+                members.into_iter().map(|m| m.into_inner().into()).collect(),
+            ),
+            crate::ContextRequestKind::RemoveMembers { members } => {
+                ContextRequestKind::RemoveMembers(
+                    members.into_iter().map(|m| m.into_inner().into()).collect(),
+                )
+            }
+            crate::ContextRequestKind::Grant { capabilities } => ContextRequestKind::Grant(
+                capabilities
+                    .into_iter()
                     .map(|(id, cap)| CapabilityAssignment {
                         member: id.into_inner().into(),
                         capability: cap.into(),
                     })
-                    .collect()),
-            crate::ContextRequestKind::Revoke { capabilities } => 
-                ContextRequestKind::Revoke(capabilities.into_iter()
+                    .collect(),
+            ),
+            crate::ContextRequestKind::Revoke { capabilities } => ContextRequestKind::Revoke(
+                capabilities
+                    .into_iter()
                     .map(|(id, cap)| CapabilityAssignment {
                         member: id.into_inner().into(),
                         capability: cap.into(),
                     })
-                    .collect()),
-            crate::ContextRequestKind::UpdateProxyContract => 
-                ContextRequestKind::UpdateProxyContract,
+                    .collect(),
+            ),
+            crate::ContextRequestKind::UpdateProxyContract => {
+                ContextRequestKind::UpdateProxyContract
+            }
         }
     }
 }
@@ -322,42 +335,43 @@ impl Encode for EncodableString {
 impl<'a> Decode<'a> for EncodableString {
     fn decode_iter<T>(iter: &mut T) -> Result<Self, Error>
     where
-        T: Iterator<Item = &'a Felt>
+        T: Iterator<Item = &'a Felt>,
     {
         const WORD_SIZE: usize = 31;
-        
+
         // First felt is full_words_count
-        let full_words_count = iter.next()
+        let full_words_count = iter
+            .next()
             .ok_or_else(Error::input_exhausted)?
             .to_bytes_be()[31] as usize;
-        
+
         let mut bytes = Vec::with_capacity(full_words_count * WORD_SIZE);
-        
+
         // Read each full word (31 bytes each)
         for _ in 0..full_words_count {
-            let word = iter.next()
+            let word = iter
+                .next()
                 .ok_or_else(Error::input_exhausted)?
                 .to_bytes_be();
             bytes.extend_from_slice(&word[1..WORD_SIZE + 1]); // Take exactly WORD_SIZE bytes, skipping first byte
         }
-        
+
         // Read pending bytes (if any)
-        let pending = iter.next()
-            .ok_or_else(Error::input_exhausted)?;
-        
-        let pending_len = iter.next()
+        let pending = iter.next().ok_or_else(Error::input_exhausted)?;
+
+        let pending_len = iter
+            .next()
             .ok_or_else(Error::input_exhausted)?
             .to_bytes_be()[31] as usize;
-            
+
         if pending_len > 0 {
             let pending_bytes = pending.to_bytes_be();
             bytes.extend_from_slice(&pending_bytes[1..pending_len + 1]);
         }
-        
+
         // Convert bytes to string
-        let string = String::from_utf8(bytes)
-            .map_err(|_| Error::custom("Invalid UTF-8"))?;
-        
+        let string = String::from_utf8(bytes).map_err(|_| Error::custom("Invalid UTF-8"))?;
+
         Ok(EncodableString(string))
     }
 }
@@ -387,7 +401,9 @@ pub struct StarknetApplicationRevisionRequest {
 impl From<crate::client::env::config::query::application_revision::ApplicationRevisionRequest>
     for StarknetApplicationRevisionRequest
 {
-    fn from(value: crate::client::env::config::query::application_revision::ApplicationRevisionRequest) -> Self {
+    fn from(
+        value: crate::client::env::config::query::application_revision::ApplicationRevisionRequest,
+    ) -> Self {
         StarknetApplicationRevisionRequest {
             context_id: (*value.context_id).into(),
         }
@@ -447,20 +463,25 @@ impl<'a> From<EncodableString> for crate::types::ApplicationMetadata<'a> {
 #[derive(Debug, Decode)]
 pub struct StarknetPrivilegeEntry {
     pub identity: ContextIdentity,
-    pub capabilities: Vec<Capability>
+    pub capabilities: Vec<Capability>,
 }
 
 #[derive(Debug, Decode)]
 pub struct StarknetPrivileges {
-    pub privileges: Vec<StarknetPrivilegeEntry>
+    pub privileges: Vec<StarknetPrivilegeEntry>,
 }
 
 impl From<StarknetPrivileges> for BTreeMap<SignerId, Vec<crate::Capability>> {
     fn from(value: StarknetPrivileges) -> Self {
-        value.privileges
+        value
+            .privileges
             .into_iter()
-            .map(|entry| (entry.identity.into(), 
-                         entry.capabilities.into_iter().map(Into::into).collect()))
+            .map(|entry| {
+                (
+                    entry.identity.into(),
+                    entry.capabilities.into_iter().map(Into::into).collect(),
+                )
+            })
             .collect()
     }
 }
@@ -489,15 +510,12 @@ impl From<ContextIdentity> for SignerId {
 
 #[derive(Debug, Decode)]
 pub struct StarknetMembers {
-    pub members: Vec<ContextIdentity>
+    pub members: Vec<ContextIdentity>,
 }
 
 impl From<StarknetMembers> for Vec<crate::types::ContextIdentity> {
     fn from(value: StarknetMembers) -> Self {
-        value.members
-            .into_iter()
-            .map(|id| id.into())
-            .collect()
+        value.members.into_iter().map(|id| id.into()).collect()
     }
 }
 

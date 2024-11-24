@@ -1,14 +1,13 @@
 use core::mem;
 
 use serde::Serialize;
-use starknet::core::codec::Encode;
+use starknet::core::codec::{Decode, Encode};
 use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::{StarknetMembers, StarknetMembersRequest};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use starknet::core::codec::Decode;
 use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 

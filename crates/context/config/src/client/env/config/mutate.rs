@@ -76,10 +76,14 @@ impl<'a> Method<Starknet> for Mutate<'a> {
         let user_key_bytes = user_key.to_bytes();
 
         // Create Repr wrapped ContextIdentity instances
-        let signer_id = verifying_key_bytes.rt::<ContextIdentity>().expect("Infallible conversion");
+        let signer_id = verifying_key_bytes
+            .rt::<ContextIdentity>()
+            .expect("Infallible conversion");
         let signer_id = Repr::new(signer_id);
 
-        let user_id = user_key_bytes.rt::<ContextIdentity>().expect("Infallible conversion");
+        let user_id = user_key_bytes
+            .rt::<ContextIdentity>()
+            .expect("Infallible conversion");
         let user_id = Repr::new(user_id);
 
         // Create the Request structure using into() conversions
