@@ -11,7 +11,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
@@ -76,15 +76,11 @@ impl<'a> Method<Starknet> for Mutate<'a> {
         let user_key_bytes = user_key.to_bytes();
 
         // Create Repr wrapped ContextIdentity instances
-        let signer_id = Repr::new(ContextIdentity::from_bytes(|bytes| {
-            bytes.copy_from_slice(&verifying_key_bytes);
-            Ok(32)
-        })?);
+        let signer_id = verifying_key_bytes.rt::<ContextIdentity>().expect("Infallible conversion");
+        let signer_id = Repr::new(signer_id);
 
-        let user_id = Repr::new(ContextIdentity::from_bytes(|bytes| {
-            bytes.copy_from_slice(&user_key_bytes);
-            Ok(32)
-        })?);
+        let user_id = user_key_bytes.rt::<ContextIdentity>().expect("Infallible conversion");
+        let user_id = Repr::new(user_id);
 
         // Create the Request structure using into() conversions
         let request = StarknetRequest {
@@ -121,8 +117,7 @@ impl<'a> Method<Starknet> for Mutate<'a> {
         Ok(bytes)
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        println!("decode {:?}", response);
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
         Ok(())
     }
 }

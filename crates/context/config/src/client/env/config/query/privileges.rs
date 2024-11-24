@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 use starknet_crypto::Felt;
+use starknet::core::codec::Decode;
 
+use crate::client::env::config::types::starknet::StarknetPrivileges;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -89,39 +91,27 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        // if response.is_empty() {
-        //     return Ok(BTreeMap::new());
-        // }
+        if response.is_empty() {
+            return Ok(BTreeMap::new());
+        }
 
-        // let mut result = BTreeMap::new();
-        // let mut offset = 0;
+        // Convert bytes to Felts
+        let mut felts = Vec::new();
+        for chunk in response.chunks(32) {
+            if chunk.len() == 32 {
+                felts.push(Felt::from_bytes_be(chunk.try_into().unwrap()));
+            }
+        }
 
-        // // First felt is array length
-        // let array_len = u64::from_be_bytes(response[24..32].try_into()?);
-        // offset += 32;
+        // Check if it's a None response (single zero Felt)
+        if felts.len() == 1 && felts[0] == Felt::ZERO {
+            return Ok(BTreeMap::new());
+        }
 
-        // // Process each (identity, capabilities) pair
-        // for _ in 0..array_len {
-        //     // Read identity from 2 felts (32 bytes each)
-        //     let identity = SignerId::from_bytes(|bytes| {
-        //         // Take the second felt (low part) for SignerId
-        //         bytes.copy_from_slice(&response[offset + 32..offset + 64]);
-        //         Ok(32) // Return successful result with number of bytes written
-        //     })?;
-        //     offset += 64; // Skip both felts (high and low parts)
+        // Skip the flag/version felt and decode the privileges
+        let privileges = StarknetPrivileges::decode(&felts[1..])
+            .map_err(|e| eyre::eyre!("Failed to decode privileges: {:?}", e))?;
 
-        //     // Read capability (1 felt)
-        //     let cap_value = u64::from_be_bytes(response[offset + 24..offset + 32].try_into()?);
-        //     offset += 32;
-
-        //     // Create capabilities vector with single capability
-        //     let capabilities = vec![Capability::from(cap_value)];
-
-        //     result.insert(identity, capabilities);
-        // }
-
-        // Ok(result)
-
-        todo!()
+        Ok(privileges.into())
     }
 }

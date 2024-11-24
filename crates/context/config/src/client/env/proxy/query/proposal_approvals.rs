@@ -42,8 +42,8 @@ impl Method<Starknet> for ProposalApprovalsRequest {
 
         // Encode both high and low parts
         let mut encoded = Vec::new();
-        encoded.extend_from_slice(&starknet_id.high.to_bytes_be());
-        encoded.extend_from_slice(&starknet_id.low.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.0.high.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.0.low.to_bytes_be());
 
         Ok(encoded)
     }

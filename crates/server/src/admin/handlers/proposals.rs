@@ -15,7 +15,7 @@ use crate::AdminState;
 
 //todo split it up into separate files
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Copy, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionType {
     ExternalFunctionCall,

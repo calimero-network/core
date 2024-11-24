@@ -9,8 +9,8 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::repr::ReprBytes;
-use crate::types::{ProposalId, Signed, SignerId};
+use crate::types::Signed;
+use crate::repr::ReprTransmute;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
 pub mod methods;
@@ -64,10 +64,8 @@ impl Method<Starknet> for Mutate {
         let verifying_key_bytes = verifying_key.to_bytes_be();
 
         // Create signer_id from ECDSA verifying key for signature verification
-        let signer_id = Repr::new(SignerId::from_bytes(|bytes| {
-            bytes.copy_from_slice(&verifying_key_bytes);
-            Ok(32)
-        })?);
+        let signer_id = verifying_key_bytes.rt().expect("Infallible conversion");
+        let signer_id = Repr::new(signer_id);
 
         // Create request with signer_id
         let request = StarknetProxyMutateRequest::from((signer_id, self.raw_request));
@@ -104,12 +102,10 @@ impl Method<Starknet> for Mutate {
         let response = &response[32..];
 
         // Get proposal_id from the next 64 bytes (32 for high, 32 for low)
-        let proposal_id = Repr::new(ProposalId::from_bytes(|bytes| {
-            // Take 16 bytes from high and 16 bytes from low
-            bytes[..16].copy_from_slice(&response[16..32]); // Last 16 bytes of high
-            bytes[16..].copy_from_slice(&response[48..64]); // Last 16 bytes of low
-            Ok(32)
-        })?);
+        let mut proposal_bytes = [0u8; 32];
+        proposal_bytes[..16].copy_from_slice(&response[16..32]); // Last 16 bytes of high
+        proposal_bytes[16..].copy_from_slice(&response[48..64]); // Last 16 bytes of low
+        let proposal_id = Repr::new(proposal_bytes.rt()?);
 
         // Get num_approvals from the last 32 bytes
         let num_approvals = u32::from_be_bytes(response[64..][28..32].try_into()?) as usize;

@@ -4,11 +4,12 @@ use serde::Serialize;
 use starknet::core::codec::Encode;
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::starknet::StarknetMembersRequest;
+use crate::client::env::config::types::starknet::{StarknetMembers, StarknetMembersRequest};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use starknet::core::codec::Decode;
+use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -65,27 +66,23 @@ impl Method<Starknet> for MembersRequest {
             return Ok(Vec::new());
         }
 
-        // First 32 bytes contain the count, skip it
-        let response = &response[32..];
+        // Convert bytes to Felts
+        let mut felts = Vec::new();
+        for chunk in response.chunks(32) {
+            let mut padded_chunk = [0u8; 32];
+            padded_chunk[..chunk.len()].copy_from_slice(chunk);
+            felts.push(Felt::from_bytes_be(&padded_chunk));
+        }
 
-        let members: Result<Vec<ContextIdentity>, _> = response
-            .chunks_exact(64)
-            .map(|chunk| {
-                let felt1 = Felt::from_bytes_be_slice(&chunk[..32]);
-                let felt2 = Felt::from_bytes_be_slice(&chunk[32..]);
+        // Check if it's a None response (single zero Felt)
+        if felts.len() == 1 && felts[0] == Felt::ZERO {
+            return Ok(Vec::new());
+        }
 
-                let felt1_bytes = felt1.to_bytes_be();
-                let felt2_bytes = felt2.to_bytes_be();
+        // Decode directly from the felts slice - the Decode trait will handle the array structure
+        let members = StarknetMembers::decode(&felts)
+            .map_err(|e| eyre::eyre!("Failed to decode members: {:?}", e))?;
 
-                ContextIdentity::from_bytes(|bytes| {
-                    bytes[..16].copy_from_slice(&felt1_bytes[16..]);
-                    bytes[16..].copy_from_slice(&felt2_bytes[16..]);
-                    Ok(32)
-                })
-            })
-            .collect();
-
-        let members = members.map_err(|e| eyre::eyre!("Failed to decode members: {:?}", e))?;
-        Ok(members)
+        Ok(members.into())
     }
 }

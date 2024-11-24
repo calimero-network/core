@@ -250,7 +250,6 @@ impl Network {
             |result| {
                 Ok(result
                     .into_iter()
-                    // Remove the skip(1) here
                     .map(|felt| felt.to_bytes_be())
                     .flatten()
                     .collect::<Vec<u8>>())
@@ -368,8 +367,8 @@ impl Network {
                                         reason: format!("Failed to decode event: {:?}", e),
                                     })?;
                                 let mut encoded = vec![0u8; 32];
-                                encoded.extend_from_slice(&result.proposal_id.high.to_bytes_be());
-                                encoded.extend_from_slice(&result.proposal_id.low.to_bytes_be());
+                                encoded.extend_from_slice(&result.proposal_id.0.high.to_bytes_be());
+                                encoded.extend_from_slice(&result.proposal_id.0.low.to_bytes_be());
                                 encoded.extend_from_slice(&result.num_approvals.to_bytes_be());
                                 return Ok(encoded);
                             }

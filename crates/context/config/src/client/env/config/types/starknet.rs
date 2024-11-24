@@ -1,88 +1,135 @@
 use hex;
-use starknet::core::codec::{Encode, Error, FeltWriter};
+use starknet::core::codec::{Encode, Decode, Error, FeltWriter};
 use starknet::core::types::Felt;
-
 use crate::repr::{Repr, ReprBytes};
 use crate::types::SignerId;
+use crate::repr::ReprTransmute;
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Encode)]
-pub struct ContextId {
+// Base type for all Starknet Felt pairs
+#[derive(Debug, Clone, Copy, Encode, Decode)]
+pub struct FeltPair {
     pub high: Felt,
     pub low: Felt,
 }
 
-impl From<crate::ContextId> for ContextId {
-    fn from(value: crate::ContextId) -> Self {
-        let bytes = value.as_bytes();
+// Newtype pattern following types.rs style
+#[derive(Debug, Clone, Copy, Encode, Decode)]
+pub struct ContextId(FeltPair);
+
+#[derive(Debug, Clone, Copy, Encode, Decode)]
+pub struct ContextIdentity(FeltPair);
+
+#[derive(Debug, Clone, Copy, Encode, Decode)]
+pub struct ApplicationId(FeltPair);
+
+#[derive(Debug, Clone, Copy, Encode, Decode)]
+pub struct ApplicationBlob(FeltPair);
+
+// Single conversion trait
+pub trait IntoFeltPair {
+    fn into_felt_pair(self) -> (Felt, Felt);
+}
+
+// Implement for our base types
+impl IntoFeltPair for crate::types::ContextId {
+    fn into_felt_pair(self) -> (Felt, Felt) {
+        let bytes = self.as_bytes();
         let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextId {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
+        (
+            Felt::from_bytes_be_slice(high_bytes),
+            Felt::from_bytes_be_slice(low_bytes),
+        )
     }
 }
 
-// Add this implementation for Repr wrapped type
-impl From<Repr<crate::ContextId>> for ContextId {
-    fn from(value: Repr<crate::ContextId>) -> Self {
-        let bytes = value.as_bytes();
+impl IntoFeltPair for crate::types::ContextIdentity {
+    fn into_felt_pair(self) -> (Felt, Felt) {
+        let bytes = self.as_bytes();
         let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextId {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
+        (
+            Felt::from_bytes_be_slice(high_bytes),
+            Felt::from_bytes_be_slice(low_bytes),
+        )
     }
 }
 
-// Context Member ID
-#[derive(Debug, Clone, Encode)]
-pub struct ContextIdentity {
-    pub high: Felt,
-    pub low: Felt,
-}
-
-impl From<crate::ContextIdentity> for ContextIdentity {
-    fn from(value: crate::ContextIdentity) -> Self {
-        let bytes = value.as_bytes();
+impl IntoFeltPair for crate::types::ApplicationId {
+    fn into_felt_pair(self) -> (Felt, Felt) {
+        let bytes = self.as_bytes();
         let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextIdentity {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
+        (
+            Felt::from_bytes_be_slice(high_bytes),
+            Felt::from_bytes_be_slice(low_bytes),
+        )
     }
 }
 
-// Add this implementation for Repr wrapped type
-impl From<Repr<crate::ContextIdentity>> for ContextIdentity {
-    fn from(value: Repr<crate::ContextIdentity>) -> Self {
-        let bytes = value.as_bytes();
+impl IntoFeltPair for crate::types::BlobId {
+    fn into_felt_pair(self) -> (Felt, Felt) {
+        let bytes = self.as_bytes();
         let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextIdentity {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
+        (
+            Felt::from_bytes_be_slice(high_bytes),
+            Felt::from_bytes_be_slice(low_bytes),
+        )
     }
 }
 
+// Add IntoFeltPair implementation for SignerId
+impl IntoFeltPair for SignerId {
+    fn into_felt_pair(self) -> (Felt, Felt) {
+        let bytes = self.as_bytes();
+        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        (
+            Felt::from_bytes_be_slice(high_bytes),
+            Felt::from_bytes_be_slice(low_bytes),
+        )
+    }
+}
+
+// From implementations for our Starknet types
+impl From<crate::types::ContextId> for ContextId {
+    fn from(value: crate::types::ContextId) -> Self {
+        let (high, low) = value.into_felt_pair();
+        Self(FeltPair { high, low })
+    }
+}
+
+impl From<crate::types::ContextIdentity> for ContextIdentity {
+    fn from(value: crate::types::ContextIdentity) -> Self {
+        let (high, low) = value.into_felt_pair();
+        Self(FeltPair { high, low })
+    }
+}
+
+impl From<crate::types::ApplicationId> for ApplicationId {
+    fn from(value: crate::types::ApplicationId) -> Self {
+        let (high, low) = value.into_felt_pair();
+        Self(FeltPair { high, low })
+    }
+}
+
+impl From<crate::types::BlobId> for ApplicationBlob {
+    fn from(value: crate::types::BlobId) -> Self {
+        let (high, low) = value.into_felt_pair();
+        Self(FeltPair { high, low })
+    }
+}
+
+// Add From<SignerId> for ContextIdentity
 impl From<SignerId> for ContextIdentity {
     fn from(value: SignerId) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextIdentity {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
+        let (high, low) = value.into_felt_pair();
+        Self(FeltPair { high, low })
     }
 }
 
-impl From<Repr<SignerId>> for ContextIdentity {
-    fn from(value: Repr<SignerId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextIdentity {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
+// Add From<Repr<ContextIdentity>> for ContextIdentity
+impl From<Repr<crate::types::ContextIdentity>> for ContextIdentity {
+    fn from(value: Repr<crate::types::ContextIdentity>) -> Self {
+        let (high, low) = value.into_inner().into_felt_pair();
+        Self(FeltPair { high, low })
     }
 }
 
@@ -108,42 +155,8 @@ pub struct ContextRequest {
 impl From<crate::ContextRequest<'_>> for ContextRequest {
     fn from(value: crate::ContextRequest<'_>) -> Self {
         ContextRequest {
-            context_id: value.context_id.into(),
+            context_id: (*value.context_id).into(),
             kind: value.kind.to_owned().into(),
-        }
-    }
-}
-
-#[derive(Debug, Encode)]
-pub struct Signed {
-    pub payload: Vec<Felt>,
-    pub signature_r: Felt,
-    pub signature_s: Felt,
-}
-
-impl<T> From<crate::types::Signed<T>> for Signed {
-    fn from(value: crate::types::Signed<T>) -> Self {
-        // Convert the payload bytes to Felts
-        let payload = value
-            .payload
-            .into_inner()
-            .chunks_exact(32)
-            .map(|chunk| {
-                let chunk_array: [u8; 32] = chunk.try_into().expect("chunk should be 32 bytes");
-                Felt::from_bytes_be(&chunk_array)
-            })
-            .collect();
-        // Extract r and s from the signature
-        let sig_bytes = value.signature.as_bytes();
-        let (r_bytes, s_bytes) = sig_bytes.split_at(32);
-        // Convert slices to fixed arrays
-        let r_array: [u8; 32] = r_bytes.try_into().expect("r should be 32 bytes");
-        let s_array: [u8; 32] = s_bytes.try_into().expect("s should be 32 bytes");
-
-        Signed {
-            payload,
-            signature_r: Felt::from_bytes_be(&r_array),
-            signature_s: Felt::from_bytes_be(&s_array),
         }
     }
 }
@@ -156,24 +169,11 @@ pub struct Request {
     pub nonce: u64,
 }
 
-impl From<crate::Request<'_>> for Request {
-    fn from(value: crate::Request<'_>) -> Self {
-        Request {
-            kind: value.kind.into(),
-            signer_id: value.signer_id.into(),
-            user_id: ContextIdentity {
-                high: Felt::ZERO,
-                low: Felt::ZERO,
-            },
-            nonce: 0,
-        }
-    }
-}
-
-#[derive(Debug, Encode)]
+#[derive(Debug, Encode, Decode, Copy, Clone)]
 pub enum Capability {
     ManageApplication,
     ManageMembers,
+    ProxyCode,
 }
 
 impl From<&crate::Capability> for Capability {
@@ -181,6 +181,7 @@ impl From<&crate::Capability> for Capability {
         match value {
             crate::Capability::ManageApplication => Capability::ManageApplication,
             crate::Capability::ManageMembers => Capability::ManageMembers,
+            crate::Capability::Proxy => Capability::ProxyCode,
         }
     }
 }
@@ -205,57 +206,35 @@ pub enum ContextRequestKind {
 impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
     fn from(value: crate::ContextRequestKind<'_>) -> Self {
         match value {
-            crate::ContextRequestKind::Add {
-                author_id,
-                application,
-            } => ContextRequestKind::Add(author_id.into(), application.into()),
-            crate::ContextRequestKind::UpdateApplication { application } => {
-                ContextRequestKind::UpdateApplication(application.into())
-            }
-            crate::ContextRequestKind::AddMembers { members } => {
-                ContextRequestKind::AddMembers(members.into_iter().map(|m| m.into()).collect())
-            }
-            crate::ContextRequestKind::RemoveMembers { members } => {
-                ContextRequestKind::RemoveMembers(members.into_iter().map(|m| m.into()).collect())
-            }
-            crate::ContextRequestKind::Grant { capabilities } => ContextRequestKind::Grant(
-                capabilities
-                    .into_iter()
+            crate::ContextRequestKind::Add { author_id, application } => 
+                ContextRequestKind::Add(author_id.into_inner().into(), application.into()),
+            crate::ContextRequestKind::UpdateApplication { application } => 
+                ContextRequestKind::UpdateApplication(application.into()),
+            crate::ContextRequestKind::AddMembers { members } => 
+                ContextRequestKind::AddMembers(members.into_iter().map(|m| m.into_inner().into()).collect()),
+            crate::ContextRequestKind::RemoveMembers { members } => 
+                ContextRequestKind::RemoveMembers(members.into_iter().map(|m| m.into_inner().into()).collect()),
+            crate::ContextRequestKind::Grant { capabilities } => 
+                ContextRequestKind::Grant(capabilities.into_iter()
                     .map(|(id, cap)| CapabilityAssignment {
-                        member: id.into(),
+                        member: id.into_inner().into(),
                         capability: cap.into(),
                     })
-                    .collect(),
-            ),
-            crate::ContextRequestKind::Revoke { capabilities } => ContextRequestKind::Revoke(
-                capabilities
-                    .into_iter()
+                    .collect()),
+            crate::ContextRequestKind::Revoke { capabilities } => 
+                ContextRequestKind::Revoke(capabilities.into_iter()
                     .map(|(id, cap)| CapabilityAssignment {
-                        member: id.into(),
+                        member: id.into_inner().into(),
                         capability: cap.into(),
                     })
-                    .collect(),
-            ),
-            crate::ContextRequestKind::UpdateProxyContract => {
-                ContextRequestKind::UpdateProxyContract
-            }
+                    .collect()),
+            crate::ContextRequestKind::UpdateProxyContract => 
+                ContextRequestKind::UpdateProxyContract,
         }
     }
 }
 
-#[derive(Debug, Clone, Encode)]
-pub struct ApplicationId {
-    pub high: Felt,
-    pub low: Felt,
-}
-
-#[derive(Debug, Clone, Encode)]
-pub struct ApplicationBlob {
-    pub high: Felt,
-    pub low: Felt,
-}
-
-#[derive(Debug, Clone, Encode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct Application {
     pub id: ApplicationId,
     pub blob: ApplicationBlob,
@@ -266,21 +245,9 @@ pub struct Application {
 
 impl From<crate::Application<'_>> for Application {
     fn from(value: crate::Application<'_>) -> Self {
-        let id_bytes = value.id.as_bytes();
-        let (id_high, id_low) = id_bytes.split_at(id_bytes.len() / 2);
-
-        let blob_bytes = value.blob.as_bytes();
-        let (blob_high, blob_low) = blob_bytes.split_at(blob_bytes.len() / 2);
-
         Application {
-            id: ApplicationId {
-                high: Felt::from_bytes_be_slice(id_high),
-                low: Felt::from_bytes_be_slice(id_low),
-            },
-            blob: ApplicationBlob {
-                high: Felt::from_bytes_be_slice(blob_high),
-                low: Felt::from_bytes_be_slice(blob_low),
-            },
+            id: (*value.id).into(),
+            blob: (*value.blob).into(),
             size: value.size,
             source: value.source.into(),
             metadata: value.metadata.into(),
@@ -288,69 +255,14 @@ impl From<crate::Application<'_>> for Application {
     }
 }
 
-impl From<crate::types::ApplicationId> for ApplicationId {
-    fn from(value: crate::types::ApplicationId) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ApplicationId {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-impl From<Repr<crate::types::ApplicationId>> for ApplicationId {
-    fn from(value: Repr<crate::types::ApplicationId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ApplicationId {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-impl From<&Repr<crate::types::ApplicationId>> for ApplicationId {
-    fn from(value: &Repr<crate::types::ApplicationId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ApplicationId {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-// Similar implementations for ApplicationBlob
-impl From<crate::types::BlobId> for ApplicationBlob {
-    fn from(value: crate::types::BlobId) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ApplicationBlob {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-impl From<Repr<crate::types::BlobId>> for ApplicationBlob {
-    fn from(value: Repr<crate::types::BlobId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ApplicationBlob {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-impl From<&Repr<crate::types::BlobId>> for ApplicationBlob {
-    fn from(value: &Repr<crate::types::BlobId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ApplicationBlob {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
+impl<'a> From<Application> for crate::Application<'a> {
+    fn from(value: Application) -> Self {
+        crate::Application {
+            id: Repr::new(value.id.into()),
+            blob: Repr::new(value.blob.into()),
+            size: value.size,
+            source: value.source.into(),
+            metadata: value.metadata.into(),
         }
     }
 }
@@ -370,7 +282,6 @@ impl From<crate::types::ApplicationMetadata<'_>> for EncodableString {
     }
 }
 
-// Optional: Add this if you need to convert from string references
 impl From<&str> for EncodableString {
     fn from(value: &str) -> Self {
         EncodableString(value.to_string())
@@ -382,14 +293,11 @@ impl Encode for EncodableString {
         const WORD_SIZE: usize = 31;
         let bytes = self.0.as_bytes();
 
-        // Calculate full words and pending word
         let full_words_count = bytes.len() / WORD_SIZE;
         let pending_len = bytes.len() % WORD_SIZE;
 
-        // Write number of full words
         writer.write(Felt::from(full_words_count));
 
-        // Write full words (31 chars each)
         for i in 0..full_words_count {
             let start = i * WORD_SIZE;
             let word_bytes = &bytes[start..start + WORD_SIZE];
@@ -397,7 +305,6 @@ impl Encode for EncodableString {
             writer.write(Felt::from_hex(&format!("0x{}", word_hex)).unwrap());
         }
 
-        // Write pending word if exists
         if pending_len > 0 {
             let pending_bytes = &bytes[full_words_count * WORD_SIZE..];
             let pending_hex = hex::encode(pending_bytes);
@@ -406,10 +313,52 @@ impl Encode for EncodableString {
             writer.write(Felt::ZERO);
         }
 
-        // Write pending word length
         writer.write(Felt::from(pending_len));
 
         Ok(())
+    }
+}
+
+impl<'a> Decode<'a> for EncodableString {
+    fn decode_iter<T>(iter: &mut T) -> Result<Self, Error>
+    where
+        T: Iterator<Item = &'a Felt>
+    {
+        const WORD_SIZE: usize = 31;
+        
+        // First felt is full_words_count
+        let full_words_count = iter.next()
+            .ok_or_else(Error::input_exhausted)?
+            .to_bytes_be()[31] as usize;
+        
+        let mut bytes = Vec::with_capacity(full_words_count * WORD_SIZE);
+        
+        // Read each full word (31 bytes each)
+        for _ in 0..full_words_count {
+            let word = iter.next()
+                .ok_or_else(Error::input_exhausted)?
+                .to_bytes_be();
+            bytes.extend_from_slice(&word[1..WORD_SIZE + 1]); // Take exactly WORD_SIZE bytes, skipping first byte
+        }
+        
+        // Read pending bytes (if any)
+        let pending = iter.next()
+            .ok_or_else(Error::input_exhausted)?;
+        
+        let pending_len = iter.next()
+            .ok_or_else(Error::input_exhausted)?
+            .to_bytes_be()[31] as usize;
+            
+        if pending_len > 0 {
+            let pending_bytes = pending.to_bytes_be();
+            bytes.extend_from_slice(&pending_bytes[1..pending_len + 1]);
+        }
+        
+        // Convert bytes to string
+        let string = String::from_utf8(bytes)
+            .map_err(|_| Error::custom("Invalid UTF-8"))?;
+        
+        Ok(EncodableString(string))
     }
 }
 
@@ -423,62 +372,142 @@ pub struct StarknetMembersRequest {
 impl From<crate::client::env::config::query::members::MembersRequest> for StarknetMembersRequest {
     fn from(value: crate::client::env::config::query::members::MembersRequest) -> Self {
         StarknetMembersRequest {
-            context_id: value.context_id.into(),
+            context_id: (*value.context_id).into(),
             offset: value.offset as u32,
             length: value.length as u32,
         }
     }
 }
 
-// Add these implementations for reference types
-impl From<&Repr<crate::ContextIdentity>> for ContextIdentity {
-    fn from(value: &Repr<crate::ContextIdentity>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextIdentity {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-impl From<&Repr<SignerId>> for ContextIdentity {
-    fn from(value: &Repr<SignerId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextIdentity {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-impl From<&Repr<crate::ContextId>> for ContextId {
-    fn from(value: &Repr<crate::ContextId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        ContextId {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
-
-// Add this new struct
 #[derive(Debug, Encode)]
 pub struct StarknetApplicationRevisionRequest {
     pub context_id: ContextId,
 }
 
-// Add From implementation
 impl From<crate::client::env::config::query::application_revision::ApplicationRevisionRequest>
     for StarknetApplicationRevisionRequest
 {
-    fn from(
-        value: crate::client::env::config::query::application_revision::ApplicationRevisionRequest,
-    ) -> Self {
+    fn from(value: crate::client::env::config::query::application_revision::ApplicationRevisionRequest) -> Self {
         StarknetApplicationRevisionRequest {
-            context_id: value.context_id.into(),
+            context_id: (*value.context_id).into(),
         }
+    }
+}
+
+#[derive(Debug, Encode)]
+pub struct Signed {
+    pub payload: Vec<Felt>,
+    pub signature_r: Felt,
+    pub signature_s: Felt,
+}
+
+// Add reverse conversions for IDs
+impl From<ApplicationId> for crate::types::ApplicationId {
+    fn from(value: ApplicationId) -> Self {
+        let FeltPair { high, low } = value.0;
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+impl From<ContextId> for crate::types::ContextId {
+    fn from(value: ContextId) -> Self {
+        let FeltPair { high, low } = value.0;
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+impl From<ApplicationBlob> for crate::types::BlobId {
+    fn from(value: ApplicationBlob) -> Self {
+        let FeltPair { high, low } = value.0;
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+impl<'a> From<EncodableString> for crate::types::ApplicationSource<'a> {
+    fn from(value: EncodableString) -> Self {
+        crate::types::ApplicationSource(std::borrow::Cow::Owned(value.0))
+    }
+}
+
+impl<'a> From<EncodableString> for crate::types::ApplicationMetadata<'a> {
+    fn from(value: EncodableString) -> Self {
+        crate::types::ApplicationMetadata(Repr::new(std::borrow::Cow::Owned(value.0.into_bytes())))
+    }
+}
+
+#[derive(Debug, Decode)]
+pub struct StarknetPrivilegeEntry {
+    pub identity: ContextIdentity,
+    pub capabilities: Vec<Capability>
+}
+
+#[derive(Debug, Decode)]
+pub struct StarknetPrivileges {
+    pub privileges: Vec<StarknetPrivilegeEntry>
+}
+
+impl From<StarknetPrivileges> for BTreeMap<SignerId, Vec<crate::Capability>> {
+    fn from(value: StarknetPrivileges) -> Self {
+        value.privileges
+            .into_iter()
+            .map(|entry| (entry.identity.into(), 
+                         entry.capabilities.into_iter().map(Into::into).collect()))
+            .collect()
+    }
+}
+
+// Add conversion from Starknet Capability to domain Capability
+impl From<Capability> for crate::Capability {
+    fn from(value: Capability) -> Self {
+        match value {
+            Capability::ManageApplication => crate::Capability::ManageApplication,
+            Capability::ManageMembers => crate::Capability::ManageMembers,
+            Capability::ProxyCode => crate::Capability::Proxy,
+        }
+    }
+}
+
+// Add conversion from Starknet ContextIdentity to SignerId
+impl From<ContextIdentity> for SignerId {
+    fn from(value: ContextIdentity) -> Self {
+        let FeltPair { high, low } = value.0;
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+#[derive(Debug, Decode)]
+pub struct StarknetMembers {
+    pub members: Vec<ContextIdentity>
+}
+
+impl From<StarknetMembers> for Vec<crate::types::ContextIdentity> {
+    fn from(value: StarknetMembers) -> Self {
+        value.members
+            .into_iter()
+            .map(|id| id.into())
+            .collect()
+    }
+}
+
+// Add conversion from Starknet ContextIdentity to domain ContextIdentity
+impl From<ContextIdentity> for crate::types::ContextIdentity {
+    fn from(value: ContextIdentity) -> Self {
+        let FeltPair { high, low } = value.0;
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
     }
 }

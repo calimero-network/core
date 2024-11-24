@@ -368,19 +368,9 @@ impl ContextManager {
             None
         };
 
-        let context = match self
+        let context = self
             .internal_sync_context_config(context_id, config.as_mut())
-            .await
-        {
-            Ok(ctx) => {
-                println!("Successfully got context from internal_sync");
-                ctx
-            }
-            Err(e) => {
-                println!("Error in internal_sync_context_config: {:?}", e);
-                return Err(e);
-            }
-        };
+            .await?;
 
         if !handle.has(&identity_key)? {
             bail!("unable to join context: not a member, invalid invitation?")

@@ -307,12 +307,13 @@ impl ReprBytes for VerifyingKey {
 pub enum Capability {
     ManageApplication,
     ManageMembers,
+    Proxy,
 }
 
 #[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signed<T> {
-    pub payload: Repr<Box<[u8]>>,
-    pub signature: Repr<Signature>,
+    payload: Repr<Box<[u8]>>,
+    signature: Repr<Signature>,
 
     #[serde(skip)]
     _priv: PhantomData<T>,

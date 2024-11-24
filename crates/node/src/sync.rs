@@ -106,7 +106,7 @@ impl Node {
         chosen_peer: PeerId,
     ) -> EyreResult<()> {
         let mut context = self.ctx_manager.sync_context_config(context_id).await?;
-        println!("initiating sync for context: {:?}", context);
+
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
             bail!("application not found: {}", context.application_id);
         };
@@ -123,7 +123,6 @@ impl Node {
             .await?;
 
         if !self.ctx_manager.has_blob_available(application.blob)? {
-            println!("blob not available, initiating blob share process");
             self.initiate_blob_share_process(
                 &context,
                 our_identity,

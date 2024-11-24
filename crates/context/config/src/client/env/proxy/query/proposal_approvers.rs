@@ -5,6 +5,7 @@ use starknet::core::codec::Decode;
 use starknet::core::types::Felt;
 
 use super::ProposalId;
+use crate::client::env::proxy::starknet::FeltPair;
 use crate::client::env::proxy::types::starknet::{StarknetApprovers, StarknetProposalId};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
@@ -59,14 +60,15 @@ impl Method<Starknet> for ProposalApproversRequest {
         high[16..].copy_from_slice(high_bytes); // Put in last 16 bytes
         low[16..].copy_from_slice(low_bytes); // Put in last 16 bytes
 
-        let starknet_id = StarknetProposalId {
+        let starknet_id = StarknetProposalId(FeltPair {
             high: Felt::from_bytes_be(&high),
             low: Felt::from_bytes_be(&low),
-        };
+        });
+
         // Encode exactly as in mutate response
         let mut encoded = Vec::new();
-        encoded.extend_from_slice(&starknet_id.high.to_bytes_be());
-        encoded.extend_from_slice(&starknet_id.low.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.0.high.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.0.low.to_bytes_be());
         Ok(encoded)
     }
 

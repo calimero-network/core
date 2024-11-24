@@ -48,7 +48,6 @@ impl Method<Starknet> for ProxyContractRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        println!("response {:?}", response);
         if response.is_empty() {
             return Err(eyre::eyre!("No proxy contract found"));
         }
@@ -58,9 +57,10 @@ impl Method<Starknet> for ProxyContractRequest {
             return Err(eyre::eyre!("No proxy contract found"));
         }
 
-        // Convert the Felt to a hex string representing the contract address
-        let hex_string = format!("0x{}", hex::encode(&response));
-
-        Ok(hex_string)
+        // Parse bytes as Felt
+        let felt = Felt::from_bytes_be_slice(&response);
+        
+        // Format felt as hex string with 0x prefix
+        Ok(format!("0x{:x}", felt))
     }
 }

@@ -38,10 +38,10 @@ impl Method<Starknet> for ProposalRequest {
         // Convert ProposalId to StarknetProposalId
         let starknet_id: StarknetProposalId = self.proposal_id.into();
 
-        // Encode both high and low parts
+        // Encode both parts (0 is FeltPair)
         let mut encoded = Vec::new();
-        encoded.extend_from_slice(&starknet_id.high.to_bytes_be());
-        encoded.extend_from_slice(&starknet_id.low.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.0.high.to_bytes_be());
+        encoded.extend_from_slice(&starknet_id.0.low.to_bytes_be());
 
         Ok(encoded)
     }

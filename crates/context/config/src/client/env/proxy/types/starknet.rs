@@ -1,57 +1,23 @@
 use starknet::core::codec::{Decode, Encode};
 use starknet::core::types::{Felt, U256};
-
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::repr::{Repr, ReprTransmute, ReprBytes};
 use crate::types::{ContextIdentity, ProposalId, SignerId};
-use crate::{
-    Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest,
-};
+use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest};
 
 #[derive(Debug, Encode, Decode)]
-pub struct StarknetProposalId {
+pub struct FeltPair {
     pub high: Felt,
     pub low: Felt,
 }
 
-impl From<Repr<ProposalId>> for StarknetProposalId {
-    fn from(value: Repr<ProposalId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        StarknetProposalId {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
+#[derive(Debug, Encode, Decode)]
+pub struct StarknetIdentity(pub FeltPair);
 
 #[derive(Debug, Encode, Decode)]
-pub struct StarknetIdentity {
-    pub high: Felt,
-    pub low: Felt,
-}
-
-impl From<Repr<SignerId>> for StarknetIdentity {
-    fn from(value: Repr<SignerId>) -> Self {
-        let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        StarknetIdentity {
-            high: Felt::from_bytes_be_slice(high_bytes),
-            low: Felt::from_bytes_be_slice(low_bytes),
-        }
-    }
-}
+pub struct StarknetProposalId(pub FeltPair);
 
 #[derive(Debug, Encode, Decode)]
-pub struct StarknetProxyMutateRequest {
-    pub signer_id: StarknetIdentity,
-    pub kind: StarknetProxyMutateRequestKind,
-}
-
-#[derive(Debug, Encode, Decode)]
-pub enum StarknetProxyMutateRequestKind {
-    Propose(StarknetProposal),
-    Approve(StarknetConfirmationRequest),
-}
+pub struct StarknetU256(pub FeltPair);
 
 #[derive(Debug, Encode, Decode)]
 pub struct StarknetProposal {
@@ -64,31 +30,19 @@ pub struct StarknetProposal {
 pub struct StarknetConfirmationRequest {
     pub proposal_id: StarknetProposalId,
     pub signer_id: StarknetIdentity,
-    pub added_timestamp: Felt, // u64 in contract
+    pub added_timestamp: Felt,
 }
 
 #[derive(Debug, Encode, Decode)]
-pub struct StarknetU256 {
-    pub high: Felt,
-    pub low: Felt,
+pub struct StarknetProxyMutateRequest {
+    pub signer_id: StarknetIdentity,
+    pub kind: StarknetProxyMutateRequestKind,
 }
 
-impl From<U256> for StarknetU256 {
-    fn from(value: U256) -> Self {
-        StarknetU256 {
-            high: Felt::from(value.high()), // Get high 128 bits
-            low: Felt::from(value.low()),   // Get low 128 bits
-        }
-    }
-}
-
-impl From<u128> for StarknetU256 {
-    fn from(value: u128) -> Self {
-        StarknetU256 {
-            high: Felt::ZERO,
-            low: Felt::from(value),
-        }
-    }
+#[derive(Debug, Encode, Decode)]
+pub enum StarknetProxyMutateRequestKind {
+    Propose(StarknetProposal),
+    Approve(StarknetConfirmationRequest),
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -107,6 +61,101 @@ pub struct StarknetSignedRequest {
     pub signature_s: Felt,
 }
 
+#[derive(Debug, Decode)]
+pub struct StarknetProposalWithApprovals {
+    pub proposal_id: StarknetProposalId,
+    pub num_approvals: Felt,
+}
+
+#[derive(Debug, Decode)]
+pub struct StarknetApprovers {
+    pub approvers: Vec<StarknetIdentity>,
+}
+
+#[derive(Debug, Decode)]
+pub struct StarknetProposals {
+    pub proposals: Vec<StarknetProposal>
+}
+
+impl From<StarknetProposals> for Vec<Proposal> {
+  fn from(value: StarknetProposals) -> Self {
+      value.proposals.into_iter().map(Into::into).collect()
+  }
+}
+
+// Conversions for StarknetIdentity
+impl From<Repr<SignerId>> for StarknetIdentity {
+    fn from(value: Repr<SignerId>) -> Self {
+        let bytes = value.as_bytes();
+        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        StarknetIdentity(FeltPair {
+            high: Felt::from_bytes_be_slice(high_bytes),
+            low: Felt::from_bytes_be_slice(low_bytes),
+        })
+    }
+}
+
+impl From<StarknetIdentity> for SignerId {
+    fn from(value: StarknetIdentity) -> Self {
+        let FeltPair { high, low } = value.0;
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+// Conversions for ProposalId
+impl From<Repr<ProposalId>> for StarknetProposalId {
+    fn from(value: Repr<ProposalId>) -> Self {
+        let bytes = value.as_bytes();
+        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        StarknetProposalId(FeltPair {
+            high: Felt::from_bytes_be_slice(high_bytes),
+            low: Felt::from_bytes_be_slice(low_bytes),
+        })
+    }
+}
+
+impl From<StarknetProposalId> for ProposalId {
+    fn from(value: StarknetProposalId) -> Self {
+        let FeltPair { high, low } = value.0;
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+// Conversions for U256
+impl From<U256> for StarknetU256 {
+    fn from(value: U256) -> Self {
+        StarknetU256(FeltPair {
+            high: Felt::from(value.high()),
+            low: Felt::from(value.low()),
+        })
+    }
+}
+
+impl From<u128> for StarknetU256 {
+    fn from(value: u128) -> Self {
+        StarknetU256(FeltPair {
+            high: Felt::ZERO,
+            low: Felt::from(value),
+        })
+    }
+}
+
+// Conversions for ProxyMutateRequest
+impl From<(Repr<SignerId>, ProxyMutateRequest)> for StarknetProxyMutateRequest {
+    fn from((signer_id, request): (Repr<SignerId>, ProxyMutateRequest)) -> Self {
+        StarknetProxyMutateRequest {
+            signer_id: signer_id.into(),
+            kind: request.into(),
+        }
+    }
+}
+
 impl From<ProxyMutateRequest> for StarknetProxyMutateRequestKind {
     fn from(request: ProxyMutateRequest) -> Self {
         match request {
@@ -120,6 +169,7 @@ impl From<ProxyMutateRequest> for StarknetProxyMutateRequestKind {
     }
 }
 
+// Conversions for Proposal
 impl From<Proposal> for StarknetProposal {
     fn from(proposal: Proposal) -> Self {
         StarknetProposal {
@@ -130,6 +180,17 @@ impl From<Proposal> for StarknetProposal {
     }
 }
 
+impl From<StarknetProposal> for Proposal {
+    fn from(value: StarknetProposal) -> Self {
+        Proposal {
+            id: Repr::new(value.proposal_id.into()),
+            author_id: Repr::new(value.author_id.into()),
+            actions: vec![value.actions.into()],
+        }
+    }
+}
+
+// Conversions for ProposalApproval
 impl From<ProposalApprovalWithSigner> for StarknetConfirmationRequest {
     fn from(approval: ProposalApprovalWithSigner) -> Self {
         StarknetConfirmationRequest {
@@ -140,47 +201,20 @@ impl From<ProposalApprovalWithSigner> for StarknetConfirmationRequest {
     }
 }
 
-impl From<(Repr<SignerId>, ProxyMutateRequest)> for StarknetProxyMutateRequest {
-    fn from((signer_id, request): (Repr<SignerId>, ProxyMutateRequest)) -> Self {
-        StarknetProxyMutateRequest {
-            signer_id: signer_id.into(),
-            kind: request.into(),
-        }
-    }
-}
-
+// Conversions for Actions
 impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
     fn from(actions: Vec<ProposalAction>) -> Self {
-        let action = actions
-            .into_iter()
-            .next()
-            .expect("At least one action required");
-
+        let action = actions.into_iter().next().expect("At least one action required");
         match action {
-            ProposalAction::ExternalFunctionCall {
-                receiver_id,
-                method_name,
-                args,
-                deposit,
-                gas,
-            } => {
-                // Parse the args string (which is a JSON array of strings) into Felts
-                let args_vec: Vec<String> =
-                    serde_json::from_str(&args).unwrap_or_else(|_| Vec::new());
-
-                let felt_args: Vec<Felt> = args_vec
-                    .iter()
-                    .map(|arg| {
-                        // If the arg starts with "0x", parse as hex
-                        if arg.starts_with("0x") {
-                            // Use from_hex_unchecked for hex strings
-                            Felt::from_hex_unchecked(arg)
-                        } else {
-                            // Otherwise parse as bytes
-                            Felt::from_bytes_be_slice(arg.as_bytes())
-                        }
-                    })
-                    .collect();
+            ProposalAction::ExternalFunctionCall { receiver_id, method_name, args, .. } => {
+                let args_vec: Vec<String> = serde_json::from_str(&args).unwrap_or_default();
+                let felt_args = args_vec.iter().map(|arg| {
+                    if arg.starts_with("0x") {
+                        Felt::from_hex_unchecked(arg)
+                    } else {
+                        Felt::from_bytes_be_slice(arg.as_bytes())
+                    }
+                }).collect();
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
@@ -188,52 +222,24 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                     felt_args,
                 )
             }
-            ProposalAction::Transfer {
-                receiver_id,
-                amount,
-            } => {
+            ProposalAction::Transfer { receiver_id, amount } => {
                 StarknetProposalActionWithArgs::Transfer(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
-                    amount.into(), // converts to StarknetU256
+                    amount.into(),
                 )
             }
             ProposalAction::SetNumApprovals { num_approvals } => {
                 StarknetProposalActionWithArgs::SetNumApprovals(Felt::from(num_approvals))
             }
-            ProposalAction::SetActiveProposalsLimit {
-                active_proposals_limit,
-            } => StarknetProposalActionWithArgs::SetActiveProposalsLimit(Felt::from(
-                active_proposals_limit,
-            )),
+            ProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
+                StarknetProposalActionWithArgs::SetActiveProposalsLimit(Felt::from(active_proposals_limit))
+            }
             ProposalAction::SetContextValue { key, value } => {
                 StarknetProposalActionWithArgs::SetContextValue(
-                    key.chunks(16)
-                        .map(|chunk| Felt::from_bytes_be_slice(chunk))
-                        .collect(),
-                    value
-                        .chunks(16)
-                        .map(|chunk| Felt::from_bytes_be_slice(chunk))
-                        .collect(),
+                    key.chunks(16).map(Felt::from_bytes_be_slice).collect(),
+                    value.chunks(16).map(Felt::from_bytes_be_slice).collect(),
                 )
             }
-        }
-    }
-}
-
-impl From<StarknetProposal> for Proposal {
-    fn from(sp: StarknetProposal) -> Self {
-        let mut proposal_id = [0u8; 32];
-        proposal_id[..16].copy_from_slice(&sp.proposal_id.high.to_bytes_be()[16..]);
-        proposal_id[16..].copy_from_slice(&sp.proposal_id.low.to_bytes_be()[16..]);
-
-        let mut author_id = [0u8; 32];
-        author_id[..16].copy_from_slice(&sp.author_id.high.to_bytes_be()[16..]);
-        author_id[16..].copy_from_slice(&sp.author_id.low.to_bytes_be()[16..]);
-
-        Proposal {
-            id: proposal_id.rt().expect("infallible conversion"),
-            author_id: author_id.rt().expect("infallible conversion"),
-            actions: vec![sp.actions.into()],
         }
     }
 }
@@ -245,8 +251,7 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                 ProposalAction::ExternalFunctionCall {
                     receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
                     method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
-                    args: calldata
-                        .iter()
+                    args: calldata.iter()
                         .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
                         .collect::<Vec<_>>()
                         .join(","),
@@ -255,27 +260,21 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                 }
             }
             StarknetProposalActionWithArgs::Transfer(receiver, amount) => {
+                let FeltPair { high, low } = amount.0;
                 ProposalAction::Transfer {
                     receiver_id: format!("0x{}", hex::encode(receiver.to_bytes_be())),
-                    amount: u128::from_be_bytes(
-                        amount.low.to_bytes_be()[16..32].try_into().unwrap(),
-                    ) + (u128::from_be_bytes(
-                        amount.high.to_bytes_be()[16..32].try_into().unwrap(),
-                    ) << 64),
+                    amount: u128::from_be_bytes(low.to_bytes_be()[16..32].try_into().unwrap()) +
+                           (u128::from_be_bytes(high.to_bytes_be()[16..32].try_into().unwrap()) << 64),
                 }
             }
             StarknetProposalActionWithArgs::SetNumApprovals(num) => {
                 ProposalAction::SetNumApprovals {
-                    num_approvals: u32::from_be_bytes(
-                        num.to_bytes_be()[28..32].try_into().unwrap(),
-                    ),
+                    num_approvals: u32::from_be_bytes(num.to_bytes_be()[28..32].try_into().unwrap()),
                 }
             }
             StarknetProposalActionWithArgs::SetActiveProposalsLimit(limit) => {
                 ProposalAction::SetActiveProposalsLimit {
-                    active_proposals_limit: u32::from_be_bytes(
-                        limit.to_bytes_be()[28..32].try_into().unwrap(),
-                    ),
+                    active_proposals_limit: u32::from_be_bytes(limit.to_bytes_be()[28..32].try_into().unwrap()),
                 }
             }
             StarknetProposalActionWithArgs::SetContextValue(key, value) => {
@@ -284,55 +283,28 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                     value: value.iter().flat_map(|felt| felt.to_bytes_be()).collect(),
                 }
             }
-            _ => panic!("Unsupported action type"),
         }
     }
-}
-
-#[derive(Debug, Decode)]
-pub struct StarknetProposalWithApprovals {
-    pub proposal_id: StarknetProposalId,
-    pub num_approvals: Felt,
 }
 
 impl From<StarknetProposalWithApprovals> for ProposalWithApprovals {
-    fn from(spa: StarknetProposalWithApprovals) -> Self {
+    fn from(value: StarknetProposalWithApprovals) -> Self {
         ProposalWithApprovals {
-            proposal_id: Repr::new(
-                ProposalId::from_bytes(|bytes| {
-                    let mut full_bytes = Vec::with_capacity(64);
-                    full_bytes.extend_from_slice(&spa.proposal_id.high.to_bytes_be());
-                    full_bytes.extend_from_slice(&spa.proposal_id.low.to_bytes_be());
-                    bytes.copy_from_slice(&full_bytes);
-                    Ok(64)
-                })
-                .expect("Valid proposal ID"),
-            ),
-            num_approvals: u32::from_be_bytes(
-                spa.num_approvals.to_bytes_be()[28..32].try_into().unwrap(),
-            ) as usize,
+            proposal_id: Repr::new(value.proposal_id.into()),
+            num_approvals: u32::from_be_bytes(value.num_approvals.to_bytes_be()[28..32].try_into().unwrap()) as usize,
         }
     }
 }
 
-#[derive(Debug, Decode)]
-pub struct StarknetApprovers {
-    pub approvers: Vec<StarknetIdentity>,
-}
-
 impl From<StarknetApprovers> for Vec<ContextIdentity> {
-    fn from(sa: StarknetApprovers) -> Self {
-        sa.approvers
+    fn from(value: StarknetApprovers) -> Self {
+        value.approvers
             .into_iter()
             .map(|identity| {
-                ContextIdentity::from_bytes(|bytes| {
-                    let mut combined = [0u8; 32];
-                    combined[..16].copy_from_slice(&identity.high.to_bytes_be()[16..]);
-                    combined[16..].copy_from_slice(&identity.low.to_bytes_be()[16..]); // Changed this line
-                    bytes.copy_from_slice(&combined);
-                    Ok(32)
-                })
-                .expect("Valid identity")
+                let mut bytes = [0u8; 32];
+                bytes[..16].copy_from_slice(&identity.0.high.to_bytes_be()[16..]);
+                bytes[16..].copy_from_slice(&identity.0.low.to_bytes_be()[16..]);
+                bytes.rt().expect("Infallible conversion")
             })
             .collect()
     }
