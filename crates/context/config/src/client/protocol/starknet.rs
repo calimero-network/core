@@ -147,9 +147,7 @@ pub enum StarknetError {
     InvalidMethodName(String),
     #[error("access key does not have permission to call contract `{0}`")]
     NotPermittedToCallContract(String),
-    #[error(
-        "access key does not have permission to call method `{method}` on contract {contract}"
-    )]
+    #[error("access key does not have permission to call method `{method}` on contract {contract}")]
     NotPermittedToCallMethod { contract: String, method: String },
     #[error("transaction timed out")]
     TransactionTimeout,
@@ -240,21 +238,20 @@ impl Network {
 
         let response = self
             .client
-            .call(&function_call, BlockId::Tag(BlockTag::Latest))
-            .await;
-
-        response.map_or(
-            Err(StarknetError::InvalidResponse {
+            .call(&function_call, BlockId::Tag(BlockTag::Pending))
+            .await
+            .map_err(|e| StarknetError::Custom {
                 operation: ErrorOperation::Query,
-            }),
-            |result| {
-                Ok(result
-                    .into_iter()
-                    .map(|felt| felt.to_bytes_be())
-                    .flatten()
-                    .collect::<Vec<u8>>())
-            },
-        )
+                reason: format!("Failed to query state: {}", e),
+            })?;
+
+        // Convert response to bytes
+        let response_bytes = response
+            .into_iter()
+            .flat_map(|felt| felt.to_bytes_be())
+            .collect::<Vec<u8>>();
+
+        Ok(response_bytes)
     }
 
     async fn mutate(
@@ -318,49 +315,60 @@ impl Network {
             })?;
 
         let sent_at = Instant::now();
-        let timeout = Duration::from_secs(60); // Same 60-second timeout as NEAR
+        let timeout = Duration::from_secs(60);
 
         let receipt = loop {
-            match account
+            let result = account
                 .provider()
                 .get_transaction_receipt(response.transaction_hash)
-                .await
-            {
-                Ok(receipt) => {
-                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) =
-                        &receipt.receipt
-                    {
-                        if matches!(
-                            invoke_receipt.finality_status,
-                            TransactionFinalityStatus::AcceptedOnL2
-                                | TransactionFinalityStatus::AcceptedOnL1
-                        ) {
-                            break receipt;
-                        }
+                .await;
 
-                        if sent_at.elapsed() > timeout {
-                            return Err(StarknetError::TransactionTimeout);
+            match result {
+                Ok(receipt) => {
+                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) = &receipt.receipt {
+                        match (invoke_receipt.finality_status, &invoke_receipt.execution_result) {
+                            (TransactionFinalityStatus::AcceptedOnL2, ExecutionResult::Succeeded) |
+                            (TransactionFinalityStatus::AcceptedOnL1, ExecutionResult::Succeeded) => {
+                                break receipt;
+                            },
+                            (_, ExecutionResult::Reverted { reason }) => {
+                                return Err(StarknetError::Custom {
+                                    operation: ErrorOperation::Mutate,
+                                    reason: format!("Transaction reverted: {}", reason),
+                                });
+                            }
                         }
-                        continue;
                     }
                 }
                 Err(err) => {
-                    return Err(StarknetError::Custom {
-                        operation: ErrorOperation::Mutate,
-                        reason: err.to_string(),
-                    });
+                    if !err.to_string().contains("TransactionHashNotFound") {
+                        return Err(StarknetError::Custom {
+                            operation: ErrorOperation::Mutate,
+                            reason: err.to_string(),
+                        });
+                    }
                 }
             }
-        };
 
+            if sent_at.elapsed() > timeout {
+                return Err(StarknetError::TransactionTimeout);
+            }
+
+            std::thread::sleep(Duration::from_millis(1000));
+        };
         // Process the receipt
         match receipt.receipt {
             starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) => {
                 match invoke_receipt.execution_result {
                     ExecutionResult::Succeeded => {
-                        // Process events and return result
-                        for event in invoke_receipt.events.iter() {
-                            if event.from_address == contract_id {
+                        // Process events and look for proposal creation event
+                        for event in invoke_receipt.events.iter() {// Check if this is a proposal creation event by its key
+                            const PROPOSAL_CREATED_KEY: &str = "ProposalCreated";
+                            if !event.keys.is_empty() && event.keys[0] == get_selector_from_name(PROPOSAL_CREATED_KEY).expect("Failed to get selector for ProposalCreated") {
+                                if event.data.is_empty() {
+                                    return Ok(vec![]);
+                                }
+
                                 let result = StarknetProposalWithApprovals::decode(&event.data)
                                     .map_err(|e| StarknetError::Custom {
                                         operation: ErrorOperation::Query,
@@ -373,15 +381,20 @@ impl Network {
                                 return Ok(encoded);
                             }
                         }
+                        // If we didn't find a proposal creation event, return empty vec
                         Ok(vec![])
                     }
-                    ExecutionResult::Reverted { reason } => Err(StarknetError::Custom {
-                        operation: ErrorOperation::Mutate,
-                        reason: format!("Transaction reverted: {}", reason),
-                    }),
+                    ExecutionResult::Reverted { reason } => {
+                        Err(StarknetError::Custom {
+                            operation: ErrorOperation::Mutate,
+                            reason: format!("Transaction reverted: {}", reason),
+                        })
+                    }
                 }
             }
-            _ => Ok(vec![0]),
+            _ => {
+                Ok(vec![0])
+            }
         }
     }
 }
