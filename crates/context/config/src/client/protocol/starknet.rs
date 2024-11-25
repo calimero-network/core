@@ -147,7 +147,9 @@ pub enum StarknetError {
     InvalidMethodName(String),
     #[error("access key does not have permission to call contract `{0}`")]
     NotPermittedToCallContract(String),
-    #[error("access key does not have permission to call method `{method}` on contract {contract}")]
+    #[error(
+        "access key does not have permission to call method `{method}` on contract {contract}"
+    )]
     NotPermittedToCallMethod { contract: String, method: String },
     #[error("transaction timed out")]
     TransactionTimeout,
@@ -325,12 +327,23 @@ impl Network {
 
             match result {
                 Ok(receipt) => {
-                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) = &receipt.receipt {
-                        match (invoke_receipt.finality_status, &invoke_receipt.execution_result) {
-                            (TransactionFinalityStatus::AcceptedOnL2, ExecutionResult::Succeeded) |
-                            (TransactionFinalityStatus::AcceptedOnL1, ExecutionResult::Succeeded) => {
+                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) =
+                        &receipt.receipt
+                    {
+                        match (
+                            invoke_receipt.finality_status,
+                            &invoke_receipt.execution_result,
+                        ) {
+                            (
+                                TransactionFinalityStatus::AcceptedOnL2,
+                                ExecutionResult::Succeeded,
+                            )
+                            | (
+                                TransactionFinalityStatus::AcceptedOnL1,
+                                ExecutionResult::Succeeded,
+                            ) => {
                                 break receipt;
-                            },
+                            }
                             (_, ExecutionResult::Reverted { reason }) => {
                                 return Err(StarknetError::Custom {
                                     operation: ErrorOperation::Mutate,
@@ -362,9 +375,14 @@ impl Network {
                 match invoke_receipt.execution_result {
                     ExecutionResult::Succeeded => {
                         // Process events and look for proposal creation event
-                        for event in invoke_receipt.events.iter() {// Check if this is a proposal creation event by its key
+                        for event in invoke_receipt.events.iter() {
+                            // Check if this is a proposal creation event by its key
                             const PROPOSAL_CREATED_KEY: &str = "ProposalCreated";
-                            if !event.keys.is_empty() && event.keys[0] == get_selector_from_name(PROPOSAL_CREATED_KEY).expect("Failed to get selector for ProposalCreated") {
+                            if !event.keys.is_empty()
+                                && event.keys[0]
+                                    == get_selector_from_name(PROPOSAL_CREATED_KEY)
+                                        .expect("Failed to get selector for ProposalCreated")
+                            {
                                 if event.data.is_empty() {
                                     return Ok(vec![]);
                                 }
@@ -384,17 +402,13 @@ impl Network {
                         // If we didn't find a proposal creation event, return empty vec
                         Ok(vec![])
                     }
-                    ExecutionResult::Reverted { reason } => {
-                        Err(StarknetError::Custom {
-                            operation: ErrorOperation::Mutate,
-                            reason: format!("Transaction reverted: {}", reason),
-                        })
-                    }
+                    ExecutionResult::Reverted { reason } => Err(StarknetError::Custom {
+                        operation: ErrorOperation::Mutate,
+                        reason: format!("Transaction reverted: {}", reason),
+                    }),
                 }
             }
-            _ => {
-                Ok(vec![0])
-            }
+            _ => Ok(vec![0]),
         }
     }
 }
