@@ -78,12 +78,12 @@ impl<'a> Method<Starknet> for Mutate<'a> {
         // Create Repr wrapped ContextIdentity instances
         let signer_id = verifying_key_bytes
             .rt::<ContextIdentity>()
-            .expect("Infallible conversion");
+            .map_err(|e| eyre::eyre!("Failed to convert verifying key: {}", e))?;
         let signer_id = Repr::new(signer_id);
 
         let user_id = user_key_bytes
             .rt::<ContextIdentity>()
-            .expect("Infallible conversion");
+            .map_err(|e| eyre::eyre!("Failed to convert user key: {}", e))?;
         let user_id = Repr::new(user_id);
 
         // Create the Request structure using into() conversions

@@ -90,7 +90,8 @@ impl From<StarknetProposals> for Vec<Proposal> {
 impl From<Repr<SignerId>> for StarknetIdentity {
     fn from(value: Repr<SignerId>) -> Self {
         let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
         StarknetIdentity(FeltPair {
             high: Felt::from_bytes_be_slice(high_bytes),
             low: Felt::from_bytes_be_slice(low_bytes),
@@ -112,7 +113,8 @@ impl From<StarknetIdentity> for SignerId {
 impl From<Repr<ProposalId>> for StarknetProposalId {
     fn from(value: Repr<ProposalId>) -> Self {
         let bytes = value.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
         StarknetProposalId(FeltPair {
             high: Felt::from_bytes_be_slice(high_bytes),
             low: Felt::from_bytes_be_slice(low_bytes),

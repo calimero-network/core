@@ -36,7 +36,8 @@ pub trait IntoFeltPair {
 impl IntoFeltPair for crate::types::ContextId {
     fn into_felt_pair(self) -> (Felt, Felt) {
         let bytes = self.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
         (
             Felt::from_bytes_be_slice(high_bytes),
             Felt::from_bytes_be_slice(low_bytes),
@@ -47,7 +48,8 @@ impl IntoFeltPair for crate::types::ContextId {
 impl IntoFeltPair for crate::types::ContextIdentity {
     fn into_felt_pair(self) -> (Felt, Felt) {
         let bytes = self.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
         (
             Felt::from_bytes_be_slice(high_bytes),
             Felt::from_bytes_be_slice(low_bytes),
@@ -58,7 +60,8 @@ impl IntoFeltPair for crate::types::ContextIdentity {
 impl IntoFeltPair for crate::types::ApplicationId {
     fn into_felt_pair(self) -> (Felt, Felt) {
         let bytes = self.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
         (
             Felt::from_bytes_be_slice(high_bytes),
             Felt::from_bytes_be_slice(low_bytes),
@@ -69,7 +72,8 @@ impl IntoFeltPair for crate::types::ApplicationId {
 impl IntoFeltPair for crate::types::BlobId {
     fn into_felt_pair(self) -> (Felt, Felt) {
         let bytes = self.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
         (
             Felt::from_bytes_be_slice(high_bytes),
             Felt::from_bytes_be_slice(low_bytes),
@@ -81,7 +85,8 @@ impl IntoFeltPair for crate::types::BlobId {
 impl IntoFeltPair for SignerId {
     fn into_felt_pair(self) -> (Felt, Felt) {
         let bytes = self.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
         (
             Felt::from_bytes_be_slice(high_bytes),
             Felt::from_bytes_be_slice(low_bytes),
@@ -297,7 +302,7 @@ impl From<crate::types::ApplicationMetadata<'_>> for EncodableString {
 
 impl From<&str> for EncodableString {
     fn from(value: &str) -> Self {
-        EncodableString(value.to_string())
+        EncodableString(value.to_owned())
     }
 }
 
@@ -305,33 +310,38 @@ impl Encode for EncodableString {
     fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
         const WORD_SIZE: usize = 31;
         let bytes = self.0.as_bytes();
-
+        
         // Calculate full words and pending word
         let full_words_count = bytes.len() / WORD_SIZE;
         let pending_len = bytes.len() % WORD_SIZE;
-
+        
         // Write number of full words
         writer.write(Felt::from(full_words_count));
-
+        
         // Write full words (31 chars each)
         for i in 0..full_words_count {
             let start = i * WORD_SIZE;
             let word_bytes = &bytes[start..start + WORD_SIZE];
             let word_hex = hex::encode(word_bytes);
-            writer.write(Felt::from_hex(&format!("0x{}", word_hex)).unwrap());
+            let felt = Felt::from_hex(&format!("0x{}", word_hex))
+                .map_err(|e| Error::custom(&format!("Invalid word hex: {}", e)))?;
+            writer.write(felt);
         }
-
+        
+        // Write pending word if exists
         if pending_len > 0 {
             let pending_bytes = &bytes[full_words_count * WORD_SIZE..];
             let pending_hex = hex::encode(pending_bytes);
-            writer.write(Felt::from_hex(&format!("0x{}", pending_hex)).unwrap());
+            let felt = Felt::from_hex(&format!("0x{}", pending_hex))
+                .map_err(|e| Error::custom(&format!("Invalid pending hex: {}", e)))?;
+            writer.write(felt);
         } else {
             writer.write(Felt::ZERO);
         }
-
+        
         // Write pending word length
         writer.write(Felt::from(pending_len));
-
+        
         Ok(())
     }
 }

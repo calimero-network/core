@@ -46,7 +46,8 @@ impl Method<Starknet> for ApplicationRequest {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         // Split context_id into high/low parts
         let bytes = self.context_id.as_bytes();
-        let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
+        let mid_point = bytes.len().checked_div(2).expect("Length should be even");
+        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
 
         // Convert to Felts
         let high_felt = Felt::from_bytes_be_slice(high_bytes);
@@ -63,24 +64,21 @@ impl Method<Starknet> for ApplicationRequest {
         if response.is_empty() {
             return Err(eyre::eyre!("No application found"));
         }
-
+    
         // Convert bytes to Felts
         let mut felts = Vec::new();
         for chunk in response.chunks(32) {
             if chunk.len() == 32 {
-                felts.push(Felt::from_bytes_be(chunk.try_into().unwrap()));
+                let chunk_array: [u8; 32] = chunk.try_into()
+                    .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+                felts.push(Felt::from_bytes_be(&chunk_array));
             }
         }
-
-        // Check if it's a None response (single zero Felt)
-        if felts.len() == 1 && felts[0] == Felt::ZERO {
-            return Err(eyre::eyre!("No application found"));
-        }
-
-        // Skip the flag/version felt and decode the application
+    
+        // Skip version felt and decode the application
         let application = StarknetApplication::decode(&felts[1..])
             .map_err(|e| eyre::eyre!("Failed to decode application: {:?}", e))?;
-
+    
         Ok(application.into())
     }
 }
