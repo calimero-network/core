@@ -312,7 +312,7 @@ impl Encode for EncodableString {
         let bytes = self.0.as_bytes();
 
         // Calculate full words and pending word
-        #[allow(clippy::integer_division)]
+        #[allow(clippy::integer_division, reason = "Not harmful here")]
         let full_words_count = bytes.len() / WORD_SIZE;
         let pending_len = bytes.len() % WORD_SIZE;
 
