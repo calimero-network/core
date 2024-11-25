@@ -57,7 +57,8 @@ impl Test for InviteJoinContextStep {
                     .insert(invitee.clone(), invitee_public_key),
             );
 
-            println!("Report: Node '{}' joined the context", invitee)
+            ctx.output_writer
+                .write_string(format!("Report: Node '{}' joined the context", invitee));
         }
 
         Ok(())
