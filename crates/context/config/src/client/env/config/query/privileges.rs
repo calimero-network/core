@@ -109,7 +109,7 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
         }
 
         // Skip the flag/version felt and decode the privileges
-        let privileges = StarknetPrivileges::decode(&felts[1..])
+        let privileges = StarknetPrivileges::decode(&felts)
             .map_err(|e| eyre::eyre!("Failed to decode privileges: {:?}", e))?;
 
         Ok(privileges.into())

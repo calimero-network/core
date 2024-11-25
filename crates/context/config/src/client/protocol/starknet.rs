@@ -246,7 +246,6 @@ impl Network {
                 operation: ErrorOperation::Query,
                 reason: format!("Failed to query state: {}", e),
             })?;
-
         // Convert response to bytes
         let response_bytes = response
             .into_iter()

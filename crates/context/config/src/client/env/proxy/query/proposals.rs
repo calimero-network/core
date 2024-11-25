@@ -57,8 +57,11 @@ impl Method<Starknet> for ProposalsRequest {
         }
 
         // Skip version felt and decode the array
-        let proposals = StarknetProposals::decode(&felts[1..])
-            .map_err(|e| eyre::eyre!("Failed to decode proposals: {:?}", e))?;
+        let proposals = StarknetProposals::decode(&felts)
+            .map_err(|e| {
+                println!("Raw felts: {:?}", felts);
+                eyre::eyre!("Failed to decode proposals: {:?}", e)
+            })?;
 
         Ok(proposals.into())
     }

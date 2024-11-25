@@ -306,11 +306,14 @@ impl Encode for EncodableString {
         const WORD_SIZE: usize = 31;
         let bytes = self.0.as_bytes();
 
+        // Calculate full words and pending word
         let full_words_count = bytes.len() / WORD_SIZE;
         let pending_len = bytes.len() % WORD_SIZE;
 
+        // Write number of full words
         writer.write(Felt::from(full_words_count));
 
+        // Write full words (31 chars each)
         for i in 0..full_words_count {
             let start = i * WORD_SIZE;
             let word_bytes = &bytes[start..start + WORD_SIZE];
@@ -326,6 +329,7 @@ impl Encode for EncodableString {
             writer.write(Felt::ZERO);
         }
 
+        // Write pending word length
         writer.write(Felt::from(pending_len));
 
         Ok(())
@@ -339,38 +343,46 @@ impl<'a> Decode<'a> for EncodableString {
     {
         const WORD_SIZE: usize = 31;
 
-        // First felt is full_words_count
-        let full_words_count = iter
+        // Get number of full words
+        let first_felt = iter
             .next()
-            .ok_or_else(Error::input_exhausted)?
-            .to_bytes_be()[31] as usize;
+            .ok_or_else(Error::input_exhausted)?;
+            
+        let full_words_count = first_felt.to_bytes_be()[31] as usize;
+        
+        let mut bytes = Vec::new();
 
-        let mut bytes = Vec::with_capacity(full_words_count * WORD_SIZE);
-
-        // Read each full word (31 bytes each)
+        // Read full words
         for _ in 0..full_words_count {
             let word = iter
                 .next()
-                .ok_or_else(Error::input_exhausted)?
-                .to_bytes_be();
-            bytes.extend_from_slice(&word[1..WORD_SIZE + 1]); // Take exactly WORD_SIZE bytes, skipping first byte
+                .ok_or_else(Error::input_exhausted)?;
+            let word_bytes = word.to_bytes_be();
+            bytes.extend_from_slice(&word_bytes[1..WORD_SIZE + 1]);
         }
 
-        // Read pending bytes (if any)
-        let pending = iter.next().ok_or_else(Error::input_exhausted)?;
+        // Read pending word
+        let pending_word = iter
+            .next()
+            .ok_or_else(Error::input_exhausted)?;
+        let pending_bytes = pending_word.to_bytes_be();
 
+        // Read pending length
         let pending_len = iter
             .next()
             .ok_or_else(Error::input_exhausted)?
             .to_bytes_be()[31] as usize;
 
+        // Handle pending bytes - find first non-zero byte and take all remaining bytes
         if pending_len > 0 {
-            let pending_bytes = pending.to_bytes_be();
-            bytes.extend_from_slice(&pending_bytes[1..pending_len + 1]);
+            let start = pending_bytes.iter()
+                .position(|&x| x != 0)
+                .unwrap_or(1);
+            bytes.extend_from_slice(&pending_bytes[start..]);
         }
 
-        // Convert bytes to string
-        let string = String::from_utf8(bytes).map_err(|_| Error::custom("Invalid UTF-8"))?;
+        let string = String::from_utf8(bytes)
+            .map_err(|_| Error::custom("Invalid UTF-8"))?;
 
         Ok(EncodableString(string))
     }
