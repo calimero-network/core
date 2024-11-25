@@ -310,14 +310,14 @@ impl Encode for EncodableString {
     fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
         const WORD_SIZE: usize = 31;
         let bytes = self.0.as_bytes();
-        
+
         // Calculate full words and pending word
         let full_words_count = bytes.len() / WORD_SIZE;
         let pending_len = bytes.len() % WORD_SIZE;
-        
+
         // Write number of full words
         writer.write(Felt::from(full_words_count));
-        
+
         // Write full words (31 chars each)
         for i in 0..full_words_count {
             let start = i * WORD_SIZE;
@@ -327,7 +327,7 @@ impl Encode for EncodableString {
                 .map_err(|e| Error::custom(&format!("Invalid word hex: {}", e)))?;
             writer.write(felt);
         }
-        
+
         // Write pending word if exists
         if pending_len > 0 {
             let pending_bytes = &bytes[full_words_count * WORD_SIZE..];
@@ -338,10 +338,10 @@ impl Encode for EncodableString {
         } else {
             writer.write(Felt::ZERO);
         }
-        
+
         // Write pending word length
         writer.write(Felt::from(pending_len));
-        
+
         Ok(())
     }
 }

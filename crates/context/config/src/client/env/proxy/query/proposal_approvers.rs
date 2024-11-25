@@ -77,7 +77,9 @@ impl Method<Starknet> for ProposalApproversRequest {
         let mut felts = Vec::new();
         for chunk in response.chunks(32) {
             if chunk.len() == 32 {
-                felts.push(Felt::from_bytes_be(chunk.try_into().map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?));
+                felts.push(Felt::from_bytes_be(chunk.try_into().map_err(|e| {
+                    eyre::eyre!("Failed to convert chunk to array: {}", e)
+                })?));
             }
         }
 

@@ -52,12 +52,12 @@ impl Method<Starknet> for MembersRequest {
         let mut serialized_request = vec![];
         req.encode(&mut serialized_request)
             .map_err(|e| eyre::eyre!("Failed to encode request: {}", e))?;
-    
+
         let bytes: Vec<u8> = serialized_request
             .iter()
             .flat_map(|felt| felt.to_bytes_be())
             .collect();
-    
+
         Ok(bytes)
     }
 

@@ -407,10 +407,10 @@ impl Network {
                     }),
                 }
             }
-            starknet::core::types::TransactionReceipt::L1Handler(_) |
-            starknet::core::types::TransactionReceipt::Declare(_) |
-            starknet::core::types::TransactionReceipt::Deploy(_) |
-            starknet::core::types::TransactionReceipt::DeployAccount(_) => Ok(vec![0]),
+            starknet::core::types::TransactionReceipt::L1Handler(_)
+            | starknet::core::types::TransactionReceipt::Declare(_)
+            | starknet::core::types::TransactionReceipt::Deploy(_)
+            | starknet::core::types::TransactionReceipt::DeployAccount(_) => Ok(vec![0]),
         }
     }
 }

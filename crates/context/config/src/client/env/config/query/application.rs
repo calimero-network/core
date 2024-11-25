@@ -64,21 +64,22 @@ impl Method<Starknet> for ApplicationRequest {
         if response.is_empty() {
             return Err(eyre::eyre!("No application found"));
         }
-    
+
         // Convert bytes to Felts
         let mut felts = Vec::new();
         for chunk in response.chunks(32) {
             if chunk.len() == 32 {
-                let chunk_array: [u8; 32] = chunk.try_into()
+                let chunk_array: [u8; 32] = chunk
+                    .try_into()
                     .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
                 felts.push(Felt::from_bytes_be(&chunk_array));
             }
         }
-    
+
         // Skip version felt and decode the application
         let application = StarknetApplication::decode(&felts[1..])
             .map_err(|e| eyre::eyre!("Failed to decode application: {:?}", e))?;
-    
+
         Ok(application.into())
     }
 }

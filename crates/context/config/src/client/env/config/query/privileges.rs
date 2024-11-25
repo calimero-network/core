@@ -68,7 +68,10 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         // Split context_id into high/low parts
         let context_bytes = self.context_id.as_bytes();
-        let mid_point = context_bytes.len().checked_div(2).expect("Length should be even");
+        let mid_point = context_bytes
+            .len()
+            .checked_div(2)
+            .expect("Length should be even");
         let (high_bytes, low_bytes) = context_bytes.split_at(mid_point);
 
         // Convert to Felts and then to bytes
@@ -82,7 +85,10 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
         // Add each identity
         for identity in self.identities {
             let id_bytes = identity.as_bytes();
-            let mid_point = id_bytes.len().checked_div(2).expect("Length should be even");
+            let mid_point = id_bytes
+                .len()
+                .checked_div(2)
+                .expect("Length should be even");
             let (id_high, id_low) = id_bytes.split_at(mid_point);
 
             result.extend_from_slice(&Felt::from_bytes_be_slice(id_high).to_bytes_be());
@@ -101,7 +107,9 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
         let mut felts = Vec::new();
         for chunk in response.chunks(32) {
             if chunk.len() == 32 {
-                felts.push(Felt::from_bytes_be(chunk.try_into().map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?));
+                felts.push(Felt::from_bytes_be(chunk.try_into().map_err(|e| {
+                    eyre::eyre!("Failed to convert chunk to array: {}", e)
+                })?));
             }
         }
 
