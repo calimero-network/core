@@ -64,7 +64,7 @@ impl Method<Starknet> for Mutate {
         let verifying_key_bytes = verifying_key.to_bytes_be();
 
         // Create signer_id from ECDSA verifying key for signature verification
-        let signer_id = verifying_key_bytes.rt().expect("Infallible conversion");
+        let signer_id = verifying_key_bytes.rt().map_err(|_| eyre::eyre!("Infallible conversion"))?;
         let signer_id = Repr::new(signer_id);
 
         // Create request with signer_id

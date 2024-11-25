@@ -71,7 +71,7 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
         let mid_point = context_bytes
             .len()
             .checked_div(2)
-            .expect("Length should be even");
+            .ok_or_else(|| eyre::eyre!("Length should be even"))?;
         let (high_bytes, low_bytes) = context_bytes.split_at(mid_point);
 
         // Convert to Felts and then to bytes
@@ -88,7 +88,7 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
             let mid_point = id_bytes
                 .len()
                 .checked_div(2)
-                .expect("Length should be even");
+                .ok_or_else(|| eyre::eyre!("Length should be even"))?;
             let (id_high, id_low) = id_bytes.split_at(mid_point);
 
             result.extend_from_slice(&Felt::from_bytes_be_slice(id_high).to_bytes_be());
