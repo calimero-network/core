@@ -37,7 +37,10 @@ impl Method<Starknet> for HasMemberRequest {
 
         // Encode context_id (2 felts)
         let context_bytes = self.context_id.as_bytes();
-        let mid_point = context_bytes.len().checked_div(2).ok_or_else(|| eyre::eyre!("Length should be even"))?;
+        let mid_point = context_bytes
+            .len()
+            .checked_div(2)
+            .ok_or_else(|| eyre::eyre!("Length should be even"))?;
         let (context_high, context_low) = context_bytes.split_at(mid_point);
 
         // Convert to Felts and add to result
@@ -48,7 +51,10 @@ impl Method<Starknet> for HasMemberRequest {
 
         // Encode member identity (2 felts)
         let identity_bytes = self.identity.as_bytes();
-        let mid_point = identity_bytes.len().checked_div(2).ok_or_else(|| eyre::eyre!("Length should be even"))?;
+        let mid_point = identity_bytes
+            .len()
+            .checked_div(2)
+            .ok_or_else(|| eyre::eyre!("Length should be even"))?;
         let (identity_high, identity_low) = identity_bytes.split_at(mid_point);
 
         // Convert to Felts and add to result

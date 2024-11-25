@@ -34,7 +34,10 @@ impl Method<Starknet> for ApplicationRevisionRequest {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         // Split context_id into high/low parts
         let bytes = self.context_id.as_bytes();
-        let mid_point = bytes.len().checked_div(2).ok_or_else(|| eyre::eyre!("Length should be even"))?;
+        let mid_point = bytes
+            .len()
+            .checked_div(2)
+            .ok_or_else(|| eyre::eyre!("Length should be even"))?;
         let (high_bytes, low_bytes) = bytes.split_at(mid_point);
 
         // Convert to Felts
