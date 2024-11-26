@@ -7,6 +7,7 @@ use tokio::fs::{create_dir_all, File};
 use tokio::io::copy;
 use tokio::process::{Child, Command};
 
+use crate::output::OutputWriter;
 use crate::TestEnvironment;
 
 pub struct Merod {
@@ -15,6 +16,7 @@ pub struct Merod {
     nodes_dir: Utf8PathBuf,
     log_dir: Utf8PathBuf,
     binary: Utf8PathBuf,
+    output_writer: OutputWriter,
 }
 
 impl Merod {
@@ -25,6 +27,7 @@ impl Merod {
             log_dir: environment.logs_dir.join(&name),
             binary: environment.merod_binary.clone(),
             name,
+            output_writer: environment.output_writer,
         }
     }
 
@@ -92,7 +95,8 @@ impl Merod {
         let log_file = self.log_dir.join(format!("{}.log", log_suffix));
         let mut log_file = File::create(&log_file).await?;
 
-        println!("Command: '{:}' {:?}", &self.binary, root_args);
+        self.output_writer
+            .write_string(format!("Command: '{:}' {:?}", &self.binary, root_args));
 
         let mut child = Command::new(&self.binary)
             .args(root_args)

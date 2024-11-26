@@ -1,14 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borsh::to_vec;
 use claims::{assert_ge, assert_le};
 use sha2::{Digest, Sha256};
 use velcro::btree_map;
 
 use super::*;
-use crate::index::Index;
-use crate::interface::Interface;
-use crate::store::MainStorage;
+use crate::interface::MainInterface;
 use crate::tests::common::{Page, Paragraph, Paragraphs, Person};
 
 #[cfg(test)]
@@ -27,88 +24,13 @@ mod data__public_methods {
     use super::*;
 
     #[test]
-    fn calculate_merkle_hash() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
-        let person = Person {
-            name: "Alice".to_owned(),
-            age: 30,
-            storage: element.clone(),
-        };
-
-        let mut hasher = Sha256::new();
-        hasher.update(person.id().as_bytes());
-        hasher.update(&to_vec(&person.name).unwrap());
-        hasher.update(&to_vec(&person.age).unwrap());
-        hasher.update(&to_vec(&person.element().metadata).unwrap());
-        let expected_hash: [u8; 32] = hasher.finalize().into();
-
-        assert_eq!(person.calculate_merkle_hash().unwrap(), expected_hash);
-    }
-
-    #[test]
-    fn calculate_merkle_hash_for_child__valid() {
-        let parent = Element::new(&Path::new("::root::node").unwrap(), None);
-        let mut page = Page::new_from_element("Node", parent);
-        let child1 = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
-        let mut para1 = Paragraph::new_from_element("Leaf1", child1);
-        assert!(Interface::save(&mut page).unwrap());
-
-        assert!(Interface::add_child_to(page.id(), &mut page.paragraphs, &mut para1).unwrap());
-        let para1_slice = to_vec(&para1).unwrap();
-        let para1_hash = page
-            .calculate_merkle_hash_for_child("Paragraphs", &para1_slice)
-            .unwrap();
-        let expected_hash1 = para1.calculate_merkle_hash().unwrap();
-        assert_eq!(para1_hash, expected_hash1);
-
-        let child2 = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
-        let para2 = Paragraph::new_from_element("Leaf2", child2);
-        let para2_slice = to_vec(&para2).unwrap();
-        let para2_hash = page
-            .calculate_merkle_hash_for_child("Paragraphs", &para2_slice)
-            .unwrap();
-        assert_ne!(para2_hash, para1_hash);
-    }
-
-    #[test]
-    fn calculate_merkle_hash_for_child__invalid() {
-        let parent = Element::new(&Path::new("::root::node").unwrap(), None);
-        let mut page = Page::new_from_element("Node", parent);
-        let child1 = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
-        let mut para1 = Paragraph::new_from_element("Leaf1", child1);
-        assert!(Interface::save(&mut page).unwrap());
-
-        assert!(Interface::add_child_to(page.id(), &mut page.paragraphs, &mut para1).unwrap());
-        let invalid_slice = &[0, 1, 2, 3];
-        let result = page.calculate_merkle_hash_for_child("Paragraphs", invalid_slice);
-        assert!(matches!(result, Err(StorageError::DeserializationError(_))));
-    }
-
-    #[test]
-    fn calculate_merkle_hash_for_child__unknown_collection() {
-        let parent = Element::new(&Path::new("::root::node").unwrap(), None);
-        let mut page = Page::new_from_element("Node", parent);
-        let child = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
-        let mut para = Paragraph::new_from_element("Leaf", child);
-        assert!(Interface::save(&mut page).unwrap());
-
-        assert!(Interface::add_child_to(page.id(), &mut page.paragraphs, &mut para).unwrap());
-        let para_slice = to_vec(&para).unwrap();
-        let result = page.calculate_merkle_hash_for_child("unknown_collection", &para_slice);
-        assert!(matches!(
-            result,
-            Err(StorageError::UnknownCollectionType(_))
-        ));
-    }
-
-    #[test]
     fn collections() {
         let parent = Element::new(&Path::new("::root::node").unwrap(), None);
         let page = Page::new_from_element("Node", parent);
         assert_eq!(
             page.collections(),
             btree_map! {
-                "Paragraphs".to_owned(): Interface::child_info_for(page.id(), &page.paragraphs).unwrap_or_default(),
+                "Paragraphs".to_owned(): MainInterface::child_info_for(page.id(), &page.paragraphs).unwrap_or_default(),
             }
         );
 
@@ -179,7 +101,7 @@ mod child_info__constructor {
     fn new() {
         let id = Id::random();
         let hash = Sha256::digest(b"1").into();
-        let info = ChildInfo::new(id, hash);
+        let info = ChildInfo::new(id, hash, Metadata::default());
         assert_eq!(info.id, id);
         assert_eq!(info.merkle_hash, hash);
     }
@@ -191,13 +113,21 @@ mod child_info__public_methods {
 
     #[test]
     fn id() {
-        let info = ChildInfo::new(Id::random(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(
+            Id::random(),
+            Sha256::digest(b"1").into(),
+            Metadata::default(),
+        );
         assert_eq!(info.id(), info.id);
     }
 
     #[test]
     fn merkle_hash() {
-        let info = ChildInfo::new(Id::random(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(
+            Id::random(),
+            Sha256::digest(b"1").into(),
+            Metadata::default(),
+        );
         assert_eq!(info.merkle_hash(), info.merkle_hash);
     }
 }
@@ -208,7 +138,11 @@ mod child_info__traits {
 
     #[test]
     fn display() {
-        let info = ChildInfo::new(Id::random(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(
+            Id::random(),
+            Sha256::digest(b"1").into(),
+            Metadata::default(),
+        );
         assert_eq!(
             format!("{info}"),
             format!(
@@ -247,8 +181,8 @@ mod element__constructor {
         assert_eq!(element.path, path);
         assert_ge!(element.metadata.created_at, timestamp1);
         assert_le!(element.metadata.created_at, timestamp2);
-        assert_ge!(element.metadata.updated_at, timestamp1);
-        assert_le!(element.metadata.updated_at, timestamp2);
+        assert_ge!(*element.metadata.updated_at, timestamp1);
+        assert_le!(*element.metadata.updated_at, timestamp2);
         assert!(element.is_dirty);
     }
 }
@@ -281,7 +215,7 @@ mod element__public_methods {
 
     #[test]
     fn is_dirty() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
+        let element = Element::root();
         assert!(element.is_dirty());
 
         let mut person = Person {
@@ -289,27 +223,11 @@ mod element__public_methods {
             age: 30,
             storage: element,
         };
-        assert!(Interface::save(&mut person).unwrap());
+        assert!(MainInterface::save(&mut person).unwrap());
         assert!(!person.element().is_dirty());
 
         person.element_mut().update();
         assert!(person.element().is_dirty());
-    }
-
-    #[test]
-    fn merkle_hash() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
-        let mut person = Person {
-            name: "Steve".to_owned(),
-            age: 50,
-            storage: element.clone(),
-        };
-        assert_eq!(person.element().merkle_hash(), [0_u8; 32]);
-
-        assert!(Interface::save(&mut person).unwrap());
-        let expected_hash =
-            <Index<MainStorage>>::calculate_full_merkle_hash_for(person.id(), false).unwrap();
-        assert_eq!(person.element().merkle_hash(), expected_hash);
     }
 
     #[test]
@@ -327,14 +245,14 @@ mod element__public_methods {
 
     #[test]
     fn update() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap(), None);
+        let element = Element::root();
         let updated_at = element.metadata.updated_at;
         let mut person = Person {
             name: "Bob".to_owned(),
             age: 40,
             storage: element,
         };
-        assert!(Interface::save(&mut person).unwrap());
+        assert!(MainInterface::save(&mut person).unwrap());
         assert!(!person.element().is_dirty);
 
         person.element_mut().update();

@@ -4,11 +4,13 @@ use camino::Utf8PathBuf;
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use tokio::process::Command;
 
+use crate::output::OutputWriter;
 use crate::TestEnvironment;
 
 pub struct Meroctl {
     nodes_dir: Utf8PathBuf,
     binary: Utf8PathBuf,
+    output_writer: OutputWriter,
 }
 
 impl Meroctl {
@@ -16,6 +18,7 @@ impl Meroctl {
         Self {
             nodes_dir: environment.nodes_dir.clone(),
             binary: environment.meroctl_binary.clone(),
+            output_writer: environment.output_writer,
         }
     }
 
@@ -148,7 +151,8 @@ impl Meroctl {
 
         root_args.extend(args);
 
-        println!("Command: '{:}' {:?}", &self.binary, root_args);
+        self.output_writer
+            .write_string(format!("Command: '{:}' {:?}", &self.binary, root_args));
 
         let output = Command::new(&self.binary)
             .args(root_args)

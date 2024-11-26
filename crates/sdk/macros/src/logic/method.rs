@@ -1,5 +1,6 @@
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{quote, quote_spanned, ToTokens};
+use syn::spanned::Spanned;
 use syn::{Error as SynError, GenericParam, Ident, ImplItemFn, Path, ReturnType, Visibility};
 
 use crate::errors::{Errors, ParseError};
@@ -61,12 +62,14 @@ impl ToTokens for PublicLogicMethod<'_> {
 
             let input_lifetime = if self.has_refs {
                 let lifetime = lifetimes::input();
-                quote! { <#lifetime> }
+                quote_spanned! { name.span()=>
+                    <#lifetime>
+                }
             } else {
                 quote! {}
             };
 
-            quote! {
+            quote_spanned! {name.span()=>
                 #[derive(::calimero_sdk::serde::Deserialize)]
                 #[serde(crate = "::calimero_sdk::serde")]
                 struct #input_ident #input_lifetime {
@@ -94,41 +97,44 @@ impl ToTokens for PublicLogicMethod<'_> {
         let (def, mut call) = match &self.self_type {
             Some(type_) => (
                 {
-                    let mutability = match type_ {
-                        SelfType::Mutable(_) => Some(quote! {mut}),
-                        SelfType::Owned(_) | SelfType::Immutable(_) => None,
+                    let (mutability, ty) = match type_ {
+                        SelfType::Mutable(ty) => (Some(quote! {mut}), ty),
+                        SelfType::Owned(ty) | SelfType::Immutable(ty) => (None, ty),
                     };
-                    quote! {
-                        let Some(#mutability app) = ::calimero_storage::interface::Interface::root::<#self_>().ok().flatten()
+                    quote_spanned! {ty.span()=>
+                        let Some(#mutability app) = ::calimero_storage::collections::Root::<#self_>::fetch()
                         else {
                             ::calimero_sdk::env::panic_str("Failed to find or read app state")
                         };
                     }
                 },
-                quote! { app.#name(#(#arg_idents),*); },
+                quote_spanned! {name.span()=>
+                    app.#name(#(#arg_idents),*)
+                },
             ),
             None => (
                 if init_method {
-                    quote! {
-                        if let Some(mut app) = ::calimero_storage::interface::Interface::root::<#self_>().ok().flatten() {
+                    quote_spanned! {name.span()=>
+                        if ::calimero_storage::collections::Root::<#self_>::fetch().is_some() {
                             ::calimero_sdk::env::panic_str("Cannot initialize over already existing state.")
                         };
 
-                        let mut app: #self_ =
+                        let app =
                     }
                 } else {
                     quote! {}
                 },
-                quote! { <#self_>::#name(#(#arg_idents),*); },
+                quote_spanned! {name.span()=>
+                    <#self_>::#name(#(#arg_idents),*)
+                },
             ),
         };
 
-        if let (Some(_), false) = (&self.ret, init_method) {
-            //only when it's not init
-            call = quote! {
+        if let (Some(ret), false) = (&self.ret, init_method) {
+            call = quote_spanned! {ret.ty.span()=>
                 let output = #call;
                 let output = {
-                    #[expect(unused_imports)]
+                    #[allow(unused_imports)]
                     use ::calimero_sdk::__private::IntoResult;
                     match ::calimero_sdk::__private::WrappedReturn::new(output)
                         .into_result()
@@ -140,22 +146,34 @@ impl ToTokens for PublicLogicMethod<'_> {
                         ),
                     }
                 };
-                ::calimero_sdk::env::value_return(&output);
-            };
+                ::calimero_sdk::env::value_return(&output)
+            }
         }
 
         let state_finalizer = match (&self.self_type, init_method) {
             (Some(SelfType::Mutable(_)), _) | (_, true) => quote! {
-                if let Err(_) = ::calimero_storage::interface::Interface::commit_root(app) {
-                    ::calimero_sdk::env::panic_str("Failed to commit app state")
-                }
+                app.commit();
             },
             _ => quote! {},
         };
 
         // todo! when generics are present, strip them
         let init_impl = if init_method {
-            quote! {
+            call = quote_spanned! {name.span()=>
+                ::calimero_storage::collections::Root::new(|| #call)
+            };
+
+            quote_spanned! {name.span()=>
+                #[cfg(target_arch = "wasm32")]
+                #[no_mangle]
+                pub extern "C" fn __calimero_sync_next() {
+                    let Some(args) = ::calimero_sdk::env::input() else {
+                        ::calimero_sdk::env::panic_str("Expected payload to sync method.")
+                    };
+
+                    ::calimero_storage::collections::Root::<#self_>::sync(&args).expect("fatal: sync failed");
+                }
+
                 impl ::calimero_sdk::state::AppStateInit for #self_ {
                     type Return = #ret;
                 }
@@ -164,7 +182,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             quote! {}
         };
 
-        quote! {
+        quote_spanned! {name.span()=>
             #[cfg(target_arch = "wasm32")]
             #[no_mangle]
             pub extern "C" fn #name() {
@@ -176,7 +194,7 @@ impl ToTokens for PublicLogicMethod<'_> {
 
                 #def
 
-                #call
+                #call;
 
                 #state_finalizer
             }
