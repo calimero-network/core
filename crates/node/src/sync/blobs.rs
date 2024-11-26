@@ -177,7 +177,7 @@ impl Node {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
-        let mut nonce = thread_rng().gen::<Nonce>();
+        let mut our_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -185,7 +185,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
-                next_nonce: nonce,
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -194,7 +194,7 @@ impl Node {
         let mut sequencer = Sequencer::default();
 
         while let Some(chunk) = blob.try_next().await? {
-            let next_nonce = thread_rng().gen::<Nonce>();
+            let our_new_nonce = thread_rng().gen::<Nonce>();
             send(
                 stream,
                 &StreamMessage::Message {
@@ -202,13 +202,13 @@ impl Node {
                     payload: MessagePayload::BlobShare {
                         chunk: chunk.into_vec().into(),
                     },
-                    next_nonce,
+                    next_nonce: our_new_nonce,
                 },
-                Some((shared_key, nonce)),
+                Some((shared_key, our_nonce)),
             )
             .await?;
 
-            nonce = next_nonce;
+            our_nonce = our_new_nonce;
         }
 
         send(
@@ -218,7 +218,7 @@ impl Node {
                 payload: MessagePayload::BlobShare { chunk: b"".into() },
                 next_nonce: [0; NONCE_LEN],
             },
-            Some((shared_key, nonce)),
+            Some((shared_key, our_nonce)),
         )
         .await?;
 

@@ -253,8 +253,8 @@ impl Node {
         sqx_out: &mut Sequencer,
         stream: &mut Stream,
         shared_key: SharedKey,
-        our_nonce: Nonce,
-        their_nonce: Nonce,
+        mut our_nonce: Nonce,
+        mut their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -265,9 +265,6 @@ impl Node {
 
         let mut sqx_in = Sequencer::default();
 
-        let mut our_nonce = our_nonce;
-        let mut their_nonce = their_nonce;
-
         while let Some(msg) = recv(
             stream,
             self.sync_config.timeout,
@@ -275,7 +272,7 @@ impl Node {
         )
         .await?
         {
-            let (sequence_id, artifact, new_their_nonce) = match msg {
+            let (sequence_id, artifact, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
                     sequence_id,
@@ -287,7 +284,7 @@ impl Node {
                 }
             };
 
-            their_nonce = new_their_nonce;
+            their_nonce = their_new_nonce;
 
             sqx_in.test(sequence_id)?;
 
@@ -311,7 +308,7 @@ impl Node {
                 "State sync outcome",
             );
 
-            let new_our_nonce = thread_rng().gen::<Nonce>();
+            let our_new_nonce = thread_rng().gen::<Nonce>();
 
             send(
                 stream,
@@ -320,13 +317,13 @@ impl Node {
                     payload: MessagePayload::StateSync {
                         artifact: Cow::from(&outcome.artifact),
                     },
-                    next_nonce: new_our_nonce,
+                    next_nonce: our_new_nonce,
                 },
                 Some((shared_key, our_nonce)),
             )
             .await?;
 
-            our_nonce = new_our_nonce;
+            our_nonce = our_new_nonce;
         }
 
         debug!(
