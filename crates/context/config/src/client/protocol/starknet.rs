@@ -2,10 +2,14 @@ use core::str::FromStr;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use starknet::accounts::{Account, ExecutionEncoding, SingleOwnerAccount};
-use starknet::core::types::{BlockId, BlockTag, Call, Felt, FunctionCall};
+use starknet::accounts::{Account, ConnectedAccount, ExecutionEncoding, SingleOwnerAccount};
+use starknet::core::codec::Decode;
+use starknet::core::types::{
+    BlockId, BlockTag, Call, ExecutionResult, Felt, FunctionCall, TransactionFinalityStatus,
+};
 use starknet::core::utils::get_selector_from_name;
 use starknet::providers::jsonrpc::HttpTransport;
 use starknet::providers::{JsonRpcClient, Provider, Url};
@@ -13,6 +17,7 @@ use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
 
 use super::Protocol;
+use crate::client::env::proxy::starknet::StarknetProposalWithApprovals;
 use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
 
 #[derive(Copy, Clone, Debug)]
@@ -219,13 +224,10 @@ impl Network {
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
-            args.chunks(32)
+            args.chunks_exact(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0_u8; 32];
-                    for (i, byte) in chunk.iter().enumerate() {
-                        padded_chunk[i] = *byte;
-                    }
-                    Felt::from_bytes_be(&padded_chunk)
+                    let chunk_array: [u8; 32] = chunk.try_into().expect("chunk should be 32 bytes");
+                    Felt::from_bytes_be(&chunk_array)
                 })
                 .collect()
         };
@@ -238,20 +240,19 @@ impl Network {
 
         let response = self
             .client
-            .call(&function_call, BlockId::Tag(BlockTag::Latest))
-            .await;
-
-        response.map_or(
-            Err(StarknetError::InvalidResponse {
+            .call(&function_call, BlockId::Tag(BlockTag::Pending))
+            .await
+            .map_err(|e| StarknetError::Custom {
                 operation: ErrorOperation::Query,
-            }),
-            |result| {
-                Ok(result
-                    .into_iter()
-                    .flat_map(|felt| felt.to_bytes_be().to_vec())
-                    .collect::<Vec<u8>>())
-            },
-        )
+                reason: format!("Failed to query state: {}", e),
+            })?;
+        // Convert response to bytes
+        let response_bytes = response
+            .into_iter()
+            .flat_map(|felt| felt.to_bytes_be())
+            .collect::<Vec<u8>>();
+
+        Ok(response_bytes)
     }
 
     async fn mutate(
@@ -271,13 +272,10 @@ impl Network {
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
-            args.chunks(32)
+            args.chunks_exact(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0_u8; 32];
-                    for (i, byte) in chunk.iter().enumerate() {
-                        padded_chunk[i] = *byte;
-                    }
-                    Felt::from_bytes_be(&padded_chunk)
+                    let chunk_array: [u8; 32] = chunk.try_into().expect("chunk should be 32 bytes");
+                    Felt::from_bytes_be(&chunk_array)
                 })
                 .collect()
         };
@@ -312,9 +310,107 @@ impl Network {
             }])
             .send()
             .await
-            .unwrap();
+            .map_err(|e| StarknetError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to send transaction: {}", e),
+            })?;
 
-        let transaction_hash: Vec<u8> = vec![response.transaction_hash.to_bytes_be()[0]];
-        Ok(transaction_hash)
+        let sent_at = Instant::now();
+        let timeout = Duration::from_secs(60);
+
+        let receipt = loop {
+            let result = account
+                .provider()
+                .get_transaction_receipt(response.transaction_hash)
+                .await;
+
+            match result {
+                Ok(receipt) => {
+                    if let starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) =
+                        &receipt.receipt
+                    {
+                        match (
+                            invoke_receipt.finality_status,
+                            &invoke_receipt.execution_result,
+                        ) {
+                            (
+                                TransactionFinalityStatus::AcceptedOnL2,
+                                ExecutionResult::Succeeded,
+                            )
+                            | (
+                                TransactionFinalityStatus::AcceptedOnL1,
+                                ExecutionResult::Succeeded,
+                            ) => {
+                                break receipt;
+                            }
+                            (_, ExecutionResult::Reverted { reason }) => {
+                                return Err(StarknetError::Custom {
+                                    operation: ErrorOperation::Mutate,
+                                    reason: format!("Transaction reverted: {}", reason),
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    if !err.to_string().contains("TransactionHashNotFound") {
+                        return Err(StarknetError::Custom {
+                            operation: ErrorOperation::Mutate,
+                            reason: err.to_string(),
+                        });
+                    }
+                }
+            }
+
+            if sent_at.elapsed() > timeout {
+                return Err(StarknetError::TransactionTimeout);
+            }
+
+            std::thread::sleep(Duration::from_millis(1000));
+        };
+        // Process the receipt
+        match receipt.receipt {
+            starknet::core::types::TransactionReceipt::Invoke(invoke_receipt) => {
+                match invoke_receipt.execution_result {
+                    ExecutionResult::Succeeded => {
+                        // Process events and look for proposal creation event
+                        for event in invoke_receipt.events.iter() {
+                            // Check if this is a proposal creation event by its key
+                            const PROPOSAL_CREATED_KEY: &str = "ProposalCreated";
+                            if !event.keys.is_empty()
+                                && event.keys[0]
+                                    == get_selector_from_name(PROPOSAL_CREATED_KEY)
+                                        .expect("Failed to get selector for ProposalCreated")
+                            {
+                                if event.data.is_empty() {
+                                    return Ok(vec![]);
+                                }
+
+                                let result = StarknetProposalWithApprovals::decode(&event.data)
+                                    .map_err(|e| StarknetError::Custom {
+                                        operation: ErrorOperation::Query,
+                                        reason: format!("Failed to decode event: {:?}", e),
+                                    })?;
+                                let mut encoded = vec![0u8; 32];
+                                encoded.extend_from_slice(&result.proposal_id.0.high.to_bytes_be());
+                                encoded.extend_from_slice(&result.proposal_id.0.low.to_bytes_be());
+                                encoded.extend_from_slice(&result.num_approvals.to_bytes_be());
+                                return Ok(encoded);
+                            }
+                        }
+                        // If we didn't find a proposal creation event, return empty vec
+                        Ok(vec![])
+                    }
+                    ExecutionResult::Reverted { reason } => Err(StarknetError::Custom {
+                        operation: ErrorOperation::Mutate,
+                        reason: format!("Transaction reverted: {}", reason),
+                    }),
+                }
+            }
+            starknet::core::types::TransactionReceipt::L1Handler(_)
+            | starknet::core::types::TransactionReceipt::Declare(_)
+            | starknet::core::types::TransactionReceipt::Deploy(_)
+            | starknet::core::types::TransactionReceipt::DeployAccount(_) => Ok(vec![0]),
+        }
     }
 }

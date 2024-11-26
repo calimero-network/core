@@ -266,7 +266,7 @@ impl InitCommand {
                         contract_id: match self.protocol {
                             ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
                             ConfigProtocol::Starknet => {
-                                "0x1ee8182d5dd595be9797ccae1488bdf84b19a0f05a93ce6148b0efae04f4568"
+                                "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                                     .parse()?
                             }
                         },
