@@ -1,17 +1,14 @@
 #!/bin/bash
 
-set -e
-
-# Define version and repository
+BINARY_NAME="meroctl"
 VERSION="v0.1.1"
 REPO="calimero-network/core"
-BINARY_NAME="meroctl"
+INSTALL_DIR="$HOME/.local/bin"
 
-# Detect OS
+# Detect OS and Architecture
 OS=$(uname | tr '[:upper:]' '[:lower:]')
-
-# Detect Architecture
 ARCH=$(uname -m)
+
 case "$ARCH" in
   "x86_64") ARCH="x86_64" ;;
   "arm64" | "aarch64") ARCH="aarch64" ;;
@@ -21,7 +18,6 @@ case "$ARCH" in
     ;;
 esac
 
-# Determine platform
 if [ "$OS" == "darwin" ]; then
   PLATFORM="apple-darwin"
 elif [ "$OS" == "linux" ]; then
@@ -31,31 +27,30 @@ else
   exit 1
 fi
 
-# Construct download URL and tarball name
+# Construct download URL
 TARBALL_NAME="${BINARY_NAME}_${ARCH}-${PLATFORM}.tar.gz"
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$TARBALL_NAME"
+
+# Ensure installation directory exists
+mkdir -p "$INSTALL_DIR"
 
 # Download binary tarball
 echo "Downloading $TARBALL_NAME from $DOWNLOAD_URL..."
 curl -L -o "$TARBALL_NAME" "$DOWNLOAD_URL"
 
-# Extract tarball
+# Extract binary
 echo "Extracting $TARBALL_NAME..."
 tar -xzf "$TARBALL_NAME"
-
-# Make binary executable
 chmod +x "$BINARY_NAME"
 
-# Move to /usr/local/bin (or another PATH directory)
-INSTALL_DIR="/usr/local/bin"
-if [ ! -w "$INSTALL_DIR" ]; then
-  echo "You need sudo permissions to install to $INSTALL_DIR"
-  sudo mv "$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
-else
-  mv "$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
-fi
-
-# Clean up tarball
+# Move binary to user-local bin directory
+mv "$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 rm "$TARBALL_NAME"
 
-echo "$BINARY_NAME installed successfully! Run '$BINARY_NAME' to get started."
+# Add $HOME/.local/bin to PATH if not already present
+if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+  echo "Added $HOME/.local/bin to PATH. Reload your shell or run: source ~/.bashrc"
+fi
+
+echo "$BINARY_NAME installed successfully in $INSTALL_DIR. Run '$BINARY_NAME --version' to verify."
