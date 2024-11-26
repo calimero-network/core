@@ -4,16 +4,11 @@
 //! system, as a layer on top of the underlying database store.
 //!
 
-#![forbid(
-    unreachable_pub,
-    unsafe_code,
-    unsafe_op_in_unsafe_fn,
-    clippy::missing_docs_in_private_items
-)]
+#![forbid(unreachable_pub, unsafe_op_in_unsafe_fn)]
 #![deny(
+    unsafe_code,
     clippy::expect_used,
     clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
     clippy::panic,
     clippy::unwrap_in_result,
     clippy::unwrap_used

@@ -1,100 +1,57 @@
+//! This module provides functionality for the unordered map data structure.
+
 use core::borrow::Borrow;
-use core::marker::PhantomData;
+use core::fmt;
+use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::ser::SerializeMap;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-// fixme! macro expects `calimero_storage` to be in deps
-use crate as calimero_storage;
-use crate::address::{Id, Path};
+use super::{Collection, StorageAdaptor};
+use crate::address::Id;
 use crate::collections::error::StoreError;
-use crate::entities::{Data, Element};
-use crate::interface::Interface;
-use crate::{AtomicUnit, Collection};
+use crate::entities::Data;
+use crate::store::MainStorage;
 
 /// A map collection that stores key-value pairs.
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[type_id(255)]
-#[root]
-pub struct UnorderedMap<K, V> {
-    /// The id used for the map's entries.
-    id: Id,
-    /// The entries in the map.
-    entries: Entries<K, V>,
-    /// The storage element for the map.
-    #[storage]
-    storage: Element,
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct UnorderedMap<K, V, S: StorageAdaptor = MainStorage> {
+    #[borsh(bound(serialize = "", deserialize = ""))]
+    inner: Collection<(K, V), S>,
 }
 
-/// A collection of entries in a map.
-#[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[children(Entry<K, V>)]
-struct Entries<K, V> {
-    /// Helper to associate the generic types with the collection.
-    _priv: PhantomData<(K, V)>,
-}
-
-/// An entry in a map.
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[type_id(254)]
-pub struct Entry<K, V> {
-    /// The key for the entry.
-    key: K,
-    /// The value for the entry.
-    value: V,
-    /// The storage element for the entry.
-    #[storage]
-    storage: Element,
-}
-
-impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
-    UnorderedMap<K, V>
+impl<K, V> UnorderedMap<K, V, MainStorage>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
 {
     /// Create a new map collection.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
-    ///
-    pub fn new() -> Result<Self, StoreError> {
-        let id = Id::random();
-        let mut this = Self {
-            id: id,
-            entries: Entries::default(),
-            storage: Element::new(&Path::new(format!("::unused::map::{id}::path"))?, Some(id)),
-        };
+    pub fn new() -> Self {
+        Self::new_internal()
+    }
+}
 
-        let _ = Interface::save(&mut this)?;
-
-        Ok(this)
+impl<K, V, S> UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Create a new map collection.
+    fn new_internal() -> Self {
+        Self {
+            inner: Collection::new(None),
+        }
     }
 
     /// Compute the ID for a key.
     fn compute_id(&self, key: &[u8]) -> Id {
         let mut hasher = Sha256::new();
-        hasher.update(self.id.as_bytes());
+        hasher.update(self.inner.id().as_bytes());
         hasher.update(key);
         Id::new(hasher.finalize().into())
-    }
-
-    /// Get the raw entry for a key in the map.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
-    ///
-    fn get_raw<Q>(&self, key: &Q) -> Result<Option<Entry<K, V>>, StoreError>
-    where
-        K: Borrow<Q>,
-        Q: PartialEq + AsRef<[u8]> + ?Sized,
-    {
-        Ok(Interface::find_by_id::<Entry<K, V>>(
-            self.compute_id(key.as_ref()),
-        )?)
     }
 
     /// Insert a key-value pair into the map.
@@ -109,26 +66,15 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     where
         K: AsRef<[u8]> + PartialEq,
     {
-        if let Some(mut entry) = self.get_raw(&key)? {
-            let ret_value = entry.value;
-            entry.value = value;
-            // has to be called to update the entry
-            entry.element_mut().update();
-            let _ = Interface::save(&mut entry)?;
-            return Ok(Some(ret_value));
+        let id = self.compute_id(key.as_ref());
+
+        if let Some(mut entry) = self.inner.get_mut(id)? {
+            let (_, v) = &mut *entry;
+
+            return Ok(Some(mem::replace(v, value)));
         }
 
-        let path = self.path();
-        let storage = Element::new(&path, Some(self.compute_id(key.as_ref())));
-        let _ = Interface::add_child_to(
-            self.storage.id(),
-            &mut self.entries,
-            &mut Entry {
-                key,
-                value,
-                storage,
-            },
-        )?;
+        let _ignored = self.inner.insert(Some(id), (key, value))?;
 
         Ok(None)
     }
@@ -141,10 +87,8 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, StoreError> {
-        let entries = Interface::children_of(self.id(), &self.entries)?;
-
-        Ok(entries.into_iter().map(|entry| (entry.key, entry.value)))
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)> + '_, StoreError> {
+        Ok(self.inner.entries()?.flatten().fuse())
     }
 
     /// Get the number of entries in the map.
@@ -156,7 +100,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// returned.
     ///
     pub fn len(&self) -> Result<usize, StoreError> {
-        Ok(Interface::child_info_for(self.id(), &self.entries)?.len())
+        self.inner.len()
     }
 
     /// Get the value for a key in the map.
@@ -172,10 +116,9 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let entry = Interface::find_by_id::<Entry<K, V>>(self.compute_id(key.as_ref()))?;
-        let value = entry.map(|e| e.value);
+        let id = self.compute_id(key.as_ref());
 
-        Ok(value)
+        Ok(self.inner.get(id)?.map(|(_, v)| v))
     }
 
     /// Check if the map contains a key.
@@ -191,7 +134,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
         K: Borrow<Q> + PartialEq,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        Ok(self.get_raw(key)?.is_some())
+        self.get(key).map(|v| v.is_some())
     }
 
     /// Remove a key from the map, returning the value at the key if it previously existed.
@@ -202,18 +145,18 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn remove<Q>(&mut self, key: &Q) -> Result<bool, StoreError>
+    pub fn remove<Q>(&mut self, key: &Q) -> Result<Option<V>, StoreError>
     where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let entry = Element::new(&self.path(), Some(self.compute_id(key.as_ref())));
+        let id = self.compute_id(key.as_ref());
 
-        Ok(Interface::remove_child_from(
-            self.id(),
-            &mut self.entries,
-            entry.id(),
-        )?)
+        let Some(entry) = self.inner.get_mut(id)? else {
+            return Ok(None);
+        };
+
+        entry.remove().map(|(_, v)| Some(v))
     }
 
     /// Clear the map, removing all entries.
@@ -225,23 +168,120 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// returned.
     ///
     pub fn clear(&mut self) -> Result<(), StoreError> {
-        let entries = Interface::children_of(self.id(), &self.entries)?;
+        self.inner.clear()
+    }
+}
 
-        for entry in entries {
-            let _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
+impl<K, V, S> Eq for UnorderedMap<K, V, S>
+where
+    K: Eq + BorshSerialize + BorshDeserialize,
+    V: Eq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+}
+
+impl<K, V, S> PartialEq for UnorderedMap<K, V, S>
+where
+    K: PartialEq + BorshSerialize + BorshDeserialize,
+    V: PartialEq + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
+    fn eq(&self, other: &Self) -> bool {
+        let l = self.entries().unwrap();
+        let r = other.entries().unwrap();
+
+        l.eq(r)
+    }
+}
+
+impl<K, V, S> Ord for UnorderedMap<K, V, S>
+where
+    K: Ord + BorshSerialize + BorshDeserialize,
+    V: Ord + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let l = self.entries().unwrap();
+        let r = other.entries().unwrap();
+
+        l.cmp(r)
+    }
+}
+
+impl<K, V, S> PartialOrd for UnorderedMap<K, V, S>
+where
+    K: PartialOrd + BorshSerialize + BorshDeserialize,
+    V: PartialOrd + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        let l = self.entries().ok()?;
+        let r = other.entries().ok()?;
+
+        l.partial_cmp(r)
+    }
+}
+
+impl<K, V, S> fmt::Debug for UnorderedMap<K, V, S>
+where
+    K: fmt::Debug + BorshSerialize + BorshDeserialize,
+    V: fmt::Debug + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            f.debug_struct("UnorderedMap")
+                .field("entries", &self.inner)
+                .finish()
+        } else {
+            f.debug_map().entries(self.entries().unwrap()).finish()
+        }
+    }
+}
+
+impl<K, V, S> Default for UnorderedMap<K, V, S>
+where
+    K: Default + BorshSerialize + BorshDeserialize,
+    V: Default + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn default() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<K, V, S> Serialize for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + Serialize,
+    V: BorshSerialize + BorshDeserialize + Serialize,
+    S: StorageAdaptor,
+{
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        let len = self.len().map_err(serde::ser::Error::custom)?;
+
+        let mut seq = serializer.serialize_map(Some(len))?;
+
+        for (k, v) in self.entries().map_err(serde::ser::Error::custom)? {
+            seq.serialize_entry(&k, &v)?;
         }
 
-        Ok(())
+        seq.end()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::unordered_map::UnorderedMap;
+    use crate::collections::{Root, UnorderedMap};
 
     #[test]
     fn test_unordered_map_basic_operations() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
@@ -249,18 +289,19 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed"),
-            Some("value".to_string())
+            map.get("key").expect("get failed").as_deref(),
+            Some("value")
         );
         assert_ne!(
-            map.get("key").expect("get failed"),
-            Some("value2".to_string())
+            map.get("key").expect("get failed").as_deref(),
+            Some("value2")
         );
 
         assert_eq!(
             map.insert("key".to_string(), "value2".to_string())
-                .expect("insert failed"),
-            Some("value".to_string())
+                .expect("insert failed")
+                .as_deref(),
+            Some("value")
         );
         assert!(map
             .insert("key2".to_string(), "value".to_string())
@@ -268,23 +309,28 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed"),
-            Some("value2".to_string())
+            map.get("key").expect("get failed").as_deref(),
+            Some("value2")
         );
         assert_eq!(
-            map.get("key2").expect("get failed"),
-            Some("value".to_string())
+            map.get("key2").expect("get failed").as_deref(),
+            Some("value")
         );
 
-        assert_eq!(map.remove("key").expect("error while removing key"), true);
-        assert_eq!(map.remove("key").expect("error while removing key"), false);
+        assert_eq!(
+            map.remove("key")
+                .expect("error while removing key")
+                .as_deref(),
+            Some("value2")
+        );
+        assert_eq!(map.remove("key").expect("error while removing key"), None);
 
         assert_eq!(map.get("key").expect("get failed"), None);
     }
 
     #[test]
     fn test_unordered_map_insert_and_get() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
@@ -296,18 +342,18 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key1").expect("get failed"),
-            Some("value1".to_string())
+            map.get("key1").expect("get failed").as_deref(),
+            Some("value1")
         );
         assert_eq!(
-            map.get("key2").expect("get failed"),
-            Some("value2".to_string())
+            map.get("key2").expect("get failed").as_deref(),
+            Some("value2")
         );
     }
 
     #[test]
     fn test_unordered_map_update_value() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
@@ -319,27 +365,30 @@ mod tests {
             .is_none());
 
         assert_eq!(
-            map.get("key").expect("get failed"),
-            Some("new_value".to_string())
+            map.get("key").expect("get failed").as_deref(),
+            Some("new_value")
         );
     }
 
     #[test]
     fn test_remove() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
             .expect("insert failed")
             .is_none());
 
-        assert_eq!(map.remove("key").expect("remove failed"), true);
+        assert_eq!(
+            map.remove("key").expect("remove failed").as_deref(),
+            Some("value")
+        );
         assert_eq!(map.get("key").expect("get failed"), None);
     }
 
     #[test]
     fn test_clear() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
@@ -358,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_len() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert_eq!(map.len().expect("len failed"), 0);
 
@@ -377,14 +426,17 @@ mod tests {
 
         assert_eq!(map.len().expect("len failed"), 2);
 
-        assert_eq!(map.remove("key1").expect("remove failed"), true);
+        assert_eq!(
+            map.remove("key1").expect("remove failed").as_deref(),
+            Some("value1")
+        );
 
         assert_eq!(map.len().expect("len failed"), 1);
     }
 
     #[test]
     fn test_unordered_map_contains() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
@@ -397,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_unordered_map_entries() {
-        let mut map = UnorderedMap::<String, String>::new().expect("failed to create map");
+        let mut map = Root::new(|| UnorderedMap::new());
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())

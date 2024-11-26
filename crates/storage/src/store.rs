@@ -41,7 +41,7 @@ impl Key {
 /// used for key operations during testing, such as modelling a foreign node's
 /// data store.
 ///
-pub(crate) trait StorageAdaptor {
+pub trait StorageAdaptor {
     /// Reads data from persistent storage.
     ///
     /// # Parameters

@@ -107,6 +107,13 @@ impl Node {
         };
 
         if root_hash == context.root_hash {
+            debug!(
+                context_id=%context.id,
+                our_identity=%our_identity,
+                their_identity=%their_identity,
+                "Root hashes match, up to date",
+            );
+
             return Ok(());
         }
 
@@ -218,6 +225,13 @@ impl Node {
         .await?;
 
         if their_root_hash == context.root_hash {
+            debug!(
+                context_id=%context.id,
+                our_identity=%our_identity,
+                their_identity=%their_identity,
+                "Root hashes match, up to date",
+            );
+
             return Ok(());
         }
 
@@ -308,7 +322,9 @@ impl Node {
                 "State sync outcome",
             );
 
-            let our_new_nonce = thread_rng().gen::<Nonce>();
+            let our_new_nonce = (!outcome.artifact.is_empty())
+                .then(|| thread_rng().gen())
+                .unwrap_or_default();
 
             send(
                 stream,
@@ -322,6 +338,10 @@ impl Node {
                 Some((shared_key, our_nonce)),
             )
             .await?;
+
+            if our_new_nonce == [0; 12] {
+                break;
+            }
 
             our_nonce = our_new_nonce;
         }

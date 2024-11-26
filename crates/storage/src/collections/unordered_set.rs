@@ -1,76 +1,52 @@
+//! This module provides functionality for the unordered set data structure.
+
 use core::borrow::Borrow;
-use core::marker::PhantomData;
+use core::fmt;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::ser::SerializeSeq;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-// fixme! macro expects `calimero_storage` to be in deps
-use crate as calimero_storage;
-use crate::address::{Id, Path};
+use super::Collection;
+use crate::address::Id;
 use crate::collections::error::StoreError;
-use crate::entities::{Data, Element};
-use crate::interface::Interface;
-use crate::{AtomicUnit, Collection};
+use crate::entities::Data;
+use crate::store::{MainStorage, StorageAdaptor};
 
 /// A set collection that stores unqiue values once.
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[type_id(253)]
-#[root]
-pub struct UnorderedSet<V> {
-    /// The prefix used for the set's entries.
-    id: Id,
-    /// The entries in the set.
-    entries: Entries<V>,
-    /// The storage element for the set.
-    #[storage]
-    storage: Element,
+#[derive(BorshSerialize, BorshDeserialize)]
+pub struct UnorderedSet<V, S: StorageAdaptor = MainStorage> {
+    #[borsh(bound(serialize = "", deserialize = ""))]
+    inner: Collection<V, S>,
 }
 
-/// A collection of entries in a set.
-#[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[children(Entry<V>)]
-struct Entries<V> {
-    /// Helper to associate the generic types with the collection.
-    _priv: PhantomData<V>,
-}
-
-/// An entry in a set.
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[type_id(252)]
-pub struct Entry<V> {
-    /// The value for the entry.
-    value: V,
-    /// The storage element for the entry.
-    #[storage]
-    storage: Element,
-}
-
-impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
+impl<V> UnorderedSet<V, MainStorage>
+where
+    V: BorshSerialize + BorshDeserialize,
+{
     /// Create a new set collection.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`](crate::entities::Element) cannot be found, an error will be
-    /// returned.
-    ///
-    pub fn new() -> Result<Self, StoreError> {
-        let id = Id::random();
-        let mut this = Self {
-            id: id,
-            entries: Entries::default(),
-            storage: Element::new(&Path::new(format!("::unused::set::{id}::path"))?, Some(id)),
-        };
+    pub fn new() -> Self {
+        Self::new_internal()
+    }
+}
 
-        let _ = Interface::save(&mut this)?;
-
-        Ok(this)
+impl<V, S> UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    /// Create a new set collection.
+    fn new_internal() -> Self {
+        Self {
+            inner: Collection::new(None),
+        }
     }
 
     /// Compute the ID for a value in the set.
     fn compute_id(&self, value: &[u8]) -> Id {
         let mut hasher = Sha256::new();
-        hasher.update(self.id.as_bytes());
+        hasher.update(self.inner.id().as_bytes());
         hasher.update(value);
         Id::new(hasher.finalize().into())
     }
@@ -87,18 +63,13 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
     where
         V: AsRef<[u8]> + PartialEq,
     {
-        let path = self.path();
+        let id = self.compute_id(value.as_ref());
 
-        if self.contains(&value)? {
+        if self.inner.get_mut(id)?.is_some() {
             return Ok(false);
-        }
+        };
 
-        let storage = Element::new(&path, Some(self.compute_id(value.as_ref())));
-        let _ = Interface::add_child_to(
-            self.storage.id(),
-            &mut self.entries,
-            &mut Entry { value, storage },
-        )?;
+        let _ignored = self.inner.insert(Some(id), value)?;
 
         Ok(true)
     }
@@ -111,10 +82,8 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = V>, StoreError> {
-        let entries = Interface::children_of(self.id(), &self.entries)?;
-
-        Ok(entries.into_iter().map(|entry| entry.value))
+    pub fn entries(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
+        Ok(self.inner.entries()?.flatten().fuse())
     }
 
     /// Get the number of entries in the set.
@@ -126,7 +95,7 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
     /// returned.
     ///
     pub fn len(&self) -> Result<usize, StoreError> {
-        Ok(Interface::child_info_for(self.id(), &self.entries)?.len())
+        self.inner.len()
     }
 
     /// Get the value for a key in the set.
@@ -142,8 +111,9 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
         V: Borrow<Q>,
         Q: PartialEq + ?Sized + AsRef<[u8]>,
     {
-        let entry = Interface::find_by_id::<Entry<V>>(self.compute_id(value.as_ref()))?;
-        Ok(entry.is_some())
+        let id = self.compute_id(value.as_ref());
+
+        Ok(self.inner.get(id)?.is_some())
     }
 
     /// Remove a key from the set, returning the value at the key if it previously existed.
@@ -159,13 +129,15 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
         V: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let entry = Element::new(&self.path(), Some(self.compute_id(value.as_ref())));
+        let id = self.compute_id(value.as_ref());
 
-        Ok(Interface::remove_child_from(
-            self.id(),
-            &mut self.entries,
-            entry.id(),
-        )?)
+        let Some(entry) = self.inner.get_mut(id)? else {
+            return Ok(false);
+        };
+
+        let _ignored = entry.remove()?;
+
+        Ok(true)
     }
 
     /// Clear the set, removing all entries.
@@ -177,23 +149,103 @@ impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
     /// returned.
     ///
     pub fn clear(&mut self) -> Result<(), StoreError> {
-        let entries = Interface::children_of(self.id(), &self.entries)?;
+        self.inner.clear()
+    }
+}
 
-        for entry in entries {
-            let _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
+impl<V> Eq for UnorderedSet<V> where V: Eq + BorshSerialize + BorshDeserialize {}
+
+impl<V> PartialEq for UnorderedSet<V>
+where
+    V: PartialEq + BorshSerialize + BorshDeserialize,
+{
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
+    fn eq(&self, other: &Self) -> bool {
+        let l = self.entries().unwrap();
+        let r = other.entries().unwrap();
+
+        l.eq(r)
+    }
+}
+
+impl<V> Ord for UnorderedSet<V>
+where
+    V: Ord + BorshSerialize + BorshDeserialize,
+{
+    #[expect(clippy::unwrap_used, reason = "'tis fine")]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let l = self.entries().unwrap();
+        let r = other.entries().unwrap();
+
+        l.cmp(r)
+    }
+}
+
+impl<V> PartialOrd for UnorderedSet<V>
+where
+    V: PartialOrd + BorshSerialize + BorshDeserialize,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        let l = self.entries().ok()?;
+        let r = other.entries().ok()?;
+
+        l.partial_cmp(r)
+    }
+}
+
+impl<V> fmt::Debug for UnorderedSet<V>
+where
+    V: fmt::Debug + BorshSerialize + BorshDeserialize,
+{
+    #[expect(clippy::unwrap_used, clippy::unwrap_in_result, reason = "'tis fine")]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            f.debug_struct("UnorderedSet")
+                .field("entries", &self.inner)
+                .finish()
+        } else {
+            f.debug_set().entries(self.entries().unwrap()).finish()
+        }
+    }
+}
+
+impl<V> Default for UnorderedSet<V>
+where
+    V: BorshSerialize + BorshDeserialize,
+{
+    fn default() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<V, S> Serialize for UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + Serialize,
+    S: StorageAdaptor,
+{
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        let len = self.len().map_err(serde::ser::Error::custom)?;
+
+        let mut seq = serializer.serialize_seq(Some(len))?;
+
+        for v in self.entries().map_err(serde::ser::Error::custom)? {
+            seq.serialize_element(&v)?;
         }
 
-        Ok(())
+        seq.end()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::UnorderedSet;
+    use crate::collections::{Root, UnorderedSet};
 
     #[test]
     fn test_unordered_set_operations() {
-        let mut set = UnorderedSet::<String>::new().expect("failed to create set");
+        let mut set = Root::new(|| UnorderedSet::new());
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
 
@@ -221,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_unordered_set_len() {
-        let mut set = UnorderedSet::<String>::new().expect("failed to create set");
+        let mut set = Root::new(|| UnorderedSet::new());
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
         assert!(set.insert("value2".to_string()).expect("insert failed"));
@@ -236,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_unordered_set_clear() {
-        let mut set = UnorderedSet::<String>::new().expect("failed to create set");
+        let mut set = Root::new(|| UnorderedSet::new());
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
         assert!(set.insert("value2".to_string()).expect("insert failed"));
@@ -252,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_unordered_set_entries() {
-        let mut set = UnorderedSet::<String>::new().expect("failed to create set");
+        let mut set = Root::new(|| UnorderedSet::new());
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
         assert!(set.insert("value2".to_string()).expect("insert failed"));
