@@ -1,0 +1,22 @@
+[package]
+name = "context_contract"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+calimero-context-config = { path = "../../../crates/context/config" }
+candid = "0.10"
+ed25519-dalek.workspace = true
+ic-cdk = "0.16"
+ic-cdk-macros = "0.16"
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+pocket-ic = "6.0.0"
+rand = "0.8"
+ed25519-dalek = "2.0"
