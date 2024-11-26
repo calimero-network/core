@@ -11,7 +11,8 @@ use rand::Rng;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
-    let wasm = std::fs::read("res/context_contract.wasm").expect("failed to read wasm");
+    let wasm = std::fs::read("/Users/alen/www/calimero/core/contracts/icp/context-config/target/wasm32-unknown-unknown/release/context_contract.wasm")
+        .expect("failed to read wasm");
     let canister = pic.create_canister();
     pic.install_canister(
         canister,
