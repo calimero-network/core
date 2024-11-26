@@ -25,7 +25,9 @@ use thiserror::Error;
 use url::Url;
 
 use super::Protocol;
-use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
+use crate::client::transport::{
+    AssociatedTransport, Operation, Transport, TransportLike, TransportRequest,
+};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Near {}
@@ -36,6 +38,22 @@ impl Protocol for Near {
 
 impl AssociatedTransport for NearTransport<'_> {
     type Protocol = Near;
+}
+
+impl TransportLike for NearTransport<'_> {
+    type Error = NearError;
+
+    async fn try_send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: &Vec<u8>,
+    ) -> Option<Result<Vec<u8>, Self::Error>> {
+        if request.protocol == "near" {
+            Some(self.send(request, payload.to_vec()).await)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

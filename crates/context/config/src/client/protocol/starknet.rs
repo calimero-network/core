@@ -13,7 +13,9 @@ use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
 
 use super::Protocol;
-use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
+use crate::client::transport::{
+    AssociatedTransport, Operation, Transport, TransportLike, TransportRequest,
+};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Starknet {}
@@ -24,6 +26,22 @@ impl Protocol for Starknet {
 
 impl AssociatedTransport for StarknetTransport<'_> {
     type Protocol = Starknet;
+}
+
+impl TransportLike for StarknetTransport<'_> {
+    type Error = StarknetError;
+
+    async fn try_send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: &Vec<u8>,
+    ) -> Option<Result<Vec<u8>, Self::Error>> {
+        if request.protocol == "near" {
+            Some(self.send(request, payload.to_vec()).await)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
