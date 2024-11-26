@@ -4,6 +4,8 @@ use core::borrow::Borrow;
 use core::fmt;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::ser::SerializeSeq;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::Collection;
@@ -204,6 +206,36 @@ where
         } else {
             f.debug_set().entries(self.entries().unwrap()).finish()
         }
+    }
+}
+
+impl<V> Default for UnorderedSet<V>
+where
+    V: BorshSerialize + BorshDeserialize,
+{
+    fn default() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<V, S> Serialize for UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + Serialize,
+    S: StorageAdaptor,
+{
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        let len = self.len().map_err(serde::ser::Error::custom)?;
+
+        let mut seq = serializer.serialize_seq(Some(len))?;
+
+        for v in self.entries().map_err(serde::ser::Error::custom)? {
+            seq.serialize_element(&v)?;
+        }
+
+        seq.end()
     }
 }
 

@@ -5,6 +5,8 @@ use core::fmt;
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::ser::SerializeMap;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{Collection, StorageAdaptor};
@@ -237,6 +239,39 @@ where
         } else {
             f.debug_map().entries(self.entries().unwrap()).finish()
         }
+    }
+}
+
+impl<K, V, S> Default for UnorderedMap<K, V, S>
+where
+    K: Default + BorshSerialize + BorshDeserialize,
+    V: Default + BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn default() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<K, V, S> Serialize for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + Serialize,
+    V: BorshSerialize + BorshDeserialize + Serialize,
+    S: StorageAdaptor,
+{
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        let len = self.len().map_err(serde::ser::Error::custom)?;
+
+        let mut seq = serializer.serialize_map(Some(len))?;
+
+        for (k, v) in self.entries().map_err(serde::ser::Error::custom)? {
+            seq.serialize_entry(&k, &v)?;
+        }
+
+        seq.end()
     }
 }
 

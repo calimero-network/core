@@ -5,6 +5,8 @@ use core::fmt;
 use std::mem;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::ser::SerializeSeq;
+use serde::Serialize;
 
 use super::Collection;
 use crate::collections::error::StoreError;
@@ -122,6 +124,22 @@ where
         Ok(self.inner.entries()?.flatten().fuse())
     }
 
+    /// Get the last value in the vector.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    ///
+    pub fn last(&self) -> Result<Option<V>, StoreError> {
+        let Some(last) = self.inner.last()? else {
+            return Ok(None);
+        };
+
+        self.inner.get(last)
+    }
+
     /// Get the number of entries in the vector.
     ///
     /// # Errors
@@ -223,6 +241,37 @@ where
         } else {
             f.debug_list().entries(self.entries().unwrap()).finish()
         }
+    }
+}
+
+impl<V, S> Default for Vector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn default() -> Self {
+        Self::new_internal()
+    }
+}
+
+impl<V, S> Serialize for Vector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + Serialize,
+    S: StorageAdaptor,
+{
+    fn serialize<Ser>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error>
+    where
+        Ser: serde::Serializer,
+    {
+        let len = self.len().map_err(serde::ser::Error::custom)?;
+
+        let mut seq = serializer.serialize_seq(Some(len))?;
+
+        for entry in self.entries().map_err(serde::ser::Error::custom)? {
+            seq.serialize_element(&entry)?;
+        }
+
+        seq.end()
     }
 }
 

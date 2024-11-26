@@ -366,6 +366,16 @@ impl<T, S: StorageAdaptor> fmt::Debug for Collection<T, S> {
     }
 }
 
+impl<T, S> Default for Collection<T, S>
+where
+    T: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn default() -> Self {
+        Self::new(None)
+    }
+}
+
 impl<T: Eq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Eq for Collection<T, S> {}
 
 impl<T: PartialEq + BorshSerialize + BorshDeserialize, S: StorageAdaptor> PartialEq
