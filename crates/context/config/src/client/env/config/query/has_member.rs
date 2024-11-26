@@ -35,15 +35,15 @@ impl Method<Starknet> for HasMemberRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let mut call_data = CallData::default();
-          
+
         // Encode context_id
         let context_pair: FeltPair = self.context_id.into();
         context_pair.encode(&mut call_data)?;
-        
+
         // Encode identity
         let identity_pair: FeltPair = self.identity.into();
         identity_pair.encode(&mut call_data)?;
-        
+
         Ok(call_data.0)
     }
 
@@ -57,7 +57,9 @@ impl Method<Starknet> for HasMemberRequest {
 
         // Check if all bytes except the last one are zero
         if !response[..31].iter().all(|&b| b == 0) {
-            return Err(eyre::eyre!("Invalid response format: non-zero bytes in prefix"));
+            return Err(eyre::eyre!(
+                "Invalid response format: non-zero bytes in prefix"
+            ));
         }
 
         // Check the last byte is either 0 or 1

@@ -1,7 +1,7 @@
 use std::mem;
 
 use serde::Serialize;
-use starknet::core::codec::{Encode, Decode};
+use starknet::core::codec::{Decode, Encode};
 use starknet::core::types::Felt;
 
 use super::ProposalId;
@@ -69,7 +69,7 @@ impl Method<Starknet> for ProposalApproversRequest {
         // Convert bytes to Felts
         let mut felts = Vec::new();
         let chunks = response.chunks_exact(32);
-        
+
         // Verify no remainder
         if !chunks.remainder().is_empty() {
             return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));

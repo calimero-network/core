@@ -1,13 +1,14 @@
 use serde::Serialize;
-use starknet::core::codec::Decode;
+use starknet::core::codec::{Decode, Encode};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::starknet::{Application as StarknetApplication, CallData, FeltPair};
+use crate::client::env::config::types::starknet::{
+    Application as StarknetApplication, CallData, FeltPair,
+};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::repr::Repr;
-use starknet::core::codec::Encode;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -66,7 +67,7 @@ impl Method<Starknet> for ApplicationRequest {
         // Convert bytes to Felts
         let mut felts = Vec::new();
         let chunks = response.chunks_exact(32);
-        
+
         // Verify no remainder
         if !chunks.remainder().is_empty() {
             return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));

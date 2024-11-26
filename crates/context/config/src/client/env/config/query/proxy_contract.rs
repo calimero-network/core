@@ -1,11 +1,11 @@
 use serde::Serialize;
-use starknet_crypto::Felt;
 use starknet::core::codec::Encode;
+use starknet_crypto::Felt;
 
+use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::repr::Repr;
 use crate::types::ContextId;
 

@@ -33,12 +33,12 @@ pub trait IntoFeltPair {
 }
 
 impl From<(Felt, Felt)> for FeltPair {
-  fn from(value: (Felt, Felt)) -> Self {
-      FeltPair {
-          high: value.0,
-          low: value.1,
-      }
-  }
+    fn from(value: (Felt, Felt)) -> Self {
+        FeltPair {
+            high: value.0,
+            low: value.1,
+        }
+    }
 }
 
 #[derive(Default, Debug)]

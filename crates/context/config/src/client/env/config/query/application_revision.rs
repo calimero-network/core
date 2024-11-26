@@ -41,7 +41,10 @@ impl Method<Starknet> for ApplicationRevisionRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         if response.len() != 32 {
-            return Err(eyre::eyre!("Invalid response length: expected 32 bytes, got {}", response.len()));
+            return Err(eyre::eyre!(
+                "Invalid response length: expected 32 bytes, got {}",
+                response.len()
+            ));
         }
 
         // Response should be a single u64 in the last 8 bytes of a felt

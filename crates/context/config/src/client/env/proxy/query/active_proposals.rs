@@ -41,7 +41,9 @@ impl Method<Starknet> for ActiveProposalRequest {
 
         // Verify that all bytes except the last two are zero
         if !response[..30].iter().all(|&b| b == 0) {
-            return Err(eyre::eyre!("Invalid response format: non-zero bytes in prefix"));
+            return Err(eyre::eyre!(
+                "Invalid response format: non-zero bytes in prefix"
+            ));
         }
 
         // Take the last two bytes for u16

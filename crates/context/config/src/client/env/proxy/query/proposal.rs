@@ -3,13 +3,13 @@ use starknet::core::codec::{Decode, Encode};
 use starknet_crypto::Felt;
 
 use super::ProposalId;
+use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetProposalId};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::repr::Repr;
 use crate::Proposal;
-use crate::client::env::proxy::starknet::CallData;
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalRequest {
@@ -57,7 +57,7 @@ impl Method<Starknet> for ProposalRequest {
         // Convert bytes to Felts
         let mut felts = Vec::new();
         let chunks = response.chunks_exact(32);
-        
+
         // Verify no remainder
         if !chunks.remainder().is_empty() {
             return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));

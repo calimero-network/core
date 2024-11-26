@@ -50,7 +50,9 @@ impl Method<Starknet> for MembersRevisionRequest {
         // Response should be a single u64 in the last 8 bytes of a felt
         // First 24 bytes should be zero
         if !response[..24].iter().all(|&b| b == 0) {
-            return Err(eyre::eyre!("Invalid response format: non-zero bytes in prefix"));
+            return Err(eyre::eyre!(
+                "Invalid response format: non-zero bytes in prefix"
+            ));
         }
 
         let revision_bytes = &response[24..32];
