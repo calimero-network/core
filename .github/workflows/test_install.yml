@@ -1,0 +1,33 @@
+name: Test Install Script
+
+on:
+  push:
+    branches:
+      - xilosada/test-install-script
+  pull_request:
+    branches:
+      - xilosada/test-install-script
+
+jobs:
+  test-install:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        arch: [x86_64, aarch64]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # Run the installation script
+      - name: Test installation script
+        run: |
+          curl -s https://raw.githubusercontent.com/calimero-network/core/xilosada\/test-install-script/scripts/install.sh | bash
+
+      # Validate the binary installation
+      - name: Validate installation
+        run: |
+          which meroctl
+          meroctl --version
