@@ -4,10 +4,13 @@ on:
   push:
     branches:
       - master
+      - xilosada/test-gh-actions
+
   pull_request:
     branches:
       - master
-
+      - xilosada/test-gh-actions
+      
 jobs:
   test-install:
     strategy:
@@ -24,7 +27,7 @@ jobs:
       # Run the installation script
       - name: Test installation script
         run: |
-          curl -s https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | bash
+          curl -s https://raw.githubusercontent.com/calimero-network/core/${GITHUB_REF_NAME}/scripts/install.sh | bash
 
       # Validate the binary installation
       - name: Validate installation
