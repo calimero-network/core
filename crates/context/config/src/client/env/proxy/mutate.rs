@@ -67,9 +67,8 @@ impl Method<Starknet> for Mutate {
         let signer_id = verifying_key_bytes
             .rt()
             .map_err(|_| eyre::eyre!("Infallible conversion"))?;
-        let signer_id = Repr::new(signer_id);
 
-        // Create request with signer_id
+        // Create request with signer_id (no Repr)
         let request = StarknetProxyMutateRequest::from((signer_id, self.raw_request));
 
         // Serialize -> Hash -> Sign with ECDSA

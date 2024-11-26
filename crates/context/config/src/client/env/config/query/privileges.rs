@@ -5,7 +5,7 @@ use serde::Serialize;
 use starknet::core::codec::{Decode, Encode, FeltWriter};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::starknet::{CallData, FeltPair, StarknetPrivileges};
+use crate::client::env::config::types::starknet::{CallData, StarknetPrivileges, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -68,17 +68,17 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let mut call_data = CallData::default();
 
-        // Encode context_id
-        let context_pair: FeltPair = self.context_id.into();
-        context_pair.encode(&mut call_data)?;
+        // Dereference Repr and encode context_id
+        let context_id: StarknetContextId = (*self.context_id).into();
+        context_id.encode(&mut call_data)?;
 
         // Add array length
         call_data.write(Felt::from(self.identities.len() as u64));
 
-        // Add each identity
+        // Add each identity using StarknetIdentity
         for identity in self.identities {
-            let identity_pair: FeltPair = (*identity).into();
-            identity_pair.encode(&mut call_data)?;
+            let starknet_id: StarknetContextIdentity = (*identity).into();
+            starknet_id.encode(&mut call_data)?;
         }
 
         Ok(call_data.0)

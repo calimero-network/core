@@ -37,8 +37,10 @@ impl Method<Starknet> for ProposalRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let starknet_id: StarknetProposalId = self.proposal_id.into();
+
         let mut call_data = CallData::default();
-        starknet_id.0.encode(&mut call_data)?;
+        starknet_id.encode(&mut call_data)?;
+        
         Ok(call_data.0)
     }
 

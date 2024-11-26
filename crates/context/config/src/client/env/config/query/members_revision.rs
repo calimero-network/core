@@ -1,7 +1,7 @@
 use serde::Serialize;
 use starknet::core::codec::Encode;
 
-use crate::client::env::config::types::starknet::{CallData, FeltPair};
+use crate::client::env::config::types::starknet::{CallData, ContextId as StarknetContextId};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -33,9 +33,11 @@ impl Method<Starknet> for MembersRevisionRequest {
     const METHOD: &'static str = "members_revision";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let felt_pair: FeltPair = self.context_id.into();
+        // Dereference Repr and encode context_id
+        let context_id: StarknetContextId = (*self.context_id).into();
+
         let mut call_data = CallData::default();
-        felt_pair.encode(&mut call_data)?;
+        context_id.encode(&mut call_data)?;
         Ok(call_data.0)
     }
 

@@ -87,48 +87,67 @@ impl From<StarknetProposals> for Vec<Proposal> {
 }
 
 // Conversions for StarknetIdentity
-impl From<Repr<SignerId>> for StarknetIdentity {
-    fn from(value: Repr<SignerId>) -> Self {
+impl From<SignerId> for FeltPair {
+    fn from(value: SignerId) -> Self {
         let bytes = value.as_bytes();
         let mid_point = bytes.len().checked_div(2).expect("Length should be even");
         let (high_bytes, low_bytes) = bytes.split_at(mid_point);
-        StarknetIdentity(FeltPair {
+        FeltPair {
             high: Felt::from_bytes_be_slice(high_bytes),
             low: Felt::from_bytes_be_slice(low_bytes),
-        })
+        }
+    }
+}
+
+impl From<FeltPair> for SignerId {
+    fn from(value: FeltPair) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&value.high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&value.low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+impl From<SignerId> for StarknetIdentity {
+    fn from(value: SignerId) -> Self {
+        StarknetIdentity(value.into())
     }
 }
 
 impl From<StarknetIdentity> for SignerId {
     fn from(value: StarknetIdentity) -> Self {
-        let FeltPair { high, low } = value.0;
-        let mut bytes = [0u8; 32];
-        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
-        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
-        bytes.rt().expect("Infallible conversion")
+        value.0.into()
     }
 }
 
 // Conversions for ProposalId
-impl From<Repr<ProposalId>> for StarknetProposalId {
-    fn from(value: Repr<ProposalId>) -> Self {
+impl From<ProposalId> for FeltPair {
+    fn from(value: ProposalId) -> Self {
         let bytes = value.as_bytes();
         let mid_point = bytes.len().checked_div(2).expect("Length should be even");
         let (high_bytes, low_bytes) = bytes.split_at(mid_point);
-        StarknetProposalId(FeltPair {
+        FeltPair {
             high: Felt::from_bytes_be_slice(high_bytes),
             low: Felt::from_bytes_be_slice(low_bytes),
-        })
+        }
     }
 }
 
-impl From<StarknetProposalId> for ProposalId {
-    fn from(value: StarknetProposalId) -> Self {
-        let FeltPair { high, low } = value.0;
-        let mut bytes = [0u8; 32];
-        bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
-        bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
-        bytes.rt().expect("Infallible conversion")
+impl From<ProposalId> for StarknetProposalId {
+    fn from(value: ProposalId) -> Self {
+        StarknetProposalId(value.into())
+    }
+}
+
+impl From<Repr<ProposalId>> for StarknetProposalId {
+    fn from(value: Repr<ProposalId>) -> Self {
+        StarknetProposalId((*value).into())
+    }
+}
+
+impl From<Repr<SignerId>> for StarknetIdentity {
+    fn from(value: Repr<SignerId>) -> Self {
+        StarknetIdentity((*value).into())
     }
 }
 
@@ -152,8 +171,8 @@ impl From<u128> for StarknetU256 {
 }
 
 // Conversions for ProxyMutateRequest
-impl From<(Repr<SignerId>, ProxyMutateRequest)> for StarknetProxyMutateRequest {
-    fn from((signer_id, request): (Repr<SignerId>, ProxyMutateRequest)) -> Self {
+impl From<(SignerId, ProxyMutateRequest)> for StarknetProxyMutateRequest {
+    fn from((signer_id, request): (SignerId, ProxyMutateRequest)) -> Self {
         StarknetProxyMutateRequest {
             signer_id: signer_id.into(),
             kind: request.into(),
@@ -353,4 +372,19 @@ impl FeltWriter for CallData {
 pub struct StarknetProposalsRequest {
     pub offset: Felt,
     pub length: Felt,
+}
+
+impl From<FeltPair> for ProposalId {
+    fn from(value: FeltPair) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(&value.high.to_bytes_be()[16..]);
+        bytes[16..].copy_from_slice(&value.low.to_bytes_be()[16..]);
+        bytes.rt().expect("Infallible conversion")
+    }
+}
+
+impl From<StarknetProposalId> for ProposalId {
+    fn from(value: StarknetProposalId) -> Self {
+        value.0.into()
+    }
 }

@@ -43,7 +43,7 @@ impl Method<Starknet> for ProposalApprovalsRequest {
 
         // Encode both high and low parts
         let mut call_data = CallData::default();
-        starknet_id.0.encode(&mut call_data)?;
+        starknet_id.encode(&mut call_data)?;
         Ok(call_data.0)
     }
 
