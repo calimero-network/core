@@ -4,6 +4,7 @@ use config::Config;
 use const_format::concatcp;
 use driver::Driver;
 use eyre::Result as EyreResult;
+use output::{OutputFormat, OutputWriter};
 use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
 
@@ -11,6 +12,7 @@ mod config;
 mod driver;
 mod meroctl;
 mod merod;
+mod output;
 mod steps;
 
 pub const EXAMPLES: &str = r"
@@ -51,6 +53,11 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     #[arg(env = "MEROCTL_BINARY", hide_env_values = true)]
     pub meroctl_binary: Utf8PathBuf,
+
+    /// Format of the E2E test output.
+    #[arg(long, value_name = "OUTPUT_FORMAT", default_value_t, value_enum)]
+    #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
+    pub output_format: OutputFormat,
 }
 
 #[derive(Debug)]
@@ -62,6 +69,7 @@ pub struct TestEnvironment {
     pub output_dir: Utf8PathBuf,
     pub nodes_dir: Utf8PathBuf,
     pub logs_dir: Utf8PathBuf,
+    pub output_writer: OutputWriter,
 }
 
 impl Into<TestEnvironment> for Args {
@@ -76,6 +84,7 @@ impl Into<TestEnvironment> for Args {
             output_dir: self.output_dir.clone(),
             nodes_dir: self.output_dir.join("nodes"),
             logs_dir: self.output_dir.join("logs"),
+            output_writer: OutputWriter::new(self.output_format),
         }
     }
 }
