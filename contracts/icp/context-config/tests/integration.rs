@@ -1,13 +1,13 @@
-use candid::Principal;
-use pocket_ic::PocketIc;
-use ed25519_dalek::SigningKey;
-use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use candid::Principal;
 use context_contract::types::{
-    ICApplication, ICApplicationId, ICBlobId, ICContextId, ICContextIdentity,
-    ICPSigned, ICSignerId, Request, RequestKind, ContextRequest, ContextRequestKind
+    ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, ICContextId,
+    ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
+use ed25519_dalek::SigningKey;
+use pocket_ic::PocketIc;
+use rand::Rng;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
@@ -22,10 +22,7 @@ fn setup() -> (PocketIc, Principal) {
     (pic, canister)
 }
 
-fn create_signed_request(
-    _signer_key: &SigningKey,
-    request: Request,
-) -> ICPSigned<Request> {
+fn create_signed_request(_signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
     // TODO: Implement actual signature creation
     ICPSigned {
         payload: request,
@@ -124,8 +121,11 @@ fn test_mutate_failure_cases() {
         );
 
         let err = response.unwrap_err();
-        assert!(err.description.contains("request expired"), 
-            "Expected expired request error, got: {}", err.description);
+        assert!(
+            err.description.contains("request expired"),
+            "Expected expired request error, got: {}",
+            err.description
+        );
     }
 
     // Test Case 2: Wrong signer for context addition
@@ -161,8 +161,12 @@ fn test_mutate_failure_cases() {
         );
 
         let err = response.unwrap_err();
-        assert!(err.description.contains("context addition must be signed by the context itself"), 
-            "Expected wrong signer error, got: {}", err.description);
+        assert!(
+            err.description
+                .contains("context addition must be signed by the context itself"),
+            "Expected wrong signer error, got: {}",
+            err.description
+        );
     }
 
     // Test Case 3: Duplicate context addition
@@ -210,7 +214,10 @@ fn test_mutate_failure_cases() {
         );
 
         let err = response.unwrap_err();
-        assert!(err.description.contains("context already exists"), 
-            "Expected duplicate context error, got: {}", err.description);
+        assert!(
+            err.description.contains("context already exists"),
+            "Expected duplicate context error, got: {}",
+            err.description
+        );
     }
 }

@@ -1,8 +1,9 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+
+use calimero_context_config::types::Revision;
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
-use calimero_context_config::types::Revision;
 
 use crate::types::ICSignerId;
 
@@ -33,7 +34,10 @@ impl<T> Guard<T> {
         }
     }
 
-    pub fn get(&mut self, signer_id: &ICSignerId) -> Result<GuardHandle<'_, T>, UnauthorizedAccess> {
+    pub fn get(
+        &mut self,
+        signer_id: &ICSignerId,
+    ) -> Result<GuardHandle<'_, T>, UnauthorizedAccess> {
         if !self.privileged.contains(signer_id) {
             return Err(UnauthorizedAccess { _priv: () });
         }
