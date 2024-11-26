@@ -5,7 +5,10 @@ use serde::Serialize;
 use starknet::core::codec::{Decode, Encode, FeltWriter};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::starknet::{CallData, StarknetPrivileges, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity};
+use crate::client::env::config::types::starknet::{
+    CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
+    StarknetPrivileges,
+};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;

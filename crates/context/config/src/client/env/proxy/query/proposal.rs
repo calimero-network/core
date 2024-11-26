@@ -40,7 +40,7 @@ impl Method<Starknet> for ProposalRequest {
 
         let mut call_data = CallData::default();
         starknet_id.encode(&mut call_data)?;
-        
+
         Ok(call_data.0)
     }
 
