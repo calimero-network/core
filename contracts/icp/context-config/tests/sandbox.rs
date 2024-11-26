@@ -1,11 +1,11 @@
 extern crate context_contract;
 
+use context_contract::mutate::mutate;
 use context_contract::types::{
-    ICSignerId, ICContextId, ICApplication, ICApplicationId, 
-    ICBlobId, Request, RequestKind, ContextRequest, ContextRequestKind, ICPSigned
+    ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, ICContextId,
+    ICPSigned, ICSignerId, Request, RequestKind,
 };
 use context_contract::CONTEXT_CONFIGS;
-use context_contract::mutate::mutate;
 
 #[cfg(test)]
 mod tests {

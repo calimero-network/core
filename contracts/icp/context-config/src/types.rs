@@ -1,13 +1,19 @@
-use candid::CandidType;
-use serde::{Deserialize, Serialize};
-use calimero_context_config::types::{Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, ContextId, IntoResult, SignerId};
-use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::repr::ReprBytes;
 use std::borrow::Cow;
 use std::collections::HashMap;
+
+use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::types::{
+    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, ContextId,
+    IntoResult, SignerId,
+};
+use candid::CandidType;
+use serde::{Deserialize, Serialize};
+
 use crate::guard::Guard;
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy)]
+#[derive(
+    CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy,
+)]
 pub struct ICSignerId(pub [u8; 32]);
 
 impl ICSignerId {
@@ -248,7 +254,7 @@ impl<T: CandidType + Serialize> ICPSigned<T> {
     {
         // TODO: Verify signature using ed25519
         // This should follow the same pattern as NEAR's Signed::parse
-        
+
         let _ = f(&self.payload); // Call the verification function
         Ok(&self.payload)
     }
