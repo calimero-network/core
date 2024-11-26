@@ -14,6 +14,7 @@ fn setup() -> (PocketIc, Principal) {
     let wasm = std::fs::read("/Users/alen/www/calimero/core/contracts/icp/context-config/target/wasm32-unknown-unknown/release/context_contract.wasm")
         .expect("failed to read wasm");
     let canister = pic.create_canister();
+    pic.add_cycles(canister, 2_000_000_000_000);
     pic.install_canister(
         canister,
         wasm,
