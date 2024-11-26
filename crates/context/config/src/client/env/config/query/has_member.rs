@@ -5,6 +5,7 @@ use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
@@ -68,5 +69,19 @@ impl Method<Starknet> for HasMemberRequest {
             1 => Ok(true),
             v => Err(eyre::eyre!("Invalid boolean value: {}", v)),
         }
+    }
+}
+
+impl Method<Icp> for HasMemberRequest {
+    type Returns = bool;
+
+    const METHOD: &'static str = "has_member";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

@@ -5,6 +5,7 @@ use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::{ContextId, Revision};
 
@@ -52,5 +53,19 @@ impl Method<Starknet> for ApplicationRevisionRequest {
         let revision = u64::from_be_bytes(revision_bytes.try_into()?);
 
         Ok(revision)
+    }
+}
+
+impl Method<Icp> for ApplicationRevisionRequest {
+    type Returns = Revision;
+
+    const METHOD: &'static str = "application_revision";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

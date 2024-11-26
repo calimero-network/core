@@ -12,6 +12,7 @@ use crate::client::env::config::types::starknet::{
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
@@ -124,5 +125,19 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
             .map_err(|e| eyre::eyre!("Failed to decode privileges: {:?}", e))?;
 
         Ok(privileges.into())
+    }
+}
+
+impl<'a> Method<Icp> for PrivilegesRequest<'a> {
+    type Returns = BTreeMap<SignerId, Vec<Capability>>;
+
+    const METHOD: &'static str = "privileges";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

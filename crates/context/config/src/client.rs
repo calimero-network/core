@@ -14,7 +14,7 @@ pub mod transport;
 pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
-use protocol::{near, starknet, Protocol};
+use protocol::{icp, near, starknet, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 pub type AnyTransport = Either<
@@ -59,6 +59,9 @@ impl Client<AnyTransport> {
                                 ),
                                 Credentials::Starknet(_) => {
                                     panic!("Expected Near credentials but got something else.")
+                                },
+                                Credentials::Icp(_) => {
+                                    panic!("Expected Near credentials but got something else.")
                                 }
                             };
                             (
@@ -82,8 +85,11 @@ impl Client<AnyTransport> {
                             let (account_id, secret_key) = match &config.credentials {
                                 Credentials::Starknet(credentials) => {
                                     (credentials.account_id, credentials.secret_key)
-                                }
+                                },
                                 Credentials::Near(_) => {
+                                    panic!("Expected Starknet credentials but got something else.")
+                                },
+                                Credentials::Icp(_) => {
                                     panic!("Expected Starknet credentials but got something else.")
                                 }
                             };

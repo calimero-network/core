@@ -8,8 +8,10 @@ license.workspace = true
 
 [dependencies]
 camino = { workspace = true, features = ["serde1"] }
+candid.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+ic-agent.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true

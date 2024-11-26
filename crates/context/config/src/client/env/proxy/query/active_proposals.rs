@@ -3,6 +3,7 @@ use serde::Serialize;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct ActiveProposalRequest;
@@ -50,5 +51,19 @@ impl Method<Starknet> for ActiveProposalRequest {
         let value = u16::from_be_bytes([response[30], response[31]]);
 
         Ok(value)
+    }
+}
+
+impl Method<Icp> for ActiveProposalRequest {
+    const METHOD: &'static str = "get_active_proposals_limit";
+
+    type Returns = u16;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

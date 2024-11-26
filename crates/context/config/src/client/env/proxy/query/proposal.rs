@@ -8,6 +8,7 @@ use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetPropo
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::Proposal;
 
@@ -87,5 +88,19 @@ impl Method<Starknet> for ProposalRequest {
             }
             v => Err(eyre::eyre!("Invalid option discriminant: {}", v)),
         }
+    }
+}
+
+impl Method<Icp> for ProposalRequest {
+    const METHOD: &'static str = "proposals";
+
+    type Returns = Option<Proposal>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

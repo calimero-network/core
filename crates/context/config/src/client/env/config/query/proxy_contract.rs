@@ -6,6 +6,7 @@ use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::ContextId;
 
@@ -55,5 +56,19 @@ impl Method<Starknet> for ProxyContractRequest {
 
         // Format felt as hex string with 0x prefix
         Ok(format!("0x{:x}", felt))
+    }
+}
+
+impl Method<Icp> for ProxyContractRequest {
+    const METHOD: &'static str = "proxy_contract";
+
+    type Returns = String;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

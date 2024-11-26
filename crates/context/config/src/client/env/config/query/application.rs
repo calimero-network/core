@@ -8,6 +8,7 @@ use crate::client::env::config::types::starknet::{
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
@@ -89,5 +90,19 @@ impl Method<Starknet> for ApplicationRequest {
             .map_err(|e| eyre::eyre!("Failed to decode application: {:?}", e))?;
 
         Ok(application.into())
+    }
+}
+
+impl Method<Icp> for ApplicationRequest {
+    type Returns = Application<'static>;
+
+    const METHOD: &'static str = "application";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

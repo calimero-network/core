@@ -9,6 +9,7 @@ use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigne
 use crate::client::env::{utils, Method};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::{Repr, ReprTransmute};
@@ -126,7 +127,27 @@ impl<'a> Method<Starknet> for Mutate<'a> {
     }
 }
 
-impl<'a, T: Transport + Debug> ContextConfigMutateRequest<'a, T> {
+impl<'a> Method<Icp> for Mutate<'a> {
+    type Returns = ();
+
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        // sign the params, encode it and return
+        // since you will have a `Vec<Felt>` here, you can
+        // `Vec::with_capacity(32 * calldata.len())` and then
+        // extend the `Vec` with each `Felt::to_bytes_le()`
+        // when this `Vec<u8>` makes it to `StarknetTransport`,
+        // reconstruct the `Vec<Felt>` from it
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
+    }
+}
+
+impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
     pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ClientError<T>> {
         let request = Mutate {
             signing_key,

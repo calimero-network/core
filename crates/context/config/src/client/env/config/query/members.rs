@@ -10,6 +10,7 @@ use crate::client::env::config::types::starknet::{
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
@@ -94,5 +95,19 @@ impl Method<Starknet> for MembersRequest {
             .map_err(|e| eyre::eyre!("Failed to decode members: {:?}", e))?;
 
         Ok(members.into())
+    }
+}
+
+impl Method<Icp> for MembersRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "members";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

@@ -6,6 +6,7 @@ use url::Url;
 
 use crate::client::protocol::near::Credentials as NearCredentials;
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
+use crate::client::protocol::icp::Credentials as IcpCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
@@ -62,4 +63,5 @@ pub struct ClientLocalSigner {
 pub enum Credentials {
     Near(NearCredentials),
     Starknet(StarknetCredentials),
+    Icp(IcpCredentials),
 }

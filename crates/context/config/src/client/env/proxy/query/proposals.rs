@@ -6,6 +6,7 @@ use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetP
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::Proposal;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -80,5 +81,19 @@ impl Method<Starknet> for ProposalsRequest {
             .map_err(|e| eyre::eyre!("Failed to decode proposals: {:?}", e))?;
 
         Ok(proposals.into())
+    }
+}
+
+impl Method<Icp> for ProposalsRequest {
+    const METHOD: &'static str = "proposals";
+
+    type Returns = Vec<Proposal>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

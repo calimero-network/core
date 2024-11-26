@@ -18,6 +18,7 @@ mod utils {
     use super::Method;
     use crate::client::protocol::near::Near;
     use crate::client::protocol::starknet::Starknet;
+    use crate::client::protocol::icp::Icp;
     use crate::client::protocol::Protocol;
     use crate::client::transport::Transport;
     use crate::client::{CallClient, ClientError, Operation};
@@ -30,10 +31,12 @@ mod utils {
     where
         M: Method<Near, Returns = R>,
         M: Method<Starknet, Returns = R>,
+        M: Method<Icp, Returns = R>,
     {
         match &*client.protocol {
             Near::PROTOCOL => client.send::<Near, _>(params).await,
             Starknet::PROTOCOL => client.send::<Starknet, _>(params).await,
+            Icp::PROTOCOL => client.send::<Icp, _>(params).await,
             unsupported_protocol => Err(ClientError::UnsupportedProtocol {
                 found: unsupported_protocol.to_owned(),
                 expected: vec![Near::PROTOCOL.into(), Starknet::PROTOCOL.into()].into(),

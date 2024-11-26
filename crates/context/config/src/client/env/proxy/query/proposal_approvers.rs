@@ -10,6 +10,7 @@ use crate::client::env::proxy::types::starknet::{StarknetApprovers, StarknetProp
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::ContextIdentity;
 
@@ -88,5 +89,19 @@ impl Method<Starknet> for ProposalApproversRequest {
             .map_err(|e| eyre::eyre!("Failed to decode approvers: {:?}", e))?;
 
         Ok(approvers.into())
+    }
+}
+
+impl Method<Icp> for ProposalApproversRequest {
+    const METHOD: &'static str = "proposal_approvers";
+
+    type Returns = Vec<ContextIdentity>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }
