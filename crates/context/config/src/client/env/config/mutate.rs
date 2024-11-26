@@ -90,7 +90,7 @@ impl<'a> Method<Starknet> for Mutate<'a> {
         let request = StarknetRequest {
             signer_id: signer_id.into(),
             user_id: user_id.into(),
-            nonce: 0,
+            nonce: self.nonce,
             kind: self.kind.into(),
         };
 
@@ -130,10 +130,9 @@ impl<'a, T: Transport + Debug> ContextConfigMutateRequest<'a, T> {
     pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ClientError<T>> {
         let request = Mutate {
             signing_key,
-            nonce: 0,
             // todo! when nonces are implemented in context
             // todo! config contract, we fetch it here first
-            // nonce: _,
+            nonce: 0,
             kind: self.kind,
         };
 

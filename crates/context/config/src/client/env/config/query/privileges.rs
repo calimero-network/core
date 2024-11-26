@@ -2,14 +2,15 @@ use core::{mem, ptr};
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use starknet::core::codec::Decode;
+use starknet::core::codec::{Decode, Encode, FeltWriter};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::starknet::StarknetPrivileges;
+use crate::client::env::config::types::starknet::{CallData, FeltPair, StarknetPrivileges};
+
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprBytes};
+use crate::repr::Repr;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -66,36 +67,22 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        // Split context_id into high/low parts
-        let context_bytes = self.context_id.as_bytes();
-        let mid_point = context_bytes
-            .len()
-            .checked_div(2)
-            .ok_or_else(|| eyre::eyre!("Length should be even"))?;
-        let (high_bytes, low_bytes) = context_bytes.split_at(mid_point);
-
-        // Convert to Felts and then to bytes
-        let mut result = Vec::new();
-        result.extend_from_slice(&Felt::from_bytes_be_slice(high_bytes).to_bytes_be());
-        result.extend_from_slice(&Felt::from_bytes_be_slice(low_bytes).to_bytes_be());
-
+        let mut call_data = CallData::default();
+        
+        // Encode context_id
+        let context_pair: FeltPair = self.context_id.into();
+        context_pair.encode(&mut call_data)?;
+        
         // Add array length
-        result.extend_from_slice(&Felt::from(self.identities.len() as u64).to_bytes_be());
-
+        call_data.write(Felt::from(self.identities.len() as u64));
+        
         // Add each identity
         for identity in self.identities {
-            let id_bytes = identity.as_bytes();
-            let mid_point = id_bytes
-                .len()
-                .checked_div(2)
-                .ok_or_else(|| eyre::eyre!("Length should be even"))?;
-            let (id_high, id_low) = id_bytes.split_at(mid_point);
-
-            result.extend_from_slice(&Felt::from_bytes_be_slice(id_high).to_bytes_be());
-            result.extend_from_slice(&Felt::from_bytes_be_slice(id_low).to_bytes_be());
+            let identity_pair: FeltPair = (*identity).into();
+            identity_pair.encode(&mut call_data)?;
         }
-
-        Ok(result)
+        
+        Ok(call_data.0)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
@@ -103,14 +90,27 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
             return Ok(BTreeMap::new());
         }
 
+        if response.len() % 32 != 0 {
+            return Err(eyre::eyre!(
+                "Invalid response length: {} bytes is not a multiple of 32",
+                response.len()
+            ));
+        }
+
         // Convert bytes to Felts
         let mut felts = Vec::new();
-        for chunk in response.chunks(32) {
-            if chunk.len() == 32 {
-                felts.push(Felt::from_bytes_be(chunk.try_into().map_err(|e| {
-                    eyre::eyre!("Failed to convert chunk to array: {}", e)
-                })?));
-            }
+        let chunks = response.chunks_exact(32);
+        
+        // Verify no remainder
+        if !chunks.remainder().is_empty() {
+            return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));
+        }
+
+        for chunk in chunks {
+            let chunk_array: [u8; 32] = chunk
+                .try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+            felts.push(Felt::from_bytes_be(&chunk_array));
         }
 
         // Check if it's a None response (single zero Felt)
@@ -118,7 +118,6 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
             return Ok(BTreeMap::new());
         }
 
-        // Skip the flag/version felt and decode the privileges
         let privileges = StarknetPrivileges::decode(&felts)
             .map_err(|e| eyre::eyre!("Failed to decode privileges: {:?}", e))?;
 

@@ -48,7 +48,7 @@ impl<'a> Request<'a> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "scope", content = "params")]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub enum RequestKind<'a> {
@@ -56,7 +56,7 @@ pub enum RequestKind<'a> {
     Context(ContextRequest<'a>),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
@@ -74,7 +74,7 @@ impl<'a> ContextRequest<'a> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "scope", content = "params")]
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]

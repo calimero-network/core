@@ -1,8 +1,8 @@
 use serde::Serialize;
-use starknet::core::codec::Decode;
+use starknet::core::codec::{Encode, Decode};
 use starknet_crypto::Felt;
 
-use crate::client::env::proxy::starknet::StarknetProposals;
+use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetProposalsRequest};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -34,31 +34,48 @@ impl Method<Starknet> for ProposalsRequest {
     type Returns = Vec<Proposal>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let mut bytes = Vec::with_capacity(64); // 2 * 32 bytes for two u32 parameters
-
-        // First parameter (offset): pad to 32 bytes
-        bytes.extend_from_slice(&[0; 28]); // 28 bytes of zeros
-        bytes.extend_from_slice(&(self.offset as u32).to_be_bytes()); // 4 bytes of actual value
-
-        // Second parameter (length): pad to 32 bytes
-        bytes.extend_from_slice(&[0; 28]); // 28 bytes of zeros
-        bytes.extend_from_slice(&(self.length as u32).to_be_bytes()); // 4 bytes of actual value
-
-        Ok(bytes)
+        let req = StarknetProposalsRequest {
+            offset: Felt::from(self.offset as u64),
+            length: Felt::from(self.length as u64),
+        };
+        let mut call_data = CallData::default();
+        req.encode(&mut call_data)?;
+        Ok(call_data.0)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        // Convert bytes to Felts
-        let mut felts = Vec::new();
-        for chunk in response.chunks(32) {
-            if chunk.len() == 32 {
-                felts.push(Felt::from_bytes_be(chunk.try_into().map_err(|e| {
-                    eyre::eyre!("Failed to convert chunk to array: {}", e)
-                })?));
-            }
+        if response.is_empty() {
+            return Ok(Vec::new());
         }
 
-        // Skip version felt and decode the array
+        if response.len() % 32 != 0 {
+            return Err(eyre::eyre!(
+                "Invalid response length: {} bytes is not a multiple of 32",
+                response.len()
+            ));
+        }
+
+        // Convert bytes to Felts
+        let mut felts = Vec::new();
+        let chunks = response.chunks_exact(32);
+        
+        // Verify no remainder
+        if !chunks.remainder().is_empty() {
+            return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));
+        }
+
+        for chunk in chunks {
+            let chunk_array: [u8; 32] = chunk
+                .try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+            felts.push(Felt::from_bytes_be(&chunk_array));
+        }
+
+        if felts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Decode the array
         let proposals = StarknetProposals::decode(&felts)
             .map_err(|e| eyre::eyre!("Failed to decode proposals: {:?}", e))?;
 

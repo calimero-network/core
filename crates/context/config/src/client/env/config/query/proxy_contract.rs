@@ -1,10 +1,12 @@
 use serde::Serialize;
 use starknet_crypto::Felt;
+use starknet::core::codec::Encode;
 
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprBytes};
+use crate::client::env::config::types::starknet::{CallData, FeltPair};
+use crate::repr::Repr;
 use crate::types::ContextId;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -32,23 +34,10 @@ impl Method<Starknet> for ProxyContractRequest {
     type Returns = String;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        // Split context_id into high/low parts
-        let bytes = self.context_id.as_bytes();
-        let mid_point = bytes
-            .len()
-            .checked_div(2)
-            .ok_or_else(|| eyre::eyre!("Length should be even"))?;
-        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
-
-        // Convert to Felts
-        let high_felt = Felt::from_bytes_be_slice(high_bytes);
-        let low_felt = Felt::from_bytes_be_slice(low_bytes);
-
-        // Convert both Felts to bytes and concatenate
-        let mut result = Vec::new();
-        result.extend_from_slice(&high_felt.to_bytes_be());
-        result.extend_from_slice(&low_felt.to_bytes_be());
-        Ok(result)
+        let mut call_data = CallData::default();
+        let felt_pair: FeltPair = self.context_id.into();
+        felt_pair.encode(&mut call_data)?;
+        Ok(call_data.0)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

@@ -1,4 +1,4 @@
-use starknet::core::codec::{Decode, Encode};
+use starknet::core::codec::{Decode, Encode, FeltWriter};
 use starknet::core::types::{Felt, U256};
 
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
@@ -338,4 +338,19 @@ impl From<StarknetApprovers> for Vec<ContextIdentity> {
             })
             .collect()
     }
+}
+
+#[derive(Default, Debug)]
+pub struct CallData(pub Vec<u8>);
+
+impl FeltWriter for CallData {
+    fn write(&mut self, felt: Felt) {
+        self.0.extend(felt.to_bytes_be())
+    }
+}
+
+#[derive(Debug, Encode)]
+pub struct StarknetProposalsRequest {
+    pub offset: Felt,
+    pub length: Felt,
 }

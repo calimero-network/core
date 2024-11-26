@@ -1,8 +1,9 @@
 use serde::Serialize;
-use starknet::core::codec::Decode;
+use starknet::core::codec::{Encode, Decode};
 use starknet::core::types::Felt;
 
 use super::ProposalId;
+use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{
     StarknetProposalId, StarknetProposalWithApprovals,
 };
@@ -41,22 +42,37 @@ impl Method<Starknet> for ProposalApprovalsRequest {
         let starknet_id: StarknetProposalId = self.proposal_id.into();
 
         // Encode both high and low parts
-        let mut encoded = Vec::new();
-        encoded.extend_from_slice(&starknet_id.0.high.to_bytes_be());
-        encoded.extend_from_slice(&starknet_id.0.low.to_bytes_be());
-
-        Ok(encoded)
+        let mut call_data = CallData::default();
+        starknet_id.0.encode(&mut call_data)?;
+        Ok(call_data.0)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Err(eyre::eyre!("Empty response"));
+        }
+
+        if response.len() % 32 != 0 {
+            return Err(eyre::eyre!(
+                "Invalid response length: {} bytes is not a multiple of 32",
+                response.len()
+            ));
+        }
+
         // Convert bytes to Felts
         let mut felts = Vec::new();
-        for chunk in response.chunks(32) {
-            if chunk.len() == 32 {
-                felts.push(Felt::from_bytes_be(chunk.try_into().map_err(|e| {
-                    eyre::eyre!("Failed to convert chunk to array: {}", e)
-                })?));
-            }
+        let chunks = response.chunks_exact(32);
+        
+        // Verify no remainder
+        if !chunks.remainder().is_empty() {
+            return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));
+        }
+
+        for chunk in chunks {
+            let chunk_array: [u8; 32] = chunk
+                .try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+            felts.push(Felt::from_bytes_be(&chunk_array));
         }
 
         let approvals = StarknetProposalWithApprovals::decode(&felts)

@@ -1,10 +1,11 @@
 use serde::Serialize;
-use starknet_crypto::Felt;
+use starknet::core::codec::Encode;
 
+use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprBytes};
+use crate::repr::Repr;
 use crate::types::{ContextId, Revision};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -32,33 +33,27 @@ impl Method<Starknet> for MembersRevisionRequest {
     const METHOD: &'static str = "members_revision";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        // Split context_id into high/low parts
-        let bytes = self.context_id.as_bytes();
-        let mid_point = bytes
-            .len()
-            .checked_div(2)
-            .ok_or_else(|| eyre::eyre!("Length should be even"))?;
-        let (high_bytes, low_bytes) = bytes.split_at(mid_point);
-
-        // Convert to Felts
-        let high_felt = Felt::from_bytes_be_slice(high_bytes);
-        let low_felt = Felt::from_bytes_be_slice(low_bytes);
-
-        // Convert both Felts to bytes and concatenate
-        let mut result = Vec::new();
-        result.extend_from_slice(&high_felt.to_bytes_be());
-        result.extend_from_slice(&low_felt.to_bytes_be());
-
-        Ok(result)
+        let felt_pair: FeltPair = self.context_id.into();
+        let mut call_data = CallData::default();
+        felt_pair.encode(&mut call_data)?;
+        Ok(call_data.0)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() {
-            return Err(eyre::eyre!("Empty response"));
+        if response.len() != 32 {
+            return Err(eyre::eyre!(
+                "Invalid response length: expected 32 bytes, got {}",
+                response.len()
+            ));
         }
 
         // Response should be a single u64 in the last 8 bytes of a felt
-        let revision_bytes = &response[24..32]; // Take last 8 bytes
+        // First 24 bytes should be zero
+        if !response[..24].iter().all(|&b| b == 0) {
+            return Err(eyre::eyre!("Invalid response format: non-zero bytes in prefix"));
+        }
+
+        let revision_bytes = &response[24..32];
         let revision = u64::from_be_bytes(revision_bytes.try_into()?);
 
         Ok(revision)

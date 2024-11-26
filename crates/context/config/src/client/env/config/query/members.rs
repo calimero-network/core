@@ -4,7 +4,7 @@ use serde::Serialize;
 use starknet::core::codec::{Decode, Encode};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::starknet::{StarknetMembers, StarknetMembersRequest};
+use crate::client::env::config::types::starknet::{CallData, StarknetMembers, StarknetMembersRequest};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -12,10 +12,10 @@ use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
-pub struct MembersRequest {
-    pub context_id: Repr<ContextId>,
-    pub offset: usize,
-    pub length: usize,
+pub(crate) struct MembersRequest {
+    pub(crate) context_id: Repr<ContextId>,
+    pub(crate) offset: usize,
+    pub(crate) length: usize,
 }
 
 impl Method<Near> for MembersRequest {
@@ -49,16 +49,9 @@ impl Method<Starknet> for MembersRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let req: StarknetMembersRequest = self.into();
-        let mut serialized_request = vec![];
-        req.encode(&mut serialized_request)
-            .map_err(|e| eyre::eyre!("Failed to encode request: {}", e))?;
-
-        let bytes: Vec<u8> = serialized_request
-            .iter()
-            .flat_map(|felt| felt.to_bytes_be())
-            .collect();
-
-        Ok(bytes)
+        let mut call_data = CallData::default();
+        req.encode(&mut call_data)?;
+        Ok(call_data.0)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
@@ -66,12 +59,27 @@ impl Method<Starknet> for MembersRequest {
             return Ok(Vec::new());
         }
 
+        if response.len() % 32 != 0 {
+            return Err(eyre::eyre!(
+                "Invalid response length: {} bytes is not a multiple of 32",
+                response.len()
+            ));
+        }
+
         // Convert bytes to Felts
         let mut felts = Vec::new();
-        for chunk in response.chunks(32) {
-            let mut padded_chunk = [0u8; 32];
-            padded_chunk[..chunk.len()].copy_from_slice(chunk);
-            felts.push(Felt::from_bytes_be(&padded_chunk));
+        let chunks = response.chunks_exact(32);
+        
+        // Verify no remainder
+        if !chunks.remainder().is_empty() {
+            return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));
+        }
+
+        for chunk in chunks {
+            let chunk_array: [u8; 32] = chunk
+                .try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+            felts.push(Felt::from_bytes_be(&chunk_array));
         }
 
         // Check if it's a None response (single zero Felt)

@@ -32,6 +32,24 @@ pub trait IntoFeltPair {
     fn into_felt_pair(self) -> (Felt, Felt);
 }
 
+impl From<(Felt, Felt)> for FeltPair {
+  fn from(value: (Felt, Felt)) -> Self {
+      FeltPair {
+          high: value.0,
+          low: value.1,
+      }
+  }
+}
+
+#[derive(Default, Debug)]
+pub struct CallData(pub Vec<u8>);
+
+impl FeltWriter for CallData {
+    fn write(&mut self, felt: Felt) {
+        self.0.extend(felt.to_bytes_be())
+    }
+}
+
 // Implement for our base types
 impl IntoFeltPair for crate::types::ContextId {
     fn into_felt_pair(self) -> (Felt, Felt) {
@@ -94,32 +112,53 @@ impl IntoFeltPair for SignerId {
     }
 }
 
-// From implementations for our Starknet types
+// Add From implementations for FeltPair
+impl From<crate::types::ContextId> for FeltPair {
+    fn from(value: crate::types::ContextId) -> Self {
+        value.into_felt_pair().into()
+    }
+}
+
+impl From<crate::types::ContextIdentity> for FeltPair {
+    fn from(value: crate::types::ContextIdentity) -> Self {
+        value.into_felt_pair().into()
+    }
+}
+
+impl From<crate::types::ApplicationId> for FeltPair {
+    fn from(value: crate::types::ApplicationId) -> Self {
+        value.into_felt_pair().into()
+    }
+}
+
+impl From<crate::types::BlobId> for FeltPair {
+    fn from(value: crate::types::BlobId) -> Self {
+        value.into_felt_pair().into()
+    }
+}
+
+// Simplify the existing From implementations
 impl From<crate::types::ContextId> for ContextId {
     fn from(value: crate::types::ContextId) -> Self {
-        let (high, low) = value.into_felt_pair();
-        Self(FeltPair { high, low })
+        Self(value.into())
     }
 }
 
 impl From<crate::types::ContextIdentity> for ContextIdentity {
     fn from(value: crate::types::ContextIdentity) -> Self {
-        let (high, low) = value.into_felt_pair();
-        Self(FeltPair { high, low })
+        Self(value.into())
     }
 }
 
 impl From<crate::types::ApplicationId> for ApplicationId {
     fn from(value: crate::types::ApplicationId) -> Self {
-        let (high, low) = value.into_felt_pair();
-        Self(FeltPair { high, low })
+        Self(value.into())
     }
 }
 
 impl From<crate::types::BlobId> for ApplicationBlob {
     fn from(value: crate::types::BlobId) -> Self {
-        let (high, low) = value.into_felt_pair();
-        Self(FeltPair { high, low })
+        Self(value.into())
     }
 }
 
@@ -147,7 +186,7 @@ pub enum RequestKind {
 impl From<crate::RequestKind<'_>> for RequestKind {
     fn from(value: crate::RequestKind<'_>) -> Self {
         match value {
-            crate::RequestKind::Context(ctx_req) => RequestKind::Context(ctx_req.to_owned().into()),
+            crate::RequestKind::Context(ctx_req) => RequestKind::Context(ctx_req.into()),
         }
     }
 }
@@ -162,7 +201,7 @@ impl From<crate::ContextRequest<'_>> for ContextRequest {
     fn from(value: crate::ContextRequest<'_>) -> Self {
         ContextRequest {
             context_id: (*value.context_id).into(),
-            kind: value.kind.to_owned().into(),
+            kind: value.kind.into(),
         }
     }
 }
@@ -541,5 +580,19 @@ impl From<ContextIdentity> for crate::types::ContextIdentity {
         bytes[..16].copy_from_slice(&high.to_bytes_be()[16..]);
         bytes[16..].copy_from_slice(&low.to_bytes_be()[16..]);
         bytes.rt().expect("Infallible conversion")
+    }
+}
+
+// Add From implementation for Repr<ContextId>
+impl From<Repr<crate::types::ContextId>> for FeltPair {
+    fn from(value: Repr<crate::types::ContextId>) -> Self {
+        value.into_inner().into()
+    }
+}
+
+// Add From implementation for Repr<ContextIdentity>
+impl From<Repr<crate::types::ContextIdentity>> for FeltPair {
+    fn from(value: Repr<crate::types::ContextIdentity>) -> Self {
+        value.into_inner().into()
     }
 }
