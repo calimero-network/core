@@ -38,6 +38,7 @@ members = [
     "./contracts/registry",
     "./contracts/proxy-lib",
     "./contracts/test-counter",
+    "./contracts/icp/context-config",
 
     "./e2e-tests",
 ]
