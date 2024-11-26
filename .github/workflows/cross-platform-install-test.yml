@@ -3,10 +3,10 @@ name: Test Install Script
 on:
   push:
     branches:
-      - xilosada/test-install-script
+      - master
   pull_request:
     branches:
-      - xilosada/test-install-script
+      - master
 
 jobs:
   test-install:
@@ -24,7 +24,7 @@ jobs:
       # Run the installation script
       - name: Test installation script
         run: |
-          curl -s https://raw.githubusercontent.com/calimero-network/core/xilosada\/test-install-script/scripts/install.sh | bash
+          curl -s https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | bash
 
       # Validate the binary installation
       - name: Validate installation
