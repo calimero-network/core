@@ -23,7 +23,7 @@ impl Node {
             "Initiating key share",
         );
 
-        let nonce = thread_rng().gen::<Nonce>();
+        let our_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -31,7 +31,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::KeyShare,
-                next_nonce: nonce,
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -60,7 +60,7 @@ impl Node {
             our_identity,
             their_identity,
             stream,
-            nonce,
+            our_nonce,
             their_nonce,
         )
         .await
@@ -72,7 +72,7 @@ impl Node {
         our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
-        nonce: Nonce,
+        their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -80,9 +80,7 @@ impl Node {
             "Received key share request",
         );
 
-        let their_nonce = nonce;
-
-        let nonce = thread_rng().gen::<Nonce>();
+        let our_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -90,7 +88,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::KeyShare,
-                next_nonce: nonce,
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -101,7 +99,7 @@ impl Node {
             our_identity,
             their_identity,
             stream,
-            nonce,
+            our_nonce,
             their_nonce,
         )
         .await
@@ -113,8 +111,8 @@ impl Node {
         our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
-        sending_nonce: Nonce,
-        receiving_nonce: Nonce,
+        our_nonce: Nonce,
+        their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -142,16 +140,16 @@ impl Node {
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
                 payload: MessagePayload::KeyShare { sender_key },
-                next_nonce: sending_nonce, // the next nonce will not be used
+                next_nonce: our_nonce,
             },
-            Some((shared_key, sending_nonce)),
+            Some((shared_key, our_nonce)),
         )
         .await?;
 
         let Some(msg) = recv(
             stream,
             self.sync_config.timeout,
-            Some((shared_key, receiving_nonce)),
+            Some((shared_key, their_nonce)),
         )
         .await?
         else {

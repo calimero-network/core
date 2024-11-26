@@ -29,7 +29,7 @@ impl Node {
             "Initiating state sync",
         );
 
-        let nonce = thread_rng().gen::<Nonce>();
+        let our_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -40,7 +40,7 @@ impl Node {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
-                next_nonce: nonce,
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -118,7 +118,7 @@ impl Node {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
-        let new_nonce = thread_rng().gen::<Nonce>();
+        let our_new_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -127,9 +127,9 @@ impl Node {
                 payload: MessagePayload::StateSync {
                     artifact: b"".into(),
                 },
-                next_nonce: new_nonce,
+                next_nonce: our_new_nonce,
             },
-            Some((shared_key, nonce)),
+            Some((shared_key, our_nonce)),
         )
         .await?;
         self.bidirectional_sync(
@@ -139,7 +139,7 @@ impl Node {
             &mut sqx_out,
             stream,
             shared_key,
-            new_nonce,
+            our_new_nonce,
             their_nonce,
         )
         .await?;
@@ -155,7 +155,7 @@ impl Node {
         their_root_hash: Hash,
         their_application_id: ApplicationId,
         stream: &mut Stream,
-        nonce: Nonce,
+        their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -200,9 +200,7 @@ impl Node {
             debug!(context_id=%context.id, "Resuming state sync");
         }
 
-        let their_nonce = nonce;
-
-        let nonce = thread_rng().gen::<Nonce>();
+        let our_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -213,7 +211,7 @@ impl Node {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
-                next_nonce: nonce,
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -229,7 +227,6 @@ impl Node {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
-        let nonce = thread_rng().gen::<Nonce>();
 
         let mut sqx_out = Sequencer::default();
 
@@ -240,7 +237,7 @@ impl Node {
             &mut sqx_out,
             stream,
             shared_key,
-            nonce,
+            our_nonce,
             their_nonce,
         )
         .await
@@ -256,8 +253,8 @@ impl Node {
         sqx_out: &mut Sequencer,
         stream: &mut Stream,
         shared_key: SharedKey,
-        sending_nonce: Nonce,
-        receiving_nonce: Nonce,
+        our_nonce: Nonce,
+        their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -268,17 +265,17 @@ impl Node {
 
         let mut sqx_in = Sequencer::default();
 
-        let mut sending_nonce = sending_nonce;
-        let mut receiving_nonce = receiving_nonce;
+        let mut our_nonce = our_nonce;
+        let mut their_nonce = their_nonce;
 
         while let Some(msg) = recv(
             stream,
             self.sync_config.timeout,
-            Some((shared_key, receiving_nonce)),
+            Some((shared_key, their_nonce)),
         )
         .await?
         {
-            let (sequence_id, artifact, new_receiving_nonce) = match msg {
+            let (sequence_id, artifact, new_their_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
                     sequence_id,
@@ -290,7 +287,7 @@ impl Node {
                 }
             };
 
-            receiving_nonce = new_receiving_nonce;
+            their_nonce = new_their_nonce;
 
             sqx_in.test(sequence_id)?;
 
@@ -314,7 +311,7 @@ impl Node {
                 "State sync outcome",
             );
 
-            let new_sending_nonce = thread_rng().gen::<Nonce>();
+            let new_our_nonce = thread_rng().gen::<Nonce>();
 
             send(
                 stream,
@@ -323,13 +320,13 @@ impl Node {
                     payload: MessagePayload::StateSync {
                         artifact: Cow::from(&outcome.artifact),
                     },
-                    next_nonce: new_sending_nonce,
+                    next_nonce: new_our_nonce,
                 },
-                Some((shared_key, sending_nonce)),
+                Some((shared_key, our_nonce)),
             )
             .await?;
 
-            sending_nonce = new_sending_nonce;
+            our_nonce = new_our_nonce;
         }
 
         debug!(
