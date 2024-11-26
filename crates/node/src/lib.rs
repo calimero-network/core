@@ -16,7 +16,7 @@ use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::ProposalAction;
-use calimero_crypto::SharedKey;
+use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -305,6 +305,7 @@ impl Node {
                 author_id,
                 root_hash,
                 artifact,
+                nonce,
             } => {
                 self.handle_state_delta(
                     source,
@@ -312,6 +313,7 @@ impl Node {
                     author_id,
                     root_hash,
                     artifact.into_owned(),
+                    nonce,
                 )
                 .await?;
             }
@@ -327,6 +329,7 @@ impl Node {
         author_id: PublicKey,
         root_hash: Hash,
         artifact: Vec<u8>,
+        nonce: [u8; NONCE_LEN],
     ) -> EyreResult<()> {
         let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
             bail!("context '{}' not found", context_id);
@@ -344,7 +347,7 @@ impl Node {
         let shared_key = SharedKey::from_sk(&sender_key);
 
         let artifact = shared_key
-            .decrypt(artifact, [0; 12])
+            .decrypt(artifact, nonce)
             .ok_or_eyre("failed to decrypt message")?;
 
         let Some(outcome) = self
@@ -381,9 +384,10 @@ impl Node {
                 .ok_or_eyre("expected own identity to have sender key")?;
 
             let shared_key = SharedKey::from_sk(&sender_key);
+            let nonce = thread_rng().gen::<Nonce>();
 
             let artifact_encrypted = shared_key
-                .encrypt(outcome.artifact.clone(), [0; 12])
+                .encrypt(outcome.artifact.clone(), nonce)
                 .ok_or_eyre("encryption failed")?;
 
             let message = to_vec(&BroadcastMessage::StateDelta {
@@ -391,6 +395,7 @@ impl Node {
                 author_id: executor_public_key,
                 root_hash: context.root_hash,
                 artifact: artifact_encrypted.as_slice().into(),
+                nonce,
             })?;
 
             let _ignored = self

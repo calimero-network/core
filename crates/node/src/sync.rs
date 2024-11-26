@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use calimero_crypto::SharedKey;
+use calimero_crypto::{Nonce, SharedKey};
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -28,15 +28,14 @@ pub struct SyncConfig {
 async fn send(
     stream: &mut Stream,
     message: &StreamMessage<'_>,
-    shared_key: Option<SharedKey>,
+    shared_key: Option<(SharedKey, Nonce)>,
 ) -> EyreResult<()> {
     let base_data = borsh::to_vec(message)?;
 
     let data = match shared_key {
-        Some(key) => match key.encrypt(base_data, [0; 12]) {
-            Some(data) => data,
-            None => bail!("encryption failed"),
-        },
+        Some((key, nonce)) => key
+            .encrypt(base_data, nonce)
+            .ok_or_eyre("encryption failed")?,
         None => base_data,
     };
 
@@ -47,7 +46,7 @@ async fn send(
 async fn recv(
     stream: &mut Stream,
     duration: Duration,
-    shared_key: Option<SharedKey>,
+    shared_key: Option<(SharedKey, Nonce)>,
 ) -> EyreResult<Option<StreamMessage<'static>>> {
     let Some(message) = timeout(duration, stream.next()).await? else {
         return Ok(None);
@@ -56,10 +55,17 @@ async fn recv(
     let message_data = message?.data.into_owned();
 
     let data = match shared_key {
-        Some(key) => match key.decrypt(message_data, [0; 12]) {
-            Some(data) => data,
-            None => bail!("decryption failed"),
-        },
+        Some((key, nonce)) => {
+            match key.decrypt(
+                message_data,
+                nonce
+                    .try_into()
+                    .map_err(|_| eyre!("nonce must be 12 bytes"))?,
+            ) {
+                Some(data) => data,
+                None => bail!("decryption failed"),
+            }
+        }
         None => message_data,
     };
 
@@ -158,12 +164,14 @@ impl Node {
             return Ok(None);
         };
 
-        let (context_id, their_identity, payload) = match message {
+        let (context_id, their_identity, payload, nonce) = match message {
             StreamMessage::Init {
                 context_id,
                 party_id,
                 payload,
-            } => (context_id, party_id, payload),
+                next_nonce,
+                ..
+            } => (context_id, party_id, payload, next_nonce),
             unexpected @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError) => {
                 bail!("expected initialization handshake, got {:?}", unexpected)
             }
@@ -201,7 +209,7 @@ impl Node {
 
         match payload {
             InitPayload::KeyShare => {
-                self.handle_key_share_request(&context, our_identity, their_identity, stream)
+                self.handle_key_share_request(&context, our_identity, their_identity, stream, nonce)
                     .await?
             }
             InitPayload::BlobShare { blob_id } => {
@@ -233,6 +241,7 @@ impl Node {
                     their_root_hash,
                     their_application_id,
                     stream,
+                    nonce,
                 )
                 .await?
             }

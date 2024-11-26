@@ -1,4 +1,4 @@
-use calimero_crypto::SharedKey;
+use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
 use calimero_network::stream::Stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::Context;
@@ -6,6 +6,7 @@ use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
+use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -29,12 +30,15 @@ impl Node {
             "Initiating blob share",
         );
 
+        let our_nonce = thread_rng().gen::<Nonce>();
+
         send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -44,13 +48,14 @@ impl Node {
             bail!("connection closed while awaiting blob share handshake");
         };
 
-        let their_identity = match ack {
+        let (their_identity, mut their_nonce) = match ack {
             StreamMessage::Init {
                 party_id,
                 payload:
                     InitPayload::BlobShare {
                         blob_id: ack_blob_id,
                     },
+                next_nonce,
                 ..
             } => {
                 if ack_blob_id != blob_id {
@@ -61,7 +66,7 @@ impl Node {
                     );
                 }
 
-                party_id
+                (party_id, next_nonce)
             }
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
@@ -88,13 +93,20 @@ impl Node {
         let read_task = async {
             let mut sequencer = Sequencer::default();
 
-            while let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? {
-                let (sequence_id, chunk) = match msg {
+            while let Some(msg) = recv(
+                stream,
+                self.sync_config.timeout,
+                Some((shared_key, their_nonce)),
+            )
+            .await?
+            {
+                let (sequence_id, chunk, their_new_nonce) = match msg {
                     StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                     StreamMessage::Message {
                         sequence_id,
                         payload: MessagePayload::BlobShare { chunk },
-                    } => (sequence_id, chunk),
+                        next_nonce,
+                    } => (sequence_id, chunk, next_nonce),
                     unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
                         bail!("unexpected message: {:?}", unexpected)
                     }
@@ -107,6 +119,8 @@ impl Node {
                 }
 
                 tx.send(Ok(chunk)).await?;
+
+                their_nonce = their_new_nonce;
             }
 
             drop(tx);
@@ -163,6 +177,7 @@ impl Node {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
+        let mut our_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -170,6 +185,7 @@ impl Node {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::BlobShare { blob_id },
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -178,6 +194,7 @@ impl Node {
         let mut sequencer = Sequencer::default();
 
         while let Some(chunk) = blob.try_next().await? {
+            let our_new_nonce = thread_rng().gen::<Nonce>();
             send(
                 stream,
                 &StreamMessage::Message {
@@ -185,10 +202,13 @@ impl Node {
                     payload: MessagePayload::BlobShare {
                         chunk: chunk.into_vec().into(),
                     },
+                    next_nonce: our_new_nonce,
                 },
-                Some(shared_key),
+                Some((shared_key, our_nonce)),
             )
             .await?;
+
+            our_nonce = our_new_nonce;
         }
 
         send(
@@ -196,8 +216,9 @@ impl Node {
             &StreamMessage::Message {
                 sequence_id: sequencer.next(),
                 payload: MessagePayload::BlobShare { chunk: b"".into() },
+                next_nonce: [0; NONCE_LEN],
             },
-            Some(shared_key),
+            Some((shared_key, our_nonce)),
         )
         .await?;
 
