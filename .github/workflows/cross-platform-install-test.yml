@@ -4,12 +4,10 @@ on:
   push:
     branches:
       - master
-      - xilosada/test-gh-actions
 
   pull_request:
     branches:
       - master
-      - xilosada/test-gh-actions
 
 jobs:
   test-install:
