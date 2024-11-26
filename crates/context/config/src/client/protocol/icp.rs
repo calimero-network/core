@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use ic_agent::{export::Principal, Agent};
-
+use ic_agent::export::Principal;
+use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -30,9 +30,8 @@ pub struct Credentials {
 }
 
 mod serde_creds {
-    use thiserror::Error;
-
     use serde::{Deserialize, Serialize};
+    use thiserror::Error;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {

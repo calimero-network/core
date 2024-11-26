@@ -4,9 +4,9 @@ use starknet_crypto::Felt;
 
 use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetProposalsRequest};
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::icp::Icp;
 use crate::Proposal;
 
 #[derive(Copy, Clone, Debug, Serialize)]

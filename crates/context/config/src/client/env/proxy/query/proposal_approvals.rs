@@ -8,9 +8,9 @@ use crate::client::env::proxy::types::starknet::{
     StarknetProposalId, StarknetProposalWithApprovals,
 };
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::ProposalWithApprovals;
 

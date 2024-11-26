@@ -7,9 +7,9 @@ use starknet_crypto::{poseidon_hash_many, Felt};
 
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
 use crate::client::env::{utils, Method};
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::icp::Icp;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::{Repr, ReprTransmute};

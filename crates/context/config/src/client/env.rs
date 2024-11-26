@@ -16,9 +16,9 @@ mod utils {
     #![expect(clippy::type_repetition_in_bounds, reason = "Useful for clarity")]
 
     use super::Method;
+    use crate::client::protocol::icp::Icp;
     use crate::client::protocol::near::Near;
     use crate::client::protocol::starknet::Starknet;
-    use crate::client::protocol::icp::Icp;
     use crate::client::protocol::Protocol;
     use crate::client::transport::Transport;
     use crate::client::{CallClient, ClientError, Operation};

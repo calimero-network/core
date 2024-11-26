@@ -6,9 +6,9 @@ use crate::client::env::config::types::starknet::{
     Application as StarknetApplication, CallData, FeltPair,
 };
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::icp::Icp;
 use crate::repr::Repr;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
