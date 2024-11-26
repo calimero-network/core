@@ -14,6 +14,7 @@ use tokio::time::sleep;
 use crate::config::Config;
 use crate::meroctl::Meroctl;
 use crate::merod::Merod;
+use crate::output::OutputWriter;
 use crate::steps::{TestScenario, TestStep};
 use crate::TestEnvironment;
 
@@ -24,6 +25,7 @@ pub struct TestContext<'a> {
     pub context_id: Option<String>,
     pub inviter_public_key: Option<String>,
     pub invitees_public_keys: HashMap<String, String>,
+    pub output_writer: OutputWriter,
 }
 
 pub trait Test {
@@ -31,7 +33,12 @@ pub trait Test {
 }
 
 impl<'a> TestContext<'a> {
-    pub fn new(inviter: String, invitees: Vec<String>, meroctl: &'a Meroctl) -> Self {
+    pub fn new(
+        inviter: String,
+        invitees: Vec<String>,
+        meroctl: &'a Meroctl,
+        output_writer: OutputWriter,
+    ) -> Self {
         Self {
             inviter,
             invitees,
@@ -39,6 +46,7 @@ impl<'a> TestContext<'a> {
             context_id: None,
             inviter_public_key: None,
             invitees_public_keys: HashMap::new(),
+            output_writer,
         }
     }
 }
@@ -81,6 +89,13 @@ impl Driver {
 
         self.stop_merods().await;
 
+        if let Err(e) = &result {
+            self.environment
+                .output_writer
+                .write_str("Error occurred during test run:");
+            self.environment.output_writer.write_string(e.to_string());
+        }
+
         result
     }
 
@@ -113,7 +128,9 @@ impl Driver {
     }
 
     async fn boot_merods(&mut self) -> EyreResult<()> {
-        println!("========================= Starting nodes ===========================");
+        self.environment
+            .output_writer
+            .write_header("Starting merod nodes", 2);
 
         for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
@@ -178,9 +195,7 @@ impl Driver {
         }
 
         // TODO: Implement health check?
-        sleep(Duration::from_secs(20)).await;
-
-        println!("====================================================================");
+        sleep(Duration::from_secs(10)).await;
 
         Ok(())
     }
@@ -213,35 +228,50 @@ impl Driver {
     }
 
     async fn run_scenario(&self, file_path: PathBuf) -> EyreResult<()> {
-        println!("================= Setting up scenario and context ==================");
+        self.environment
+            .output_writer
+            .write_header("Running scenario", 2);
+
         let scenario: TestScenario = from_slice(&read(&file_path).await?)?;
 
-        println!(
-            "Loaded test scenario from file: {:?}\n{:?}",
-            file_path, scenario
-        );
+        self.environment
+            .output_writer
+            .write_string(format!("Source file: {:?}", file_path));
+        self.environment
+            .output_writer
+            .write_string(format!("Steps count: {}", scenario.steps.len()));
 
         let (inviter, invitees) = match self.pick_inviter_node() {
             Some((inviter, invitees)) => (inviter, invitees),
             None => bail!("Not enough nodes to run the test"),
         };
 
-        println!("Picked inviter: {}", inviter);
-        println!("Picked invitees: {:?}", invitees);
+        self.environment
+            .output_writer
+            .write_string(format!("Picked inviter: {}", inviter));
+        self.environment
+            .output_writer
+            .write_string(format!("Picked invitees: {:?}", invitees));
 
-        let mut ctx = TestContext::new(inviter, invitees, &self.meroctl);
-
-        println!("====================================================================");
+        let mut ctx = TestContext::new(
+            inviter,
+            invitees,
+            &self.meroctl,
+            self.environment.output_writer,
+        );
 
         for step in scenario.steps.iter() {
-            println!("======================== Starting step =============================");
-            println!("Step: {:?}", step);
+            self.environment
+                .output_writer
+                .write_header("Running test step", 3);
+            self.environment.output_writer.write_str("Step spec:");
+            self.environment.output_writer.write_json(&step)?;
+
             match step {
                 TestStep::ContextCreate(step) => step.run_assert(&mut ctx).await?,
                 TestStep::ContextInviteJoin(step) => step.run_assert(&mut ctx).await?,
                 TestStep::JsonRpcCall(step) => step.run_assert(&mut ctx).await?,
             };
-            println!("====================================================================");
         }
 
         Ok(())
