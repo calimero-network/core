@@ -3,11 +3,11 @@ use std::collections::HashMap;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
-    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, ContextId,
-    IntoResult, SignerId,
+    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, ContextId, IntoResult, SignerId
 };
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
+use ed25519_dalek::{Verifier, VerifyingKey};
 
 use crate::guard::Guard;
 
@@ -81,7 +81,7 @@ impl From<ICContextId> for ContextId {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ICApplicationId(pub [u8; 32]);
 
 impl ICApplicationId {
@@ -90,7 +90,7 @@ impl ICApplicationId {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ICBlobId(pub [u8; 32]);
 
 impl ICBlobId {
@@ -177,6 +177,12 @@ pub struct ContextRequest {
     pub kind: ContextRequestKind,
 }
 
+#[derive(CandidType, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum ICCapability {
+    ManageApplication,
+    ManageMembers,
+}
+
 #[derive(CandidType, Serialize, Deserialize, Debug, Clone)]
 pub enum ContextRequestKind {
     Add {
@@ -193,10 +199,10 @@ pub enum ContextRequestKind {
         members: Vec<ICContextIdentity>,
     },
     Grant {
-        capabilities: Vec<ICContextIdentity>,
+        capabilities: Vec<(ICContextIdentity, ICCapability)>,
     },
     Revoke {
-        capabilities: Vec<ICContextIdentity>,
+        capabilities: Vec<(ICContextIdentity, ICCapability)>,
     },
     UpdateProxyContract,
 }
@@ -248,14 +254,29 @@ pub struct ICPSigned<T: CandidType + Serialize> {
 }
 
 impl<T: CandidType + Serialize> ICPSigned<T> {
-    pub fn parse<F, O>(&self, f: F) -> Result<&T, &'static str>
+    pub fn parse<F>(&self, f: F) -> Result<&T, &'static str>
     where
-        F: FnOnce(&T) -> O,
+        F: FnOnce(&T) -> &ICSignerId,
     {
-        // TODO: Verify signature using ed25519
-        // This should follow the same pattern as NEAR's Signed::parse
+        // Get the signer's public key from the payload
+        let signer_id = f(&self.payload);
+        
+        // Convert signer_id to VerifyingKey (public key)
+        let verifying_key = VerifyingKey::from_bytes(&signer_id.0)
+            .map_err(|_| "invalid public key")?;
 
-        let _ = f(&self.payload); // Call the verification function
+        // Serialize the payload for verification
+        let message = candid::encode_one(&self.payload)
+            .map_err(|_| "failed to serialize payload")?;
+
+        // Convert signature bytes to ed25519::Signature
+        let signature = ed25519_dalek::Signature::from_slice(&self.signature)
+            .map_err(|_| "invalid signature format")?;
+
+        // Verify the signature
+        verifying_key.verify(&message, &signature)
+            .map_err(|_| "invalid signature")?;
+
         Ok(&self.payload)
     }
 }
