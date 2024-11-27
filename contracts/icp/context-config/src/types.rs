@@ -3,7 +3,8 @@ use std::collections::HashMap;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
-    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, Capability, ContextId, SignerId
+    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, Capability,
+    ContextId, SignerId,
 };
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::guard::Guard;
 
 #[derive(
-    CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash
+    CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash,
 )]
 pub struct Identity(pub [u8; 32]);
 
@@ -71,7 +72,7 @@ impl From<Repr<SignerId>> for ICSignerId {
 
 impl From<ICSignerId> for SignerId {
     fn from(value: ICSignerId) -> Self {
-        value.0.0.rt().expect("Infallible conversion")
+        value.0 .0.rt().expect("Infallible conversion")
     }
 }
 
@@ -90,7 +91,7 @@ impl From<Repr<ContextId>> for ICContextId {
 
 impl From<ICContextId> for ContextId {
     fn from(value: ICContextId) -> Self {
-        value.0.0.rt().expect("Infallible conversion")
+        value.0 .0.rt().expect("Infallible conversion")
     }
 }
 
@@ -118,7 +119,7 @@ impl From<Repr<ApplicationId>> for ICApplicationId {
 
 impl From<ICApplicationId> for ApplicationId {
     fn from(value: ICApplicationId) -> Self {
-        value.0.0.rt().expect("Infallible conversion")
+        value.0 .0.rt().expect("Infallible conversion")
     }
 }
 
@@ -137,7 +138,7 @@ impl From<Repr<BlobId>> for ICBlobId {
 
 impl From<ICBlobId> for BlobId {
     fn from(value: ICBlobId) -> Self {
-        value.0.0.rt().expect("Infallible conversion")
+        value.0 .0.rt().expect("Infallible conversion")
     }
 }
 
@@ -258,7 +259,7 @@ impl<T: CandidType + Serialize> ICPSigned<T> {
 
         // Convert signer_id to VerifyingKey (public key)
         let verifying_key =
-            VerifyingKey::from_bytes(&signer_id.0.0).map_err(|_| "invalid public key")?;
+            VerifyingKey::from_bytes(&signer_id.0 .0).map_err(|_| "invalid public key")?;
 
         // Serialize the payload for verification
         let message =
