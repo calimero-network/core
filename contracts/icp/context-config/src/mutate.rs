@@ -1,9 +1,11 @@
+use std::ops::Deref;
+
 use crate::guard::Guard;
 use crate::types::{
-    Context, ContextRequest, ContextRequestKind, ICApplication, ICCapability, ICContextId, ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind
+    Context, ContextRequest, ContextRequestKind, ICApplication, ICCapability, ICContextId,
+    ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
 use crate::CONTEXT_CONFIGS;
-use std::ops::Deref;
 
 #[ic_cdk::update]
 pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
@@ -33,27 +35,15 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
                 Ok(())
             }
             ContextRequestKind::UpdateApplication { application } => {
-                update_application(
-                    &request.signer_id,
-                    &context_id.clone(),
-                    application.clone(),
-                )?;
+                update_application(&request.signer_id, &context_id.clone(), application.clone())?;
                 Ok(())
             }
             ContextRequestKind::AddMembers { members } => {
-                add_members(
-                    &request.signer_id,
-                    &context_id.clone(),
-                    members.clone(),
-                )?;
+                add_members(&request.signer_id, &context_id.clone(), members.clone())?;
                 Ok(())
             }
             ContextRequestKind::RemoveMembers { members } => {
-                remove_members(
-                    &request.signer_id,
-                    &context_id.clone(),
-                    members.clone(),
-                )?;
+                remove_members(&request.signer_id, &context_id.clone(), members.clone())?;
                 Ok(())
             }
             ContextRequestKind::Grant { capabilities } => {
@@ -126,7 +116,7 @@ fn update_application(
 ) -> Result<(), String> {
     CONTEXT_CONFIGS.with(|configs| {
         let mut configs = configs.borrow_mut();
-        
+
         // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
@@ -134,7 +124,8 @@ fn update_application(
             .ok_or_else(|| "context does not exist".to_string())?;
 
         // Get mutable access to the application through the Guard
-        let guard_ref = context.application
+        let guard_ref = context
+            .application
             .get(signer_id)
             .map_err(|e| e.to_string())?;
         let mut app_ref = guard_ref.get_mut();
@@ -164,7 +155,7 @@ fn add_members(
 ) -> Result<(), String> {
     CONTEXT_CONFIGS.with(|configs| {
         let mut configs = configs.borrow_mut();
-        
+
         // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
@@ -172,19 +163,13 @@ fn add_members(
             .ok_or_else(|| "context does not exist".to_string())?;
 
         // Get mutable access to the members through the Guard
-        let guard_ref = context.members
-            .get(signer_id)
-            .map_err(|e| e.to_string())?;
+        let guard_ref = context.members.get(signer_id).map_err(|e| e.to_string())?;
         let mut ctx_members = guard_ref.get_mut();
 
         // Add each member
         for member in members {
-            ic_cdk::println!(
-                "Added `{:?}` as a member of `{:?}`",
-                member,
-                context_id
-            );
-            
+            ic_cdk::println!("Added `{:?}` as a member of `{:?}`", member, context_id);
+
             ctx_members.push(member);
         }
 
@@ -199,7 +184,7 @@ fn remove_members(
 ) -> Result<(), String> {
     CONTEXT_CONFIGS.with(|configs| {
         let mut configs = configs.borrow_mut();
-        
+
         // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
@@ -207,7 +192,8 @@ fn remove_members(
             .ok_or_else(|| "context does not exist".to_string())?;
 
         // Get mutable access to the members through the Guard
-        let mut ctx_members = context.members
+        let mut ctx_members = context
+            .members
             .get(signer_id)
             .map_err(|e| e.to_string())?
             .get_mut();
@@ -241,31 +227,31 @@ fn grant(
 ) -> Result<(), String> {
     CONTEXT_CONFIGS.with(|configs| {
         let mut configs = configs.borrow_mut();
-        
+
         let context = configs
             .contexts
             .get_mut(context_id)
             .ok_or_else(|| "context does not exist".to_string())?;
 
         for (identity, capability) in capabilities {
-            let is_member = context.members
-                .deref()
-                .contains(&identity);
-            
+            let is_member = context.members.deref().contains(&identity);
+
             if !is_member {
                 return Err("unable to grant privileges to non-member".to_string());
             }
 
             match capability {
                 ICCapability::ManageApplication => {
-                    context.application
+                    context
+                        .application
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
                         .grant(identity.clone());
                 }
                 ICCapability::ManageMembers => {
-                    context.members
+                    context
+                        .members
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
@@ -292,7 +278,7 @@ fn revoke(
 ) -> Result<(), String> {
     CONTEXT_CONFIGS.with(|configs| {
         let mut configs = configs.borrow_mut();
-        
+
         let context = configs
             .contexts
             .get_mut(context_id)
@@ -301,14 +287,16 @@ fn revoke(
         for (identity, capability) in capabilities {
             match capability {
                 ICCapability::ManageApplication => {
-                    context.application
+                    context
+                        .application
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
                         .revoke(&identity);
                 }
                 ICCapability::ManageMembers => {
-                    context.members
+                    context
+                        .members
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()

@@ -1,14 +1,12 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use candid::Principal;
 use context_contract::types::{
-    ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, ICCapability, ICContextId, ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind
+    ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, ICCapability,
+    ICContextId, ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
-use ed25519_dalek::SigningKey;
-use ed25519_dalek::Signer;
-use pocket_ic::PocketIc;
-use pocket_ic::WasmResult;
+use ed25519_dalek::{Signer, SigningKey};
+use pocket_ic::{PocketIc, WasmResult};
 use rand::Rng;
 
 fn setup() -> (PocketIc, Principal) {
@@ -28,12 +26,11 @@ fn setup() -> (PocketIc, Principal) {
 
 fn create_signed_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
     // Serialize the request using candid (same as in verification)
-    let message = candid::encode_one(&request)
-        .expect("Failed to serialize request");
-    
+    let message = candid::encode_one(&request).expect("Failed to serialize request");
+
     // Sign the serialized message
     let signature = signer_key.sign(&message);
-    
+
     ICPSigned {
         payload: request,
         signature: signature.to_vec(),
@@ -63,7 +60,7 @@ fn test_mutate_success_cases() {
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
     let context_id = ICContextId::new(context_pk.to_bytes());
-    
+
     // Get current IC time in nanoseconds
     let current_time = get_time_nanos(&pic);
     println!("Current IC time (nanos): {}", current_time);
@@ -84,7 +81,7 @@ fn test_mutate_success_cases() {
             },
         }),
         signer_id: ICSignerId::new(context_id.0.clone()),
-        timestamp_ms: current_time,  // Now using nanoseconds
+        timestamp_ms: current_time, // Now using nanoseconds
     };
 
     let signed_request = create_signed_request(&context_sk, request);
@@ -183,17 +180,17 @@ fn test_member_management() {
         canister,
         Principal::anonymous(),
         "members",
-        candid::encode_args((
-            context_id.clone(),
-            0_usize,
-            10_usize,
-        )).unwrap(),
+        candid::encode_args((context_id.clone(), 0_usize, 10_usize)).unwrap(),
     );
-    
+
     match query_response {
         Ok(WasmResult::Reply(bytes)) => {
             let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
-            assert_eq!(members.len(), 2, "Should have both Alice and Bob as members");
+            assert_eq!(
+                members.len(),
+                2,
+                "Should have both Alice and Bob as members"
+            );
             assert!(members.contains(&alice_id), "Alice should be a member");
             assert!(members.contains(&bob_id), "Bob should be a member");
         }
@@ -227,17 +224,16 @@ fn test_member_management() {
         canister,
         Principal::anonymous(),
         "members",
-        candid::encode_args((
-            context_id.clone(),
-            0_usize,
-            10_usize,
-        )).unwrap(),
+        candid::encode_args((context_id.clone(), 0_usize, 10_usize)).unwrap(),
     );
-    
+
     if let Ok(WasmResult::Reply(bytes)) = query_response {
         let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
         assert_eq!(members.len(), 1, "Should have one member (Alice)");
-        assert!(members.contains(&alice_id), "Alice should still be a member");
+        assert!(
+            members.contains(&alice_id),
+            "Alice should still be a member"
+        );
         assert!(!members.contains(&bob_id), "Bob should not be a member");
     } else {
         panic!("Failed to query members");
@@ -327,9 +323,10 @@ fn test_capability_management() {
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
-        let privileges: std::collections::BTreeMap<ICSignerId, Vec<ICCapability>> = 
+        let privileges: std::collections::BTreeMap<ICSignerId, Vec<ICCapability>> =
             candid::decode_one(&bytes).unwrap();
-        let bob_capabilities = privileges.get(&ICSignerId::new(bob_pk.to_bytes()))
+        let bob_capabilities = privileges
+            .get(&ICSignerId::new(bob_pk.to_bytes()))
             .expect("Bob should have capabilities");
         assert_eq!(bob_capabilities, &[ICCapability::ManageMembers]);
     }
@@ -364,10 +361,17 @@ fn test_capability_management() {
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
-        let privileges: std::collections::BTreeMap<ICSignerId, Vec<ICCapability>> = 
+        let privileges: std::collections::BTreeMap<ICSignerId, Vec<ICCapability>> =
             candid::decode_one(&bytes).unwrap();
-        assert!(privileges.get(&ICSignerId::new(bob_pk.to_bytes())).is_none() || 
-               privileges.get(&ICSignerId::new(bob_pk.to_bytes())).unwrap().is_empty());
+        assert!(
+            privileges
+                .get(&ICSignerId::new(bob_pk.to_bytes()))
+                .is_none()
+                || privileges
+                    .get(&ICSignerId::new(bob_pk.to_bytes()))
+                    .unwrap()
+                    .is_empty()
+        );
     }
 }
 
@@ -458,7 +462,7 @@ fn test_application_update() {
     // Try unauthorized application update (Bob)
     let new_app_id = ICApplicationId::new(rng.gen());
     let new_blob_id = ICBlobId::new(rng.gen());
-    
+
     let update_request = Request {
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
@@ -487,7 +491,10 @@ fn test_application_update() {
     match response {
         Ok(WasmResult::Reply(bytes)) => {
             let result: Result<(), String> = candid::decode_one(&bytes).unwrap();
-            assert!(result.is_err(), "Unauthorized application update should fail");
+            assert!(
+                result.is_err(),
+                "Unauthorized application update should fail"
+            );
         }
         Ok(_) => panic!("Expected Reply variant"),
         Err(err) => panic!("Unexpected error: {}", err),
@@ -532,7 +539,10 @@ fn test_application_update() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    assert!(response.is_ok(), "Authorized application update should succeed");
+    assert!(
+        response.is_ok(),
+        "Authorized application update should succeed"
+    );
 
     // Verify application has been updated
     let query_response = pic.query_call(
@@ -607,9 +617,7 @@ fn test_edge_cases() {
     let add_empty_members = Request {
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: ContextRequestKind::AddMembers {
-                members: vec![],
-            },
+            kind: ContextRequestKind::AddMembers { members: vec![] },
         }),
         signer_id: ICSignerId::new(alice_pk.to_bytes()),
         timestamp_ms: get_time_nanos(&pic),
@@ -622,7 +630,10 @@ fn test_edge_cases() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    assert!(response.is_ok(), "Empty member list should be handled gracefully");
+    assert!(
+        response.is_ok(),
+        "Empty member list should be handled gracefully"
+    );
 
     // Test 2: Adding duplicate members
     let bob_id = ICContextIdentity::new(rng.gen());
@@ -644,7 +655,10 @@ fn test_edge_cases() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    assert!(response.is_ok(), "Duplicate members should be handled gracefully");
+    assert!(
+        response.is_ok(),
+        "Duplicate members should be handled gracefully"
+    );
 
     // Verify only one instance was added
     let query_response = pic.query_call(
@@ -653,7 +667,7 @@ fn test_edge_cases() {
         "members",
         candid::encode_one((context_id.clone(), 0_usize, 10_usize)).unwrap(),
     );
-    
+
     if let Ok(WasmResult::Reply(bytes)) = query_response {
         let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
         assert_eq!(
@@ -730,7 +744,10 @@ fn test_timestamp_scenarios() {
         Ok(WasmResult::Reply(bytes)) => {
             let result: Result<(), String> = candid::decode_one(&bytes).unwrap();
             assert!(result.is_err(), "Expired timestamp should be rejected");
-            assert!(result.unwrap_err().contains("expired"), "Should contain 'expired' in error message");
+            assert!(
+                result.unwrap_err().contains("expired"),
+                "Should contain 'expired' in error message"
+            );
         }
         _ => panic!("Expected error response for expired timestamp"),
     }
@@ -774,7 +791,8 @@ fn test_concurrent_operations() {
         Principal::anonymous(),
         "mutate",
         candid::encode_one(signed_request).unwrap(),
-    ).expect("Context creation should succeed");
+    )
+    .expect("Context creation should succeed");
 
     // Create multiple member additions with same timestamp
     let timestamp = get_time_nanos(&pic);
@@ -795,17 +813,23 @@ fn test_concurrent_operations() {
     }
 
     // Submit requests "concurrently"
-    let responses: Vec<_> = requests.into_iter().map(|signed_request| {
-        pic.update_call(
-            canister,
-            Principal::anonymous(),
-            "mutate",
-            candid::encode_one(signed_request).unwrap(),
-        )
-    }).collect();
+    let responses: Vec<_> = requests
+        .into_iter()
+        .map(|signed_request| {
+            pic.update_call(
+                canister,
+                Principal::anonymous(),
+                "mutate",
+                candid::encode_one(signed_request).unwrap(),
+            )
+        })
+        .collect();
 
     // Verify all operations succeeded
-    assert!(responses.iter().all(|r| r.is_ok()), "All concurrent operations should succeed");
+    assert!(
+        responses.iter().all(|r| r.is_ok()),
+        "All concurrent operations should succeed"
+    );
 
     // Verify final state
     let query_response = pic.query_call(
@@ -814,9 +838,13 @@ fn test_concurrent_operations() {
         "members",
         candid::encode_one((context_id.clone(), 0_usize, 10_usize)).unwrap(),
     );
-    
+
     if let Ok(WasmResult::Reply(bytes)) = query_response {
         let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
-        assert_eq!(members.len(), 4, "Should have all members (Alice + 3 new members)");
+        assert_eq!(
+            members.len(),
+            4,
+            "Should have all members (Alice + 3 new members)"
+        );
     }
 }
