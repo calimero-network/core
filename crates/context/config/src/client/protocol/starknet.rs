@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use super::Protocol;
 use crate::client::transport::{
-    AssociatedTransport, Operation, Transport, TransportLike, TransportRequest,
+    AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -26,22 +26,6 @@ impl Protocol for Starknet {
 
 impl AssociatedTransport for StarknetTransport<'_> {
     type Protocol = Starknet;
-}
-
-impl TransportLike for StarknetTransport<'_> {
-    type Error = StarknetError;
-
-    async fn try_send(
-        &self,
-        request: TransportRequest<'_>,
-        payload: &Vec<u8>,
-    ) -> Option<Result<Vec<u8>, Self::Error>> {
-        if request.protocol == "near" {
-            Some(self.send(request, payload.to_vec()).await)
-        } else {
-            None
-        }
-    }
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
@@ -148,8 +132,6 @@ impl<'a> StarknetTransport<'a> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum StarknetError {
-    #[error("unsupported protocol: {0}")]
-    UnsupportedProtocol(String),
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid response from RPC while {operation}")]
@@ -186,7 +168,7 @@ pub enum ErrorOperation {
     FetchNonce,
 }
 
-impl Transport for StarknetTransport<'_> {
+impl ProtocolTransport for StarknetTransport<'_> {
     type Error = StarknetError;
 
     async fn send(
@@ -194,12 +176,6 @@ impl Transport for StarknetTransport<'_> {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
-        if request.protocol != Starknet::PROTOCOL {
-            return Err(StarknetError::UnsupportedProtocol(
-                request.protocol.into_owned(),
-            ));
-        }
-
         let Some(network) = self.networks.get(&request.network_id) else {
             return Err(StarknetError::UnknownNetwork(
                 request.network_id.into_owned(),

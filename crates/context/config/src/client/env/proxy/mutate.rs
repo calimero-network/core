@@ -77,6 +77,6 @@ impl<'a, T: Transport> ContextProxyMutateRequest<'a, T> {
             raw_request: self.raw_request,
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Write(request)).await
+        utils::send(&self.client, Operation::Write(request)).await
     }
 }

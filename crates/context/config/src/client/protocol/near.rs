@@ -26,7 +26,7 @@ use url::Url;
 
 use super::Protocol;
 use crate::client::transport::{
-    AssociatedTransport, Operation, Transport, TransportLike, TransportRequest,
+    AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -38,22 +38,6 @@ impl Protocol for Near {
 
 impl AssociatedTransport for NearTransport<'_> {
     type Protocol = Near;
-}
-
-impl TransportLike for NearTransport<'_> {
-    type Error = NearError;
-
-    async fn try_send(
-        &self,
-        request: TransportRequest<'_>,
-        payload: &Vec<u8>,
-    ) -> Option<Result<Vec<u8>, Self::Error>> {
-        if request.protocol == "near" {
-            Some(self.send(request, payload.to_vec()).await)
-        } else {
-            None
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -169,8 +153,6 @@ impl<'a> NearTransport<'a> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum NearError {
-    #[error("unsupported protocol `{0}`")]
-    UnsupportedProtocol(String),
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid response from RPC while {operation}")]
@@ -203,7 +185,7 @@ pub enum ErrorOperation {
     FetchAccount,
 }
 
-impl Transport for NearTransport<'_> {
+impl ProtocolTransport for NearTransport<'_> {
     type Error = NearError;
 
     async fn send(
@@ -211,12 +193,6 @@ impl Transport for NearTransport<'_> {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
-        if request.protocol != Near::PROTOCOL {
-            return Err(NearError::UnsupportedProtocol(
-                request.protocol.into_owned(),
-            ));
-        }
-
         let Some(network) = self.networks.get(&request.network_id) else {
             return Err(NearError::UnknownNetwork(request.network_id.into_owned()));
         };

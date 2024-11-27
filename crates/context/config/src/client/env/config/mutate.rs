@@ -84,6 +84,6 @@ impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
             kind: self.kind,
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Write(request)).await
+        utils::send(&self.client, Operation::Write(request)).await
     }
 }
