@@ -4,6 +4,9 @@ use std::{time, vec};
 
 pub use near_crypto::SecretKey;
 use near_crypto::{InMemorySigner, PublicKey, Signer};
+use near_jsonrpc_client::errors::{
+    JsonRpcError, JsonRpcServerError, JsonRpcServerResponseStatusError,
+};
 use near_jsonrpc_client::methods::query::{RpcQueryRequest, RpcQueryResponse};
 use near_jsonrpc_client::methods::send_tx::RpcSendTransactionRequest;
 use near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest;
@@ -298,12 +301,24 @@ impl Network {
             match response {
                 Ok(response) => break response,
                 Err(err) => {
-                    let Some(RpcTransactionError::TimeoutError) = err.handler_error() else {
-                        return Err(NearError::Custom {
-                            operation: ErrorOperation::Mutate,
-                            reason: err.to_string(),
-                        });
-                    };
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "quite terse, these variants"
+                    )]
+                    match err {
+                        JsonRpcError::ServerError(
+                            JsonRpcServerError::ResponseStatusError(
+                                JsonRpcServerResponseStatusError::TimeoutError,
+                            )
+                            | JsonRpcServerError::HandlerError(RpcTransactionError::TimeoutError),
+                        ) => {}
+                        _ => {
+                            return Err(NearError::Custom {
+                                operation: ErrorOperation::Mutate,
+                                reason: err.to_string(),
+                            });
+                        }
+                    }
 
                     if sent_at.elapsed().as_secs() > 60 {
                         return Err(NearError::TransactionTimeout);
