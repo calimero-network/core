@@ -1,109 +1,104 @@
-use candid::Principal;
 use ic_cdk_macros::query;
+use std::collections::BTreeMap;
 use crate::types::*;
-use crate::{Context, ContextConfigs, CONTEXT_CONFIGS};
-
-type QueryResult<T> = Result<T, &'static str>;
+use crate::CONTEXT_CONFIGS;
 
 #[query]
-fn application(context_id: CandidRepr<CandidContextId>) -> QueryResult<&'static CandidApplication<'static>> {
+fn application(context_id: ICContextId) -> ICApplication {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
             .contexts
-            .get(&context_id.0)
-            .ok_or("context does not exist")?;
+            .get(&context_id)
+            .expect("context does not exist");
 
-        Ok(&context.application.inner)
+        (*context.application).clone()
     })
 }
 
 #[query]
-fn application_revision(context_id: CandidRepr<CandidContextId>) -> QueryResult<u64> {
+fn application_revision(context_id: ICContextId) -> u64 {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
             .contexts
-            .get(&context_id.0)
-            .ok_or("context does not exist")?;
+            .get(&context_id)
+            .expect("context does not exist");
 
-        Ok(context.application.revision)
+        context.application.revision()
     })
 }
 
 #[query]
-fn proxy_contract(context_id: CandidRepr<CandidContextId>) -> QueryResult<Principal> {
+fn proxy_contract(context_id: ICContextId) -> String {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
             .contexts
-            .get(&context_id.0)
-            .ok_or("context does not exist")?;
+            .get(&context_id)
+            .expect("context does not exist");
 
-        Ok(*context.proxy.inner)
+        (*context.proxy).clone()
     })
 }
 
 #[query]
-fn members(
-    context_id: CandidRepr<CandidContextId>,
-    offset: usize,
-    length: usize,
-) -> QueryResult<Vec<CandidContextIdentity>> {
+fn members(context_id: ICContextId, offset: usize, length: usize) -> Vec<ICContextIdentity> {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
             .contexts
-            .get(&context_id.0)
-            .ok_or("context does not exist")?;
+            .get(&context_id)
+            .expect("context does not exist");
 
-        let members = &context.members.inner;
-        let start = offset.min(members.len());
-        let end = (offset + length).min(members.len());
-
-        Ok(members[start..end].to_vec())
+        let members = &*context.members;
+        members.iter()
+            .skip(offset)
+            .take(length)
+            .cloned()
+            .collect()
     })
 }
 
 #[query]
-fn has_member(context_id: CandidRepr<CandidContextId>, identity: CandidRepr<CandidContextIdentity>) -> QueryResult<bool> {
+fn has_member(context_id: ICContextId, identity: ICContextIdentity) -> bool {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
             .contexts
-            .get(&context_id.0)
-            .ok_or("context does not exist")?;
+            .get(&context_id)
+            .expect("context does not exist");
 
-        Ok(context.members.inner.contains(&identity.0))
+        context.members.contains(&identity)
     })
 }
 
 #[query]
-fn members_revision(context_id: CandidRepr<CandidContextId>) -> QueryResult<u64> {
+fn members_revision(context_id: ICContextId) -> u64 {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
             .contexts
-            .get(&context_id.0)
-            .ok_or("context does not exist")?;
+            .get(&context_id)
+            .expect("context does not exist");
 
-        Ok(context.members.revision)
+        context.members.revision()
     })
 }
 
 #[query]
 fn privileges(
-    context_id: CandidRepr<CandidContextId>,
-    identities: Vec<CandidRepr<CandidContextIdentity>>,
-) -> QueryResult<BTreeMap<CandidSignerId, Vec<CandidCapability>>> {
+    context_id: ICContextId,
+    identities: Vec<ICContextIdentity>,
+) -> BTreeMap<ICSignerId, Vec<ICCapability>> {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
             .contexts
-            .get(&context_id.0)
-            .ok_or("context does not exist")?;
+            .get(&context_id)
+            .expect("context does not exist");
 
-        let mut privileges = BTreeMap::<_, Vec<_>>::new();
+        let mut privileges: BTreeMap<ICSignerId, Vec<ICCapability>> = BTreeMap::new();
 
         let application_privileges = context.application.privileged();
         let member_privileges = context.members.privileged();
@@ -111,33 +106,30 @@ fn privileges(
         if identities.is_empty() {
             for signer_id in application_privileges {
                 privileges
-                    .entry(CandidSignerId::new(signer_id))
+                    .entry(*signer_id)
                     .or_default()
-                    .push(CandidCapability::ManageApplication);
+                    .push(ICCapability::ManageApplication);
             }
 
             for signer_id in member_privileges {
                 privileges
-                    .entry(CandidSignerId::new(signer_id))
+                    .entry(*signer_id)
                     .or_default()
-                    .push(CandidCapability::ManageMembers);
+                    .push(ICCapability::ManageMembers);
             }
         } else {
             for identity in identities {
-                let signer_id = identity.rt().expect("infallible conversion");
+                let entry = privileges.entry(identity).or_default();
 
-                let entry = privileges.entry(signer_id).or_default();
-
-                if application_privileges.contains(&signer_id) {
-                    entry.push(CandidCapability::ManageApplication);
+                if application_privileges.contains(&identity) {
+                    entry.push(ICCapability::ManageApplication);
                 }
-
-                if member_privileges.contains(&signer_id) {
-                    entry.push(CandidCapability::ManageMembers);
+                if member_privileges.contains(&identity) {
+                    entry.push(ICCapability::ManageMembers);
                 }
             }
         }
 
-        Ok(privileges)
+        privileges
     })
 }

@@ -1,40 +1,38 @@
-type GuardedApplication = record {
-    inner : vec nat8;
-    revision : nat64;
-    privileged : vec vec nat8;
+type ContextRequest = record { context_id : blob; kind : ContextRequestKind };
+type ContextRequestKind = variant {
+  Add : record { application : ICApplication; author_id : blob };
+  Grant : record { capabilities : vec record { blob; ICCapability } };
+  UpdateApplication : record { application : ICApplication };
+  RemoveMembers : record { members : vec blob };
+  Revoke : record { capabilities : vec record { blob; ICCapability } };
+  AddMembers : record { members : vec blob };
+  UpdateProxyContract;
 };
-
-type GuardedMembers = record {
-    inner : vec vec nat8;
-    revision : nat64;
-    privileged : vec vec nat8;
+type ICApplication = record {
+  id : blob;
+  source : text;
+  metadata : blob;
+  "blob" : blob;
+  size : nat64;
 };
-
-type GuardedProxy = record {
-    inner : principal;
-    revision : nat64;
-    privileged : vec vec nat8;
-};
-
-type Context = record {
-    application : GuardedApplication;
-    members : GuardedMembers;
-    proxy : GuardedProxy;
-};
-
+type ICCapability = variant { ManageMembers; ManageApplication };
+type ICPSigned = record { signature : blob; payload : Request };
 type Request = record {
-    signer_id : vec nat8;
-    context_id : vec nat8;
-    kind : RequestKind;
+  timestamp_ms : nat64;
+  kind : RequestKind;
+  signer_id : blob;
 };
-
-type RequestKind = variant {
-    Add : record {
-        author_id : vec nat8;
-        application : vec nat8;
-    };
-};
-
-service : {
-    mutate : (Request) -> ();
+type RequestKind = variant { Context : ContextRequest };
+type Result = variant { Ok; Err : text };
+service : () -> {
+  application : (blob) -> (ICApplication) query;
+  application_revision : (blob) -> (nat64) query;
+  has_member : (blob, blob) -> (bool) query;
+  members : (blob, nat64, nat64) -> (vec blob) query;
+  members_revision : (blob) -> (nat64) query;
+  mutate : (ICPSigned) -> (Result);
+  privileges : (blob, vec blob) -> (
+      vec record { blob; vec ICCapability },
+    ) query;
+  proxy_contract : (blob) -> (text) query;
 }
