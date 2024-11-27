@@ -102,7 +102,6 @@ impl ProxyContract {
         &self,
         proposal_id: Repr<ProposalId>,
     ) -> Option<Vec<Repr<SignerId>>> {
-        let approvals_for_proposal = self.approvals.get(&proposal_id);
         let approvals = self.approvals.get(&proposal_id)?;
         Some(approvals.iter().flat_map(|a| a.rt()).collect())
     }

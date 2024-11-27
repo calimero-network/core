@@ -5,7 +5,7 @@ use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Application, ContextId, ContextIdentity, SignerId};
 use calimero_context_config::{SystemRequest, Timestamp};
 use near_sdk::store::{IterableMap, IterableSet};
-use near_sdk::{env, near};
+use near_sdk::{env, near, Gas, NearToken, Promise};
 
 use crate::{parse_input, Config, ContextConfigs, ContextConfigsExt};
 
@@ -36,9 +36,17 @@ impl ContextConfigs {
         for (_, context) in self.contexts.drain() {
             let _ignored = context.application.into_inner();
             context.members.into_inner().clear();
-            let _ignored = context.proxy.into_inner();
+            let proxy = context.proxy.into_inner();
+
+            let _is_sent_on_drop = Promise::new(proxy).function_call(
+                "nuke".to_owned(),
+                vec![],
+                NearToken::default(),
+                Gas::from_tgas(1),
+            );
         }
 
+        self.next_proxy_id = 0;
         self.proxy_code.set(None);
 
         env::log_str(&format!(
