@@ -17,8 +17,23 @@ where
             }
         }
 
-        write!(res, "{}", item).expect("infallible");
+        write!(res, "`{}`", item).expect("infallible");
     }
 
     res
+}
+
+#[test]
+fn test_humanize_iter() {
+    assert_eq!(
+        humanize_iter(&["near", "starknet", "ethereum", "solana"]),
+        "`near`, `starknet`, `ethereum` and `solana`"
+    );
+    assert_eq!(
+        humanize_iter(&["polkadot", "near", "icp"]),
+        "`polkadot`, `near` and `icp`"
+    );
+    assert_eq!(humanize_iter(&["this", "that"]), "`this` and `that`");
+    assert_eq!(humanize_iter(&["me"]), "`me`");
+    assert_eq!(humanize_iter::<[u8; 0]>([]), "");
 }
