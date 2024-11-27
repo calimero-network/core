@@ -1,0 +1,44 @@
+name: Test Install Script
+
+on:
+  push:
+    branches:
+      - master
+
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  test-install:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        arch: [x86_64, aarch64]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # Determine Branch Name
+      - name: Set Branch Name
+        id: branch-name
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "BRANCH_NAME=${{ github.head_ref }}" >> $GITHUB_ENV
+          else
+            echo "BRANCH_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
+      # Run the installation script
+      - name: Test installation script
+        run: |
+          curl -s https://raw.githubusercontent.com/calimero-network/core/${{ env.BRANCH_NAME }}/scripts/install.sh | bash
+
+      # Validate the binary installation
+      - name: Validate installation
+        run: |
+          which meroctl
+          meroctl --version
