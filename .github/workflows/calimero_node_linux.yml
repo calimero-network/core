@@ -4,10 +4,10 @@ on:
   push:
     branches:
       - "**"
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "crates/**"
+    # paths:
+    #   - Cargo.toml
+    #   - Cargo.lock
+    #   - "crates/**"
   pull_request:
     types: [closed]
 
