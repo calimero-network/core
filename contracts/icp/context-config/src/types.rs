@@ -3,8 +3,7 @@ use std::collections::HashMap;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
-    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, ContextId,
-    IntoResult, SignerId,
+    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, Capability, ContextId, SignerId
 };
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
@@ -13,94 +12,89 @@ use serde::{Deserialize, Serialize};
 use crate::guard::Guard;
 
 #[derive(
+    CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash
+)]
+pub struct Identity(pub [u8; 32]);
+
+#[derive(
     CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy,
 )]
-pub struct ICSignerId(pub [u8; 32]);
+pub struct ICSignerId(pub Identity);
 
 impl ICSignerId {
     pub fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+        Self(Identity(bytes))
     }
 }
 
-// Make ICContextIdentity a type alias for ICSignerId, just like NEAR does
 pub type ICContextIdentity = ICSignerId;
 
-// From original type to ICP type
-impl From<SignerId> for ICSignerId {
-    fn from(value: SignerId) -> Self {
-        ICSignerId(value.as_bytes())
-    }
-}
-
-// From Repr to ICP type
-impl From<Repr<SignerId>> for ICSignerId {
-    fn from(value: Repr<SignerId>) -> Self {
-        ICSignerId(value.as_bytes())
-    }
-}
-
-// From ICP type back to original
-impl From<ICSignerId> for SignerId {
-    fn from(value: ICSignerId) -> Self {
-        value.0.rt().expect("Infallible conversion")
-    }
-}
-impl IntoResult<SignerId> for ICSignerId {
-    type Error = &'static str;
-
-    fn into_result(self) -> Result<SignerId, Self::Error> {
-        Ok(self.into())
-    }
-}
-
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
-pub struct ICContextId(pub [u8; 32]);
+pub struct ICContextId(pub Identity);
 
 impl ICContextId {
     pub fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+        Self(Identity(bytes))
     }
 }
 
-// Implement conversions like we did for SignerId
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ICApplicationId(pub Identity);
+
+impl ICApplicationId {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(Identity(bytes))
+    }
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ICBlobId(pub Identity);
+
+impl ICBlobId {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(Identity(bytes))
+    }
+}
+
+// Update the From implementations
+impl From<SignerId> for ICSignerId {
+    fn from(value: SignerId) -> Self {
+        ICSignerId(Identity(value.as_bytes()))
+    }
+}
+
+impl From<Repr<SignerId>> for ICSignerId {
+    fn from(value: Repr<SignerId>) -> Self {
+        ICSignerId(Identity(value.as_bytes()))
+    }
+}
+
+impl From<ICSignerId> for SignerId {
+    fn from(value: ICSignerId) -> Self {
+        value.0.0.rt().expect("Infallible conversion")
+    }
+}
+
+// Similar From implementations for other types
 impl From<ContextId> for ICContextId {
     fn from(value: ContextId) -> Self {
-        ICContextId(value.as_bytes())
+        ICContextId(Identity(value.as_bytes()))
     }
 }
 
 impl From<Repr<ContextId>> for ICContextId {
     fn from(value: Repr<ContextId>) -> Self {
-        ICContextId(value.as_bytes())
+        ICContextId(Identity(value.as_bytes()))
     }
 }
 
 impl From<ICContextId> for ContextId {
     fn from(value: ICContextId) -> Self {
-        value.0.rt().expect("Infallible conversion")
+        value.0.0.rt().expect("Infallible conversion")
     }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ICApplicationId(pub [u8; 32]);
-
-impl ICApplicationId {
-    pub fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ICBlobId(pub [u8; 32]);
-
-impl ICBlobId {
-    pub fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct ICApplication {
     pub id: ICApplicationId,
     pub blob: ICBlobId,
@@ -112,38 +106,38 @@ pub struct ICApplication {
 // Conversions for ApplicationId
 impl From<ApplicationId> for ICApplicationId {
     fn from(value: ApplicationId) -> Self {
-        ICApplicationId(value.as_bytes())
+        ICApplicationId(Identity(value.as_bytes()))
     }
 }
 
 impl From<Repr<ApplicationId>> for ICApplicationId {
     fn from(value: Repr<ApplicationId>) -> Self {
-        ICApplicationId(value.as_bytes())
+        ICApplicationId(Identity(value.as_bytes()))
     }
 }
 
 impl From<ICApplicationId> for ApplicationId {
     fn from(value: ICApplicationId) -> Self {
-        value.0.rt().expect("Infallible conversion")
+        value.0.0.rt().expect("Infallible conversion")
     }
 }
 
 // Conversions for BlobId
 impl From<BlobId> for ICBlobId {
     fn from(value: BlobId) -> Self {
-        ICBlobId(value.as_bytes())
+        ICBlobId(Identity(value.as_bytes()))
     }
 }
 
 impl From<Repr<BlobId>> for ICBlobId {
     fn from(value: Repr<BlobId>) -> Self {
-        ICBlobId(value.as_bytes())
+        ICBlobId(Identity(value.as_bytes()))
     }
 }
 
 impl From<ICBlobId> for BlobId {
     fn from(value: ICBlobId) -> Self {
-        value.0.rt().expect("Infallible conversion")
+        value.0.0.rt().expect("Infallible conversion")
     }
 }
 
@@ -151,8 +145,8 @@ impl From<ICBlobId> for BlobId {
 impl From<Application<'_>> for ICApplication {
     fn from(value: Application) -> Self {
         ICApplication {
-            id: (*value.id).into(),
-            blob: (*value.blob).into(),
+            id: ICApplicationId(Identity(value.id.as_bytes())),
+            blob: ICBlobId(Identity(value.blob.as_bytes())),
             size: value.size,
             source: value.source.0.into_owned(),
             metadata: value.metadata.0.into_inner().into_owned().to_vec(),
@@ -264,7 +258,7 @@ impl<T: CandidType + Serialize> ICPSigned<T> {
 
         // Convert signer_id to VerifyingKey (public key)
         let verifying_key =
-            VerifyingKey::from_bytes(&signer_id.0).map_err(|_| "invalid public key")?;
+            VerifyingKey::from_bytes(&signer_id.0.0).map_err(|_| "invalid public key")?;
 
         // Serialize the payload for verification
         let message =
@@ -300,6 +294,25 @@ impl Default for ContextConfigs {
         Self {
             contexts: HashMap::new(),
             next_proxy_id: 0,
+        }
+    }
+}
+
+// Add these conversions for ICCapability
+impl From<Capability> for ICCapability {
+    fn from(value: Capability) -> Self {
+        match value {
+            Capability::ManageApplication => ICCapability::ManageApplication,
+            Capability::ManageMembers => ICCapability::ManageMembers,
+        }
+    }
+}
+
+impl From<ICCapability> for Capability {
+    fn from(value: ICCapability) -> Self {
+        match value {
+            ICCapability::ManageApplication => Capability::ManageApplication,
+            ICCapability::ManageMembers => Capability::ManageMembers,
         }
     }
 }

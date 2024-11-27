@@ -10,7 +10,7 @@ rustup target add wasm32-unknown-unknown
 cargo build --target wasm32-unknown-unknown --release
 
 # Generate the candid interface
-candid-extractor .dfx/local/canisters/context_contract/context_contract.wasm > context_contract.did
+candid-extractor target/wasm32-unknown-unknown/release/context_contract.wasm > context_contract.did
 
 # Stop the replica
 dfx stop
