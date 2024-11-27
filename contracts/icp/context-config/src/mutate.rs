@@ -130,9 +130,6 @@ fn update_application(
             .map_err(|e| e.to_string())?;
         let mut app_ref = guard_ref.get_mut();
 
-        // Store the old application ID for logging
-        let old_application_id = app_ref.id.clone();
-
         // Replace the application with the new one
         *app_ref = application.clone();
 

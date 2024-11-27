@@ -12,5 +12,11 @@ cargo build --target wasm32-unknown-unknown --release
 # Generate the candid interface
 candid-extractor .dfx/local/canisters/context_contract/context_contract.wasm > context_contract.did
 
+# Stop the replica
+dfx stop
+
+# Start the replica
+dfx start --background
+
 # Deploy the contract
 dfx deploy
