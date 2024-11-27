@@ -63,7 +63,6 @@ fn test_mutate_success_cases() {
 
     // Get current IC time in nanoseconds
     let current_time = get_time_nanos(&pic);
-    println!("Current IC time (nanos): {}", current_time);
 
     // Create the request with IC time in nanoseconds
     let request = Request {
@@ -81,7 +80,7 @@ fn test_mutate_success_cases() {
             },
         }),
         signer_id: ICSignerId::new(context_id.0.clone()),
-        timestamp_ms: current_time, // Now using nanoseconds
+        timestamp_ms: current_time,
     };
 
     let signed_request = create_signed_request(&context_sk, request);
@@ -91,12 +90,6 @@ fn test_mutate_success_cases() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-
-    println!("Raw response: {:?}", response);
-    if let Ok(WasmResult::Reply(bytes)) = &response {
-        let decoded: Result<(), String> = candid::decode_one(bytes).unwrap();
-        println!("Decoded response: {:?}", decoded);
-    }
 
     assert!(response.is_ok(), "Context addition should succeed");
 }

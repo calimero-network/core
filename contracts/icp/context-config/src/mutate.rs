@@ -136,14 +136,6 @@ fn update_application(
         // Replace the application with the new one
         *app_ref = application.clone();
 
-        // Log the update
-        ic_cdk::println!(
-            "Updated application for context `{:?}` from `{:?}` to `{:?}`",
-            context_id,
-            old_application_id,
-            application.id
-        );
-
         Ok(())
     })
 }
@@ -168,8 +160,6 @@ fn add_members(
 
         // Add each member
         for member in members {
-            ic_cdk::println!("Added `{:?}` as a member of `{:?}`", member, context_id);
-
             ctx_members.push(member);
         }
 
@@ -203,13 +193,6 @@ fn remove_members(
             if let Some(pos) = ctx_members.iter().position(|x| x == &member) {
                 ctx_members.remove(pos);
             }
-
-            // Log the removal
-            ic_cdk::println!(
-                "Removed `{:?}` from being a member of `{:?}`",
-                member,
-                context_id
-            );
 
             // Revoke privileges
             ctx_members.privileges().revoke(&member);
@@ -258,13 +241,6 @@ fn grant(
                         .grant(identity.clone());
                 }
             }
-
-            ic_cdk::println!(
-                "Granted `{:?}` to `{:?}` in `{:?}`",
-                capability,
-                identity,
-                context_id
-            );
         }
 
         Ok(())
@@ -303,13 +279,6 @@ fn revoke(
                         .revoke(&identity);
                 }
             }
-
-            ic_cdk::println!(
-                "Revoked `{:?}` from `{:?}` in `{:?}`",
-                capability,
-                identity,
-                context_id
-            );
         }
 
         Ok(())
