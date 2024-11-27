@@ -97,7 +97,7 @@ jobs:
           echo "CARGO_ZIGBUILD_ZIG=$PWD/zig-linux-x86_64-0.11.0/zig" >> $GITHUB_ENV
           cargo install cargo-zigbuild
 
-      - name: Build meroctl for AArch64
+      - name: Build merod for AArch64
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         env:
           C_INCLUDE_PATH: /usr/lib/gcc-cross/aarch64-linux-gnu/11/include
@@ -110,30 +110,30 @@ jobs:
           PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
           OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
           RUSTFLAGS: "-C link-arg=-lstdc++ -C link-arg=-lpthread -C link-arg=-lc"
-        run: cargo zigbuild -p meroctl --release --target ${{ matrix.target }}
+        run: cargo zigbuild -p merod --release --target ${{ matrix.target }}
       
-      - name: Build meroctl for x86_64
+      - name: Build merod for x86_64
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo build -p meroctl --release --target ${{ matrix.target }}
+        run: cargo build -p merod --release --target ${{ matrix.target }}
 
       - name: Extract version
         id: extract_version
         run: |
-          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "meroctl") | .version')
+          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "merod") | .version')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Compress artifact using gzip
         id: compress
         run: |
-          tar -czf meroctl_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release meroctl
-          echo "artifact_path=meroctl_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
+          tar -czf merod_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release merod
+          echo "artifact_path=merod_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
           echo "target=${{ matrix.target }}" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: meroctl_${{ matrix.target }}.tar.gz
-          path: meroctl_${{ matrix.target }}.tar.gz
+          name: merod_${{ matrix.target }}.tar.gz
+          path: merod_${{ matrix.target }}.tar.gz
           retention-days: 2
 
   upload_branch_artifact:
@@ -148,7 +148,7 @@ jobs:
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
-          name: meroctl_${{ matrix.target }}.tar.gz
+          name: merod_${{ matrix.target }}.tar.gz
 
       - name: Sanitize ref name
         id: sanitize
@@ -201,7 +201,7 @@ jobs:
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
-          name: meroctl_${{ matrix.target }}.tar.gz
+          name: merod_${{ matrix.target }}.tar.gz
 
       - name: Check if artifact exists in release
         id: check_artifact
@@ -210,7 +210,7 @@ jobs:
         run: |
           VERSION=${{ needs.build.outputs.version }}
           TARGET=${{ matrix.target }}
-          ARTIFACT_NAME="meroctl_${TARGET}.tar.gz"
+          ARTIFACT_NAME="merod_${TARGET}.tar.gz"
           ASSET_ID=$(gh api \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
@@ -229,4 +229,4 @@ jobs:
         run: |
           VERSION=${{ needs.build.outputs.version }}
           TARGET=${{ matrix.target }}
-          gh release upload "v$VERSION" meroctl_${TARGET}.tar.gz
+          gh release upload "v$VERSION" merod_${TARGET}.tar.gz
