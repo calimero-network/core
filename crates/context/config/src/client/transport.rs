@@ -2,6 +2,7 @@ use core::error::Error;
 use std::borrow::Cow;
 
 use either::Either;
+use serde::ser::StdError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -18,7 +19,7 @@ pub trait Transport {
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TransportRequest<'a> {
     pub protocol: Cow<'a, str>,
@@ -72,11 +73,43 @@ impl<L: Transport, R: Transport> Transport for Either<L, R> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub enum Operation<'a> {
     Read { method: Cow<'a, str> },
     Write { method: Cow<'a, str> },
+}
+
+pub trait TransportLike {
+    type Error;
+
+    async fn try_send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: &Vec<u8>,
+    ) -> Option<Result<Vec<u8>, Self::Error>>;
+}
+
+impl<L, R> TransportLike for Both<L, R>
+where
+    L: TransportLike,
+    R: TransportLike,
+{
+    type Error = EitherError<L::Error, R::Error>;
+
+    async fn try_send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: &Vec<u8>,
+    ) -> Option<Result<Vec<u8>, Self::Error>> {
+        if let Some(result) = self.left.try_send(request.clone(), payload).await {
+            return Some(result.map_err(EitherError::Left));
+        }
+        if let Some(result) = self.right.try_send(request, payload).await {
+            return Some(result.map_err(EitherError::Right));
+        }
+        None
+    }
 }
 
 pub trait AssociatedTransport: Transport {
@@ -98,8 +131,10 @@ pub struct Both<L, R> {
 
 impl<L, R> Transport for Both<L, R>
 where
-    L: AssociatedTransport,
-    R: AssociatedTransport,
+    L: TransportLike,
+    <L as TransportLike>::Error: StdError,
+    R: TransportLike,
+    <R as TransportLike>::Error: StdError, //no idea why
 {
     type Error = EitherError<L::Error, R::Error>;
 
@@ -108,20 +143,11 @@ where
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
-        if request.protocol == L::protocol() {
-            self.left
-                .send(request, payload)
-                .await
-                .map_err(EitherError::Left)
-        } else if request.protocol == R::protocol() {
-            self.right
-                .send(request, payload)
-                .await
-                .map_err(EitherError::Right)
-        } else {
-            return Err(EitherError::UnsupportedProtocol(
+        match self.try_send(request.clone(), &payload).await {
+            Some(result) => result,
+            None => Err(EitherError::UnsupportedProtocol(
                 request.protocol.into_owned(),
-            ));
+            )),
         }
     }
 }
