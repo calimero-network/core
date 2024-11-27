@@ -155,7 +155,7 @@ impl From<Application<'_>> for ICApplication {
             blob: (*value.blob).into(),
             size: value.size,
             source: value.source.0.into_owned(),
-            metadata: value.metadata.0.into_inner().into_owned(),
+            metadata: value.metadata.0.into_inner().into_owned().to_vec(),
         }
     }
 }
