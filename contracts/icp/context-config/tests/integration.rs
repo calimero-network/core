@@ -186,7 +186,8 @@ fn test_member_management() {
 
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
             assert!(result.is_ok(), "Adding member failed: {:?}", result.err());
         }
         Ok(WasmResult::Reject(msg)) => {
@@ -242,7 +243,8 @@ fn test_member_management() {
 
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
             assert!(result.is_ok(), "Removing member failed: {:?}", result.err());
         }
         Ok(WasmResult::Reject(msg)) => {
@@ -327,8 +329,13 @@ fn test_capability_management() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Context creation failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Context creation failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
@@ -359,7 +366,8 @@ fn test_capability_management() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
             assert!(result.is_ok(), "Adding member failed: {:?}", result.err());
         }
         Ok(WasmResult::Reject(msg)) => {
@@ -391,8 +399,13 @@ fn test_capability_management() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Granting capability failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Granting capability failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
@@ -440,8 +453,13 @@ fn test_capability_management() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Revoking capability failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Revoking capability failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
@@ -531,8 +549,13 @@ fn test_application_update() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Context creation failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Context creation failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
@@ -651,8 +674,13 @@ fn test_application_update() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Authorized update failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Authorized update failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
@@ -731,8 +759,13 @@ fn test_edge_cases() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Context creation failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Context creation failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
@@ -761,8 +794,13 @@ fn test_edge_cases() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Empty member list failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Empty member list failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
@@ -794,8 +832,13 @@ fn test_edge_cases() {
     );
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Duplicate members failed: {:?}", result.err());
+            let result: Result<(), String> =
+                candid::decode_one(&bytes).expect("Failed to decode response");
+            assert!(
+                result.is_ok(),
+                "Duplicate members failed: {:?}",
+                result.err()
+            );
         }
         Ok(WasmResult::Reject(msg)) => {
             panic!("Canister rejected the call: {}", msg);
