@@ -1,8 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use ic_agent::export::Principal;
-use ic_agent::Agent;
+use ic_agent::{agent::CallResponse, export::Principal, Agent};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -202,10 +201,33 @@ impl Network {
 
     async fn mutate(
         &self,
-        _canister_id: &Principal,
-        _method: String,
-        _args: Vec<u8>,
+        canister_id: &Principal,
+        method: String,
+        args: Vec<u8>,
     ) -> Result<Vec<u8>, IcpError> {
-        Ok(vec![])
+        self.client
+            .fetch_root_key()
+            .await
+            .map_err(|_| IcpError::Custom {
+                operation: ErrorOperation::Query,
+                reason: "Failed to fetch root key".to_string(),
+            })?;
+
+        let response = self.client
+            .update(canister_id, method)
+            .with_arg(args)
+            .call()
+            .await;
+        match response {
+            Ok(CallResponse::Response((data, _certificate))) => Ok(data),
+            Ok(CallResponse::Poll(_)) => Err(IcpError::Custom {
+                operation: ErrorOperation::Query,
+                reason: "Unexpected Poll response".to_string(),
+            }),
+            Err(_) => Err(IcpError::Custom {
+                operation: ErrorOperation::Query,
+                reason: "No response".to_string(),
+            }),
+        }
     }
 }
