@@ -301,6 +301,10 @@ impl Network {
             match response {
                 Ok(response) => break response,
                 Err(err) => {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "quite terse, these variants"
+                    )]
                     match err {
                         JsonRpcError::ServerError(
                             JsonRpcServerError::ResponseStatusError(
