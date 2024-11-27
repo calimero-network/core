@@ -99,13 +99,13 @@ where
 
     async fn try_send(
         &self,
-        req: TransportRequest<'_>,
+        request: TransportRequest<'_>,
         payload: &Vec<u8>,
     ) -> Option<Result<Vec<u8>, Self::Error>> {
-        if let Some(result) = self.left.try_send(req.clone(), payload).await {
+        if let Some(result) = self.left.try_send(request.clone(), payload).await {
             return Some(result.map_err(EitherError::Left));
         }
-        if let Some(result) = self.right.try_send(req, payload).await {
+        if let Some(result) = self.right.try_send(request, payload).await {
             return Some(result.map_err(EitherError::Right));
         }
         None
