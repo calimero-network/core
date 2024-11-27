@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 
+use candid::{CandidType, Decode, Encode};
 use ed25519_dalek::{Signer, SigningKey};
-use starknet::core::codec::Encode;
+use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
@@ -133,17 +134,12 @@ impl<'a> Method<Icp> for Mutate<'a> {
     const METHOD: &'static str = "mutate";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        // sign the params, encode it and return
-        // since you will have a `Vec<Felt>` here, you can
-        // `Vec::with_capacity(32 * calldata.len())` and then
-        // extend the `Vec` with each `Felt::to_bytes_le()`
-        // when this `Vec<u8>` makes it to `StarknetTransport`,
-        // reconstruct the `Vec<Felt>` from it
-        todo!()
+        Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        Ok(value)
     }
 }
 

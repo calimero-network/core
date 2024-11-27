@@ -1,3 +1,4 @@
+use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
 
 use crate::client::env::Method;
@@ -5,7 +6,7 @@ use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 
-#[derive(Copy, Clone, Debug, Serialize)]
+#[derive(Copy, Clone, Debug, Serialize, CandidType)]
 pub(super) struct ActiveProposalRequest;
 
 impl Method<Near> for ActiveProposalRequest {
@@ -60,10 +61,11 @@ impl Method<Icp> for ActiveProposalRequest {
     type Returns = u16;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        Ok(value)
     }
 }

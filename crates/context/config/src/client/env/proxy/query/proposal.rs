@@ -1,5 +1,6 @@
+use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::{Decode, Encode};
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
 use super::ProposalId;
@@ -12,7 +13,7 @@ use crate::client::protocol::starknet::Starknet;
 use crate::repr::Repr;
 use crate::Proposal;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, CandidType)]
 pub(super) struct ProposalRequest {
     pub(super) proposal_id: Repr<ProposalId>,
 }
@@ -97,10 +98,11 @@ impl Method<Icp> for ProposalRequest {
     type Returns = Option<Proposal>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        Ok(value)
     }
 }

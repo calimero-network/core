@@ -1,8 +1,9 @@
 use core::{mem, ptr};
 use std::collections::BTreeMap;
 
+use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::{Decode, Encode, FeltWriter};
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::{
@@ -134,10 +135,11 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        Ok(value)
     }
 }

@@ -1,7 +1,8 @@
 use core::mem;
 
+use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::{Decode, Encode};
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::{
@@ -104,10 +105,11 @@ impl Method<Icp> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        Ok(value)
     }
 }

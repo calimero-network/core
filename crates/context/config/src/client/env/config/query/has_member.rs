@@ -1,5 +1,6 @@
+use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::Encode;
+use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
@@ -78,10 +79,11 @@ impl Method<Icp> for HasMemberRequest {
     const METHOD: &'static str = "has_member";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        Ok(value)
     }
 }
