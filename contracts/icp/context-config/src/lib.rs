@@ -1,15 +1,10 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use crate::types::ContextConfigs;
-use crate::types::ICPSigned;
-use crate::types::Request;
-use crate::types::ICApplication;
-use crate::types::ICCapability;
-use crate::types::ICContextId;
-use crate::types::ICContextIdentity;
-use crate::types::ICSignerId;
-
+use crate::types::{
+    ContextConfigs, ICApplication, ICCapability, ICContextId, ICContextIdentity, ICPSigned,
+    ICSignerId, Request,
+};
 
 pub mod guard;
 pub mod mutate;

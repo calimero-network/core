@@ -3,11 +3,12 @@ use std::collections::HashMap;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
-    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, ContextId, IntoResult, SignerId
+    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, ContextId,
+    IntoResult, SignerId,
 };
 use candid::CandidType;
-use serde::{Deserialize, Serialize};
 use ed25519_dalek::{Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
 
 use crate::guard::Guard;
 
@@ -260,21 +261,22 @@ impl<T: CandidType + Serialize> ICPSigned<T> {
     {
         // Get the signer's public key from the payload
         let signer_id = f(&self.payload);
-        
+
         // Convert signer_id to VerifyingKey (public key)
-        let verifying_key = VerifyingKey::from_bytes(&signer_id.0)
-            .map_err(|_| "invalid public key")?;
+        let verifying_key =
+            VerifyingKey::from_bytes(&signer_id.0).map_err(|_| "invalid public key")?;
 
         // Serialize the payload for verification
-        let message = candid::encode_one(&self.payload)
-            .map_err(|_| "failed to serialize payload")?;
+        let message =
+            candid::encode_one(&self.payload).map_err(|_| "failed to serialize payload")?;
 
         // Convert signature bytes to ed25519::Signature
         let signature = ed25519_dalek::Signature::from_slice(&self.signature)
             .map_err(|_| "invalid signature format")?;
 
         // Verify the signature
-        verifying_key.verify(&message, &signature)
+        verifying_key
+            .verify(&message, &signature)
             .map_err(|_| "invalid signature")?;
 
         Ok(&self.payload)

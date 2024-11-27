@@ -1,5 +1,7 @@
-use ic_cdk_macros::query;
 use std::collections::BTreeMap;
+
+use ic_cdk_macros::query;
+
 use crate::types::*;
 use crate::CONTEXT_CONFIGS;
 
@@ -52,11 +54,7 @@ fn members(context_id: ICContextId, offset: usize, length: usize) -> Vec<ICConte
             .expect("context does not exist");
 
         let members = &*context.members;
-        members.iter()
-            .skip(offset)
-            .take(length)
-            .cloned()
-            .collect()
+        members.iter().skip(offset).take(length).cloned().collect()
     })
 }
 
