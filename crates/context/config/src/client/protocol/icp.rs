@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use ic_agent::{agent::CallResponse, export::Principal, Agent};
+use ic_agent::agent::CallResponse;
+use ic_agent::export::Principal;
+use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -213,7 +215,8 @@ impl Network {
                 reason: "Failed to fetch root key".to_string(),
             })?;
 
-        let response = self.client
+        let response = self
+            .client
             .update(canister_id, method)
             .with_arg(args)
             .call()
