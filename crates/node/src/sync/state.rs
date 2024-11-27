@@ -1,12 +1,13 @@
 use std::borrow::Cow;
 
-use calimero_crypto::SharedKey;
+use calimero_crypto::{Nonce, SharedKey};
 use calimero_network::stream::Stream;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
+use rand::{thread_rng, Rng};
 use tracing::debug;
 
 use crate::sync::{recv, send, Sequencer};
@@ -28,6 +29,8 @@ impl Node {
             "Initiating state sync",
         );
 
+        let our_nonce = thread_rng().gen::<Nonce>();
+
         send(
             stream,
             &StreamMessage::Init {
@@ -37,19 +40,20 @@ impl Node {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
+                next_nonce: our_nonce,
             },
             None,
         )
         .await?;
 
-        let mut pair = None;
+        let mut triple = None;
 
         for _ in 1..=2 {
             let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
                 bail!("connection closed while awaiting state sync handshake");
             };
 
-            let (root_hash, their_identity) = match ack {
+            let (root_hash, their_identity, their_nonce) = match ack {
                 StreamMessage::Init {
                     party_id,
                     payload:
@@ -57,6 +61,7 @@ impl Node {
                             root_hash,
                             application_id,
                         },
+                    next_nonce,
                     ..
                 } => {
                     if application_id != context.application_id {
@@ -67,7 +72,7 @@ impl Node {
                         );
                     }
 
-                    (root_hash, party_id)
+                    (root_hash, party_id, next_nonce)
                 }
                 StreamMessage::Init {
                     party_id: their_identity,
@@ -92,16 +97,23 @@ impl Node {
                 }
             };
 
-            pair = Some((root_hash, their_identity));
+            triple = Some((root_hash, their_identity, their_nonce));
 
             break;
         }
 
-        let Some((root_hash, their_identity)) = pair else {
+        let Some((root_hash, their_identity, their_nonce)) = triple else {
             bail!("expected two state sync handshakes, got none");
         };
 
         if root_hash == context.root_hash {
+            debug!(
+                context_id=%context.id,
+                our_identity=%our_identity,
+                their_identity=%their_identity,
+                "Root hashes match, up to date",
+            );
+
             return Ok(());
         }
 
@@ -113,6 +125,7 @@ impl Node {
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
+        let our_new_nonce = thread_rng().gen::<Nonce>();
 
         send(
             stream,
@@ -121,11 +134,11 @@ impl Node {
                 payload: MessagePayload::StateSync {
                     artifact: b"".into(),
                 },
+                next_nonce: our_new_nonce,
             },
-            Some(shared_key),
+            Some((shared_key, our_nonce)),
         )
         .await?;
-
         self.bidirectional_sync(
             context,
             our_identity,
@@ -133,6 +146,8 @@ impl Node {
             &mut sqx_out,
             stream,
             shared_key,
+            our_new_nonce,
+            their_nonce,
         )
         .await?;
 
@@ -147,6 +162,7 @@ impl Node {
         their_root_hash: Hash,
         their_application_id: ApplicationId,
         stream: &mut Stream,
+        their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -191,6 +207,8 @@ impl Node {
             debug!(context_id=%context.id, "Resuming state sync");
         }
 
+        let our_nonce = thread_rng().gen::<Nonce>();
+
         send(
             stream,
             &StreamMessage::Init {
@@ -200,12 +218,20 @@ impl Node {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
+                next_nonce: our_nonce,
             },
             None,
         )
         .await?;
 
         if their_root_hash == context.root_hash {
+            debug!(
+                context_id=%context.id,
+                our_identity=%our_identity,
+                their_identity=%their_identity,
+                "Root hashes match, up to date",
+            );
+
             return Ok(());
         }
 
@@ -225,6 +251,8 @@ impl Node {
             &mut sqx_out,
             stream,
             shared_key,
+            our_nonce,
+            their_nonce,
         )
         .await
 
@@ -239,6 +267,8 @@ impl Node {
         sqx_out: &mut Sequencer,
         stream: &mut Stream,
         shared_key: SharedKey,
+        mut our_nonce: Nonce,
+        mut their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -249,17 +279,26 @@ impl Node {
 
         let mut sqx_in = Sequencer::default();
 
-        while let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? {
-            let (sequence_id, artifact) = match msg {
+        while let Some(msg) = recv(
+            stream,
+            self.sync_config.timeout,
+            Some((shared_key, their_nonce)),
+        )
+        .await?
+        {
+            let (sequence_id, artifact, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
                     sequence_id,
                     payload: MessagePayload::StateSync { artifact },
-                } => (sequence_id, artifact),
+                    next_nonce,
+                } => (sequence_id, artifact, next_nonce),
                 unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
                     bail!("unexpected message: {:?}", unexpected)
                 }
             };
+
+            their_nonce = their_new_nonce;
 
             sqx_in.test(sequence_id)?;
 
@@ -283,6 +322,10 @@ impl Node {
                 "State sync outcome",
             );
 
+            let our_new_nonce = (!outcome.artifact.is_empty())
+                .then(|| thread_rng().gen())
+                .unwrap_or_default();
+
             send(
                 stream,
                 &StreamMessage::Message {
@@ -290,10 +333,17 @@ impl Node {
                     payload: MessagePayload::StateSync {
                         artifact: Cow::from(&outcome.artifact),
                     },
+                    next_nonce: our_new_nonce,
                 },
-                Some(shared_key),
+                Some((shared_key, our_nonce)),
             )
             .await?;
+
+            if our_new_nonce == [0; 12] {
+                break;
+            }
+
+            our_nonce = our_new_nonce;
         }
 
         debug!(

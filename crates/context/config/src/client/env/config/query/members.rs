@@ -1,7 +1,12 @@
 use core::mem;
 
 use serde::Serialize;
+use starknet::core::codec::{Decode, Encode};
+use starknet_crypto::Felt;
 
+use crate::client::env::config::types::starknet::{
+    CallData, StarknetMembers, StarknetMembersRequest,
+};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -9,10 +14,10 @@ use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
-pub(super) struct MembersRequest {
-    pub(super) context_id: Repr<ContextId>,
-    pub(super) offset: usize,
-    pub(super) length: usize,
+pub(crate) struct MembersRequest {
+    pub(crate) context_id: Repr<ContextId>,
+    pub(crate) offset: usize,
+    pub(crate) length: usize,
 }
 
 impl Method<Near> for MembersRequest {
@@ -45,10 +50,49 @@ impl Method<Starknet> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let req: StarknetMembersRequest = self.into();
+        let mut call_data = CallData::default();
+        req.encode(&mut call_data)?;
+        Ok(call_data.0)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if response.len() % 32 != 0 {
+            return Err(eyre::eyre!(
+                "Invalid response length: {} bytes is not a multiple of 32",
+                response.len()
+            ));
+        }
+
+        // Convert bytes to Felts
+        let mut felts = Vec::new();
+        let chunks = response.chunks_exact(32);
+
+        // Verify no remainder
+        if !chunks.remainder().is_empty() {
+            return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));
+        }
+
+        for chunk in chunks {
+            let chunk_array: [u8; 32] = chunk
+                .try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+            felts.push(Felt::from_bytes_be(&chunk_array));
+        }
+
+        // Check if it's a None response (single zero Felt)
+        if felts.len() == 1 && felts[0] == Felt::ZERO {
+            return Ok(Vec::new());
+        }
+
+        // Decode directly from the felts slice - the Decode trait will handle the array structure
+        let members = StarknetMembers::decode(&felts)
+            .map_err(|e| eyre::eyre!("Failed to decode members: {:?}", e))?;
+
+        Ok(members.into())
     }
 }

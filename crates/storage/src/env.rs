@@ -163,7 +163,7 @@ mod mocked {
 
     /// Return the context id.
     pub(super) const fn context_id() -> [u8; 32] {
-        [0; 32]
+        [236; 32]
     }
 
     /// Gets the current time.

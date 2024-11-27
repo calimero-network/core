@@ -40,6 +40,7 @@ impl ProxyContract {
         }
     }
 }
+
 #[near]
 impl ProxyContract {
     #[private]
@@ -224,6 +225,26 @@ impl ProxyContract {
                 Self::ext(env::current_account_id())
                     .update_contract_callback(env::attached_deposit()),
             )
+    }
+
+    fn erase(&mut self) {
+        // if this is going to be exposed, it should be a proposal
+        self.proposals.clear();
+        self.approvals.clear();
+        self.num_proposals_pk.clear();
+        self.context_storage.clear();
+    }
+
+    pub fn nuke(&mut self) -> Promise {
+        require!(
+            env::predecessor_account_id() == self.context_config_account_id,
+            "Only the context config contract can nuke the proxy"
+        );
+
+        self.erase();
+
+        Promise::new(env::current_account_id())
+            .delete_account(self.context_config_account_id.clone())
     }
 
     #[private]
