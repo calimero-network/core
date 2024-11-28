@@ -30,7 +30,10 @@ impl Test for CreateContextStep {
         ctx.context_id = Some(context_id);
         ctx.inviter_public_key = Some(member_public_key);
 
-        println!("Report: Created context on '{}' node", &ctx.inviter);
+        ctx.output_writer.write_string(format!(
+            "Report: Created context on '{}' node",
+            &ctx.inviter
+        ));
 
         Ok(())
     }

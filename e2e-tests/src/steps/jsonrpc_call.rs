@@ -75,7 +75,8 @@ impl Test for JsonRpcCallStep {
                 }
             }
 
-            println!("Report: Call on '{}' node passed assertion", node)
+            ctx.output_writer
+                .write_string(format!("Report: Call on '{}' node passed assertion", node));
         }
 
         Ok(())

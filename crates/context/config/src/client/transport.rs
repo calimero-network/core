@@ -7,10 +7,10 @@ use thiserror::Error;
 
 use super::protocol::Protocol;
 
-pub trait Transport {
+pub trait ProtocolTransport {
     type Error: Error;
 
-    #[expect(async_fn_in_trait, reason = "Should be fine")]
+    #[expect(async_fn_in_trait, reason = "constraints are upheld for now")]
     async fn send(
         &self,
         request: TransportRequest<'_>,
@@ -19,57 +19,10 @@ pub trait Transport {
 }
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct TransportRequest<'a> {
-    pub protocol: Cow<'a, str>,
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
     pub operation: Operation<'a>,
-}
-
-impl<'a> TransportRequest<'a> {
-    #[must_use]
-    pub const fn new(
-        protocol: Cow<'a, str>,
-        network_id: Cow<'a, str>,
-        contract_id: Cow<'a, str>,
-        operation: Operation<'a>,
-    ) -> Self {
-        Self {
-            protocol,
-            network_id,
-            contract_id,
-            operation,
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum EitherError<L, R> {
-    #[error(transparent)]
-    Left(L),
-    #[error(transparent)]
-    Right(R),
-    #[error("unsupported protocol: {0}")]
-    UnsupportedProtocol(String),
-}
-
-impl<L: Transport, R: Transport> Transport for Either<L, R> {
-    type Error = EitherError<L::Error, R::Error>;
-
-    async fn send(
-        &self,
-        request: TransportRequest<'_>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Self::Error> {
-        match self {
-            Self::Left(left) => left.send(request, payload).await.map_err(EitherError::Left),
-            Self::Right(right) => right
-                .send(request, payload)
-                .await
-                .map_err(EitherError::Right),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -79,13 +32,52 @@ pub enum Operation<'a> {
     Write { method: Cow<'a, str> },
 }
 
-pub trait AssociatedTransport: Transport {
-    type Protocol: Protocol;
+pub trait Transport {
+    type Error: Error;
 
-    #[inline]
-    #[must_use]
-    fn protocol() -> &'static str {
-        Self::Protocol::PROTOCOL
+    #[expect(async_fn_in_trait, reason = "constraints are upheld for now")]
+    async fn try_send<'a>(
+        &self,
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>>;
+}
+
+#[derive(Debug)]
+pub struct TransportArguments<'a> {
+    pub protocol: Cow<'a, str>,
+    pub request: TransportRequest<'a>,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct UnsupportedProtocol<'a> {
+    pub args: TransportArguments<'a>,
+    pub expected: Cow<'static, [Cow<'static, str>]>,
+}
+
+#[derive(Debug, Error)]
+pub enum EitherError<L, R> {
+    #[error(transparent)]
+    Left(L),
+    #[error(transparent)]
+    Right(R),
+}
+
+impl<L, R> Transport for Either<L, R>
+where
+    L: Transport,
+    R: Transport,
+{
+    type Error = EitherError<L::Error, R::Error>;
+
+    async fn try_send<'a>(
+        &self,
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>> {
+        match self {
+            Self::Left(left) => Ok(left.try_send(args).await?.map_err(EitherError::Left)),
+            Self::Right(right) => Ok(right.try_send(args).await?.map_err(EitherError::Right)),
+        }
     }
 }
 
@@ -98,30 +90,72 @@ pub struct Both<L, R> {
 
 impl<L, R> Transport for Both<L, R>
 where
-    L: AssociatedTransport,
-    R: AssociatedTransport,
+    L: Transport,
+    R: Transport,
 {
     type Error = EitherError<L::Error, R::Error>;
 
-    async fn send(
+    async fn try_send<'a>(
         &self,
-        request: TransportRequest<'_>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Self::Error> {
-        if request.protocol == L::protocol() {
-            self.left
-                .send(request, payload)
-                .await
-                .map_err(EitherError::Left)
-        } else if request.protocol == R::protocol() {
-            self.right
-                .send(request, payload)
-                .await
-                .map_err(EitherError::Right)
-        } else {
-            return Err(EitherError::UnsupportedProtocol(
-                request.protocol.into_owned(),
-            ));
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>> {
+        let left = self.left.try_send(args).await;
+
+        let UnsupportedProtocol {
+            args,
+            expected: left_expected,
+        } = match left {
+            Ok(res) => return Ok(res.map_err(EitherError::Left)),
+            Err(err) => err,
+        };
+
+        let right = self.right.try_send(args).await;
+
+        let UnsupportedProtocol {
+            args,
+            expected: right_expected,
+        } = match right {
+            Ok(res) => return Ok(res.map_err(EitherError::Right)),
+            Err(err) => err,
+        };
+
+        let mut expected = left_expected.into_owned();
+
+        expected.extend(right_expected.into_owned());
+
+        Err(UnsupportedProtocol {
+            args,
+            expected: expected.into(),
+        })
+    }
+}
+
+pub trait AssociatedTransport: ProtocolTransport {
+    type Protocol: Protocol;
+
+    #[inline]
+    #[must_use]
+    fn protocol() -> &'static str {
+        Self::Protocol::PROTOCOL
+    }
+}
+
+impl<T: AssociatedTransport> Transport for T {
+    type Error = T::Error;
+
+    async fn try_send<'a>(
+        &self,
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>> {
+        let protocol = Self::protocol();
+
+        if args.protocol != protocol {
+            return Err(UnsupportedProtocol {
+                args,
+                expected: vec![protocol.into()].into(),
+            });
         }
+
+        Ok(self.send(args.request, args.payload).await)
     }
 }

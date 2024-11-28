@@ -1,8 +1,9 @@
-use calimero_crypto::SharedKey;
+use calimero_crypto::{Nonce, SharedKey};
 use calimero_network::stream::Stream;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
+use rand::{thread_rng, Rng};
 use tracing::debug;
 
 use crate::sync::{recv, send, Sequencer};
@@ -22,12 +23,15 @@ impl Node {
             "Initiating key share",
         );
 
+        let our_nonce = thread_rng().gen::<Nonce>();
+
         send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::KeyShare,
+                next_nonce: our_nonce,
             },
             None,
         )
@@ -37,12 +41,13 @@ impl Node {
             bail!("connection closed while awaiting state sync handshake");
         };
 
-        let their_identity = match ack {
+        let (their_identity, their_nonce) = match ack {
             StreamMessage::Init {
                 party_id,
                 payload: InitPayload::KeyShare,
+                next_nonce,
                 ..
-            } => party_id,
+            } => (party_id, next_nonce),
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }
             | StreamMessage::OpaqueError) => {
@@ -50,8 +55,15 @@ impl Node {
             }
         };
 
-        self.bidirectional_key_share(context, our_identity, their_identity, stream)
-            .await
+        self.bidirectional_key_share(
+            context,
+            our_identity,
+            their_identity,
+            stream,
+            our_nonce,
+            their_nonce,
+        )
+        .await
     }
 
     pub(super) async fn handle_key_share_request(
@@ -60,6 +72,7 @@ impl Node {
         our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
+        their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -67,19 +80,29 @@ impl Node {
             "Received key share request",
         );
 
+        let our_nonce = thread_rng().gen::<Nonce>();
+
         send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::KeyShare,
+                next_nonce: our_nonce,
             },
             None,
         )
         .await?;
 
-        self.bidirectional_key_share(context, our_identity, their_identity, stream)
-            .await
+        self.bidirectional_key_share(
+            context,
+            our_identity,
+            their_identity,
+            stream,
+            our_nonce,
+            their_nonce,
+        )
+        .await
     }
 
     async fn bidirectional_key_share(
@@ -88,6 +111,8 @@ impl Node {
         our_identity: PublicKey,
         their_identity: PublicKey,
         stream: &mut Stream,
+        our_nonce: Nonce,
+        their_nonce: Nonce,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -115,12 +140,19 @@ impl Node {
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
                 payload: MessagePayload::KeyShare { sender_key },
+                next_nonce: our_nonce,
             },
-            Some(shared_key),
+            Some((shared_key, our_nonce)),
         )
         .await?;
 
-        let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? else {
+        let Some(msg) = recv(
+            stream,
+            self.sync_config.timeout,
+            Some((shared_key, their_nonce)),
+        )
+        .await?
+        else {
             bail!("connection closed while awaiting key share");
         };
 
@@ -128,6 +160,7 @@ impl Node {
             StreamMessage::Message {
                 sequence_id,
                 payload: MessagePayload::KeyShare { sender_key },
+                ..
             } => (sequence_id, sender_key),
             unexpected @ (StreamMessage::Init { .. }
             | StreamMessage::Message { .. }

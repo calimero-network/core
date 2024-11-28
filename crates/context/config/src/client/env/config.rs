@@ -2,7 +2,7 @@ use crate::client::{CallClient, Environment};
 
 mod mutate;
 mod query;
-
+mod types;
 use mutate::ContextConfigMutate;
 use query::ContextConfigQuery;
 

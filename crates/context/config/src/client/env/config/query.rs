@@ -28,7 +28,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             context_id: Repr::new(context_id),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn application_revision(
@@ -39,7 +39,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             context_id: Repr::new(context_id),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn members(
@@ -54,7 +54,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             length,
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn has_member(
@@ -67,7 +67,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             identity: Repr::new(identity),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn members_revision(
@@ -78,7 +78,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             context_id: Repr::new(context_id),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn privileges(
@@ -88,7 +88,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     ) -> Result<BTreeMap<SignerId, Vec<Capability>>, ClientError<T>> {
         let params = privileges::PrivilegesRequest::new(context_id, identities);
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn get_proxy_contract(
@@ -99,6 +99,6 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             context_id: Repr::new(context_id),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 }

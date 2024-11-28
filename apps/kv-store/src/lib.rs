@@ -2,22 +2,16 @@
 
 use std::collections::BTreeMap;
 
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
 use calimero_storage::collections::UnorderedMap;
-use calimero_storage::entities::Element;
-use calimero_storage::AtomicUnit;
-
-mod __private;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(AtomicUnit, Clone, Debug, PartialEq, PartialOrd)]
-#[root]
-#[type_id(1)]
+#[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     items: UnorderedMap<String, String>,
-    #[storage]
-    storage: Element,
 }
 
 #[app::event]
@@ -33,8 +27,7 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
-            items: UnorderedMap::new().unwrap(),
-            storage: Element::root(),
+            items: UnorderedMap::new(),
         }
     }
 
@@ -93,7 +86,10 @@ impl KvStore {
 
         app::emit!(Event::Removed { key });
 
-        self.items.remove(key).map_err(Into::into)
+        self.items
+            .remove(key)
+            .map(|v| v.is_some())
+            .map_err(Into::into)
     }
 
     pub fn clear(&mut self) -> Result<(), Error> {

@@ -3,19 +3,15 @@
 use std::result::Result;
 
 use calimero_sdk::app;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::types::Error;
 use calimero_storage::collections::{UnorderedMap, UnorderedSet};
-use calimero_storage::entities::Element;
-use calimero_storage::AtomicUnit;
 
 #[app::state]
-#[derive(AtomicUnit, Clone, Debug, PartialEq, PartialOrd)]
-#[root]
-#[type_id(1)]
+#[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
 pub struct VisitedCities {
     visited: UnorderedMap<String, UnorderedSet<String>>,
-    #[storage]
-    storage: Element,
 }
 
 #[app::logic]
@@ -23,16 +19,12 @@ impl VisitedCities {
     #[app::init]
     pub fn init() -> VisitedCities {
         VisitedCities {
-            visited: UnorderedMap::new().unwrap(),
-            storage: Element::root(),
+            visited: UnorderedMap::new(),
         }
     }
 
     pub fn add_person(&mut self, person: String) -> Result<bool, Error> {
-        Ok(self
-            .visited
-            .insert(person, UnorderedSet::new().unwrap())?
-            .is_some())
+        Ok(self.visited.insert(person, UnorderedSet::new())?.is_some())
     }
 
     pub fn add_visited_city(&mut self, person: String, city: String) -> Result<bool, Error> {

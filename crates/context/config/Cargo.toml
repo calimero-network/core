@@ -12,6 +12,7 @@ borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
+hex.workspace = true
 near-crypto = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
