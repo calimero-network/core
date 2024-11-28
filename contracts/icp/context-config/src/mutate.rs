@@ -237,6 +237,14 @@ fn grant(
                         .privileges()
                         .grant(identity.clone());
                 }
+                ICCapability::Proxy => {
+                    context
+                        .proxy
+                        .get(signer_id)
+                        .map_err(|e| e.to_string())?
+                        .privileges()
+                        .grant(identity.clone());
+                }
             }
         }
 
@@ -270,6 +278,14 @@ fn revoke(
                 ICCapability::ManageMembers => {
                     context
                         .members
+                        .get(signer_id)
+                        .map_err(|e| e.to_string())?
+                        .privileges()
+                        .revoke(&identity);
+                }
+                ICCapability::Proxy => {
+                    context
+                        .proxy
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
