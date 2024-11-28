@@ -19,7 +19,10 @@ use transport::{Both, Transport, TransportArguments, TransportRequest, Unsupport
 
 pub type AnyTransport = Either<
     relayer::RelayerTransport,
-    Both<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
+    Both<
+        near::NearTransport<'static>,
+        Both<starknet::StarknetTransport<'static>, icp::IcpTransport<'static>>,
+    >,
 >;
 
 #[derive(Clone, Debug)]
@@ -75,35 +78,71 @@ impl Client<AnyTransport> {
                         })
                         .collect(),
                 }),
-                right: starknet::StarknetTransport::new(&starknet::StarknetConfig {
-                    networks: config
-                        .signer
-                        .local
-                        .starknet
-                        .iter()
-                        .map(|(network, config)| {
-                            let (account_id, secret_key) = match &config.credentials {
-                                Credentials::Starknet(credentials) => {
-                                    (credentials.account_id, credentials.secret_key)
-                                }
-                                Credentials::Near(_) => {
-                                    panic!("Expected Starknet credentials but got something else.")
-                                }
-                                Credentials::Icp(_) => {
-                                    panic!("Expected Starknet credentials but got something else.")
-                                }
-                            };
-                            (
-                                network.clone().into(),
-                                starknet::NetworkConfig {
-                                    rpc_url: config.rpc_url.clone(),
-                                    account_id,
-                                    access_key: secret_key,
-                                },
-                            )
-                        })
-                        .collect(),
-                }),
+                right: Both {
+                    left: starknet::StarknetTransport::new(&starknet::StarknetConfig {
+                        networks: config
+                            .signer
+                            .local
+                            .starknet
+                            .iter()
+                            .map(|(network, config)| {
+                                let (account_id, secret_key) = match &config.credentials {
+                                    Credentials::Starknet(credentials) => {
+                                        (credentials.account_id, credentials.secret_key)
+                                    }
+                                    Credentials::Near(_) => {
+                                        panic!(
+                                            "Expected Starknet credentials but got something else."
+                                        )
+                                    }
+                                    Credentials::Icp(_) => {
+                                        panic!(
+                                            "Expected Starknet credentials but got something else."
+                                        )
+                                    }
+                                };
+                                (
+                                    network.clone().into(),
+                                    starknet::NetworkConfig {
+                                        rpc_url: config.rpc_url.clone(),
+                                        account_id,
+                                        access_key: secret_key,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    }),
+                    right: icp::IcpTransport::new(&icp::IcpConfig {
+                        networks: config
+                            .signer
+                            .local
+                            .icp
+                            .iter()
+                            .map(|(network, config)| {
+                                let (account_id, secret_key) = match &config.credentials {
+                                    Credentials::Icp(credentials) => (
+                                        credentials.account_id.clone(),
+                                        credentials.secret_key.clone(),
+                                    ),
+                                    Credentials::Near(_) => {
+                                        panic!("Expected ICP credentials but got something else.")
+                                    }
+                                    Credentials::Starknet(_) => {
+                                        panic!("Expected ICP credentials but got something else.")
+                                    }
+                                };
+                                (
+                                    network.clone().into(),
+                                    icp::NetworkConfig {
+                                        rpc_url: config.rpc_url.clone(),
+                                        account_id,
+                                        secret_key,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    }),
+                },
             }),
         };
 

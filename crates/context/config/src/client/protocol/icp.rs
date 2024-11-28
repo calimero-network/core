@@ -64,7 +64,6 @@ pub struct NetworkConfig {
     pub rpc_url: Url,
     pub account_id: String,
     pub secret_key: String,
-    pub canister_id: String,
 }
 
 #[derive(Debug)]

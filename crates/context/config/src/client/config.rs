@@ -25,6 +25,7 @@ pub struct ClientNew {
 pub struct LocalConfig {
     pub near: BTreeMap<String, ClientLocalSigner>,
     pub starknet: BTreeMap<String, ClientLocalSigner>,
+    pub icp: BTreeMap<String, ClientLocalSigner>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

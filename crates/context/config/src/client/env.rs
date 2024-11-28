@@ -39,7 +39,12 @@ mod utils {
             Icp::PROTOCOL => client.send::<Icp, _>(params).await,
             unsupported_protocol => Err(ClientError::UnsupportedProtocol {
                 found: unsupported_protocol.to_owned(),
-                expected: vec![Near::PROTOCOL.into(), Starknet::PROTOCOL.into()].into(),
+                expected: vec![
+                    Near::PROTOCOL.into(),
+                    Starknet::PROTOCOL.into(),
+                    Icp::PROTOCOL.into(),
+                ]
+                .into(),
             }),
         }
     }
