@@ -1,4 +1,3 @@
-use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
@@ -10,7 +9,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::Proposal;
 
-#[derive(Copy, Clone, Debug, Serialize, CandidType)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct ProposalsRequest {
     pub(super) offset: usize,
     pub(super) length: usize,
@@ -91,11 +90,10 @@ impl Method<Icp> for ProposalsRequest {
     type Returns = Vec<Proposal>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        todo!()
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value: Self::Returns = Decode!(&response, Self::Returns)?;
-        Ok(value)
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

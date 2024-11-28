@@ -1,4 +1,4 @@
-use candid::{CandidType, Decode, Encode};
+use candid::Decode;
 use serde::Serialize;
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
@@ -66,7 +66,7 @@ impl Method<Icp> for ProxyContractRequest {
     type Returns = String;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        todo!();
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

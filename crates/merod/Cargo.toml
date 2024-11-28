@@ -14,13 +14,17 @@ camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 const_format.workspace = true
+ic-agent.workspace = true
 dirs.workspace = true
+ed25519-consensus.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 near-crypto.workspace = true
+rand.workspace = true
+ring.workspace = true
 starknet.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 toml_edit.workspace = true

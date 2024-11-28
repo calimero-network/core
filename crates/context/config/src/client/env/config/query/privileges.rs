@@ -1,7 +1,7 @@
 use core::{mem, ptr};
 use std::collections::BTreeMap;
 
-use candid::{CandidType, Decode, Encode};
+use candid::{Decode, Encode};
 use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
@@ -14,6 +14,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icpTypes::{ICCapability, ICContextId, ICContextIdentity, ICPrivilegesRequest, ICSignerId};
 use crate::repr::Repr;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
@@ -135,11 +136,21 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        let context_id: ICContextId = self.context_id.into();
+        let identities: ICContextIdentity = self.identities.into();
+        let request = ICPrivilegesRequest {
+            context_id,
+            identities,
+        };
+        Encode!(&request).map_err(|e| eyre::eyre!(e))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        let decoded: BTreeMap<ICSignerId, Vec<ICCapability>> = Decode!(&response, BTreeMap<ICSignerId, Vec<ICCapability>>)?;
+        let value: Self::Returns = decoded
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into_iter().map(Into::into).collect()))
+            .collect();
         Ok(value)
     }
 }

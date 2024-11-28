@@ -1,4 +1,4 @@
-use candid::{CandidType, Decode, Encode};
+use candid::{Decode, Encode};
 use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
@@ -10,10 +10,11 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icpTypes::{ICApplication, ICContextId};
 use crate::repr::Repr;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
-#[derive(CandidType, Copy, Clone, Debug, Serialize)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct ApplicationRequest {
     pub(super) context_id: Repr<ContextId>,
 }
@@ -93,18 +94,7 @@ impl Method<Starknet> for ApplicationRequest {
         Ok(application.into())
     }
 }
-impl CandidType for Application<'static> {
-    fn _ty() -> candid::types::Type {
-        candid::types::Type::Struct(vec![])
-    }
 
-    fn idl_serialize<S>(&self, _serializer: S) -> Result<(), S::Error>
-    where
-        S: candid::types::Serializer,
-    {
-        Ok(())
-    }
-}
 
 impl Method<Icp> for ApplicationRequest {
     type Returns = Application<'static>;
@@ -112,11 +102,13 @@ impl Method<Icp> for ApplicationRequest {
     const METHOD: &'static str = "application";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        let context_id: ICContextId = self.context_id.into();
+        Encode!(&context_id).map_err(|e| eyre::eyre!(e))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        let decoded: ICApplication = Decode!(&response, ICApplication)?;
+        let value: Self::Returns = decoded.into();
         Ok(value)
     }
 }

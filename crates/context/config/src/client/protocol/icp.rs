@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use ed25519_consensus::SigningKey;
 use ic_agent::agent::CallResponse;
 use ic_agent::export::Principal;
 use ic_agent::Agent;
@@ -27,23 +28,25 @@ impl AssociatedTransport for IcpTransport<'_> {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
-    pub account_id: String,
-    pub public_key: String,
-    pub secret_key: String,
+    pub account_id: Principal,
+    pub public_key: Vec<u8>,
+    pub secret_key: SigningKey,
 }
 
 mod serde_creds {
+    use ed25519_consensus::SigningKey;
+    use candid::Principal;
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {
-        secret_key: String,
-        public_key: String,
-        account_id: String,
+        account_id: Principal,
+        public_key: Vec<u8>,
+        secret_key: SigningKey,
     }
 
-    #[derive(Debug, Error)]
+    #[derive(Copy, Clone, Debug, Error)]
     pub enum CredentialsError {}
 
     impl TryFrom<Credentials> for super::Credentials {
@@ -62,8 +65,8 @@ mod serde_creds {
 #[derive(Debug)]
 pub struct NetworkConfig {
     pub rpc_url: Url,
-    pub account_id: String,
-    pub secret_key: String,
+    pub account_id: Principal,
+    pub secret_key: SigningKey,
 }
 
 #[derive(Debug)]
@@ -74,8 +77,8 @@ pub struct IcpConfig<'a> {
 #[derive(Clone, Debug)]
 struct Network {
     client: Agent,
-    account_id: String,
-    secret_key: String,
+    account_id: Principal,
+    secret_key: SigningKey,
 }
 
 #[derive(Clone, Debug)]

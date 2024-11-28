@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 
-use candid::{CandidType, Decode, Encode};
 use ed25519_dalek::{Signer, SigningKey};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
@@ -134,12 +133,11 @@ impl<'a> Method<Icp> for Mutate<'a> {
     const METHOD: &'static str = "mutate";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        todo!()
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value: Self::Returns = Decode!(&response, Self::Returns)?;
-        Ok(value)
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }
 

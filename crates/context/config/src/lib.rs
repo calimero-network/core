@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub mod client;
 pub mod repr;
 pub mod types;
+pub mod icpTypes;
+pub mod guard;
 
 use repr::Repr;
 use types::{Application, Capability, ContextId, ContextIdentity, ProposalId, SignerId};

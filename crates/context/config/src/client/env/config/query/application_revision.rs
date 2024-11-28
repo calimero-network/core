@@ -1,4 +1,4 @@
-use candid::{CandidType, Decode, Encode};
+use candid::{Decode, Encode};
 use serde::Serialize;
 use starknet::core::codec::Encode as StarknetEncode;
 
@@ -7,10 +7,11 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icpTypes::ICContextId;
 use crate::repr::Repr;
 use crate::types::{ContextId, Revision};
 
-#[derive(CandidType, Copy, Clone, Debug, Serialize)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub struct ApplicationRevisionRequest {
     pub context_id: Repr<ContextId>,
 }
@@ -58,12 +59,13 @@ impl Method<Starknet> for ApplicationRevisionRequest {
 }
 
 impl Method<Icp> for ApplicationRevisionRequest {
-    type Returns = Revision;
+    type Returns = u64;
 
     const METHOD: &'static str = "application_revision";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        let context_id: ICContextId = self.context_id.into();
+        Encode!(&context_id).map_err(|e| eyre::eyre!(e))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
