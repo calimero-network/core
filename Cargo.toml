@@ -39,7 +39,7 @@ members = [
     "./contracts/proxy-lib",
     "./contracts/test-counter",
     "./contracts/icp/context-config",
-
+    "./contracts/icp/proxy-contract",
     "./e2e-tests",
 ]
 
