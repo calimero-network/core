@@ -56,16 +56,7 @@ impl<'a> Application<'a> {
 }
 
 #[derive(
-    Eq,
-    Ord,
-    Copy,
-    Debug,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    BorshSerialize,
-    BorshDeserialize,
-    Hash,
+    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, Hash,
 )]
 pub struct Identity([u8; 32]);
 
@@ -258,9 +249,7 @@ impl ReprBytes for Signature {
     }
 }
 
-#[derive(
-    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize,
-)]
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct ProposalId(Identity);
 
 impl ReprBytes for ProposalId {

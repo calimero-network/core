@@ -9,7 +9,9 @@ use thiserror::Error;
 use url::Url;
 
 use super::Protocol;
-use crate::client::transport::{AssociatedTransport, Operation, ProtocolTransport, TransportRequest};
+use crate::client::transport::{
+    AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
+};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Icp {}
