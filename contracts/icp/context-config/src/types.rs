@@ -177,6 +177,7 @@ pub struct ContextRequest {
 pub enum ICCapability {
     ManageApplication,
     ManageMembers,
+    Proxy,
 }
 
 #[derive(CandidType, Serialize, Deserialize, Debug, Clone)]
@@ -305,6 +306,7 @@ impl From<Capability> for ICCapability {
         match value {
             Capability::ManageApplication => ICCapability::ManageApplication,
             Capability::ManageMembers => ICCapability::ManageMembers,
+            Capability::Proxy => ICCapability::Proxy,
         }
     }
 }
@@ -314,6 +316,7 @@ impl From<ICCapability> for Capability {
         match value {
             ICCapability::ManageApplication => Capability::ManageApplication,
             ICCapability::ManageMembers => Capability::ManageMembers,
+            ICCapability::Proxy => Capability::Proxy,
         }
     }
 }
