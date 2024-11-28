@@ -6,7 +6,7 @@ use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use common::config_helper::ConfigContractHelper;
 use common::counter_helper::CounterContractHelper;
 use common::proxy_lib_helper::ProxyContractHelper;
-use common::{create_account_with_balance, generate_near_account_id};
+use common::{create_account_with_balance};
 use ed25519_dalek::SigningKey;
 use eyre::{Ok, Result};
 use near_sdk::{AccountId, NearToken};
@@ -43,7 +43,7 @@ async fn setup_test(
     let alice_sk: SigningKey = common::generate_keypair()?;
     let context_sk = common::generate_keypair()?;
     let relayer_account =
-        common::create_account_with_balance(worker, generate_near_account_id()?.as_str(), 1000)
+        common::create_account_with_balance(worker, worker.dev_create_account().await?.id().as_str(), 1000)
             .await?;
 
     let _test = config_helper

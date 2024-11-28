@@ -36,16 +36,3 @@ pub async fn create_account_with_balance(
     Ok(account)
 }
 
-pub fn generate_near_account_id() -> Result<String> {
-    let random_account_id: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Uniform::new_inclusive('a', 'z')) // Lowercase letters
-        .take(6)
-        .chain(
-            rand::thread_rng()
-                .sample_iter(&rand::distributions::Uniform::new_inclusive('0', '9'))
-                .take(2),
-        ) // Append digits
-        .collect();
-
-    Ok(random_account_id)
-}
