@@ -6,7 +6,6 @@ use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use bs58::decode::Result as Bs58Result;
-use candid::CandidType;
 use ed25519_dalek::{Signature, SignatureError, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
@@ -67,7 +66,6 @@ impl<'a> Application<'a> {
     BorshSerialize,
     BorshDeserialize,
     Hash,
-    CandidType,
 )]
 pub struct Identity([u8; 32]);
 
@@ -261,7 +259,7 @@ impl ReprBytes for Signature {
 }
 
 #[derive(
-    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, CandidType,
+    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize,
 )]
 pub struct ProposalId(Identity);
 
