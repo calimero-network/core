@@ -1,0 +1,23 @@
+{
+  "canisters": {
+    "mock_ledger": {
+      "type": "rust",
+      "package": "mock_ledger",
+      "candid": "ledger/ledger.did",
+      "path": "ledger"
+    },
+    "mock_external": {
+      "type": "rust",
+      "package": "mock_external",
+      "candid": "external/external.did",
+      "path": "external"
+    }
+  },
+  "defaults": {
+    "build": {
+      "packtool": "",
+      "args": ""
+    }
+  },
+  "version": 1
+}

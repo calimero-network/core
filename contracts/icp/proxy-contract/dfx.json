@@ -1,0 +1,17 @@
+{
+  "canisters": {
+    "proxy_contract": {
+      "candid": "proxy_contract.did",
+      "package": "proxy_contract",
+      "type": "rust"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

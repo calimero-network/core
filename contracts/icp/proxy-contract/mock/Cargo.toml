@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "ledger",
+    "external"
+]
+resolver = "2"
