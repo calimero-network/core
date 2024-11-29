@@ -1,21 +1,19 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 
 use bs58::decode::Result as Bs58Result;
 use calimero_context_config::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
-    Application, ApplicationMetadata, ApplicationSource, Capability,
+    Application, ApplicationMetadata, ApplicationSource, Capability, IntoResult,
 };
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-
-use crate::guard::Guard;
+use thiserror::Error as ThisError;
 
 #[derive(
     CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash,
 )]
-pub struct Identity(pub [u8; 32]);
+pub struct Identity([u8; 32]);
 
 impl ReprBytes for Identity {
     type EncodeBytes<'a> = [u8; 32];
@@ -37,7 +35,7 @@ impl ReprBytes for Identity {
 #[derive(
     CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy,
 )]
-pub struct ICSignerId(pub Identity);
+pub struct ICSignerId(Identity);
 
 impl ICSignerId {
     pub fn new(bytes: [u8; 32]) -> Self {
@@ -51,7 +49,7 @@ impl ReprBytes for ICSignerId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0 .0
+        self.0.as_bytes()
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -62,7 +60,31 @@ impl ReprBytes for ICSignerId {
     }
 }
 
-pub type ICContextIdentity = ICSignerId;
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy)]
+pub struct ICContextIdentity(Identity);
+
+impl ICContextIdentity {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(Identity(bytes))
+    }
+}
+
+impl ReprBytes for ICContextIdentity {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.0
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
+    }
+}
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
 pub struct ICContextId(pub Identity);
@@ -79,7 +101,7 @@ impl ReprBytes for ICContextId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0 .0
+        self.0.as_bytes()
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -105,7 +127,7 @@ impl ReprBytes for ICApplicationId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0 .0
+        self.0.as_bytes()
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -131,7 +153,7 @@ impl ReprBytes for ICBlobId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0 .0
+        self.0.as_bytes()
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -158,7 +180,7 @@ impl From<Application<'_>> for ICApplication {
             blob: value.blob.rt().expect("infallible conversion"),
             size: value.size,
             source: value.source.0.into_owned(),
-            metadata: value.metadata.0.into_inner().into_owned().to_vec(),
+            metadata: value.metadata.0.into_inner().into_owned(),
         }
     }
 }
@@ -243,59 +265,64 @@ impl Request {
     }
 }
 
+#[derive(Debug, ThisError)]
+pub enum ICPSignedError<E> {
+    #[error("invalid signature")]
+    InvalidSignature,
+    #[error("json error: {0}")]
+    ParseError(#[from] serde_json::Error),
+    #[error("derivation error: {0}")]
+    DerivationError(E),
+    #[error("invalid public key")]
+    InvalidPublicKey,
+    #[error("signature error: {0}")]
+    SignatureError(#[from] ed25519_dalek::ed25519::Error),
+}
+
 #[derive(CandidType, Deserialize, Debug, Clone)]
-pub struct ICPSigned<T: CandidType + Serialize> {
+pub struct ICPSigned<T> {
     pub payload: T,
     pub signature: Vec<u8>,
 }
 
-impl<T: CandidType + Serialize> ICPSigned<T> {
-    pub fn parse<F>(&self, f: F) -> Result<&T, &'static str>
+impl<T: CandidType + Serialize + Clone> ICPSigned<T> {
+    pub fn new<E, R, F>(payload: T, sign: F) -> Result<Self, ICPSignedError<E>>
     where
-        F: FnOnce(&T) -> &ICSignerId,
+        R: IntoResult<Vec<u8>, Error = E>,
+        F: FnOnce(&[u8]) -> R,
     {
-        // Get the signer's public key from the payload
-        let signer_id = f(&self.payload);
+        let bytes = serde_json::to_vec(&payload)?;
+        
+        let signature = sign(&bytes)
+            .into_result()
+            .map_err(ICPSignedError::DerivationError)?;
 
-        // Convert signer_id to VerifyingKey (public key)
-        let verifying_key =
-            VerifyingKey::from_bytes(&signer_id.0 .0).map_err(|_| "invalid public key")?;
-
-        // Serialize the payload to JSON for verification
-        let message =
-            serde_json::to_vec(&self.payload).map_err(|_| "failed to serialize payload")?;
-
-        // Convert signature bytes to ed25519::Signature
-        let signature = ed25519_dalek::Signature::from_slice(&self.signature)
-            .map_err(|_| "invalid signature format")?;
-
-        // Verify the signature
-        verifying_key
-            .verify(&message, &signature)
-            .map_err(|_| "invalid signature")?;
-
-        Ok(&self.payload)
+        Ok(Self {
+            payload,
+            signature,
+        })
     }
-}
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
-pub struct Context {
-    pub application: Guard<ICApplication>,
-    pub members: Guard<Vec<ICContextIdentity>>,
-    pub proxy: Guard<String>,
-}
+    pub fn parse<R, F>(&self, f: F) -> Result<T, ICPSignedError<R::Error>>
+    where
+        R: IntoResult<ICSignerId>,
+        F: FnOnce(&T) -> R,
+    {
+        let bytes = serde_json::to_vec(&self.payload)?;
+        
+        let signer_id = f(&self.payload)
+            .into_result()
+            .map_err(ICPSignedError::DerivationError)?;
 
-pub struct ContextConfigs {
-    pub contexts: HashMap<ICContextId, Context>,
-    pub next_proxy_id: u64,
-}
+        let key = signer_id
+            .rt::<VerifyingKey>()
+            .map_err(|_| ICPSignedError::InvalidPublicKey)?;
 
-impl Default for ContextConfigs {
-    fn default() -> Self {
-        Self {
-            contexts: HashMap::new(),
-            next_proxy_id: 0,
-        }
+        let signature = ed25519_dalek::Signature::from_slice(&self.signature)?;
+        key.verify(&bytes, &signature)
+            .map_err(|_| ICPSignedError::InvalidSignature)?;
+
+        Ok(self.payload.clone())
     }
 }
 

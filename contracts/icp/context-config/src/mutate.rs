@@ -1,8 +1,12 @@
 use std::ops::Deref;
 
+use calimero_context_config::repr::{ReprBytes, ReprTransmute};
+
+
 use crate::guard::Guard;
+use crate::Context;
 use crate::types::{
-    Context, ContextRequest, ContextRequestKind, ICApplication, ICCapability, ICContextId,
+    ContextRequest, ContextRequestKind, ICApplication, ICCapability, ICContextId,
     ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
 use crate::CONTEXT_CONFIGS;
@@ -10,7 +14,7 @@ use crate::CONTEXT_CONFIGS;
 #[ic_cdk::update]
 pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
     let request = signed_request
-        .parse(|r| &r.signer_id)
+        .parse(|r| r.signer_id)
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
 
     // Check request timestamp
@@ -20,7 +24,7 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
         return Err("request expired".to_string());
     }
 
-    match &request.kind {
+    match request.kind {
         RequestKind::Context(ContextRequest { context_id, kind }) => match kind {
             ContextRequestKind::Add {
                 author_id,
@@ -28,39 +32,33 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
             } => {
                 add_context(
                     &request.signer_id,
-                    context_id.clone(),
-                    author_id.clone(),
-                    application.clone(),
-                )?;
-                Ok(())
+                    context_id,
+                    author_id,
+                    application,
+                )
             }
             ContextRequestKind::UpdateApplication { application } => {
-                update_application(&request.signer_id, &context_id.clone(), application.clone())?;
-                Ok(())
+                update_application(&request.signer_id, &context_id.clone(), application.clone())
             }
             ContextRequestKind::AddMembers { members } => {
-                add_members(&request.signer_id, &context_id.clone(), members.clone())?;
-                Ok(())
+                add_members(&request.signer_id, &context_id.clone(), members.clone())
             }
             ContextRequestKind::RemoveMembers { members } => {
-                remove_members(&request.signer_id, &context_id.clone(), members.clone())?;
-                Ok(())
+                remove_members(&request.signer_id, &context_id.clone(), members.clone())
             }
             ContextRequestKind::Grant { capabilities } => {
                 grant(
                     &request.signer_id,
                     &context_id.clone(),
                     capabilities.clone(),
-                )?;
-                Ok(())
+                )
             }
             ContextRequestKind::Revoke { capabilities } => {
                 revoke(
                     &request.signer_id,
                     &context_id.clone(),
                     capabilities.clone(),
-                )?;
-                Ok(())
+                )
             }
             ContextRequestKind::UpdateProxyContract => {
                 // TODO: Implement update_proxy_contract
@@ -77,7 +75,7 @@ fn add_context(
     application: ICApplication,
 ) -> Result<(), String> {
     // 1. Verify signer is the context itself - direct array comparison
-    if signer_id.0 != context_id.0 {
+    if signer_id.as_bytes() != context_id.as_bytes() {
         return Err("context addition must be signed by the context itself".into());
     }
 
@@ -86,10 +84,16 @@ fn add_context(
 
         // Create context with guards
         let context = Context {
-            application: Guard::new(author_id.clone(), application),
-            members: Guard::new(author_id.clone(), vec![author_id.clone()]),
+            application: Guard::new(
+                author_id.rt().expect("infallible conversion"),
+                application,
+            ),
+            members: Guard::new(
+                author_id.rt().expect("infallible conversion"),
+                vec![author_id.rt().expect("infallible conversion")],
+            ),
             proxy: Guard::new(
-                author_id,
+                author_id.rt().expect("infallible conversion"),
                 format!("{}.{}", configs.next_proxy_id, ic_cdk::api::id()),
             ),
         };
@@ -192,8 +196,13 @@ fn remove_members(
             }
 
             // Revoke privileges
-            ctx_members.privileges().revoke(&member);
-            context.application.privileges().revoke(&member);
+            ctx_members
+                .privileges()
+                .revoke(&member.rt().expect("infallible conversion"));
+            context
+                .application
+                .privileges()
+                .revoke(&member.rt().expect("infallible conversion"));
         }
 
         Ok(())
@@ -227,7 +236,7 @@ fn grant(
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
-                        .grant(identity.clone());
+                        .grant(identity.rt().expect("infallible conversion"));
                 }
                 ICCapability::ManageMembers => {
                     context
@@ -235,7 +244,7 @@ fn grant(
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
-                        .grant(identity.clone());
+                        .grant(identity.rt().expect("infallible conversion"));
                 }
                 ICCapability::Proxy => {
                     context
@@ -243,7 +252,7 @@ fn grant(
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
-                        .grant(identity.clone());
+                        .grant(identity.rt().expect("infallible conversion"));
                 }
             }
         }
@@ -273,7 +282,7 @@ fn revoke(
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
-                        .revoke(&identity);
+                        .revoke(&identity.rt().expect("infallible conversion"));
                 }
                 ICCapability::ManageMembers => {
                     context
@@ -281,7 +290,7 @@ fn revoke(
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
-                        .revoke(&identity);
+                        .revoke(&identity.rt().expect("infallible conversion"));
                 }
                 ICCapability::Proxy => {
                     context
@@ -289,7 +298,7 @@ fn revoke(
                         .get(signer_id)
                         .map_err(|e| e.to_string())?
                         .privileges()
-                        .revoke(&identity);
+                        .revoke(&identity.rt().expect("infallible conversion"));
                 }
             }
         }
