@@ -1,14 +1,15 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::repr::{self, Repr, ReprBytes, LengthMismatch};
 use calimero_context_config::types::{
-    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, Capability,
-    ContextId, SignerId,
+    Application, ApplicationMetadata, ApplicationSource, Capability,
 };
+use calimero_context_config::repr::ReprTransmute;
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use bs58::decode::Result as Bs58Result;
 
 use crate::guard::Guard;
 
@@ -16,6 +17,23 @@ use crate::guard::Guard;
     CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash,
 )]
 pub struct Identity(pub [u8; 32]);
+
+impl ReprBytes for Identity {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Self::DecodeBytes::from_bytes(f).map(Self)
+    }
+}
 
 #[derive(
     CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy,
@@ -25,6 +43,23 @@ pub struct ICSignerId(pub Identity);
 impl ICSignerId {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(Identity(bytes))
+    }
+}
+
+impl ReprBytes for ICSignerId {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.0
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
     }
 }
 
@@ -39,12 +74,46 @@ impl ICContextId {
     }
 }
 
+impl ReprBytes for ICContextId {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.0
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
+    }
+}
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ICApplicationId(pub Identity);
 
 impl ICApplicationId {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(Identity(bytes))
+    }
+}
+
+impl ReprBytes for ICApplicationId {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.0
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
     }
 }
 
@@ -57,41 +126,20 @@ impl ICBlobId {
     }
 }
 
-// Update the From implementations
-impl From<SignerId> for ICSignerId {
-    fn from(value: SignerId) -> Self {
-        ICSignerId(Identity(value.as_bytes()))
-    }
-}
+impl ReprBytes for ICBlobId {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
 
-impl From<Repr<SignerId>> for ICSignerId {
-    fn from(value: Repr<SignerId>) -> Self {
-        ICSignerId(Identity(value.as_bytes()))
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.0
     }
-}
 
-impl From<ICSignerId> for SignerId {
-    fn from(value: ICSignerId) -> Self {
-        value.0 .0.rt().expect("Infallible conversion")
-    }
-}
-
-// Similar From implementations for other types
-impl From<ContextId> for ICContextId {
-    fn from(value: ContextId) -> Self {
-        ICContextId(Identity(value.as_bytes()))
-    }
-}
-
-impl From<Repr<ContextId>> for ICContextId {
-    fn from(value: Repr<ContextId>) -> Self {
-        ICContextId(Identity(value.as_bytes()))
-    }
-}
-
-impl From<ICContextId> for ContextId {
-    fn from(value: ICContextId) -> Self {
-        value.0 .0.rt().expect("Infallible conversion")
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
     }
 }
 
@@ -104,50 +152,11 @@ pub struct ICApplication {
     pub metadata: Vec<u8>,
 }
 
-// Conversions for ApplicationId
-impl From<ApplicationId> for ICApplicationId {
-    fn from(value: ApplicationId) -> Self {
-        ICApplicationId(Identity(value.as_bytes()))
-    }
-}
-
-impl From<Repr<ApplicationId>> for ICApplicationId {
-    fn from(value: Repr<ApplicationId>) -> Self {
-        ICApplicationId(Identity(value.as_bytes()))
-    }
-}
-
-impl From<ICApplicationId> for ApplicationId {
-    fn from(value: ICApplicationId) -> Self {
-        value.0 .0.rt().expect("Infallible conversion")
-    }
-}
-
-// Conversions for BlobId
-impl From<BlobId> for ICBlobId {
-    fn from(value: BlobId) -> Self {
-        ICBlobId(Identity(value.as_bytes()))
-    }
-}
-
-impl From<Repr<BlobId>> for ICBlobId {
-    fn from(value: Repr<BlobId>) -> Self {
-        ICBlobId(Identity(value.as_bytes()))
-    }
-}
-
-impl From<ICBlobId> for BlobId {
-    fn from(value: ICBlobId) -> Self {
-        value.0 .0.rt().expect("Infallible conversion")
-    }
-}
-
-// Conversions for Application
 impl From<Application<'_>> for ICApplication {
     fn from(value: Application) -> Self {
         ICApplication {
-            id: ICApplicationId(Identity(value.id.as_bytes())),
-            blob: ICBlobId(Identity(value.blob.as_bytes())),
+            id: value.id.rt().expect("infallible conversion"),
+            blob: value.blob.rt().expect("infallible conversion"),
             size: value.size,
             source: value.source.0.into_owned(),
             metadata: value.metadata.0.into_inner().into_owned().to_vec(),
@@ -158,8 +167,8 @@ impl From<Application<'_>> for ICApplication {
 impl<'a> From<ICApplication> for Application<'a> {
     fn from(value: ICApplication) -> Self {
         Application::new(
-            Repr::new(value.id.into()),
-            Repr::new(value.blob.into()),
+            value.id.rt().expect("infallible conversion"),
+            value.blob.rt().expect("infallible conversion"),
             value.size,
             ApplicationSource(Cow::Owned(value.source)),
             ApplicationMetadata(Repr::new(Cow::Owned(value.metadata))),
@@ -222,15 +231,6 @@ impl Request {
             signer_id,
             kind,
             timestamp_ms: 0, // Default timestamp for tests
-        }
-    }
-
-    #[cfg(not(test))]
-    pub fn new_with_time(signer_id: ICSignerId, kind: RequestKind) -> Self {
-        Self {
-            signer_id,
-            kind,
-            timestamp_ms: ic_cdk::api::time(),
         }
     }
 
@@ -300,7 +300,6 @@ impl Default for ContextConfigs {
     }
 }
 
-// Add these conversions for ICCapability
 impl From<Capability> for ICCapability {
     fn from(value: Capability) -> Self {
         match value {

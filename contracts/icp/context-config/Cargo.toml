@@ -9,6 +9,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+bs58.workspace = true
 calimero-context-config = { path = "../../../crates/context/config" }
 candid = "0.10"
 ed25519-dalek.workspace = true
