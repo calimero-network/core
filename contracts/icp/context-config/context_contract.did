@@ -15,7 +15,7 @@ type ICApplication = record {
   "blob" : blob;
   size : nat64;
 };
-type ICCapability = variant { ManageMembers; ManageApplication };
+type ICCapability = variant { Proxy; ManageMembers; ManageApplication };
 type ICPSigned = record { signature : blob; payload : Request };
 type Request = record {
   timestamp_ms : nat64;

@@ -261,9 +261,9 @@ impl<T: CandidType + Serialize> ICPSigned<T> {
         let verifying_key =
             VerifyingKey::from_bytes(&signer_id.0 .0).map_err(|_| "invalid public key")?;
 
-        // Serialize the payload for verification
-        let message =
-            candid::encode_one(&self.payload).map_err(|_| "failed to serialize payload")?;
+        // Serialize the payload to JSON for verification
+        let message = serde_json::to_vec(&self.payload)
+            .map_err(|_| "failed to serialize payload")?;
 
         // Convert signature bytes to ed25519::Signature
         let signature = ed25519_dalek::Signature::from_slice(&self.signature)

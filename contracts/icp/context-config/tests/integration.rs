@@ -8,6 +8,7 @@ use context_contract::types::{
 use ed25519_dalek::{Signer, SigningKey};
 use pocket_ic::{PocketIc, WasmResult};
 use rand::Rng;
+use serde_json;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
@@ -25,8 +26,8 @@ fn setup() -> (PocketIc, Principal) {
 }
 
 fn create_signed_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
-    // Serialize the request using candid (same as in verification)
-    let message = candid::encode_one(&request).expect("Failed to serialize request");
+    // Serialize the request using JSON (same as in verification)
+    let message = serde_json::to_vec(&request).expect("Failed to serialize request");
 
     // Sign the serialized message
     let signature = signer_key.sign(&message);
