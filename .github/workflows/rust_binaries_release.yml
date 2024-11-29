@@ -1,0 +1,215 @@
+name: Rust binaries release
+
+on:
+  push:
+    branches:
+      - master
+      - 'releases/**'
+      - 'hotfix/**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - master
+
+jobs:
+  binary_matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      binaries: ${{ steps.setup_matrix.outputs.binaries }}
+    steps:
+      - name: Setup matrix
+        id: setup_matrix
+        run: |
+          echo 'binaries=["merod", "meroctl"]' >> "$GITHUB_OUTPUT"
+
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    needs: binary_matrix
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Craft cargo arguments
+        id: cargo_args
+        run: |
+          binaries=$(echo '${{ needs.binary_matrix.outputs.binaries }}' | jq -r 'join(" ") | split(" ") | map("-p " + .) | join(" ")')
+          args="$binaries --release --target ${{ matrix.target }}"
+          echo "Cargo build arguments: $args"
+          echo args="$args" >> "$GITHUB_OUTPUT"
+
+      - name: Install rustup and Rust toolchain
+        if: matrix.os == 'macos-latest'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup toolchain install stable
+          rustup default stable
+
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-binaries-${{ runner.os }}-${{ matrix.target }}
+
+      - name: Install target for ${{ matrix.target }}
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install dependencies for cross-compilation
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+          libstdc++-11-dev-arm64-cross \
+          zlib1g-dev \
+          libsnappy-dev \
+          libbz2-dev \
+          liblz4-dev \
+          libzstd-dev \
+          clang \
+          libc6-dev-arm64-cross
+
+      - name: Download and set up OpenSSL for cross-compilation
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          wget https://www.openssl.org/source/openssl-1.1.1k.tar.gz
+          tar -xzf openssl-1.1.1k.tar.gz
+          cd openssl-1.1.1k
+          ./Configure linux-aarch64 --prefix=$HOME/openssl-aarch64 --cross-compile-prefix=aarch64-linux-gnu-
+          make -j$(nproc)
+          make install_sw
+          cd ..
+          echo "OPENSSL_DIR=$HOME/openssl-aarch64" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$HOME/openssl-aarch64/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$HOME/openssl-aarch64/include" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$HOME/openssl-aarch64/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+
+      - name: Install and configure Zig for aarch64 cross-compilation
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          wget https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz
+          tar -xf zig-linux-x86_64-0.11.0.tar.xz
+          echo "ZIG_PATH=$PWD/zig-linux-x86_64-0.11.0/zig" >> $GITHUB_ENV
+          echo "$PWD/zig-linux-x86_64-0.11.0" >> $GITHUB_PATH
+          zig-linux-x86_64-0.11.0/zig version
+          echo "CARGO_ZIGBUILD_ZIG=$PWD/zig-linux-x86_64-0.11.0/zig" >> $GITHUB_ENV
+          cargo install cargo-zigbuild
+
+      - name: Build binaries
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        env:
+          C_INCLUDE_PATH: /usr/lib/gcc-cross/aarch64-linux-gnu/11/include
+          CXX_INCLUDE_PATH: /usr/lib/gcc-cross/aarch64-linux-gnu/11/include/c++
+          OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
+          OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
+          OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
+          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
+          PKG_CONFIG_ALLOW_CROSS: ${{ env.PKG_CONFIG_ALLOW_CROSS }}
+          PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
+          OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
+          RUSTFLAGS: '-C link-arg=-lstdc++ -C link-arg=-lpthread -C link-arg=-lc'
+        run: cargo zigbuild ${{ steps.cargo_args.outputs.args }}
+
+      - name: Build binaries
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        run: cargo build ${{ steps.cargo_args.outputs.args }}
+
+      - name: Compress artifacts using gzip
+        run: |
+          mkdir -p artifacts
+          echo '${{ needs.binary_matrix.outputs.binaries }}' | jq -r '.[]' | while read binary; do
+            tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          path: artifacts/*
+          retention-days: 2
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [binary_matrix, build]
+    strategy:
+      matrix:
+        binary: ${{ fromJSON(needs.binary_matrix.outputs.binaries) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Get version info
+        id: version_info
+        shell: bash
+        run: |
+          echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+          if [ "${{ github.ref }}" == "refs/heads/master" ]; then
+            version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "${{ matrix.binary }}") | .version')
+            version="${{ matrix.binary }}-$version"
+            echo "Master version: $version"
+
+            if gh release view "v$VERSION" >/dev/null 2>&1; then
+              echo "Master release for this version already exists"
+              echo "release_required=false" >> $GITHUB_OUTPUT
+            else
+              echo "New master release required"
+              echo "release_required=true" >> $GITHUB_OUTPUT
+            fi
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+            echo "overwrite=false">> $GITHUB_OUTPUT
+            echo "version=$version" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == ci/* ]]; then
+            version="prerelease-${{ github.event.number }}"
+            echo "Prerelease version: $version"
+
+            echo "release_required=true" >> $GITHUB_OUTPUT
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "overwrite=true">> $GITHUB_OUTPUT
+            echo "version=$version" >> $GITHUB_OUTPUT
+          else
+            echo "This is not a master branch or a prerelease PR"
+            echo "release_required=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Remove other binaries from artifacts
+        if: steps.version_info.outputs.release_required == 'true'
+        run: |
+          ls -al artifacts/
+          find artifacts/ -type f ! -name '${{ matrix.binary }}*' -exec rm {} +
+          ls -al artifacts/
+
+      - name: Upload binaries to release
+        if: steps.version_info.outputs.release_required == 'true'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: artifacts/*
+          file_glob: true
+          tag: ${{ steps.version_info.outputs.version }}
+          prerelease: ${{ steps.version_info.outputs.prerelease }}
+          overwrite: ${{ steps.version_info.outputs.overwrite }}
+          target_commit: ${{ steps.version_info.outputs.target_commit }}
