@@ -1,5 +1,5 @@
-use std::{cell::RefCell, collections::HashMap};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 
 use candid::CandidType;
 use guard::Guard;

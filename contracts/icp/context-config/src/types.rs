@@ -60,7 +60,9 @@ impl ReprBytes for ICSignerId {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy)]
+#[derive(
+    CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy,
+)]
 pub struct ICContextIdentity(Identity);
 
 impl ICContextIdentity {
@@ -75,7 +77,7 @@ impl ReprBytes for ICContextIdentity {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.0
+        self.0 .0
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -292,15 +294,12 @@ impl<T: CandidType + Serialize + Clone> ICPSigned<T> {
         F: FnOnce(&[u8]) -> R,
     {
         let bytes = serde_json::to_vec(&payload)?;
-        
+
         let signature = sign(&bytes)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;
 
-        Ok(Self {
-            payload,
-            signature,
-        })
+        Ok(Self { payload, signature })
     }
 
     pub fn parse<R, F>(&self, f: F) -> Result<T, ICPSignedError<R::Error>>
@@ -309,7 +308,7 @@ impl<T: CandidType + Serialize + Clone> ICPSigned<T> {
         F: FnOnce(&T) -> R,
     {
         let bytes = serde_json::to_vec(&self.payload)?;
-        
+
         let signer_id = f(&self.payload)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;

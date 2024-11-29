@@ -1,6 +1,6 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::collections::BTreeSet;
 
 use calimero_context_config::types::Revision;
 use candid::CandidType;

@@ -2,14 +2,12 @@ use std::ops::Deref;
 
 use calimero_context_config::repr::{ReprBytes, ReprTransmute};
 
-
 use crate::guard::Guard;
-use crate::Context;
 use crate::types::{
     ContextRequest, ContextRequestKind, ICApplication, ICCapability, ICContextId,
     ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
-use crate::CONTEXT_CONFIGS;
+use crate::{Context, CONTEXT_CONFIGS};
 
 #[ic_cdk::update]
 pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
@@ -29,14 +27,7 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
             ContextRequestKind::Add {
                 author_id,
                 application,
-            } => {
-                add_context(
-                    &request.signer_id,
-                    context_id,
-                    author_id,
-                    application,
-                )
-            }
+            } => add_context(&request.signer_id, context_id, author_id, application),
             ContextRequestKind::UpdateApplication { application } => {
                 update_application(&request.signer_id, &context_id.clone(), application.clone())
             }
@@ -46,20 +37,16 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
             ContextRequestKind::RemoveMembers { members } => {
                 remove_members(&request.signer_id, &context_id.clone(), members.clone())
             }
-            ContextRequestKind::Grant { capabilities } => {
-                grant(
-                    &request.signer_id,
-                    &context_id.clone(),
-                    capabilities.clone(),
-                )
-            }
-            ContextRequestKind::Revoke { capabilities } => {
-                revoke(
-                    &request.signer_id,
-                    &context_id.clone(),
-                    capabilities.clone(),
-                )
-            }
+            ContextRequestKind::Grant { capabilities } => grant(
+                &request.signer_id,
+                &context_id.clone(),
+                capabilities.clone(),
+            ),
+            ContextRequestKind::Revoke { capabilities } => revoke(
+                &request.signer_id,
+                &context_id.clone(),
+                capabilities.clone(),
+            ),
             ContextRequestKind::UpdateProxyContract => {
                 // TODO: Implement update_proxy_contract
                 Ok(())
@@ -84,10 +71,7 @@ fn add_context(
 
         // Create context with guards
         let context = Context {
-            application: Guard::new(
-                author_id.rt().expect("infallible conversion"),
-                application,
-            ),
+            application: Guard::new(author_id.rt().expect("infallible conversion"), application),
             members: Guard::new(
                 author_id.rt().expect("infallible conversion"),
                 vec![author_id.rt().expect("infallible conversion")],
