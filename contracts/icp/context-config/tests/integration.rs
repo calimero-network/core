@@ -13,7 +13,7 @@ use serde_json;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
-    let wasm = std::fs::read(".dfx/local/canisters/context_contract/context_contract.wasm")
+    let wasm = std::fs::read("target/wasm32-unknown-unknown/release/context_contract.wasm")
         .expect("failed to read wasm");
     let canister = pic.create_canister();
     pic.add_cycles(canister, 2_000_000_000_000);
