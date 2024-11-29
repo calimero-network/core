@@ -14,8 +14,7 @@ pub struct Guard<T> {
     privileged: Vec<ICSignerId>,
 }
 
-#[derive(Debug)]
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct UnauthorizedAccess {
     _priv: (),
 }

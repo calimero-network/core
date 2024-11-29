@@ -84,7 +84,7 @@ impl Method<Icp> for HasMemberRequest {
         let identity: ICContextIdentity = self.identity.into();
         let request = ICHasMemberRequest {
             context_id,
-            identity
+            identity,
         };
 
         Encode!(&request).map_err(|e| eyre::eyre!(e))

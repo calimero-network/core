@@ -1,15 +1,16 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
-use crate::types::{
-    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, Capability, ContextId, ContextIdentity, SignerId
-};
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::guard::Guard;
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::types::{
+    Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, Capability,
+    ContextId, ContextIdentity, SignerId,
+};
 
 #[derive(
     CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash,
@@ -47,26 +48,20 @@ impl ICApplicationId {
     }
 }
 
-#[derive(
-    CandidType, Serialize, Deserialize, Clone, Debug,
-)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct ICHasMemberRequest {
     pub context_id: ICContextId,
     pub identity: ICContextIdentity,
 }
 
-#[derive(
-    CandidType, Serialize, Deserialize, Clone, Debug,
-)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct ICMembersRequest {
     pub context_id: ICContextId,
     pub offset: usize,
     pub length: usize,
 }
 
-#[derive(
-    CandidType, Serialize, Deserialize, Clone, Debug,
-)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct ICPrivilegesRequest {
     pub context_id: ICContextId,
     pub identities: ICContextIdentity,

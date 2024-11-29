@@ -34,8 +34,8 @@ pub struct Credentials {
 }
 
 mod serde_creds {
-    use ed25519_consensus::SigningKey;
     use candid::Principal;
+    use ed25519_consensus::SigningKey;
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
 

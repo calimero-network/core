@@ -14,7 +14,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::icpTypes::{ICCapability, ICContextId, ICContextIdentity, ICPrivilegesRequest, ICSignerId};
+use crate::icpTypes::{
+    ICCapability, ICContextId, ICContextIdentity, ICPrivilegesRequest, ICSignerId,
+};
 use crate::repr::Repr;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
@@ -146,7 +148,8 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded: BTreeMap<ICSignerId, Vec<ICCapability>> = Decode!(&response, BTreeMap<ICSignerId, Vec<ICCapability>>)?;
+        let decoded: BTreeMap<ICSignerId, Vec<ICCapability>> =
+            Decode!(&response, BTreeMap<ICSignerId, Vec<ICCapability>>)?;
         let value: Self::Returns = decoded
             .into_iter()
             .map(|(k, v)| (k.into(), v.into_iter().map(Into::into).collect()))

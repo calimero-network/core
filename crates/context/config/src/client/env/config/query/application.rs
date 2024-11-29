@@ -95,7 +95,6 @@ impl Method<Starknet> for ApplicationRequest {
     }
 }
 
-
 impl Method<Icp> for ApplicationRequest {
     type Returns = Application<'static>;
 
