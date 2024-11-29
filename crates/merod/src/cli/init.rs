@@ -265,8 +265,7 @@ impl InitCommand {
                                 (
                                     "ic".to_owned(),
                                     generate_local_signer(
-                                        "https://ic0.app"
-                                            .parse()?,
+                                        "https://ic0.app".parse()?,
                                         ConfigProtocol::Icp,
                                     )?,
                                 ),

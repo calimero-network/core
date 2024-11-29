@@ -145,7 +145,6 @@ impl<'a> Method<Icp> for Mutate<'a> {
             kind: kind.into(),
         };
 
-
         Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
