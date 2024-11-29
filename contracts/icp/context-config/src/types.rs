@@ -1,15 +1,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use calimero_context_config::repr::{self, Repr, ReprBytes, LengthMismatch};
+use bs58::decode::Result as Bs58Result;
+use calimero_context_config::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application, ApplicationMetadata, ApplicationSource, Capability,
 };
-use calimero_context_config::repr::ReprTransmute;
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use bs58::decode::Result as Bs58Result;
 
 use crate::guard::Guard;
 
@@ -52,7 +51,7 @@ impl ReprBytes for ICSignerId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.0
+        self.0 .0
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -80,7 +79,7 @@ impl ReprBytes for ICContextId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.0
+        self.0 .0
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -106,7 +105,7 @@ impl ReprBytes for ICApplicationId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.0
+        self.0 .0
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
@@ -132,7 +131,7 @@ impl ReprBytes for ICBlobId {
     type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0.0
+        self.0 .0
     }
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
