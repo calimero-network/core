@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use candid::Encode;
 use ed25519_dalek::{Signer, SigningKey};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
@@ -12,6 +13,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
+use crate::icpTypes::ICMutate;
 use crate::repr::{Repr, ReprTransmute};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
@@ -133,7 +135,18 @@ impl<'a> Method<Icp> for Mutate<'a> {
     const METHOD: &'static str = "mutate";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let signing_key = &self.signing_key;
+        let nonce = &self.nonce;
+        let kind = &self.kind;
+
+        let request = ICMutate {
+            signing_key: *signing_key,
+            nonce: *nonce,
+            kind: kind.into(),
+        };
+
+
+        Encode!(&self).map_err(|e| eyre::eyre!(e))
     }
 
     fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {

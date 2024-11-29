@@ -67,6 +67,13 @@ pub struct ICPrivilegesRequest {
     pub identities: ICContextIdentity,
 }
 
+#[derive(CandidType, Debug)]
+pub struct ICMutate {
+    pub signing_key: [u8; 32],
+    pub nonce: u64,
+    pub kind: RequestKind,
+}
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ICBlobId(pub Identity);
 

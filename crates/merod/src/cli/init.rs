@@ -265,7 +265,7 @@ impl InitCommand {
                                 (
                                     "ic".to_owned(),
                                     generate_local_signer(
-                                        "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"
+                                        "https://ic0.app"
                                             .parse()?,
                                         ConfigProtocol::Icp,
                                     )?,
@@ -295,7 +295,7 @@ impl InitCommand {
                                 "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                                     .parse()?
                             }
-                            ConfigProtocol::Icp => "be2us-64aaa-aaaaa-qaabq-cai".parse()?,
+                            ConfigProtocol::Icp => "br5f7-7uaaa-aaaaa-qaaca-cai".parse()?,
                         },
                     },
                 },
@@ -352,6 +352,7 @@ fn generate_local_signer(
 
             let signing_key = IcpSigningKey::new(&mut rng);
             let identity = BasicIdentity::from_signing_key(signing_key.clone());
+
             let public_key = identity.public_key().unwrap();
             let account_id = Principal::self_authenticating(&public_key);
 
