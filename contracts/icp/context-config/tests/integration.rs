@@ -27,16 +27,10 @@ fn setup() -> (PocketIc, Principal) {
 }
 
 fn create_signed_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
-    // Serialize the request using JSON (same as in verification)
-    let message = serde_json::to_vec(&request).expect("Failed to serialize request");
-
-    // Sign the serialized message
-    let signature = signer_key.sign(&message);
-
-    ICPSigned {
-        payload: request,
-        signature: signature.to_vec(),
-    }
+    ICPSigned::new(
+        request,
+        |bytes| Ok::<_, std::convert::Infallible>(signer_key.sign(bytes).to_vec())
+    ).expect("Failed to create signed request")
 }
 
 fn get_time_nanos(pic: &PocketIc) -> u64 {

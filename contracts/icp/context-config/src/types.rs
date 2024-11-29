@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::marker::PhantomData;
 
 use bs58::decode::Result as Bs58Result;
 use calimero_context_config::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
@@ -7,6 +8,7 @@ use calimero_context_config::types::{
 };
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
@@ -256,15 +258,6 @@ impl Request {
             timestamp_ms: 0, // Default timestamp for tests
         }
     }
-
-    #[cfg(test)]
-    pub fn new_with_time(signer_id: ICSignerId, kind: RequestKind, timestamp_ms: u64) -> Self {
-        Self {
-            signer_id,
-            kind,
-            timestamp_ms,
-        }
-    }
 }
 
 #[derive(Debug, ThisError)]
@@ -281,25 +274,46 @@ pub enum ICPSignedError<E> {
     SignatureError(#[from] ed25519_dalek::ed25519::Error),
 }
 
-#[derive(CandidType, Deserialize, Debug, Clone)]
-pub struct ICPSigned<T> {
-    pub payload: T,
-    pub signature: Vec<u8>,
+#[derive(Deserialize, Debug, Clone)]
+struct Phantom<T>(#[serde(skip)] std::marker::PhantomData<T>);
+
+impl<T> CandidType for Phantom<T> {
+    fn _ty() -> candid::types::Type {
+        candid::types::TypeInner::Null.into()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: candid::types::Serializer,
+    {
+        serializer.serialize_null(())
+    }
 }
 
-impl<T: CandidType + Serialize + Clone> ICPSigned<T> {
+#[derive(CandidType, Deserialize, Debug, Clone)]
+pub struct ICPSigned<T> {
+    pub payload: Vec<u8>,
+    pub signature: Vec<u8>,
+    _phantom: Phantom<T>,
+}
+
+impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
     pub fn new<E, R, F>(payload: T, sign: F) -> Result<Self, ICPSignedError<E>>
     where
         R: IntoResult<Vec<u8>, Error = E>,
         F: FnOnce(&[u8]) -> R,
     {
         let bytes = serde_json::to_vec(&payload)?;
-
+        
         let signature = sign(&bytes)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;
 
-        Ok(Self { payload, signature })
+        Ok(Self {
+            payload: bytes,
+            signature,
+            _phantom: Phantom(PhantomData),
+        })
     }
 
     pub fn parse<R, F>(&self, f: F) -> Result<T, ICPSignedError<R::Error>>
@@ -307,9 +321,9 @@ impl<T: CandidType + Serialize + Clone> ICPSigned<T> {
         R: IntoResult<ICSignerId>,
         F: FnOnce(&T) -> R,
     {
-        let bytes = serde_json::to_vec(&self.payload)?;
-
-        let signer_id = f(&self.payload)
+        let parsed: T = serde_json::from_slice(&self.payload)?;
+        
+        let signer_id = f(&parsed)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;
 
@@ -318,10 +332,10 @@ impl<T: CandidType + Serialize + Clone> ICPSigned<T> {
             .map_err(|_| ICPSignedError::InvalidPublicKey)?;
 
         let signature = ed25519_dalek::Signature::from_slice(&self.signature)?;
-        key.verify(&bytes, &signature)
+        key.verify(&self.payload, &signature)
             .map_err(|_| ICPSignedError::InvalidSignature)?;
 
-        Ok(self.payload.clone())
+        Ok(parsed)
     }
 }
 
