@@ -26,11 +26,8 @@ fn setup() -> (PocketIc, Principal) {
 }
 
 fn create_signed_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
-    ICPSigned::new(
-        request,
-        |bytes| signer_key.sign(bytes)
-    )
-    .expect("Failed to create signed request")
+    ICPSigned::new(request, |bytes| signer_key.sign(bytes))
+        .expect("Failed to create signed request")
 }
 
 fn get_time_nanos(pic: &PocketIc) -> u64 {

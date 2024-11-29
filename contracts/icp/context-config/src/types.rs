@@ -309,7 +309,7 @@ impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
     {
         let bytes = candid::encode_one(payload)
             .map_err(|e| ICPSignedError::SerializationError(e.to_string()))?;
-        
+
         let signature = sign(&bytes)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;
@@ -337,10 +337,12 @@ impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
             .rt::<VerifyingKey>()
             .map_err(|_| ICPSignedError::InvalidPublicKey)?;
 
-        let signature_bytes: [u8; 64] = self.signature.as_slice().try_into()
-            .map_err(|_| ICPSignedError::SignatureError(ed25519_dalek::ed25519::Error::new()))?;
+        let signature_bytes: [u8; 64] =
+            self.signature.as_slice().try_into().map_err(|_| {
+                ICPSignedError::SignatureError(ed25519_dalek::ed25519::Error::new())
+            })?;
         let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
-        
+
         key.verify(&self.payload, &signature)
             .map_err(|_| ICPSignedError::InvalidSignature)?;
 

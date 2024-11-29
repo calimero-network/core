@@ -37,16 +37,12 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
             ContextRequestKind::RemoveMembers { members } => {
                 remove_members(&request.signer_id, &context_id, members)
             }
-            ContextRequestKind::Grant { capabilities } => grant(
-                &request.signer_id,
-                &context_id,
-                capabilities,
-            ),
-            ContextRequestKind::Revoke { capabilities } => revoke(
-                &request.signer_id,
-                &context_id,
-                capabilities,
-            ),
+            ContextRequestKind::Grant { capabilities } => {
+                grant(&request.signer_id, &context_id, capabilities)
+            }
+            ContextRequestKind::Revoke { capabilities } => {
+                revoke(&request.signer_id, &context_id, capabilities)
+            }
             ContextRequestKind::UpdateProxyContract => {
                 // TODO: Implement update_proxy_contract
                 Ok(())
@@ -83,11 +79,7 @@ fn add_context(
         };
 
         // Store context
-        if configs
-            .contexts
-            .insert(context_id, context)
-            .is_some()
-        {
+        if configs.contexts.insert(context_id, context).is_some() {
             return Err("context already exists".into());
         }
 
