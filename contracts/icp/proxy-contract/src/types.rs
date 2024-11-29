@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
+
 use candid::CandidType;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
 
 /// Base identity type
 pub type Identity = [u8; 32];
@@ -10,18 +11,18 @@ pub type Identity = [u8; 32];
 pub struct ICSignerId(pub Identity);
 
 impl ICSignerId {
-  pub fn new(bytes: [u8; 32]) -> Self {
-      Self(bytes)
-  }
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq, Default)]
 pub struct ICContextId(pub Identity);
 
 impl ICContextId {
-  pub fn new(bytes: [u8; 32]) -> Self {
-      Self(bytes)
-  }
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 pub type ICGas = u64;
@@ -31,9 +32,9 @@ pub type ICNativeToken = u128;
 pub struct ICProposalId(pub [u8; 32]);
 
 impl ICProposalId {
-  pub fn new(bytes: [u8; 32]) -> Self {
-      Self(bytes)
-  }
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -82,8 +83,12 @@ pub struct ICProposalApprovalWithSigner {
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub enum ICRequestKind {
-    Propose { proposal: ICProposal },
-    Approve { approval: ICProposalApprovalWithSigner },
+    Propose {
+        proposal: ICProposal,
+    },
+    Approve {
+        approval: ICProposalApprovalWithSigner,
+    },
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
@@ -116,8 +121,8 @@ impl<T: CandidType + Serialize> ICPSigned<T> {
             candid::encode_one(&self.payload).map_err(|_| "failed to serialize payload")?;
 
         // Convert signature bytes to ed25519::Signature
-        let signature = Signature::from_slice(&self.signature)
-            .map_err(|_| "invalid signature format")?;
+        let signature =
+            Signature::from_slice(&self.signature).map_err(|_| "invalid signature format")?;
 
         // Verify the signature
         verifying_key
@@ -143,23 +148,23 @@ pub struct ICProxyContract {
 }
 
 impl ICProxyContract {
-  pub fn new(context_id: ICContextId) -> Self {
-      Self {
-          context_id,
-          context_config_id: ic_cdk::api::id().to_string(),
-          num_approvals: 3,
-          proposals: HashMap::new(),
-          approvals: HashMap::new(),
-          num_proposals_pk: HashMap::new(),
-          active_proposals_limit: 10,
-          context_storage: HashMap::new(),
-          code_size: (0, None),
-      }
-  }
+    pub fn new(context_id: ICContextId) -> Self {
+        Self {
+            context_id,
+            context_config_id: ic_cdk::api::id().to_string(),
+            num_approvals: 3,
+            proposals: HashMap::new(),
+            approvals: HashMap::new(),
+            num_proposals_pk: HashMap::new(),
+            active_proposals_limit: 10,
+            context_storage: HashMap::new(),
+            code_size: (0, None),
+        }
+    }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct LedgerTransferArgs {
-  pub to: String,
-  pub amount: ICNativeToken,
+    pub to: String,
+    pub amount: ICNativeToken,
 }

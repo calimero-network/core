@@ -29,7 +29,8 @@ pub fn get_proposal(proposal_id: ICProposalId) -> Option<ICProposal> {
 pub fn get_proposals(from_index: usize, limit: usize) -> Vec<ICProposal> {
     PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
-        contract.proposals
+        contract
+            .proposals
             .values()
             .skip(from_index)
             .take(limit)
@@ -43,19 +44,23 @@ pub fn get_proposal_approvals(proposal_id: ICProposalId) -> Option<ICProposalWit
     PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
         contract.proposals.get(&proposal_id).map(|_| {
-            let num_approvals = contract.approvals
+            let num_approvals = contract
+                .approvals
                 .get(&proposal_id)
                 .map_or(0, |approvals| approvals.len());
             ICProposalWithApprovals {
                 proposal_id,
-                num_approvals
+                num_approvals,
             }
         })
     })
 }
 
 #[ic_cdk::query]
-pub fn get_proposal_approval_with_signer(proposal_id: ICProposalId, signer_id: ICSignerId) -> Option<ICProposalApprovalWithSigner> {
+pub fn get_proposal_approval_with_signer(
+    proposal_id: ICProposalId,
+    signer_id: ICSignerId,
+) -> Option<ICProposalApprovalWithSigner> {
     PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
         if let Some(approvals) = contract.approvals.get(&proposal_id) {
@@ -72,7 +77,9 @@ pub fn get_proposal_approval_with_signer(proposal_id: ICProposalId, signer_id: I
 }
 
 #[ic_cdk::query]
-pub fn get_proposal_approvals_with_signer(proposal_id: ICProposalId) -> Vec<ICProposalApprovalWithSigner> {
+pub fn get_proposal_approvals_with_signer(
+    proposal_id: ICProposalId,
+) -> Vec<ICProposalApprovalWithSigner> {
     PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
         if let Some(approvals) = contract.approvals.get(&proposal_id) {
@@ -102,7 +109,8 @@ pub fn get_context_value(key: Vec<u8>) -> Option<Vec<u8>> {
 pub fn get_context_storage_entries(from_index: usize, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
     PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
-        contract.context_storage
+        contract
+            .context_storage
             .iter()
             .skip(from_index)
             .take(limit)

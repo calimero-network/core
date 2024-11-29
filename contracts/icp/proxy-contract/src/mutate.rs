@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
+use candid::Principal;
+
 use crate::types::*;
 use crate::PROXY_CONTRACT;
-use candid::Principal;
 
 // Helper function to convert Identity to Principal
 fn identity_to_principal(identity: &Identity) -> Principal {
@@ -27,7 +28,9 @@ async fn check_member(_signer_id: &ICSignerId) -> Result<bool, String> {
 }
 
 #[ic_cdk::update]
-async fn mutate(signed_request: ICPSigned<ICRequest>) -> Result<Option<ICProposalWithApprovals>, String> {
+async fn mutate(
+    signed_request: ICPSigned<ICRequest>,
+) -> Result<Option<ICProposalWithApprovals>, String> {
     let request = signed_request
         .parse(|r| &r.signer_id)
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
@@ -61,7 +64,8 @@ async fn mutate(signed_request: ICPSigned<ICRequest>) -> Result<Option<ICProposa
                 approval.signer_id.clone(),
                 approval.proposal_id.clone(),
                 approval.added_timestamp,
-            ).await
+            )
+            .await
         }
     }
 }
@@ -74,14 +78,14 @@ async fn internal_approve_proposal(
     // First phase: Update approvals and check if we need to execute
     let should_execute = PROXY_CONTRACT.with(|contract| {
         let mut contract = contract.borrow_mut();
-        
+
         // Check if proposal exists
         if !contract.proposals.contains_key(&proposal_id) {
             return Err("proposal does not exist".to_string());
         }
 
         let approvals = contract.approvals.entry(proposal_id.clone()).or_default();
-        
+
         if approvals.contains(&signer_id) {
             return Err("proposal already approved".to_string());
         }
@@ -106,7 +110,9 @@ async fn internal_approve_proposal(
 async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
     let proposal = PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
-        contract.proposals.get(proposal_id)
+        contract
+            .proposals
+            .get(proposal_id)
             .cloned()
             .ok_or_else(|| "proposal does not exist".to_string())
     })?;
@@ -114,24 +120,28 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
     // Execute each action
     for action in &proposal.actions {
         match action {
-            ICProposalAction::ExternalFunctionCall { receiver_id, method_name, args, deposit: _ } => {
+            ICProposalAction::ExternalFunctionCall {
+                receiver_id,
+                method_name,
+                args,
+                deposit: _,
+            } => {
                 let receiver = identity_to_principal(receiver_id);
 
-                let args_bytes = hex::decode(args)
-                    .map_err(|e| format!("Invalid args hex encoding: {}", e))?;
+                let args_bytes =
+                    hex::decode(args).map_err(|e| format!("Invalid args hex encoding: {}", e))?;
 
-                let _: ((),) = ic_cdk::call(
-                    receiver,
-                    method_name,
-                    (args_bytes,),
-                )
-                .await
-                .map_err(|e| format!("Inter-canister call failed: {:?}", e))?;
+                let _: ((),) = ic_cdk::call(receiver, method_name, (args_bytes,))
+                    .await
+                    .map_err(|e| format!("Inter-canister call failed: {:?}", e))?;
             }
-            ICProposalAction::Transfer { receiver_id, amount } => {
+            ICProposalAction::Transfer {
+                receiver_id,
+                amount,
+            } => {
                 let ledger_id = "ryjl3-tyaaa-aaaaa-aaaba-cai";
                 let receiver = identity_to_principal(receiver_id);
-                
+
                 let transfer_args = LedgerTransferArgs {
                     to: receiver.to_string(),
                     amount: *amount,
@@ -152,7 +162,9 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
                     contract.num_approvals = *num_approvals;
                 });
             }
-            ICProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
+            ICProposalAction::SetActiveProposalsLimit {
+                active_proposals_limit,
+            } => {
                 PROXY_CONTRACT.with(|contract| {
                     let mut contract = contract.borrow_mut();
                     contract.active_proposals_limit = *active_proposals_limit;
@@ -180,10 +192,12 @@ fn internal_create_proposal(
 ) -> Result<Option<ICProposalWithApprovals>, String> {
     PROXY_CONTRACT.with(|contract| {
         let mut contract = contract.borrow_mut();
-          
+
         // Check proposal limit
         if num_proposals >= contract.active_proposals_limit {
-            return Err("Account has too many active proposals. Confirm or delete some.".to_string());
+            return Err(
+                "Account has too many active proposals. Confirm or delete some.".to_string(),
+            );
         }
 
         // Validate proposal actions
@@ -193,13 +207,15 @@ fn internal_create_proposal(
 
         // Store proposal
         let proposal_id = proposal.id.clone();
-        contract.proposals.insert(proposal_id.clone(), proposal.clone());
-        
+        contract
+            .proposals
+            .insert(proposal_id.clone(), proposal.clone());
+
         // Initialize approvals set with author's approval
         let mut approvals = HashSet::new();
         approvals.insert(proposal.author_id.clone());
         contract.approvals.insert(proposal_id.clone(), approvals);
-        
+
         // Update proposal count
         let author_id = proposal.author_id;
         *contract.num_proposals_pk.entry(author_id).or_insert(0) += 1;
@@ -210,7 +226,12 @@ fn internal_create_proposal(
 
 fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
     match action {
-        ICProposalAction::ExternalFunctionCall { receiver_id, method_name, args, deposit: _ } => {
+        ICProposalAction::ExternalFunctionCall {
+            receiver_id,
+            method_name,
+            args,
+            deposit: _,
+        } => {
             if method_name.is_empty() {
                 return Err("method name cannot be empty".to_string());
             }
@@ -220,13 +241,16 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
             // Just convert to Principal, no need for ? operator
             identity_to_principal(receiver_id);
         }
-        ICProposalAction::Transfer { receiver_id, amount } => {
+        ICProposalAction::Transfer {
+            receiver_id,
+            amount,
+        } => {
             if *amount == 0 {
                 return Err("transfer amount cannot be zero".to_string());
             }
             // Just convert to Principal, no need for ? operator
             identity_to_principal(receiver_id);
-            
+
             if *amount > 1_000_000_000 {
                 return Err("transfer amount limit exceeded".to_string());
             }
@@ -236,7 +260,9 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
                 return Err("num approvals cannot be zero".to_string());
             }
         }
-        ICProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
+        ICProposalAction::SetActiveProposalsLimit {
+            active_proposals_limit,
+        } => {
             if *active_proposals_limit == 0 {
                 return Err("active proposals limit cannot be zero".to_string());
             }
@@ -274,7 +300,7 @@ fn build_proposal_response(
     proposal_id: ICProposalId,
 ) -> Result<Option<ICProposalWithApprovals>, String> {
     let approvals = contract.approvals.get(&proposal_id);
-    
+
     Ok(approvals.map(|approvals| ICProposalWithApprovals {
         proposal_id,
         num_approvals: approvals.len(),

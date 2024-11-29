@@ -652,7 +652,8 @@ mod tests {
                 author_id: signer_id.clone(),
                 actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
             };
-            let _ =create_and_verify_proposal(&pic, proxy_canister, &signer_sk, &signer_id, proposal);
+            let _ =
+                create_and_verify_proposal(&pic, proxy_canister, &signer_sk, &signer_id, proposal);
         }
 
         // Try to create one more
