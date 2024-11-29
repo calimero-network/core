@@ -29,23 +29,23 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
                 application,
             } => add_context(&request.signer_id, context_id, author_id, application),
             ContextRequestKind::UpdateApplication { application } => {
-                update_application(&request.signer_id, &context_id.clone(), application.clone())
+                update_application(&request.signer_id, &context_id, application)
             }
             ContextRequestKind::AddMembers { members } => {
-                add_members(&request.signer_id, &context_id.clone(), members.clone())
+                add_members(&request.signer_id, &context_id, members)
             }
             ContextRequestKind::RemoveMembers { members } => {
-                remove_members(&request.signer_id, &context_id.clone(), members.clone())
+                remove_members(&request.signer_id, &context_id, members)
             }
             ContextRequestKind::Grant { capabilities } => grant(
                 &request.signer_id,
-                &context_id.clone(),
-                capabilities.clone(),
+                &context_id,
+                capabilities,
             ),
             ContextRequestKind::Revoke { capabilities } => revoke(
                 &request.signer_id,
-                &context_id.clone(),
-                capabilities.clone(),
+                &context_id,
+                capabilities,
             ),
             ContextRequestKind::UpdateProxyContract => {
                 // TODO: Implement update_proxy_contract
@@ -85,7 +85,7 @@ fn add_context(
         // Store context
         if configs
             .contexts
-            .insert(context_id.clone(), context)
+            .insert(context_id, context)
             .is_some()
         {
             return Err("context already exists".into());
@@ -119,7 +119,7 @@ fn update_application(
         let mut app_ref = guard_ref.get_mut();
 
         // Replace the application with the new one
-        *app_ref = application.clone();
+        *app_ref = application;
 
         Ok(())
     })

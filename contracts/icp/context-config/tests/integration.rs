@@ -9,7 +9,6 @@ use context_contract::types::{
 use ed25519_dalek::{Signer, SigningKey};
 use pocket_ic::{PocketIc, WasmResult};
 use rand::Rng;
-use serde_json;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
@@ -27,9 +26,10 @@ fn setup() -> (PocketIc, Principal) {
 }
 
 fn create_signed_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
-    ICPSigned::new(request, |bytes| {
-        Ok::<_, std::convert::Infallible>(signer_key.sign(bytes).to_vec())
-    })
+    ICPSigned::new(
+        request,
+        |bytes| signer_key.sign(bytes)
+    )
     .expect("Failed to create signed request")
 }
 

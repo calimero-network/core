@@ -272,6 +272,10 @@ pub enum ICPSignedError<E> {
     InvalidPublicKey,
     #[error("signature error: {0}")]
     SignatureError(#[from] ed25519_dalek::ed25519::Error),
+    #[error("serialization error: {0}")]
+    SerializationError(String),
+    #[error("deserialization error: {0}")]
+    DeserializationError(String),
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -298,20 +302,21 @@ pub struct ICPSigned<T> {
 }
 
 impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
-    pub fn new<E, R, F>(payload: T, sign: F) -> Result<Self, ICPSignedError<E>>
+    pub fn new<R, F>(payload: T, sign: F) -> Result<Self, ICPSignedError<R::Error>>
     where
-        R: IntoResult<Vec<u8>, Error = E>,
+        R: IntoResult<ed25519_dalek::Signature>,
         F: FnOnce(&[u8]) -> R,
     {
-        let bytes = serde_json::to_vec(&payload)?;
-
+        let bytes = candid::encode_one(payload)
+            .map_err(|e| ICPSignedError::SerializationError(e.to_string()))?;
+        
         let signature = sign(&bytes)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;
 
         Ok(Self {
             payload: bytes,
-            signature,
+            signature: signature.to_vec(),
             _phantom: Phantom(PhantomData),
         })
     }
@@ -321,7 +326,8 @@ impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
         R: IntoResult<ICSignerId>,
         F: FnOnce(&T) -> R,
     {
-        let parsed: T = serde_json::from_slice(&self.payload)?;
+        let parsed: T = candid::decode_one(&self.payload)
+            .map_err(|e| ICPSignedError::DeserializationError(e.to_string()))?;
 
         let signer_id = f(&parsed)
             .into_result()
@@ -331,7 +337,10 @@ impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
             .rt::<VerifyingKey>()
             .map_err(|_| ICPSignedError::InvalidPublicKey)?;
 
-        let signature = ed25519_dalek::Signature::from_slice(&self.signature)?;
+        let signature_bytes: [u8; 64] = self.signature.as_slice().try_into()
+            .map_err(|_| ICPSignedError::SignatureError(ed25519_dalek::ed25519::Error::new()))?;
+        let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
+        
         key.verify(&self.payload, &signature)
             .map_err(|_| ICPSignedError::InvalidSignature)?;
 
