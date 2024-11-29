@@ -7,19 +7,19 @@ use crate::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest,
 };
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Clone, Copy, Debug, Encode, Decode)]
 pub struct FeltPair {
     pub high: Felt,
     pub low: Felt,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Clone, Copy, Debug, Encode, Decode)]
 pub struct StarknetIdentity(pub FeltPair);
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Clone, Copy, Debug, Encode, Decode)]
 pub struct StarknetProposalId(pub FeltPair);
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Clone, Copy, Debug, Encode, Decode)]
 pub struct StarknetU256(pub FeltPair);
 
 #[derive(Debug, Encode, Decode)]
@@ -29,7 +29,7 @@ pub struct StarknetProposal {
     pub actions: StarknetProposalActionWithArgs,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Clone, Copy, Debug, Encode, Decode)]
 pub struct StarknetConfirmationRequest {
     pub proposal_id: StarknetProposalId,
     pub signer_id: StarknetIdentity,
@@ -64,7 +64,7 @@ pub struct StarknetSignedRequest {
     pub signature_s: Felt,
 }
 
-#[derive(Debug, Decode)]
+#[derive(Clone, Copy, Debug, Decode)]
 pub struct StarknetProposalWithApprovals {
     pub proposal_id: StarknetProposalId,
     pub num_approvals: Felt,
@@ -368,7 +368,7 @@ impl FeltWriter for CallData {
     }
 }
 
-#[derive(Debug, Encode)]
+#[derive(Clone, Copy, Debug, Encode)]
 pub struct StarknetProposalsRequest {
     pub offset: Felt,
     pub length: Felt,

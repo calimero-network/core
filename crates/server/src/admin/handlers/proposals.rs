@@ -51,13 +51,13 @@ pub struct Transfer {
     pub(crate) amount: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetNumApprovals {
     pub(crate) num_of_approvals: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct SetActiveProposalsLimit {
     pub(crate) active_proposals_limit: u32,
 }
