@@ -145,19 +145,6 @@ impl ContextManager {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
-    async fn get_proxy_contract(&self, context_id: ContextId) -> EyreResult<String> {
-        let proxy_contract = self
-            .config_client
-            .query::<ContextConfigEnv>(
-                self.client_config.new.protocol.as_str().into(),
-                self.client_config.new.network.as_str().into(),
-                self.client_config.new.contract_id.as_str().into(),
-            )
-            .get_proxy_contract(context_id.rt().expect("infallible conversion"))
-            .await?;
-        Ok(proxy_contract)
-    }
-
     pub fn create_context(
         &self,
         seed: Option<[u8; 32]>,
@@ -253,7 +240,15 @@ impl ContextManager {
                 .send(*context_secret)
                 .await?;
 
-            let proxy_contract = this.get_proxy_contract(context.id).await?;
+            let proxy_contract = this
+                .config_client
+                .query::<ContextConfigEnv>(
+                    this.client_config.new.protocol.as_str().into(),
+                    this.client_config.new.network.as_str().into(),
+                    this.client_config.new.contract_id.as_str().into(),
+                )
+                .get_proxy_contract(context.id.rt().expect("infallible conversion"))
+                .await?;
 
             let key = ContextConfigKey::new(context.id);
             let mut config = handle.get(&key)?.ok_or_eyre("expected config to exist")?;
@@ -355,7 +350,16 @@ impl ContextManager {
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
         let mut config = if !context_exists {
-            let proxy_contract = self.get_proxy_contract(context_id).await?;
+            let proxy_contract = self
+                .config_client
+                .query::<ContextConfigEnv>(
+                    protocol.as_str().into(),
+                    network_id.as_str().into(),
+                    contract_id.as_str().into(),
+                )
+                .get_proxy_contract(context_id.rt().expect("infallible conversion"))
+                .await?;
+
             Some(ContextConfigParams {
                 protocol: protocol.into(),
                 network_id: network_id.into(),
