@@ -304,7 +304,7 @@ impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
         F: FnOnce(&[u8]) -> R,
     {
         let bytes = serde_json::to_vec(&payload)?;
-        
+
         let signature = sign(&bytes)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;
@@ -322,7 +322,7 @@ impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
         F: FnOnce(&T) -> R,
     {
         let parsed: T = serde_json::from_slice(&self.payload)?;
-        
+
         let signer_id = f(&parsed)
             .into_result()
             .map_err(ICPSignedError::DerivationError)?;
