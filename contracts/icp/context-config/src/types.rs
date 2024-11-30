@@ -91,11 +91,15 @@ impl ReprBytes for ICContextIdentity {
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
-pub struct ICContextId(pub Identity);
+pub struct ICContextId(Identity);
 
 impl ICContextId {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(Identity(bytes))
+    }
+
+    pub fn as_bytes(&self) -> [u8; 32] {
+        self.0.as_bytes()
     }
 }
 
@@ -117,7 +121,7 @@ impl ReprBytes for ICContextId {
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ICApplicationId(pub Identity);
+pub struct ICApplicationId(Identity);
 
 impl ICApplicationId {
     pub fn new(bytes: [u8; 32]) -> Self {
@@ -143,7 +147,7 @@ impl ReprBytes for ICApplicationId {
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ICBlobId(pub Identity);
+pub struct ICBlobId(Identity);
 
 impl ICBlobId {
     pub fn new(bytes: [u8; 32]) -> Self {
@@ -296,8 +300,8 @@ impl<T> CandidType for Phantom<T> {
 
 #[derive(CandidType, Deserialize, Debug, Clone)]
 pub struct ICPSigned<T> {
-    pub payload: Vec<u8>,
-    pub signature: Vec<u8>,
+    payload: Vec<u8>,
+    signature: Vec<u8>,
     _phantom: Phantom<T>,
 }
 

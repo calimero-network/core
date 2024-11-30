@@ -72,7 +72,7 @@ fn test_mutate_success_cases() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0.as_bytes()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: current_time,
     };
 
@@ -144,7 +144,7 @@ fn test_member_management() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0.as_bytes()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -309,7 +309,7 @@ fn test_capability_management() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0.as_bytes()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -529,7 +529,7 @@ fn test_application_update() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0.as_bytes()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -739,7 +739,7 @@ fn test_edge_cases() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0.as_bytes()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -888,7 +888,7 @@ fn test_timestamp_scenarios() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0.as_bytes()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: current_time,
     };
 
@@ -962,7 +962,7 @@ fn test_concurrent_operations() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0.as_bytes()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
