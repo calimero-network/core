@@ -1,9 +1,0 @@
-type TransferArgs = record {
-    to: text;
-    amount: nat64;
-};
-
-service : {
-    transfer: (TransferArgs) -> ();
-    balance: () -> (nat64) query;
-}

@@ -1,4 +1,0 @@
-service : {
-    test_method: (blob) -> ();
-    get_calls: () -> (vec blob) query;
-} 

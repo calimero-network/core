@@ -5961,6 +5961,7 @@ dependencies = [
 name = "proxy_contract"
 version = "0.1.0"
 dependencies = [
+ "bs58 0.5.1",
  "calimero-context-config",
  "candid",
  "ed25519-dalek",
@@ -5970,6 +5971,7 @@ dependencies = [
  "pocket-ic",
  "rand 0.8.5",
  "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

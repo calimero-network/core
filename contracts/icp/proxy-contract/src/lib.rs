@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 
+use candid::Principal;
+
 use crate::types::{
     ICPSigned, ICProposal, ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals,
     ICProxyContract, ICRequest, ICSignerId,
@@ -14,9 +16,9 @@ thread_local! {
 }
 
 #[ic_cdk::init]
-fn init(context_id: types::ICContextId) {
+fn init(context_id: types::ICContextId, ledger_id: Principal) {
     PROXY_CONTRACT.with(|contract| {
-        *contract.borrow_mut() = ICProxyContract::new(context_id);
+        *contract.borrow_mut() = ICProxyContract::new(context_id, ledger_id);
     });
 }
 
