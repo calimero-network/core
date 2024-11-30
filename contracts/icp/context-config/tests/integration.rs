@@ -8,11 +8,10 @@ use context_contract::types::{
 use ed25519_dalek::{Signer, SigningKey};
 use pocket_ic::{PocketIc, WasmResult};
 use rand::Rng;
-use serde_json;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
-    let wasm = std::fs::read(".dfx/local/canisters/context_contract/context_contract.wasm")
+    let wasm = std::fs::read("target/wasm32-unknown-unknown/release/context_contract.wasm")
         .expect("failed to read wasm");
     let canister = pic.create_canister();
     pic.add_cycles(canister, 2_000_000_000_000);
@@ -26,16 +25,8 @@ fn setup() -> (PocketIc, Principal) {
 }
 
 fn create_signed_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
-    // Serialize the request using JSON (same as in verification)
-    let message = serde_json::to_vec(&request).expect("Failed to serialize request");
-
-    // Sign the serialized message
-    let signature = signer_key.sign(&message);
-
-    ICPSigned {
-        payload: request,
-        signature: signature.to_vec(),
-    }
+    ICPSigned::new(request, |bytes| signer_key.sign(bytes))
+        .expect("Failed to create signed request")
 }
 
 fn get_time_nanos(pic: &PocketIc) -> u64 {
@@ -80,7 +71,7 @@ fn test_mutate_success_cases() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0 .0.clone()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: current_time,
     };
 
@@ -152,7 +143,7 @@ fn test_member_management() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0 .0.clone()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -317,7 +308,7 @@ fn test_capability_management() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0 .0.clone()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -537,7 +528,7 @@ fn test_application_update() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0 .0.clone()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -747,7 +738,7 @@ fn test_edge_cases() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0 .0.clone()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -896,7 +887,7 @@ fn test_timestamp_scenarios() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0 .0.clone()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: current_time,
     };
 
@@ -970,7 +961,7 @@ fn test_concurrent_operations() {
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.0 .0.clone()),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
         timestamp_ms: get_time_nanos(&pic),
     };
 

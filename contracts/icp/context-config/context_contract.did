@@ -1,13 +1,3 @@
-type ContextRequest = record { context_id : blob; kind : ContextRequestKind };
-type ContextRequestKind = variant {
-  Add : record { application : ICApplication; author_id : blob };
-  Grant : record { capabilities : vec record { blob; ICCapability } };
-  UpdateApplication : record { application : ICApplication };
-  RemoveMembers : record { members : vec blob };
-  Revoke : record { capabilities : vec record { blob; ICCapability } };
-  AddMembers : record { members : vec blob };
-  UpdateProxyContract;
-};
 type ICApplication = record {
   id : blob;
   source : text;
@@ -16,13 +6,7 @@ type ICApplication = record {
   size : nat64;
 };
 type ICCapability = variant { Proxy; ManageMembers; ManageApplication };
-type ICPSigned = record { signature : blob; payload : Request };
-type Request = record {
-  timestamp_ms : nat64;
-  kind : RequestKind;
-  signer_id : blob;
-};
-type RequestKind = variant { Context : ContextRequest };
+type ICPSigned = record { signature : blob; _phantom : null; payload : blob };
 type Result = variant { Ok; Err : text };
 service : () -> {
   application : (blob) -> (ICApplication) query;

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
@@ -11,7 +12,7 @@ use crate::types::ICSignerId;
 pub struct Guard<T> {
     inner: T,
     revision: Revision,
-    privileged: Vec<ICSignerId>,
+    privileged: BTreeSet<ICSignerId>,
 }
 
 #[derive(Debug)]
@@ -30,7 +31,7 @@ impl<T> Guard<T> {
         Self {
             inner,
             revision: 0,
-            privileged: vec![creator],
+            privileged: BTreeSet::from([creator]),
         }
     }
 
@@ -48,7 +49,7 @@ impl<T> Guard<T> {
         self.inner
     }
 
-    pub fn privileged(&self) -> &[ICSignerId] {
+    pub fn privileged(&self) -> &BTreeSet<ICSignerId> {
         &self.privileged
     }
 
@@ -119,19 +120,15 @@ impl<T> Drop for GuardMut<'_, T> {
 
 #[derive(Debug)]
 pub struct Privileges<'a> {
-    inner: &'a mut Vec<ICSignerId>,
+    inner: &'a mut BTreeSet<ICSignerId>,
 }
 
 impl Privileges<'_> {
     pub fn grant(&mut self, signer_id: ICSignerId) {
-        if !self.inner.contains(&signer_id) {
-            self.inner.push(signer_id);
-        }
+        self.inner.insert(signer_id);
     }
 
     pub fn revoke(&mut self, signer_id: &ICSignerId) {
-        if let Some(pos) = self.inner.iter().position(|x| x == signer_id) {
-            self.inner.remove(pos);
-        }
+        self.inner.remove(signer_id);
     }
 }

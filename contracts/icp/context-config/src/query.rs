@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use calimero_context_config::repr::ReprTransmute;
 use ic_cdk_macros::query;
 
 use crate::types::*;
@@ -117,12 +118,14 @@ fn privileges(
             }
         } else {
             for identity in identities {
-                let entry = privileges.entry(identity).or_default();
+                let entry = privileges
+                    .entry(identity.rt().expect("infallible conversion"))
+                    .or_default();
 
-                if application_privileges.contains(&identity) {
+                if application_privileges.contains(&identity.rt().expect("infallible conversion")) {
                     entry.push(ICCapability::ManageApplication);
                 }
-                if member_privileges.contains(&identity) {
+                if member_privileges.contains(&identity.rt().expect("infallible conversion")) {
                     entry.push(ICCapability::ManageMembers);
                 }
             }
