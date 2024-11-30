@@ -1,10 +1,7 @@
 #![allow(warnings)]
-
-use crate::cli::RootCommand;
 use clap::Parser;
 use eyre::Result as EyreResult;
-
-mod cli;
+use merow::cli::RootCommand;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
