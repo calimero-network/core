@@ -1,11 +1,6 @@
-[coordinator]
-name = "coordinator" 
-server_port = 2427
-swarm_port = 2527
-home = "data"
-
-[admin] 
+[node] 
 name = "node1" 
 server_port = 2428 
 swarm_port = 2528
 home = "data"
+

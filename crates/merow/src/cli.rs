@@ -10,14 +10,8 @@ use toml;
 
 pub const EXAMPLES: &str = r"
 
-  # Initialize a coordinator
-  $ merow -- init-coordinator 
-
-    # Initialize a node  
+  # Initialize a node  
   $ merow -- init-node 
-
-  # Start a running coordinator
-  $ merow -- start-coordinator 
 
   # Start a running node 
   $ merow -- start-node 
@@ -34,13 +28,13 @@ const CONFIG_FILE_PATH: &str = "crates/merow/config/default.toml";
 ))]
 pub struct RootCommand {
     /// Name of the command
+    #[arg(default_value_t = String::from("init-node"))]
     pub action: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct NodeData {
-    coordinator: NodeConfig,
-    admin: NodeConfig,
+    node: NodeConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -142,29 +136,27 @@ async fn start_node(node_name: &str, node_home: &str) -> EyreResult<()> {
 }
 
 impl RootCommand {
+    pub fn new(arg: &str) -> RootCommand {
+        let action = String::from(arg);
+        RootCommand { action }
+    }
+
+    pub fn init(self) -> EyreResult<()> {
+        // Fetch the nodes configuration
+        let data = NodeData::get_node_data();
+        let admin = data.node;
+        init_node(&admin)
+    }
+
     pub async fn run(self) -> EyreResult<()> {
         // Fetch the nodes configuration
         let data = NodeData::get_node_data();
-
-        let coordinator = data.coordinator;
-        let admin = data.admin;
+        let admin = data.node;
 
         match self.action.as_str() {
-            "init-coordinator" => {
-                println!("Initializing coordinator...\n");
-                init_node(&coordinator)
-            }
             "init-node" => {
                 println!("Initializing node...\n");
                 init_node(&admin)
-            }
-            "start-coordinator" => {
-                println!("Running coordinator...\n");
-
-                let name: &str = coordinator.name.as_str();
-                let home: &str = coordinator.home.as_str();
-
-                start_node(name, home).await
             }
             "start-node" => {
                 println!("Running node...\n");
