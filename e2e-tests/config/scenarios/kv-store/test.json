@@ -1,0 +1,28 @@
+{
+  "steps": [
+    {
+      "contextCreate": {
+        "application": { "localFile": "./apps/kv-store/res/kv_store.wasm" }
+      }
+    },
+    {
+      "jsonRpcCall": {
+        "methodName": "set",
+        "argsJson": { "key": "foo", "value": "bar" },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "jsonRpcCall": {
+        "methodName": "get",
+        "argsJson": { "key": "foo" },
+        "expectedResultJson": "bar",
+        "target": "inviter"
+      }
+    },
+    {
+      "contextInviteJoin": null
+    }
+  ]
+}

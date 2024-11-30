@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
+use std::ops::Deref;
 
 use either::Either;
 use env::Method;
@@ -10,10 +11,11 @@ pub mod env;
 pub mod protocol;
 pub mod relayer;
 pub mod transport;
+pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use protocol::{near, starknet, Protocol};
-use transport::{Both, Transport, TransportRequest};
+use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 pub type AnyTransport = Either<
     relayer::RelayerTransport,
@@ -110,17 +112,43 @@ pub enum ClientError<T: Transport> {
     Transport(T::Error),
     #[error("codec error: {0}")]
     Codec(#[from] eyre::Report),
-    #[error("unsupported protocol: {0}")]
-    UnsupportedProtocol(String),
+    #[error(
+        "unsupported protocol: `{found}`, expected {}",
+        utils::humanize_iter(expected.deref())
+    )]
+    UnsupportedProtocol {
+        found: String,
+        expected: Cow<'static, [Cow<'static, str>]>,
+    },
+}
+
+impl<'a, T: Transport> From<UnsupportedProtocol<'a>> for ClientError<T> {
+    fn from(err: UnsupportedProtocol<'a>) -> Self {
+        Self::UnsupportedProtocol {
+            found: err.args.protocol.into_owned(),
+            expected: err.expected,
+        }
+    }
 }
 
 impl<T: Transport> Client<T> {
     async fn send(
         &self,
+        protocol: Cow<'_, str>,
         request: TransportRequest<'_>,
         payload: Vec<u8>,
-    ) -> Result<Vec<u8>, T::Error> {
-        self.transport.send(request, payload).await
+    ) -> Result<Vec<u8>, ClientError<T>> {
+        let res: Result<_, _> = self
+            .transport
+            .try_send(TransportArguments {
+                protocol,
+                request,
+                payload,
+            })
+            .await
+            .into();
+
+        res?.map_err(ClientError::Transport)
     }
 
     pub fn query<'a, E: Environment<'a, T>>(
@@ -182,7 +210,6 @@ impl<'a, T: Transport> CallClient<'a, T> {
         };
 
         let request = TransportRequest {
-            protocol: Cow::Borrowed(&self.protocol),
             network_id: Cow::Borrowed(&self.network_id),
             contract_id: Cow::Borrowed(&self.contract_id),
             operation,
@@ -190,9 +217,8 @@ impl<'a, T: Transport> CallClient<'a, T> {
 
         let response = self
             .client
-            .send(request, payload)
-            .await
-            .map_err(ClientError::Transport)?;
+            .send(self.protocol.as_ref().into(), request, payload)
+            .await?;
 
         M::decode(response).map_err(ClientError::Codec)
     }

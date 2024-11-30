@@ -1,8 +1,9 @@
 use std::time::Duration;
 
+use calimero_crypto::{Nonce, SharedKey};
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -15,6 +16,7 @@ use crate::types::{InitPayload, StreamMessage};
 use crate::Node;
 
 mod blobs;
+mod key;
 mod state;
 
 #[derive(Copy, Clone, Debug)]
@@ -23,25 +25,53 @@ pub struct SyncConfig {
     pub interval: Duration,
 }
 
-async fn send(stream: &mut Stream, message: &StreamMessage<'_>) -> EyreResult<()> {
-    let message = borsh::to_vec(message)?;
+async fn send(
+    stream: &mut Stream,
+    message: &StreamMessage<'_>,
+    shared_key: Option<(SharedKey, Nonce)>,
+) -> EyreResult<()> {
+    let base_data = borsh::to_vec(message)?;
 
-    stream.send(Message::new(message)).await?;
+    let data = match shared_key {
+        Some((key, nonce)) => key
+            .encrypt(base_data, nonce)
+            .ok_or_eyre("encryption failed")?,
+        None => base_data,
+    };
 
+    stream.send(Message::new(data)).await?;
     Ok(())
 }
 
 async fn recv(
     stream: &mut Stream,
     duration: Duration,
+    shared_key: Option<(SharedKey, Nonce)>,
 ) -> EyreResult<Option<StreamMessage<'static>>> {
     let Some(message) = timeout(duration, stream.next()).await? else {
         return Ok(None);
     };
 
-    let message = borsh::from_slice(&message?.data)?;
+    let message_data = message?.data.into_owned();
 
-    Ok(Some(message))
+    let data = match shared_key {
+        Some((key, nonce)) => {
+            match key.decrypt(
+                message_data,
+                nonce
+                    .try_into()
+                    .map_err(|_| eyre!("nonce must be 12 bytes"))?,
+            ) {
+                Some(data) => data,
+                None => bail!("decryption failed"),
+            }
+        }
+        None => message_data,
+    };
+
+    let decoded = borsh::from_slice::<StreamMessage<'static>>(&data)?;
+
+    Ok(Some(decoded))
 }
 
 #[derive(Default)]
@@ -95,6 +125,9 @@ impl Node {
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
+        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
+            .await?;
+
         if !self.ctx_manager.has_blob_available(application.blob)? {
             self.initiate_blob_share_process(
                 &context,
@@ -118,7 +151,7 @@ impl Node {
                 Err(err) => {
                     error!(%err, "Failed to handle stream message");
 
-                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
+                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError, None).await {
                         error!(%err, "Failed to send error message");
                     }
                 }
@@ -127,16 +160,18 @@ impl Node {
     }
 
     async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> EyreResult<Option<()>> {
-        let Some(message) = recv(stream, self.sync_config.timeout).await? else {
+        let Some(message) = recv(stream, self.sync_config.timeout, None).await? else {
             return Ok(None);
         };
 
-        let (context_id, their_identity, payload) = match message {
+        let (context_id, their_identity, payload, nonce) = match message {
             StreamMessage::Init {
                 context_id,
                 party_id,
                 payload,
-            } => (context_id, party_id, payload),
+                next_nonce,
+                ..
+            } => (context_id, party_id, payload, next_nonce),
             unexpected @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError) => {
                 bail!("expected initialization handshake, got {:?}", unexpected)
             }
@@ -166,37 +201,47 @@ impl Node {
             }
         }
 
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
         match payload {
-            InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(context, their_identity, blob_id, stream)
+            InitPayload::KeyShare => {
+                self.handle_key_share_request(&context, our_identity, their_identity, stream, nonce)
                     .await?
             }
+            InitPayload::BlobShare { blob_id } => {
+                self.handle_blob_share_request(
+                    &context,
+                    our_identity,
+                    their_identity,
+                    blob_id,
+                    stream,
+                )
+                .await?
+            }
             InitPayload::StateSync {
-                root_hash,
-                application_id,
+                root_hash: their_root_hash,
+                application_id: their_application_id,
             } => {
-                if updated.is_none() && context.application_id != application_id {
+                if updated.is_none() && context.application_id != their_application_id {
                     updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
                 }
 
                 if let Some(updated) = updated {
-                    if application_id != updated.application_id {
-                        bail!(
-                            "application mismatch: expected {}, got {}",
-                            updated.application_id,
-                            application_id
-                        );
-                    }
-
                     context = updated;
                 }
 
                 self.handle_state_sync_request(
-                    context,
+                    &mut context,
+                    our_identity,
                     their_identity,
-                    root_hash,
-                    application_id,
+                    their_root_hash,
+                    their_application_id,
                     stream,
+                    nonce,
                 )
                 .await?
             }

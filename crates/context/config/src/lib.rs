@@ -12,7 +12,7 @@ pub mod repr;
 pub mod types;
 
 use repr::Repr;
-use types::{Application, Capability, ContextId, ContextIdentity, SignerId};
+use types::{Application, Capability, ContextId, ContextIdentity, ProposalId, SignerId};
 
 pub type Timestamp = u64;
 
@@ -114,7 +114,6 @@ pub enum SystemRequest {
 
 /// Proxy contract
 /// TODO: move these to a separate cratexs
-pub type ProposalId = [u8; 32];
 pub type Gas = u64;
 pub type NativeToken = u128;
 
@@ -173,15 +172,15 @@ pub enum ProposalAction {
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub struct Proposal {
-    pub id: ProposalId,
+    pub id: Repr<ProposalId>,
     pub author_id: Repr<SignerId>,
     pub actions: Vec<ProposalAction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Copy)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalApprovalWithSigner {
-    pub proposal_id: ProposalId,
+    pub proposal_id: Repr<ProposalId>,
     pub signer_id: Repr<SignerId>,
     pub added_timestamp: u64,
 }
@@ -203,6 +202,6 @@ pub enum ProxyMutateRequest {
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub struct ProposalWithApprovals {
-    pub proposal_id: ProposalId,
+    pub proposal_id: Repr<ProposalId>,
     pub num_approvals: usize,
 }

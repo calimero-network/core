@@ -1,7 +1,7 @@
 use borsh as _;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DeriveInput, Fields, LitInt, Type};
+use quote::quote;
+use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 
 #[cfg(test)]
 mod integration_tests_package_usage {
@@ -95,8 +95,9 @@ mod integration_tests_package_usage {
 /// ```
 /// use calimero_storage::entities::Element;
 /// use calimero_storage_macros::AtomicUnit;
+/// use borsh::{BorshSerialize, BorshDeserialize};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// #[type_id(43)]
 /// struct Page {
 ///     title: String,
@@ -110,8 +111,9 @@ mod integration_tests_package_usage {
 /// ```
 /// use calimero_storage::entities::Element;
 /// use calimero_storage_macros::{AtomicUnit, Collection};
+/// use borsh::{BorshSerialize, BorshDeserialize};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// #[type_id(44)]
 /// struct Person {
 ///     name: String,
@@ -160,15 +162,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     let name = &input.ident;
     let where_clause = input.generics.make_where_clause().clone();
     let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
-    let is_root = input.attrs.iter().any(|attr| attr.path().is_ident("root"));
-    let type_id = input
-        .attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("type_id"))
-        .and_then(|attr| attr.parse_args::<LitInt>().ok())
-        .expect("AtomicUnit derive requires a #[type_id(n)] attribute, where n is a u8")
-        .base10_parse::<u8>()
-        .expect("type_id must be a valid u8");
 
     let fields = match &input.data {
         Data::Struct(data) => &data.fields,
@@ -189,73 +182,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         .expect("You must designate one field with #[storage] for the Element");
 
     let storage_ident = storage_field.ident.as_ref().unwrap();
-    let storage_ty = &storage_field.ty;
-
-    let field_implementations = named_fields
-        .iter()
-        .filter_map(|f| {
-            let ident = f.ident.as_ref().unwrap();
-            let ty = &f.ty;
-
-            let private = f.attrs.iter().any(|attr| attr.path().is_ident("private"));
-            let skip = f.attrs.iter().any(|attr| attr.path().is_ident("skip"));
-
-            if skip || ident == storage_ident {
-                None
-            } else {
-                let setter = format_ident!("set_{}", ident);
-
-                let setter_action = if private {
-                    quote! {
-                        self.#ident = value;
-                    }
-                } else {
-                    quote! {
-                        self.#ident = value;
-                        self.#storage_ident.update();
-                    }
-                };
-
-                Some(quote! {
-                    #[doc = "Setter for the "]
-                    #[doc = stringify!(#ident)]
-                    #[doc = " field."]
-                    pub fn #setter(&mut self, value: #ty) -> bool {
-                        if self.#ident == value {
-                            false
-                        } else {
-                            #setter_action
-                            true
-                        }
-                    }
-                })
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let serializable_fields: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            !f.attrs
-                .iter()
-                .any(|attr| attr.path().is_ident("skip") || attr.path().is_ident("private"))
-                && f.ident.as_ref().unwrap() != storage_ident
-        })
-        .map(|f| f.ident.as_ref().unwrap())
-        .collect();
-
-    let regular_fields: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            !f.attrs.iter().any(|attr| {
-                attr.path().is_ident("skip")
-                    || attr.path().is_ident("private")
-                    || attr.path().is_ident("collection")
-                    || attr.path().is_ident("storage")
-            })
-        })
-        .map(|f| f.ident.as_ref().unwrap())
-        .collect();
 
     let collection_fields: Vec<_> = named_fields
         .iter()
@@ -267,130 +193,25 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         .map(|f| f.ident.as_ref().unwrap())
         .collect();
 
-    let collection_field_types: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            f.attrs
-                .iter()
-                .any(|attr| attr.path().is_ident("collection"))
-        })
-        .map(|f| f.ty.clone())
-        .collect();
-
-    let skipped_fields: Vec<_> = named_fields
-        .iter()
-        .filter(|f| {
-            f.attrs
-                .iter()
-                .any(|attr| attr.path().is_ident("skip") || attr.path().is_ident("private"))
-        })
-        .map(|f| f.ident.as_ref().unwrap())
-        .collect();
-
-    let mut data_where_clause = where_clause.clone();
+    let mut serde_where_clause = where_clause.clone();
 
     for ty in input.generics.type_params() {
         let ident = &ty.ident;
-        data_where_clause.predicates.push(syn::parse_quote!(
+        serde_where_clause.predicates.push(syn::parse_quote!(
             #ident: calimero_sdk::borsh::BorshSerialize
                 + calimero_sdk::borsh::BorshDeserialize
         ));
     }
 
-    let deserialize_impl = quote! {
-        impl #impl_generics calimero_sdk::borsh::BorshDeserialize for #name #ty_generics #data_where_clause {
-            fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-                let #storage_ident = #storage_ty::deserialize_reader(reader)?;
-                Ok(Self {
-                    #storage_ident,
-                    #(#serializable_fields: calimero_sdk::borsh::BorshDeserialize::deserialize_reader(reader)?,)*
-                    #(#skipped_fields: Default::default(),)*
-                })
-            }
-        }
-    };
-
-    let serialize_impl = quote! {
-        impl #impl_generics calimero_sdk::borsh::BorshSerialize for #name #ty_generics #data_where_clause {
-            fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-                calimero_sdk::borsh::BorshSerialize::serialize(&self.#storage_ident, writer)?;
-                #(calimero_sdk::borsh::BorshSerialize::serialize(&self.#serializable_fields, writer)?;)*
-                Ok(())
-            }
-        }
-    };
-
-    let root_impl = if is_root {
-        quote! {
-            fn is_root() -> bool {
-                true
-            }
-        }
-    } else {
-        quote! {
-            fn is_root() -> bool {
-                false
-            }
-        }
-    };
-
-    let mut local_where_clause = where_clause;
-
-    for ty in input.generics.type_params() {
-        let ident = &ty.ident;
-        local_where_clause.predicates.push(syn::parse_quote!(
-            #ident: PartialEq
-        ));
-    }
-
     let expanded = quote! {
-        impl #impl_generics #name #ty_generics #local_where_clause {
-            #(#field_implementations)*
-        }
-
-        impl #impl_generics calimero_storage::entities::Data for #name #ty_generics #data_where_clause {
-            fn calculate_merkle_hash(&self) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
-                use calimero_storage::exports::Digest;
-                let mut hasher = calimero_storage::exports::Sha256::new();
-                hasher.update(self.element().id().as_bytes());
-                #(
-                    hasher.update(
-                        &calimero_sdk::borsh::to_vec(&self.#regular_fields)
-                            .map_err(calimero_storage::interface::StorageError::SerializationError)?
-                    );
-                )*
-                hasher.update(
-                    &calimero_sdk::borsh::to_vec(&self.element().metadata())
-                        .map_err(calimero_storage::interface::StorageError::SerializationError)?
-                );
-                Ok(hasher.finalize().into())
-            }
-
-            fn calculate_merkle_hash_for_child(
-                &self,
-                collection: &str,
-                slice: &[u8],
-            ) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
-                use calimero_sdk::borsh::BorshDeserialize;
-                match collection {
-                    #(
-                        stringify!(#collection_fields) => {
-                            let child = <#collection_field_types #ty_generics as calimero_storage::entities::Collection>::Child::try_from_slice(slice)
-                                .map_err(|e| calimero_storage::interface::StorageError::DeserializationError(e))?;
-                            child.calculate_merkle_hash()
-                        },
-                    )*
-                    _ => Err(calimero_storage::interface::StorageError::UnknownCollectionType(collection.to_owned())),
-                }
-            }
-
+        impl #impl_generics calimero_storage::entities::Data for #name #ty_generics #serde_where_clause {
             fn collections(&self) -> std::collections::BTreeMap<String, Vec<calimero_storage::entities::ChildInfo>> {
                 use calimero_storage::entities::Collection;
                 let mut collections = std::collections::BTreeMap::new();
                 #(
                     collections.insert(
                         stringify!(#collection_fields).to_owned(),
-                        calimero_storage::interface::Interface::child_info_for(self.id(), &self.#collection_fields).unwrap_or_default()
+                        calimero_storage::interface::MainInterface::child_info_for(self.id(), &self.#collection_fields).unwrap_or_default()
                     );
                 )*
                 collections
@@ -403,22 +224,17 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             fn element_mut(&mut self) -> &mut calimero_storage::entities::Element {
                 &mut self.#storage_ident
             }
-
-            #root_impl
-
-            fn type_id() -> u8 {
-                #type_id
-            }
         }
 
-        impl #impl_generics calimero_storage::entities::AtomicUnit for #name #ty_generics #data_where_clause {}
-
-        #deserialize_impl
-
-        #serialize_impl
+        impl #impl_generics calimero_storage::entities::AtomicUnit for #name #ty_generics #serde_where_clause {}
     };
 
-    TokenStream::from(expanded)
+    TokenStream::from(quote! {
+        #[allow(unused_mut)]
+        const _: () = {
+            #expanded
+        };
+    })
 }
 
 /// Derives the [`Collection`](calimero_storage::entities::Collection) trait for
@@ -459,9 +275,9 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// ```
 /// use calimero_storage_macros::{AtomicUnit, Collection};
 /// use calimero_storage::entities::{Data, Element};
+/// use borsh::{BorshSerialize, BorshDeserialize};
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-/// #[type_id(42)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// struct Book {
 ///     title: String,
 ///     pages: Pages,
@@ -473,8 +289,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// #[children(Page)]
 /// struct Pages;
 ///
-/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-/// #[type_id(43)]
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 /// struct Page {
 ///     content: String,
 ///     #[storage]
@@ -540,7 +355,7 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     let data = (!data.is_empty()).then(|| quote! { { #(#data)* } });
 
     let default_impl = quote! {
-        impl #impl_generics ::core::default::Default for #name #ty_generics #where_clause {
+        impl #impl_generics ::core::default::Default for #name #ty_generics {
             fn default() -> Self {
                 Self #data
             }

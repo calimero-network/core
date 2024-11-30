@@ -30,7 +30,7 @@ jobs:
         uses: easimon/maximize-build-space@v10
         with:
           build-mount-path: ${{ env.STAGE_DIR }}
-          root-reserve-mb: 4096
+          root-reserve-mb: 8192
 
       - name: Relocate environment
         run: |

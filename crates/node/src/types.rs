@@ -3,12 +3,12 @@
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_crypto::{Nonce, NONCE_LEN};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
-use serde::Deserialize;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
@@ -19,6 +19,7 @@ pub enum BroadcastMessage<'a> {
         author_id: PublicKey,
         root_hash: Hash,
         artifact: Cow<'a, [u8]>,
+        nonce: [u8; NONCE_LEN],
     },
 }
 
@@ -27,12 +28,13 @@ pub enum StreamMessage<'a> {
     Init {
         context_id: ContextId,
         party_id: PublicKey,
-        // nonce: usize,
         payload: InitPayload,
+        next_nonce: Nonce,
     },
     Message {
         sequence_id: usize,
         payload: MessagePayload<'a>,
+        next_nonce: Nonce,
     },
     /// Other peers must not learn anything about the node's state if anything goes wrong.
     OpaqueError,
@@ -47,16 +49,13 @@ pub enum InitPayload {
         root_hash: Hash,
         application_id: ApplicationId,
     },
+    KeyShare,
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[expect(variant_size_differences, reason = "'tis fine")]
 pub enum MessagePayload<'a> {
     StateSync { artifact: Cow<'a, [u8]> },
     BlobShare { chunk: Cow<'a, [u8]> },
-}
-
-#[derive(Deserialize)]
-pub struct ProposalRequest {
-    pub sender: String,
-    pub receiver: String,
+    KeyShare { sender_key: PrivateKey },
 }

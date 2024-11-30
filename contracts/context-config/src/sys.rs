@@ -5,7 +5,7 @@ use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Application, ContextId, ContextIdentity, SignerId};
 use calimero_context_config::{SystemRequest, Timestamp};
 use near_sdk::store::{IterableMap, IterableSet};
-use near_sdk::{env, near};
+use near_sdk::{env, near, Gas, NearToken, Promise};
 
 use crate::{parse_input, Config, ContextConfigs, ContextConfigsExt};
 
@@ -34,9 +34,20 @@ impl ContextConfigs {
         env::log_str("Erasing contract");
 
         for (_, context) in self.contexts.drain() {
-            drop(context.application.into_inner());
+            let _ignored = context.application.into_inner();
             context.members.into_inner().clear();
+            let proxy = context.proxy.into_inner();
+
+            let _is_sent_on_drop = Promise::new(proxy).function_call(
+                "nuke".to_owned(),
+                vec![],
+                NearToken::default(),
+                Gas::from_tgas(1),
+            );
         }
+
+        self.next_proxy_id = 0;
+        self.proxy_code.set(None);
 
         env::log_str(&format!(
             "Post-erase storage usage: {}",
@@ -85,14 +96,9 @@ impl ContextConfigs {
     }
 
     #[private]
-    pub fn update_proxy_callback(&mut self) {
-        env::log_str("Successfully updated proxy contract");
-    }
-
-    #[private]
     pub fn set_proxy_code(&mut self) {
         self.proxy_code
-            .set(Some(env::input().expect("Expected proxy code").to_vec()));
+            .set(Some(env::input().expect("Expected proxy code")));
     }
 }
 

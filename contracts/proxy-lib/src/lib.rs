@@ -2,37 +2,49 @@ use core::str;
 use std::collections::HashSet;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ContextId, Signed, SignerId};
-use calimero_context_config::{Proposal, ProposalId, ProposalWithApprovals};
+use calimero_context_config::types::{ContextId, ProposalId, Signed, SignerId};
+use calimero_context_config::{Proposal, ProposalWithApprovals};
 use near_sdk::json_types::U128;
 use near_sdk::store::IterableMap;
-use near_sdk::{near, AccountId, PanicOnDefault, PromiseError};
+use near_sdk::{env, near, AccountId, PanicOnDefault, PromiseError};
 
 pub mod ext_config;
 mod mutate;
-pub use crate::ext_config::config_contract;
+
+#[cfg(feature = "__internal_explode_size")]
+const _: () = {
+    const __SIZE: usize = 1 << 16; // 64KB
+    const __PAYLOAD: [u8; __SIZE] = [1; __SIZE];
+
+    #[no_mangle]
+    extern "C" fn __internal_explode_size() -> usize {
+        __PAYLOAD.iter().map(|c| (*c as usize) + 1).sum()
+    }
+};
 
 enum MemberAction {
     Approve {
         identity: Repr<SignerId>,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
     },
     Create {
         proposal: Proposal,
         num_proposals: u32,
     },
 }
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct ProxyContract {
     pub context_id: ContextId,
     pub context_config_account_id: AccountId,
     pub num_approvals: u32,
-    pub proposals: IterableMap<ProposalId, Proposal>,
-    pub approvals: IterableMap<ProposalId, HashSet<SignerId>>,
+    pub proposals: IterableMap<Repr<ProposalId>, Proposal>,
+    pub approvals: IterableMap<Repr<ProposalId>, HashSet<SignerId>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
     pub context_storage: IterableMap<Box<[u8]>, Box<[u8]>>,
+    pub code_size: (u64, Option<u64>),
 }
 
 #[derive(Clone, Debug)]
@@ -46,16 +58,17 @@ pub struct FunctionCallPermission {
 #[near]
 impl ProxyContract {
     #[init]
-    pub fn init(context_id: Repr<ContextId>, context_config_account_id: AccountId) -> Self {
+    pub fn init(context_id: Repr<ContextId>) -> Self {
         Self {
             context_id: context_id.rt().expect("Invalid context id"),
-            context_config_account_id,
+            context_config_account_id: env::predecessor_account_id(),
             proposals: IterableMap::new(b"r".to_vec()),
             approvals: IterableMap::new(b"c".to_vec()),
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
             num_approvals: 3,
             active_proposals_limit: 10,
             context_storage: IterableMap::new(b"l"),
+            code_size: (env::storage_usage(), None),
         }
     }
 
@@ -70,19 +83,27 @@ impl ProxyContract {
         proposals
     }
 
-    pub fn proposal(&self, proposal_id: &ProposalId) -> Option<Proposal> {
+    pub fn proposal(&self, proposal_id: &Repr<ProposalId>) -> Option<Proposal> {
         self.proposals.get(proposal_id).cloned()
     }
 
     pub fn get_confirmations_count(
         &self,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
     ) -> Option<ProposalWithApprovals> {
         let approvals_for_proposal = self.approvals.get(&proposal_id);
         approvals_for_proposal.map(|approvals| ProposalWithApprovals {
             proposal_id,
             num_approvals: approvals.len(),
         })
+    }
+
+    pub fn get_proposal_approvers(
+        &self,
+        proposal_id: Repr<ProposalId>,
+    ) -> Option<Vec<Repr<SignerId>>> {
+        let approvals = self.approvals.get(&proposal_id)?;
+        Some(approvals.iter().flat_map(|a| a.rt()).collect())
     }
 
     #[expect(clippy::type_complexity, reason = "Acceptable here")]

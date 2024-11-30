@@ -2,46 +2,52 @@ use std::collections::HashSet;
 use std::str::FromStr;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::SignerId;
-use calimero_context_config::{
-    ProposalAction, ProposalId, ProposalWithApprovals, ProxyMutateRequest,
-};
+use calimero_context_config::types::{ProposalId, SignerId};
+use calimero_context_config::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 use near_sdk::{
     env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
     PromiseResult,
 };
 
 use super::{parse_input, Proposal, ProxyContract, ProxyContractExt, Signed};
-use crate::{assert_membership, config_contract, MemberAction};
+use crate::ext_config::config_contract;
+use crate::{assert_membership, MemberAction};
 
 #[near]
 impl ProxyContract {
     pub fn mutate(&mut self) -> Promise {
+        if let (_, Some(_)) = self.code_size {
+            env::panic_str("contract upgrade in progress");
+        }
+
         parse_input!(request: Signed<ProxyMutateRequest>);
+
         let request = request
             .parse(|i| match i {
                 ProxyMutateRequest::Propose { proposal } => *proposal.author_id,
                 ProxyMutateRequest::Approve { approval } => *approval.signer_id,
             })
             .expect(&format!("Invalid input: {:?}", request));
+
         match request {
             ProxyMutateRequest::Propose { proposal } => self.propose(proposal),
             ProxyMutateRequest::Approve { approval } => {
                 self.perform_action_by_member(MemberAction::Approve {
                     identity: approval.signer_id,
-                    proposal_id: approval.proposal_id,
+                    proposal_id: approval.proposal_id.rt().expect("Invalid proposal ID"),
                 })
             }
         }
     }
 }
+
 #[near]
 impl ProxyContract {
     #[private]
     pub fn internal_approve_proposal(
         &mut self,
         signer_id: Repr<SignerId>,
-        proposal_id: ProposalId,
+        proposal_id: Repr<ProposalId>,
         #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
     ) -> Option<ProposalWithApprovals> {
         assert_membership(call_result);
@@ -65,7 +71,7 @@ impl ProxyContract {
         self.proposals.insert(proposal.id, proposal.clone());
         self.approvals.insert(proposal.id, HashSet::new());
         self.internal_confirm(
-            proposal.id,
+            proposal.id.rt().expect("Invalid proposal ID"),
             proposal.author_id.rt().expect("Invalid signer"),
         );
         self.build_proposal_response(proposal.id)
@@ -150,7 +156,7 @@ impl ProxyContract {
                 } => {
                     let account_id: AccountId =
                         AccountId::from_str(receiver_id.as_str()).expect("Invalid account ID");
-                    Promise::new(account_id).transfer(NearToken::from_near(amount))
+                    Promise::new(account_id).transfer(NearToken::from_yoctonear(amount))
                 }
                 _ => continue,
             };
@@ -182,7 +188,7 @@ impl ProxyContract {
         self.context_storage.insert(key.clone(), value)
     }
 
-    fn internal_confirm(&mut self, proposal_id: ProposalId, signer_id: SignerId) {
+    fn internal_confirm(&mut self, proposal_id: Repr<ProposalId>, signer_id: SignerId) {
         let approvals = self.approvals.get_mut(&proposal_id).unwrap();
         assert!(
             !approvals.contains(&signer_id),
@@ -199,35 +205,71 @@ impl ProxyContract {
         }
     }
 
+    #[payable]
     pub fn update_contract(&mut self) -> Promise {
-        // Verify caller is the context config contract
         require!(
             env::predecessor_account_id() == self.context_config_account_id,
             "Only the context config contract can update the proxy"
         );
 
         let new_code = env::input().expect("Expected proxy code");
-        // Deploy the new code and chain the callback
+        let (_, new_code_size @ None) = &mut self.code_size else {
+            env::panic_str("contract upgrade in progress");
+        };
+
+        new_code_size.replace(new_code.len() as u64);
+
         Promise::new(env::current_account_id())
             .deploy_contract(new_code)
-            .then(Self::ext(env::current_account_id()).update_contract_callback())
+            .then(
+                Self::ext(env::current_account_id())
+                    .update_contract_callback(env::attached_deposit()),
+            )
+    }
+
+    fn erase(&mut self) {
+        // if this is going to be exposed, it should be a proposal
+        self.proposals.clear();
+        self.approvals.clear();
+        self.num_proposals_pk.clear();
+        self.context_storage.clear();
+    }
+
+    pub fn nuke(&mut self) -> Promise {
+        require!(
+            env::predecessor_account_id() == self.context_config_account_id,
+            "Only the context config contract can nuke the proxy"
+        );
+
+        self.erase();
+
+        Promise::new(env::current_account_id())
+            .delete_account(self.context_config_account_id.clone())
     }
 
     #[private]
-    #[handle_result]
-    pub fn update_contract_callback(&mut self) -> Result<(), &'static str> {
-        require!(
-            env::promise_results_count() == 1,
-            "Expected 1 promise result"
-        );
+    pub fn update_contract_callback(
+        &mut self,
+        attached_deposit: NearToken,
+        #[callback_result] call_result: Result<(), PromiseError>,
+    ) {
+        let (old_code_size, Some(new_code_size)) = self.code_size else {
+            env::panic_str("fatal: new code size not set");
+        };
 
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                env::log_str("Successfully updated proxy contract code");
-                Ok(())
-            }
-            _ => Err("Failed to update proxy contract code"),
-        }
+        self.code_size = (new_code_size, None);
+
+        call_result.expect("Failed to update proxy contract");
+
+        let old_cost = env::storage_byte_cost().saturating_mul(old_code_size as u128);
+        let new_cost = env::storage_byte_cost().saturating_mul(new_code_size as u128);
+        let refund = attached_deposit
+            .saturating_add(old_cost)
+            .saturating_sub(new_cost);
+
+        Promise::new(self.context_config_account_id.clone()).transfer(refund);
+
+        env::log_str("Successfully updated proxy contract code");
     }
 }
 
@@ -272,7 +314,10 @@ impl ProxyContract {
             })
     }
 
-    fn build_proposal_response(&self, proposal_id: ProposalId) -> Option<ProposalWithApprovals> {
+    fn build_proposal_response(
+        &self,
+        proposal_id: Repr<ProposalId>,
+    ) -> Option<ProposalWithApprovals> {
         let approvals = self.get_confirmations_count(proposal_id);
         match approvals {
             None => None,
@@ -283,7 +328,7 @@ impl ProxyContract {
         }
     }
 
-    fn remove_proposal(&mut self, proposal_id: ProposalId) -> Proposal {
+    fn remove_proposal(&mut self, proposal_id: Repr<ProposalId>) -> Proposal {
         self.approvals.remove(&proposal_id);
         let proposal = self
             .proposals

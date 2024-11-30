@@ -1,5 +1,8 @@
 use serde::Serialize;
+use starknet::core::codec::Encode;
+use starknet_crypto::Felt;
 
+use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -31,10 +34,26 @@ impl Method<Starknet> for ProxyContractRequest {
     type Returns = String;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let mut call_data = CallData::default();
+        let felt_pair: FeltPair = self.context_id.into();
+        felt_pair.encode(&mut call_data)?;
+        Ok(call_data.0)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Err(eyre::eyre!("No proxy contract found"));
+        }
+
+        // Check if it's a None response (single zero Felt)
+        if response.iter().all(|&x| x == 0) {
+            return Err(eyre::eyre!("No proxy contract found"));
+        }
+
+        // Parse bytes as Felt
+        let felt = Felt::from_bytes_be_slice(&response);
+
+        // Format felt as hex string with 0x prefix
+        Ok(format!("0x{:x}", felt))
     }
 }

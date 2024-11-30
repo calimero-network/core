@@ -44,7 +44,6 @@ impl VMContext {
 }
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -62,40 +61,6 @@ pub struct VMLimits {
     pub max_storage_value_size: NonZeroU64,
     // pub max_execution_time: u64,
     // number of functions per contract
-}
-
-impl VMLimits {
-    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
-    #[must_use]
-    pub const fn new(
-        max_memory_pages: u32,
-        max_stack_size: usize,
-        max_registers: u64,
-        max_register_size: Constrained<u64, MaxU64<{ u64::MAX - 1 }>>,
-        max_registers_capacity: u64,
-        max_logs: u64,
-        max_log_size: u64,
-        max_events: u64,
-        max_event_kind_size: u64,
-        max_event_data_size: u64,
-        max_storage_key_size: NonZeroU64,
-        max_storage_value_size: NonZeroU64,
-    ) -> Self {
-        Self {
-            max_memory_pages,
-            max_stack_size,
-            max_registers,
-            max_register_size,
-            max_registers_capacity,
-            max_logs,
-            max_log_size,
-            max_events,
-            max_event_kind_size,
-            max_event_data_size,
-            max_storage_key_size,
-            max_storage_value_size,
-        }
-    }
 }
 
 #[derive(Debug)]

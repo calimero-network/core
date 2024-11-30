@@ -14,7 +14,9 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
+use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::ProposalAction;
+use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -34,7 +36,7 @@ use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
@@ -303,6 +305,7 @@ impl Node {
                 author_id,
                 root_hash,
                 artifact,
+                nonce,
             } => {
                 self.handle_state_delta(
                     source,
@@ -310,6 +313,7 @@ impl Node {
                     author_id,
                     root_hash,
                     artifact.into_owned(),
+                    nonce,
                 )
                 .await?;
             }
@@ -325,6 +329,7 @@ impl Node {
         author_id: PublicKey,
         root_hash: Hash,
         artifact: Vec<u8>,
+        nonce: [u8; NONCE_LEN],
     ) -> EyreResult<()> {
         let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
             bail!("context '{}' not found", context_id);
@@ -335,13 +340,18 @@ impl Node {
             return Ok(());
         }
 
+        let Some(sender_key) = self.ctx_manager.get_sender_key(&context_id, &author_id)? else {
+            return self.initiate_sync(context_id, source).await;
+        };
+
+        let shared_key = SharedKey::from_sk(&sender_key);
+
+        let artifact = shared_key
+            .decrypt(artifact, nonce)
+            .ok_or_eyre("failed to decrypt message")?;
+
         let Some(outcome) = self
-            .execute(
-                &mut context,
-                "apply_state_delta",
-                to_vec(&artifact)?,
-                author_id,
-            )
+            .execute(&mut context, "__calimero_sync_next", artifact, author_id)
             .await?
         else {
             bail!("application not installed");
@@ -368,11 +378,24 @@ impl Node {
             .await
             != 0
         {
+            let sender_key = self
+                .ctx_manager
+                .get_sender_key(&context.id, &executor_public_key)?
+                .ok_or_eyre("expected own identity to have sender key")?;
+
+            let shared_key = SharedKey::from_sk(&sender_key);
+            let nonce = thread_rng().gen::<Nonce>();
+
+            let artifact_encrypted = shared_key
+                .encrypt(outcome.artifact.clone(), nonce)
+                .ok_or_eyre("encryption failed")?;
+
             let message = to_vec(&BroadcastMessage::StateDelta {
                 context_id: context.id,
                 author_id: executor_public_key,
                 root_hash: context.root_hash,
-                artifact: outcome.artifact.as_slice().into(),
+                artifact: artifact_encrypted.as_slice().into(),
+                nonce,
             })?;
 
             let _ignored = self
@@ -410,9 +433,9 @@ impl Node {
             return Err(CallError::ContextNotFound);
         };
 
-        if method != "init" && &*context.root_hash == &[0; 32] {
-            return Err(CallError::Uninitialized);
-        }
+        // if method != "init" && &*context.root_hash == &[0; 32] {
+        //     return Err(CallError::Uninitialized);
+        // }
 
         if !self
             .ctx_manager
@@ -439,17 +462,23 @@ impl Node {
             });
         };
 
+        if outcome.returns.is_err() {
+            return Ok(outcome);
+        }
+
         for (proposal_id, actions) in &outcome.proposals {
-            let actions: Vec<ProposalAction> = from_slice(&actions).map_err(|e| {
+            let actions: Vec<ProposalAction> = from_slice(actions).map_err(|e| {
                 error!(%e, "Failed to deserialize proposal actions.");
                 CallError::InternalError
             })?;
+
+            let proposal_id = proposal_id.rt().expect("infallible conversion");
 
             self.ctx_manager
                 .propose(
                     context_id,
                     executor_public_key,
-                    proposal_id.clone(),
+                    proposal_id,
                     actions.clone(),
                 )
                 .await
@@ -460,8 +489,10 @@ impl Node {
         }
 
         for proposal_id in &outcome.approvals {
+            let proposal_id = proposal_id.rt().expect("infallible conversion");
+
             self.ctx_manager
-                .approve(context_id, executor_public_key, *proposal_id)
+                .approve(context_id, executor_public_key, proposal_id)
                 .await
                 .map_err(|e| {
                     error!(%e, "Failed to approve proposal {:?}", proposal_id);
@@ -469,11 +500,13 @@ impl Node {
                 })?;
         }
 
-        if let Err(err) = self
-            .send_state_delta(&context, &outcome, executor_public_key)
-            .await
-        {
-            error!(%err, "Failed to send state delta.");
+        if !outcome.artifact.is_empty() {
+            if let Err(err) = self
+                .send_state_delta(&context, &outcome, executor_public_key)
+                .await
+            {
+                error!(%err, "Failed to send state delta.");
+            }
         }
 
         Ok(outcome)
@@ -508,7 +541,7 @@ impl Node {
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
-                if outcome.artifact.is_empty() {
+                if outcome.artifact.is_empty() && method != "__calimero_sync_next" {
                     eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
                 }
 
@@ -549,20 +582,19 @@ impl Node {
 // TODO: move this into the config
 // TODO: also this would be nice to have global default with per application customization
 fn get_runtime_limits() -> EyreResult<VMLimits> {
-    Ok(VMLimits::new(
-        /*max_stack_size:*/ 200 << 10, // 200 KiB
-        /*max_memory_pages:*/ 1 << 10, // 1 KiB
-        /*max_registers:*/ 100,
-        /*max_register_size:*/ (100 << 20).validate()?, // 100 MiB
-        /*max_registers_capacity:*/ 1 << 30, // 1 GiB
-        /*max_logs:*/ 100,
-        /*max_log_size:*/ 16 << 10, // 16 KiB
-        /*max_events:*/ 100,
-        /*max_event_kind_size:*/ 100,
-        /*max_event_data_size:*/ 16 << 10, // 16 KiB
-        /*max_storage_key_size:*/ (1 << 20).try_into()?, // 1 MiB
-        /*max_storage_value_size:*/
-        (10 << 20).try_into()?, // 10 MiB
-                                // can_write: writes, // todo!
-    ))
+    Ok(VMLimits {
+        max_memory_pages: 1 << 10, // 1 KiB
+        max_stack_size: 200 << 10, // 200 KiB
+        max_registers: 100,
+        max_register_size: (100 << 20).validate()?, // 100 MiB
+        max_registers_capacity: 1 << 30,            // 1 GiB
+        max_logs: 100,
+        max_log_size: 16 << 10, // 16 KiB
+        max_events: 100,
+        max_event_kind_size: 100,
+        max_event_data_size: 16 << 10,               // 16 KiB
+        max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
+        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
+                                                     // can_write: writes, // todo!
+    })
 }

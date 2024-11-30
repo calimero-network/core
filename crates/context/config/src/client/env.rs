@@ -23,7 +23,7 @@ mod utils {
     use crate::client::{CallClient, ClientError, Operation};
 
     // todo! when crates are broken up, appropriately locate this
-    pub(super) async fn send_near_or_starknet<M, R, T: Transport>(
+    pub(super) async fn send<M, R, T: Transport>(
         client: &CallClient<'_, T>,
         params: Operation<M>,
     ) -> Result<R, ClientError<T>>
@@ -34,9 +34,10 @@ mod utils {
         match &*client.protocol {
             Near::PROTOCOL => client.send::<Near, _>(params).await,
             Starknet::PROTOCOL => client.send::<Starknet, _>(params).await,
-            unsupported_protocol => Err(ClientError::UnsupportedProtocol(
-                unsupported_protocol.to_owned(),
-            )),
+            unsupported_protocol => Err(ClientError::UnsupportedProtocol {
+                found: unsupported_protocol.to_owned(),
+                expected: vec![Near::PROTOCOL.into(), Starknet::PROTOCOL.into()].into(),
+            }),
         }
     }
 }

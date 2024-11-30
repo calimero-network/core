@@ -38,20 +38,20 @@ pub enum GetRequest {
 
 impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
-        println!("{}", self.data);
+        println!("{:?}", self.data);
     }
 }
 
 impl Report for GetNumberOfProposalApprovalsResponse {
     fn report(&self) {
-        println!("{}", self.data);
+        println!("{:?}", self.data);
     }
 }
 
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
         for user in &self.data {
-            println!("{}", user.identity_public_key);
+            println!("{}", user);
         }
     }
 }
@@ -59,14 +59,14 @@ impl Report for GetProposalApproversResponse {
 impl Report for GetProposalsResponse {
     fn report(&self) {
         for proposal in &self.data {
-            println!("{:#?}", proposal.report());
+            println!("{:#?}", proposal);
         }
     }
 }
 
 impl Report for GetProposalResponse {
     fn report(&self) {
-        println!("{:#?}", self.data.report());
+        println!("{:#?}", self.data);
     }
 }
 

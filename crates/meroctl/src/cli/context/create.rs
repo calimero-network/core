@@ -1,6 +1,7 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, GetApplicationResponse,
     InstallApplicationResponse, InstallDevApplicationRequest, UpdateContextApplicationRequest,
@@ -118,7 +119,7 @@ impl CreateCommand {
                 )
                 .await?;
 
-                let context_id = create_context(
+                let (context_id, member_public_key) = create_context(
                     environment,
                     &client,
                     multiaddr,
@@ -137,6 +138,7 @@ impl CreateCommand {
                     path,
                     metadata,
                     &config.identity,
+                    member_public_key,
                 )
                 .await?;
             }
@@ -155,7 +157,7 @@ async fn create_context(
     application_id: ApplicationId,
     params: Option<String>,
     keypair: &Keypair,
-) -> EyreResult<ContextId> {
+) -> EyreResult<(ContextId, PublicKey)> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
     }
@@ -172,7 +174,7 @@ async fn create_context(
 
     environment.output.write(&response);
 
-    Ok(response.data.context_id)
+    Ok((response.data.context_id, response.data.member_public_key))
 }
 
 async fn watch_app_and_update_context(
@@ -183,6 +185,7 @@ async fn watch_app_and_update_context(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
+    member_public_key: PublicKey,
 ) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -240,6 +243,7 @@ async fn watch_app_and_update_context(
             context_id,
             application_id,
             keypair,
+            member_public_key,
         )
         .await?;
     }
@@ -254,13 +258,14 @@ async fn update_context_application(
     context_id: ContextId,
     application_id: ApplicationId,
     keypair: &Keypair,
+    member_public_key: PublicKey,
 ) -> EyreResult<()> {
     let url = multiaddr_to_url(
         base_multiaddr,
         &format!("admin-api/dev/contexts/{context_id}/application"),
     )?;
 
-    let request = UpdateContextApplicationRequest::new(application_id);
+    let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
     let response: UpdateContextApplicationResponse =
         do_request(client, url, Some(request), keypair, RequestType::Post).await?;
