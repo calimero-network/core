@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
-use candid::CandidType;
-use candid::Principal;
+use candid::{CandidType, Principal};
 
 use crate::types::*;
 use crate::PROXY_CONTRACT;
@@ -125,21 +124,15 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
                 let args_bytes =
                     hex::decode(args).map_err(|e| format!("Invalid args hex encoding: {}", e))?;
 
-                let _: () = ic_cdk::call(
-                    receiver_id, 
-                    method_name.as_str(), 
-                    (args_bytes,),
-                )
-                .await
-                .map_err(|e| format!("Inter-canister call failed: {:?}", e))?;
+                let _: () = ic_cdk::call(receiver_id, method_name.as_str(), (args_bytes,))
+                    .await
+                    .map_err(|e| format!("Inter-canister call failed: {:?}", e))?;
             }
             ICProposalAction::Transfer {
                 receiver_id,
                 amount,
             } => {
-                let ledger_id = PROXY_CONTRACT.with(|contract| {
-                    contract.borrow().ledger_id.clone()
-                });
+                let ledger_id = PROXY_CONTRACT.with(|contract| contract.borrow().ledger_id.clone());
 
                 let transfer_args = TransferArgs {
                     to: receiver_id,
@@ -147,23 +140,20 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
                 };
 
                 // First encode to bytes
-                let args_bytes = candid::encode_one(transfer_args)
-                    .expect("Failed to encode transfer args");
+                let args_bytes =
+                    candid::encode_one(transfer_args).expect("Failed to encode transfer args");
 
                 // Then wrap in newtype struct like the working version
                 #[derive(CandidType)]
                 struct Args(Vec<u8>);
 
-                let _: () = ic_cdk::call(
-                    Principal::from(ledger_id),
-                    "transfer",
-                    (Args(args_bytes),),
-                )
-                .await
-                .map_err(|e| {
-                    ic_cdk::println!("Transfer error: {:?}", e);
-                    format!("Transfer failed: {:?}", e)
-                })?;
+                let _: () =
+                    ic_cdk::call(Principal::from(ledger_id), "transfer", (Args(args_bytes),))
+                        .await
+                        .map_err(|e| {
+                            ic_cdk::println!("Transfer error: {:?}", e);
+                            format!("Transfer failed: {:?}", e)
+                        })?;
             }
             ICProposalAction::SetNumApprovals { num_approvals } => {
                 PROXY_CONTRACT.with(|contract| {
@@ -196,7 +186,6 @@ fn internal_create_proposal(
     proposal: ICProposal,
     num_proposals: u32,
 ) -> Result<Option<ICProposalWithApprovals>, String> {
-    
     if proposal.actions.is_empty() {
         return Err("proposal cannot have empty actions".to_string());
     }

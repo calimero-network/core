@@ -118,7 +118,11 @@ mod tests {
 
     #[test]
     fn test_create_proposal() {
-        let ProxyTestContext { pic, proxy_canister, .. } = setup();
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            ..
+        } = setup();
         let mut rng = rand::thread_rng();
 
         let signer_sk = SigningKey::from_bytes(&rng.gen());
@@ -131,15 +135,20 @@ mod tests {
             actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
         };
 
-        let result = create_and_verify_proposal(&pic, proxy_canister, &signer_sk, &signer_id, proposal)
-            .expect("Proposal creation should succeed");
+        let result =
+            create_and_verify_proposal(&pic, proxy_canister, &signer_sk, &signer_id, proposal)
+                .expect("Proposal creation should succeed");
 
         assert_eq!(result.proposal_id.0, [0; 32]);
     }
 
     #[test]
     fn test_create_proposal_set_num_approvals() {
-        let ProxyTestContext { pic, proxy_canister, .. } = setup();
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            ..
+        } = setup();
         let mut rng = rand::thread_rng();
 
         let signer_sk = SigningKey::from_bytes(&rng.gen());
@@ -158,7 +167,11 @@ mod tests {
 
     #[test]
     fn test_create_proposal_transfer() {
-        let ProxyTestContext { pic, proxy_canister, .. } = setup();
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            ..
+        } = setup();
         let mut rng = rand::thread_rng();
 
         let signer_sk = SigningKey::from_bytes(&rng.gen());
@@ -180,7 +193,11 @@ mod tests {
 
     #[test]
     fn test_create_proposal_external_call() {
-        let ProxyTestContext { pic, proxy_canister, .. } = setup();
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            ..
+        } = setup();
         let mut rng = rand::thread_rng();
 
         let signer_sk = SigningKey::from_bytes(&rng.gen());
@@ -204,7 +221,11 @@ mod tests {
 
     #[test]
     fn test_create_proposal_set_context() {
-        let ProxyTestContext { pic, proxy_canister, .. } = setup();
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            ..
+        } = setup();
         let mut rng = rand::thread_rng();
 
         let signer_sk = SigningKey::from_bytes(&rng.gen());
@@ -226,7 +247,11 @@ mod tests {
 
     #[test]
     fn test_create_proposal_multiple_actions() {
-        let ProxyTestContext { pic, proxy_canister, .. } = setup();
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            ..
+        } = setup();
         let mut rng = rand::thread_rng();
 
         let signer_sk = SigningKey::from_bytes(&rng.gen());
@@ -788,14 +813,14 @@ mod tests {
         let signer3_id = ICSignerId::new(signer3_pk.to_bytes());
 
         // Create external call proposal
-        let test_args = vec![1, 2, 3, 4];  // Test arguments
+        let test_args = vec![1, 2, 3, 4]; // Test arguments
         let proposal = ICProposal {
             id: ICProposalId::new([14; 32]),
             author_id: signer1_id.clone(),
             actions: vec![ICProposalAction::ExternalFunctionCall {
                 receiver_id: mock_external,
                 method_name: "test_method".to_string(),
-                args: hex::encode(&test_args),  // Encode args as hex string
+                args: hex::encode(&test_args), // Encode args as hex string
                 deposit: 0,
             }],
         };
@@ -837,7 +862,7 @@ mod tests {
                     let result: Result<Option<ICProposalWithApprovals>, String> =
                         candid::decode_one(&bytes).expect("Failed to decode response");
                     match result {
-                        Ok(Some(_proposal_with_approvals)) => {},
+                        Ok(Some(_proposal_with_approvals)) => {}
                         Ok(None) => {
                             // Proposal was executed and removed
                             // Verify proposal no longer exists
@@ -853,7 +878,8 @@ mod tests {
                             match query_response {
                                 WasmResult::Reply(bytes) => {
                                     let stored_proposal: Option<ICProposal> =
-                                        candid::decode_one(&bytes).expect("Failed to decode stored proposal");
+                                        candid::decode_one(&bytes)
+                                            .expect("Failed to decode stored proposal");
                                     assert!(
                                         stored_proposal.is_none(),
                                         "Proposal should be removed after execution"
@@ -872,16 +898,19 @@ mod tests {
         }
 
         // Verify the external call was executed
-        let response = pic.query_call(
-            mock_external,
-            Principal::anonymous(),
-            "get_calls",
-            candid::encode_args(()).unwrap(),  // Empty tuple for no arguments
-        ).expect("Query failed");
+        let response = pic
+            .query_call(
+                mock_external,
+                Principal::anonymous(),
+                "get_calls",
+                candid::encode_args(()).unwrap(), // Empty tuple for no arguments
+            )
+            .expect("Query failed");
 
         match response {
             WasmResult::Reply(bytes) => {
-                let calls: Vec<Vec<u8>> = candid::decode_one(&bytes).expect("Failed to decode calls");
+                let calls: Vec<Vec<u8>> =
+                    candid::decode_one(&bytes).expect("Failed to decode calls");
                 assert_eq!(calls.len(), 1, "Should have exactly one call");
                 assert_eq!(&calls[0], &test_args, "Call arguments should match");
             }

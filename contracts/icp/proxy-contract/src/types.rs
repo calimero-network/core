@@ -1,25 +1,27 @@
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
-use bs58::decode::Result as Bs58Result;
 
+use bs58::decode::Result as Bs58Result;
 use calimero_context_config::repr;
 use calimero_context_config::repr::{LengthMismatch, ReprBytes, ReprTransmute};
 use calimero_context_config::types::IntoResult;
 use candid::{CandidType, Principal};
-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
 /// Base identity type
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash)]
+#[derive(
+    CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash,
+)]
 pub struct Identity([u8; 32]);
 
 impl Identity {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
-    
+
     pub fn as_bytes(&self) -> [u8; 32] {
         self.0
     }
@@ -36,20 +38,20 @@ impl Default for Identity {
 }
 
 impl ReprBytes for Identity {
-  type EncodeBytes<'a> = [u8; 32];
-  type DecodeBytes = [u8; 32];
-  type Error = LengthMismatch;
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
 
-  fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-      self.0
-  }
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0
+    }
 
-  fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
-  where
-      F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
-  {
-      Self::DecodeBytes::from_bytes(f).map(Self)
-  }
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Self::DecodeBytes::from_bytes(f).map(Self)
+    }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq, Copy)]
@@ -59,7 +61,7 @@ impl ICSignerId {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(Identity(bytes))
     }
-    
+
     pub fn as_bytes(&self) -> [u8; 32] {
         self.0.as_bytes()
     }
@@ -71,22 +73,21 @@ impl Default for ICSignerId {
     }
 }
 
-
 impl ReprBytes for ICSignerId {
-  type EncodeBytes<'a> = [u8; 32];
-  type DecodeBytes = [u8; 32];
-  type Error = LengthMismatch;
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
 
-  fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-      self.0.as_bytes()
-  }
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.as_bytes()
+    }
 
-  fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
-  where
-      F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
-  {
-      Identity::from_bytes(f).map(Self)
-  }
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
+    }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
@@ -234,7 +235,7 @@ impl<T: CandidType + Serialize + DeserializeOwned> ICPSigned<T> {
     }
 }
 
-#[derive(Debug, ThisError)] 
+#[derive(Debug, ThisError)]
 pub enum ICPSignedError<E> {
     #[error("invalid signature")]
     InvalidSignature,

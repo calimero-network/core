@@ -1,5 +1,6 @@
-use candid::Principal;
 use calimero_context_config::repr::ReprTransmute;
+use candid::Principal;
+
 use crate::types::*;
 use crate::PROXY_CONTRACT;
 
@@ -59,9 +60,7 @@ pub fn get_confirmations_count(proposal_id: ICProposalId) -> Option<ICProposalWi
 }
 
 #[ic_cdk::query]
-pub fn get_proposal_approvers(
-    proposal_id: ICProposalId,
-) -> Option<Vec<ICSignerId>> {
+pub fn get_proposal_approvers(proposal_id: ICProposalId) -> Option<Vec<ICSignerId>> {
     PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
         if let Some(approvals) = contract.approvals.get(&proposal_id) {
