@@ -6,7 +6,7 @@ use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
-use super::types::icp::{ICPSigned, ICPRequest};
+use super::types::icp::{ICPRequest, ICPSigned};
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
 use crate::client::env::{utils, Method};
 use crate::client::protocol::icp::Icp;

@@ -1,2 +1,2 @@
-pub mod starknet;
 pub mod icp;
+pub mod starknet;

@@ -1,20 +1,18 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-
-
 use bs58::decode::Result as Bs58Result;
-use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
-use crate::RequestKind;
-use crate::types::{
-    Application, ApplicationMetadata, ApplicationSource, Capability, IntoResult, SignerId,
-};
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
-use crate::ContextRequestKind;
+
+use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
+use crate::types::{
+    Application, ApplicationMetadata, ApplicationSource, Capability, IntoResult, SignerId,
+};
+use crate::{ContextRequestKind, RequestKind};
 
 #[derive(
     CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash,
@@ -68,9 +66,9 @@ impl ReprBytes for ICSignerId {
 
 // From implementation for SignerId
 impl From<ICSignerId> for SignerId {
-  fn from(value: ICSignerId) -> Self {
-      value.rt().expect("infallible conversion")
-  }
+    fn from(value: ICSignerId) -> Self {
+        value.rt().expect("infallible conversion")
+    }
 }
 
 #[derive(
@@ -231,13 +229,13 @@ pub enum ICCapability {
 
 // From implementation for Capability
 impl From<ICCapability> for Capability {
-  fn from(value: ICCapability) -> Self {
-      match value {
-          ICCapability::ManageApplication => Capability::ManageApplication,
-          ICCapability::ManageMembers => Capability::ManageMembers,
-          ICCapability::Proxy => Capability::Proxy,
-      }
-  }
+    fn from(value: ICCapability) -> Self {
+        match value {
+            ICCapability::ManageApplication => Capability::ManageApplication,
+            ICCapability::ManageMembers => Capability::ManageMembers,
+            ICCapability::Proxy => Capability::Proxy,
+        }
+    }
 }
 
 #[derive(CandidType, Serialize, Deserialize, Debug, Clone)]
@@ -396,47 +394,58 @@ impl From<Capability> for ICCapability {
     }
 }
 
-
 impl From<RequestKind<'_>> for ICPRequestKind {
     fn from(value: RequestKind<'_>) -> Self {
         match value {
             RequestKind::Context(context_request) => ICPRequestKind::Context(ICPContextRequest {
-                context_id: context_request.context_id.rt().expect("infallible conversion"),
+                context_id: context_request
+                    .context_id
+                    .rt()
+                    .expect("infallible conversion"),
                 kind: match context_request.kind {
-                    ContextRequestKind::Add { author_id, application } => ICPContextRequestKind::Add {
+                    ContextRequestKind::Add {
+                        author_id,
+                        application,
+                    } => ICPContextRequestKind::Add {
                         author_id: author_id.rt().expect("infallible conversion"),
                         application: application.into(),
                     },
-                    ContextRequestKind::UpdateApplication { application } => ICPContextRequestKind::UpdateApplication {
-                        application: application.into(),
-                    },
-                    ContextRequestKind::AddMembers { members } => ICPContextRequestKind::AddMembers {
-                        members: members.into_iter()
-                            .map(|m| m.rt().expect("infallible conversion"))
-                            .collect(),
-                    },
-                    ContextRequestKind::RemoveMembers { members } => ICPContextRequestKind::RemoveMembers {
-                        members: members.into_iter()
-                            .map(|m| m.rt().expect("infallible conversion"))
-                            .collect(),
-                    },
+                    ContextRequestKind::UpdateApplication { application } => {
+                        ICPContextRequestKind::UpdateApplication {
+                            application: application.into(),
+                        }
+                    }
+                    ContextRequestKind::AddMembers { members } => {
+                        ICPContextRequestKind::AddMembers {
+                            members: members
+                                .into_iter()
+                                .map(|m| m.rt().expect("infallible conversion"))
+                                .collect(),
+                        }
+                    }
+                    ContextRequestKind::RemoveMembers { members } => {
+                        ICPContextRequestKind::RemoveMembers {
+                            members: members
+                                .into_iter()
+                                .map(|m| m.rt().expect("infallible conversion"))
+                                .collect(),
+                        }
+                    }
                     ContextRequestKind::Grant { capabilities } => ICPContextRequestKind::Grant {
-                        capabilities: capabilities.into_iter()
-                            .map(|(id, cap)| (
-                                id.rt().expect("infallible conversion"),
-                                cap.into()
-                            ))
+                        capabilities: capabilities
+                            .into_iter()
+                            .map(|(id, cap)| (id.rt().expect("infallible conversion"), cap.into()))
                             .collect(),
                     },
                     ContextRequestKind::Revoke { capabilities } => ICPContextRequestKind::Revoke {
-                        capabilities: capabilities.into_iter()
-                            .map(|(id, cap)| (
-                                id.rt().expect("infallible conversion"),
-                                cap.into()
-                            ))
+                        capabilities: capabilities
+                            .into_iter()
+                            .map(|(id, cap)| (id.rt().expect("infallible conversion"), cap.into()))
                             .collect(),
                     },
-                    ContextRequestKind::UpdateProxyContract => ICPContextRequestKind::UpdateProxyContract,
+                    ContextRequestKind::UpdateProxyContract => {
+                        ICPContextRequestKind::UpdateProxyContract
+                    }
                 },
             }),
         }

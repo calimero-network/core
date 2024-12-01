@@ -6,7 +6,9 @@ use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::icp::{ICCapability, ICContextId, ICContextIdentity, ICSignerId};
+use crate::client::env::config::types::icp::{
+    ICCapability, ICContextId, ICContextIdentity, ICSignerId,
+};
 use crate::client::env::config::types::starknet::{
     CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
     StarknetPrivileges,
@@ -138,17 +140,17 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         // Convert context_id and identities to ICP types
         let context_id: ICContextId = (*self.context_id).rt()?;
-        let identities: Vec<ICContextIdentity> = self.identities
+        let identities: Vec<ICContextIdentity> = self
+            .identities
             .iter()
             .map(|id| (*id).rt())
             .collect::<Result<Vec<_>, _>>()?;
 
         // Create a tuple of the values we want to encode
         let payload = (context_id, identities);
-        
+
         // Encode using Candid
-        Encode!(&payload)
-            .map_err(|e| eyre::eyre!("Failed to encode privileges request: {}", e))
+        Encode!(&payload).map_err(|e| eyre::eyre!("Failed to encode privileges request: {}", e))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
