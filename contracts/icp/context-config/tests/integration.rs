@@ -1,11 +1,11 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use calimero_context_config::repr::ReprBytes;
 use candid::Principal;
 use context_contract::types::{
     ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, ICCapability,
     ICContextId, ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
-use calimero_context_config::repr::ReprBytes;
 use ed25519_dalek::{Signer, SigningKey};
 use pocket_ic::{PocketIc, WasmResult};
 use rand::Rng;
