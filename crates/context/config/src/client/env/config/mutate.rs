@@ -6,6 +6,7 @@ use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
+use super::types::icp::{ICPSigned, ICPRequest};
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
 use crate::client::env::{utils, Method};
 use crate::client::protocol::icp::Icp;
@@ -13,7 +14,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::icpTypes::ICMutate;
+// use crate::icpTypes::ICMutate;
 use crate::repr::{Repr, ReprTransmute};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
@@ -135,21 +136,23 @@ impl<'a> Method<Icp> for Mutate<'a> {
     const METHOD: &'static str = "mutate";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let signing_key = &self.signing_key;
-        let nonce = &self.nonce;
-        let kind = &self.kind;
+        let signer_sk = SigningKey::from_bytes(&self.signing_key);
 
-        let request = ICMutate {
-            signing_key: *signing_key,
-            nonce: *nonce,
-            kind: kind.into(),
-        };
+        let request = ICPRequest::new(signer_sk.verifying_key().rt()?, self.kind.into());
 
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        let signed = ICPSigned::new(request, |b| signer_sk.sign(b))?;
+
+        let encoded = candid::encode_one(&signed)?;
+
+        Ok(encoded)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if !response.is_empty() {
+            eyre::bail!("unexpected response {:?}", response);
+        }
+
+        Ok(())
     }
 }
 

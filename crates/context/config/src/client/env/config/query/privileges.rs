@@ -6,6 +6,7 @@ use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
 
+use crate::client::env::config::types::icp::{ICCapability, ICContextId, ICContextIdentity, ICSignerId};
 use crate::client::env::config::types::starknet::{
     CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
     StarknetPrivileges,
@@ -14,10 +15,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::icpTypes::{
-    ICCapability, ICContextId, ICContextIdentity, ICPrivilegesRequest, ICSignerId,
-};
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -138,22 +136,27 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id: ICContextId = self.context_id.into();
-        let identities: ICContextIdentity = self.identities.into();
-        let request = ICPrivilegesRequest {
-            context_id,
-            identities,
-        };
-        Encode!(&request).map_err(|e| eyre::eyre!(e))
+        // Convert context_id and identities to ICP types
+        let context_id: ICContextId = (*self.context_id).rt()?;
+        let identities: Vec<ICContextIdentity> = self.identities
+            .iter()
+            .map(|id| (*id).rt())
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Create a tuple of the values we want to encode
+        let payload = (context_id, identities);
+        
+        // Encode using Candid
+        Encode!(&payload)
+            .map_err(|e| eyre::eyre!("Failed to encode privileges request: {}", e))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded: BTreeMap<ICSignerId, Vec<ICCapability>> =
             Decode!(&response, BTreeMap<ICSignerId, Vec<ICCapability>>)?;
-        let value: Self::Returns = decoded
+        Ok(decoded
             .into_iter()
             .map(|(k, v)| (k.into(), v.into_iter().map(Into::into).collect()))
-            .collect();
-        Ok(value)
+            .collect())
     }
 }
