@@ -11,7 +11,7 @@ use rand::Rng;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
-    
+
     // Deploy the context contract
     let wasm = std::fs::read("target/wasm32-unknown-unknown/release/context_contract.wasm")
         .expect("failed to read wasm");
@@ -25,14 +25,17 @@ fn setup() -> (PocketIc, Principal) {
     );
 
     // Set the proxy code
-    let proxy_code = std::fs::read("../proxy-contract/target/wasm32-unknown-unknown/release/proxy_contract.wasm")
-        .expect("failed to read proxy wasm");
+    let proxy_code = std::fs::read(
+        "../proxy-contract/target/wasm32-unknown-unknown/release/proxy_contract.wasm",
+    )
+    .expect("failed to read proxy wasm");
     pic.update_call(
         canister,
         Principal::anonymous(),
         "set_proxy_code",
         candid::encode_one(proxy_code).unwrap(),
-    ).expect("Failed to set proxy code");
+    )
+    .expect("Failed to set proxy code");
 
     (pic, canister)
 }
@@ -50,19 +53,23 @@ fn get_time_nanos(pic: &PocketIc) -> u64 {
 }
 
 fn handle_response(
-    response: Result<WasmResult, UserError>, 
+    response: Result<WasmResult, UserError>,
     expected_success: bool,
-    operation_name: &str
+    operation_name: &str,
 ) {
     match response {
         Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes)
-                .unwrap_or_else(|e| panic!("Failed to decode response for {}: {}", operation_name, e));
-            
+            let result: Result<(), String> = candid::decode_one(&bytes).unwrap_or_else(|e| {
+                panic!("Failed to decode response for {}: {}", operation_name, e)
+            });
+
             match (result, expected_success) {
                 (Ok(_), true) => println!("{} succeeded as expected", operation_name),
                 (Ok(_), false) => panic!("{} succeeded when it should have failed", operation_name),
-                (Err(e), true) => panic!("{} failed when it should have succeeded: {}", operation_name, e),
+                (Err(e), true) => panic!(
+                    "{} failed when it should have succeeded: {}",
+                    operation_name, e
+                ),
                 (Err(e), false) => println!("{} failed as expected: {}", operation_name, e),
             }
         }
@@ -166,7 +173,6 @@ fn test_proxy_management() {
     );
     handle_response(response, true, "mutate");
 }
-
 
 #[test]
 fn test_mutate_success_cases() {

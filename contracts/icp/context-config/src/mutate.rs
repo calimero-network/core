@@ -2,6 +2,9 @@ use std::ops::Deref;
 
 use calimero_context_config::repr::{ReprBytes, ReprTransmute};
 use candid::Principal;
+use ic_cdk::api::management_canister::main::{
+    create_canister, install_code, CanisterSettings, CreateCanisterArgument, InstallCodeArgument,
+};
 
 use crate::guard::Guard;
 use crate::types::{
@@ -9,10 +12,6 @@ use crate::types::{
     ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
 use crate::{Context, CONTEXT_CONFIGS};
-
-use ic_cdk::api::management_canister::main::{
-    create_canister, install_code, CanisterSettings, CreateCanisterArgument, InstallCodeArgument
-};
 
 #[ic_cdk::update]
 pub async fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
@@ -65,7 +64,8 @@ async fn add_context(
         return Err("context addition must be signed by the context itself".into());
     }
 
-    let proxy_canister_id = deploy_proxy_contract(&context_id).await
+    let proxy_canister_id = deploy_proxy_contract(&context_id)
+        .await
         .unwrap_or_else(|e| panic!("Failed to deploy proxy contract: {}", e));
 
     CONTEXT_CONFIGS.with(|configs| {
@@ -93,13 +93,11 @@ async fn add_context(
     })
 }
 
-async fn deploy_proxy_contract(
-    context_id: &ICContextId,
-) -> Result<String, String> {
+async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<String, String> {
     // Get the proxy code
-    let proxy_code = CONTEXT_CONFIGS.with(|configs| {
-        configs.borrow().proxy_code.clone()
-    }).ok_or("proxy code not set")?;
+    let proxy_code = CONTEXT_CONFIGS
+        .with(|configs| configs.borrow().proxy_code.clone())
+        .ok_or("proxy code not set")?;
 
     // Create canister with cycles
     let create_args = CreateCanisterArgument {
@@ -113,19 +111,19 @@ async fn deploy_proxy_contract(
             wasm_memory_limit: None,
         }),
     };
-    
+
     let (canister_record,) = ic_cdk::api::management_canister::main::create_canister(
-        create_args, 
-        500_000_000_000_000u128
-    ).await.map_err(|e| format!("Failed to create canister: {:?}", e))?;
+        create_args,
+        500_000_000_000_000u128,
+    )
+    .await
+    .map_err(|e| format!("Failed to create canister: {:?}", e))?;
 
     let canister_id = canister_record.canister_id;
 
     // Encode init args matching the proxy's init(context_id: ICContextId, ledger_id: Principal)
-    let init_args = candid::encode_args((
-        context_id.clone(),
-        Principal::anonymous(),
-    )).map_err(|e| format!("Failed to encode init args: {}", e))?;
+    let init_args = candid::encode_args((context_id.clone(), Principal::anonymous()))
+        .map_err(|e| format!("Failed to encode init args: {}", e))?;
 
     let install_args = InstallCodeArgument {
         mode: ic_cdk::api::management_canister::main::CanisterInstallMode::Install,
@@ -341,7 +339,9 @@ async fn update_proxy_contract(
 ) -> Result<(), String> {
     let mut context = CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
-        configs.contexts.get(&context_id)
+        configs
+            .contexts
+            .get(&context_id)
             .ok_or_else(|| "context does not exist".to_string())
             .cloned()
     })?;
@@ -355,9 +355,9 @@ async fn update_proxy_contract(
         .clone();
 
     // Get the proxy code
-    let proxy_code = CONTEXT_CONFIGS.with(|configs| {
-        configs.borrow().proxy_code.clone()
-    }).ok_or("proxy code not set")?;
+    let proxy_code = CONTEXT_CONFIGS
+        .with(|configs| configs.borrow().proxy_code.clone())
+        .ok_or("proxy code not set")?;
 
     // Update the proxy contract code
     let install_args = InstallCodeArgument {
@@ -365,8 +365,7 @@ async fn update_proxy_contract(
         canister_id: Principal::from_text(proxy_canister_id)
             .map_err(|e| format!("Invalid canister ID: {}", e))?,
         wasm_module: proxy_code,
-        arg: candid::encode_one(&context_id)
-            .map_err(|e| format!("Encoding error: {}", e))?,
+        arg: candid::encode_one(&context_id).map_err(|e| format!("Encoding error: {}", e))?,
     };
 
     ic_cdk::api::management_canister::main::install_code(install_args)

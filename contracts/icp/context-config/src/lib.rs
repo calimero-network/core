@@ -12,8 +12,8 @@ use crate::types::{
 pub mod guard;
 pub mod mutate;
 pub mod query;
-pub mod types;
 pub mod sys;
+pub mod types;
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct Context {
