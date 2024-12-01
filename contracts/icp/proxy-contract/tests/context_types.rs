@@ -1,6 +1,6 @@
 use candid::CandidType;
-use serde::{Deserialize, Serialize};
 use proxy_contract::types::{ICContextId, ICContextIdentity, ICSignerId};
+use serde::{Deserialize, Serialize};
 
 #[derive(CandidType, Serialize, Deserialize, Debug, Clone)]
 pub struct Request {

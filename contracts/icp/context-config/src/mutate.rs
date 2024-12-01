@@ -112,12 +112,9 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, St
         }),
     };
 
-    let (canister_record,) = create_canister(
-        create_args,
-        500_000_000_000_000u128,
-    )
-    .await
-    .map_err(|e| format!("Failed to create canister: {:?}", e))?;
+    let (canister_record,) = create_canister(create_args, 500_000_000_000_000u128)
+        .await
+        .map_err(|e| format!("Failed to create canister: {:?}", e))?;
 
     let canister_id = canister_record.canister_id;
 

@@ -5,16 +5,22 @@ use context_types::*;
 mod tests {
     use std::cell::RefCell;
     use std::time::UNIX_EPOCH;
+
     use calimero_context_config::repr::ReprBytes;
     use candid::Principal;
     use ed25519_dalek::{Signer, SigningKey};
     use pocket_ic::{PocketIc, WasmResult};
     use proxy_contract::types::{
-        ICContextId, ICContextIdentity, ICPSigned, ICProposal, ICProposalAction, ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals, ICRequest, ICRequestKind, ICSignerId
+        ICContextId, ICContextIdentity, ICPSigned, ICProposal, ICProposalAction,
+        ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals, ICRequest,
+        ICRequestKind, ICSignerId,
     };
     use rand::Rng;
 
-    use crate::{ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, Request, RequestKind};
+    use crate::{
+        ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, Request,
+        RequestKind,
+    };
 
     // Mock canister states
     thread_local! {
@@ -27,7 +33,10 @@ mod tests {
             .expect("Failed to create signed request")
     }
 
-    fn create_signed_context_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
+    fn create_signed_context_request(
+        signer_key: &SigningKey,
+        request: Request,
+    ) -> ICPSigned<Request> {
         ICPSigned::new(request, |bytes| signer_key.sign(bytes))
             .expect("Failed to create signed request")
     }
@@ -97,37 +106,38 @@ mod tests {
         // Setup context contract first
         let context_canister = pic.create_canister();
         pic.add_cycles(context_canister, 100_000_000_000_000_000);
-        let context_wasm = std::fs::read("../context-config/target/wasm32-unknown-unknown/release/context_contract.wasm")
-            .expect("failed to read context wasm");
+        let context_wasm = std::fs::read(
+            "../context-config/target/wasm32-unknown-unknown/release/context_contract.wasm",
+        )
+        .expect("failed to read context wasm");
         pic.install_canister(context_canister, context_wasm, vec![], None);
 
         // Set proxy code in context contract
-        set_proxy_code(&pic, context_canister)
-            .expect("Failed to set proxy code");
+        set_proxy_code(&pic, context_canister).expect("Failed to set proxy code");
 
         // Setup mock ledger
         let mock_ledger = pic.create_canister();
         pic.add_cycles(mock_ledger, 100_000_000_000_000);
-        let mock_ledger_wasm = std::fs::read("target/wasm32-unknown-unknown/release/mock_ledger.wasm")
-            .expect("failed to read mock ledger wasm");
+        let mock_ledger_wasm =
+            std::fs::read("target/wasm32-unknown-unknown/release/mock_ledger.wasm")
+                .expect("failed to read mock ledger wasm");
         pic.install_canister(mock_ledger, mock_ledger_wasm, vec![], None);
 
         // Setup mock external
         let mock_external = pic.create_canister();
         pic.add_cycles(mock_external, 100_000_000_000_000);
-        let mock_external_wasm = std::fs::read("mock/external/target/wasm32-unknown-unknown/release/mock_external.wasm")
-            .expect("failed to read mock external wasm");
+        let mock_external_wasm =
+            std::fs::read("mock/external/target/wasm32-unknown-unknown/release/mock_external.wasm")
+                .expect("failed to read mock external wasm");
         pic.install_canister(mock_external, mock_external_wasm, vec![], None);
 
         // Create initial author key
         let author_sk = SigningKey::from_bytes(&rng.gen());
-        
+
         // Create context and get proxy canister
-        let (proxy_canister, context_id) = create_context_with_proxy(
-            &pic,
-            context_canister,
-            &author_sk,
-        ).expect("Failed to create context and proxy");
+        let (proxy_canister, context_id) =
+            create_context_with_proxy(&pic, context_canister, &author_sk)
+                .expect("Failed to create context and proxy");
 
         ProxyTestContext {
             pic,
@@ -140,10 +150,7 @@ mod tests {
     }
 
     // Helper function to set proxy code in context contract
-    fn set_proxy_code(
-        pic: &PocketIc,
-        context_canister: Principal,
-    ) -> Result<(), String> {
+    fn set_proxy_code(pic: &PocketIc, context_canister: Principal) -> Result<(), String> {
         // Read proxy contract wasm
         let proxy_wasm = std::fs::read("target/wasm32-unknown-unknown/release/proxy_contract.wasm")
             .expect("failed to read proxy wasm");
@@ -173,12 +180,12 @@ mod tests {
         author_sk: &SigningKey,
     ) -> Result<(Principal, ICContextId), String> {
         let mut rng = rand::thread_rng();
-        
+
         // Generate context ID
         let context_sk = SigningKey::from_bytes(&rng.gen());
         let context_pk = context_sk.verifying_key();
         let context_id = ICContextId::new(context_pk.to_bytes());
-        
+
         // Create author identity
         let author_pk = author_sk.verifying_key();
         let author_id = ICContextIdentity::new(author_pk.to_bytes());
@@ -217,7 +224,9 @@ mod tests {
                     .map_err(|e| format!("Failed to decode response: {}", e))?;
                 result.map_err(|e| format!("Context creation failed: {}", e))?;
             }
-            Ok(WasmResult::Reject(msg)) => return Err(format!("Context creation rejected: {}", msg)),
+            Ok(WasmResult::Reject(msg)) => {
+                return Err(format!("Context creation rejected: {}", msg))
+            }
             Err(e) => return Err(format!("Context creation failed: {}", e)),
         }
 
@@ -252,9 +261,7 @@ mod tests {
         let request = Request {
             kind: RequestKind::Context(ContextRequest {
                 context_id: context_id.clone(),
-                kind: ContextRequestKind::AddMembers {
-                    members,
-                },
+                kind: ContextRequestKind::AddMembers { members },
             }),
             signer_id: ICSignerId::new(author_pk.to_bytes()),
             timestamp_ms: get_time_nanos(pic),
@@ -270,8 +277,7 @@ mod tests {
 
         match response {
             Ok(WasmResult::Reply(bytes)) => {
-                candid::decode_one(&bytes)
-                    .map_err(|e| format!("Failed to decode response: {}", e))
+                candid::decode_one(&bytes).map_err(|e| format!("Failed to decode response: {}", e))
             }
             Ok(WasmResult::Reject(msg)) => Err(format!("Adding members rejected: {}", msg)),
             Err(e) => Err(format!("Adding members failed: {}", e)),
@@ -285,10 +291,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([1; 32]),
             author_id: author_id.clone(),
@@ -297,11 +303,11 @@ mod tests {
                 amount: 1000000,
             }],
         };
-    
+
         create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
             .expect("Transfer proposal creation should succeed");
     }
-    
+
     #[test]
     fn test_create_proposal_external_call() {
         let ProxyTestContext {
@@ -310,10 +316,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([3; 32]),
             author_id: author_id.clone(),
@@ -324,11 +330,11 @@ mod tests {
                 deposit: 0,
             }],
         };
-    
+
         create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
             .expect("External call proposal creation should succeed");
     }
-    
+
     #[test]
     fn test_create_proposal_set_context() {
         let ProxyTestContext {
@@ -337,10 +343,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([5; 32]),
             author_id: author_id.clone(),
@@ -349,11 +355,11 @@ mod tests {
                 value: vec![4, 5, 6],
             }],
         };
-    
+
         create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
             .expect("Setting context value should succeed");
     }
-    
+
     #[test]
     fn test_create_proposal_multiple_actions() {
         let ProxyTestContext {
@@ -362,10 +368,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([6; 32]),
             author_id: author_id.clone(),
@@ -376,11 +382,11 @@ mod tests {
                 },
             ],
         };
-    
+
         create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
             .expect("Multiple actions proposal creation should succeed");
     }
-    
+
     #[test]
     fn test_create_proposal_invalid_transfer_amount() {
         let ProxyTestContext {
@@ -389,10 +395,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([8; 32]),
             author_id: author_id.clone(),
@@ -401,13 +407,13 @@ mod tests {
                 amount: 0, // Invalid amount
             }],
         };
-    
+
         let request = ICRequest {
             signer_id: author_id.clone(),
             timestamp_ms: get_time_nanos(&pic),
             kind: ICRequestKind::Propose { proposal },
         };
-    
+
         let signed_request = create_signed_request(&author_sk, request);
         let response = pic.update_call(
             proxy_canister,
@@ -415,12 +421,15 @@ mod tests {
             "mutate",
             candid::encode_one(signed_request).unwrap(),
         );
-    
+
         match response {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
                     candid::decode_one(&bytes).expect("Failed to decode response");
-                assert!(result.is_err(), "Expected error for invalid transfer amount");
+                assert!(
+                    result.is_err(),
+                    "Expected error for invalid transfer amount"
+                );
             }
             Ok(WasmResult::Reject(msg)) => {
                 panic!("Canister rejected the call: {}", msg);
@@ -430,7 +439,7 @@ mod tests {
             }
         }
     }
-    
+
     #[test]
     fn test_create_proposal_invalid_method_name() {
         let ProxyTestContext {
@@ -439,10 +448,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([9; 32]),
             author_id: author_id.clone(),
@@ -453,13 +462,13 @@ mod tests {
                 deposit: 0,
             }],
         };
-    
+
         let request = ICRequest {
             signer_id: author_id.clone(),
             timestamp_ms: get_time_nanos(&pic),
             kind: ICRequestKind::Propose { proposal },
         };
-    
+
         let signed_request = create_signed_request(&author_sk, request);
         let response = pic.update_call(
             proxy_canister,
@@ -467,7 +476,7 @@ mod tests {
             "mutate",
             candid::encode_one(signed_request).unwrap(),
         );
-    
+
         match response {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
@@ -482,7 +491,7 @@ mod tests {
             }
         }
     }
-    
+
     #[test]
     fn test_approve_own_proposal() {
         let ProxyTestContext {
@@ -491,17 +500,17 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         // Create proposal
         let proposal = ICProposal {
             id: ICProposalId::new([10; 32]),
             author_id: author_id.clone(),
             actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
         };
-    
+
         let _ = create_and_verify_proposal(
             &pic,
             proxy_canister,
@@ -509,20 +518,20 @@ mod tests {
             &author_id,
             proposal.clone(),
         );
-    
+
         // Try to approve own proposal
         let approval = ICProposalApprovalWithSigner {
             signer_id: author_id.clone(),
             proposal_id: proposal.id,
             added_timestamp: get_time_nanos(&pic),
         };
-    
+
         let request = ICRequest {
             signer_id: author_id.clone(),
             timestamp_ms: get_time_nanos(&pic),
             kind: ICRequestKind::Approve { approval },
         };
-    
+
         let signed_request = create_signed_request(&author_sk, request);
         let result = pic.update_call(
             proxy_canister,
@@ -530,7 +539,7 @@ mod tests {
             "mutate",
             candid::encode_one(signed_request).unwrap(),
         );
-    
+
         match result {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
@@ -543,7 +552,7 @@ mod tests {
             _ => panic!("Unexpected response type"),
         }
     }
-    
+
     #[test]
     fn test_approve_non_existent_proposal() {
         let ProxyTestContext {
@@ -552,22 +561,22 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let approval = ICProposalApprovalWithSigner {
             signer_id: author_id.clone(),
             proposal_id: ICProposalId::new([11; 32]),
             added_timestamp: get_time_nanos(&pic),
         };
-    
+
         let request = ICRequest {
             signer_id: author_id.clone(),
             timestamp_ms: get_time_nanos(&pic),
             kind: ICRequestKind::Approve { approval },
         };
-    
+
         let signed_request = create_signed_request(&author_sk, request);
         let response = pic.update_call(
             proxy_canister,
@@ -575,7 +584,7 @@ mod tests {
             "mutate",
             candid::encode_one(signed_request).unwrap(),
         );
-    
+
         match response {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
@@ -588,7 +597,7 @@ mod tests {
             _ => panic!("Unexpected response type"),
         }
     }
-    
+
     #[test]
     fn test_create_proposal_empty_actions() {
         let ProxyTestContext {
@@ -597,22 +606,22 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([12; 32]),
             author_id: author_id.clone(),
             actions: vec![], // Empty actions
         };
-    
+
         let request = ICRequest {
             signer_id: author_id.clone(),
             timestamp_ms: get_time_nanos(&pic),
             kind: ICRequestKind::Propose { proposal },
         };
-    
+
         let signed_request = create_signed_request(&author_sk, request);
         let response = pic.update_call(
             proxy_canister,
@@ -620,7 +629,7 @@ mod tests {
             "mutate",
             candid::encode_one(signed_request).unwrap(),
         );
-    
+
         match response {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
@@ -634,7 +643,7 @@ mod tests {
             _ => panic!("Unexpected response type"),
         }
     }
-    
+
     #[test]
     fn test_create_proposal_invalid_context_value() {
         let ProxyTestContext {
@@ -643,10 +652,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let proposal = ICProposal {
             id: ICProposalId::new([13; 32]),
             author_id: author_id.clone(),
@@ -655,13 +664,13 @@ mod tests {
                 value: vec![1, 2, 3],
             }],
         };
-    
+
         let request = ICRequest {
             signer_id: author_id.clone(),
             timestamp_ms: get_time_nanos(&pic),
             kind: ICRequestKind::Propose { proposal },
         };
-    
+
         let signed_request = create_signed_request(&author_sk, request);
         let response = pic.update_call(
             proxy_canister,
@@ -669,7 +678,7 @@ mod tests {
             "mutate",
             candid::encode_one(signed_request).unwrap(),
         );
-    
+
         match response {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
@@ -682,7 +691,7 @@ mod tests {
             _ => panic!("Unexpected response type"),
         }
     }
-    
+
     #[test]
     fn test_create_proposal_exceeds_limit() {
         let ProxyTestContext {
@@ -691,10 +700,10 @@ mod tests {
             author_sk,
             ..
         } = setup();
-    
+
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         // Create max number of proposals
         for i in 0..10 {
             let proposal = ICProposal {
@@ -702,22 +711,23 @@ mod tests {
                 author_id: author_id.clone(),
                 actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
             };
-            let _ = create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal);
+            let _ =
+                create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal);
         }
-    
+
         // Try to create one more
         let proposal = ICProposal {
             id: ICProposalId::new([11; 32]),
             author_id: author_id.clone(),
             actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
         };
-    
+
         let request = ICRequest {
             signer_id: author_id.clone(),
             timestamp_ms: get_time_nanos(&pic),
             kind: ICRequestKind::Propose { proposal },
         };
-    
+
         let signed_request = create_signed_request(&author_sk, request);
         let response = pic.update_call(
             proxy_canister,
@@ -725,7 +735,7 @@ mod tests {
             "mutate",
             candid::encode_one(signed_request).unwrap(),
         );
-    
+
         match response {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
@@ -899,7 +909,7 @@ mod tests {
 
         let author_pk = author_sk.verifying_key();
         let author_id = ICSignerId::new(author_pk.to_bytes());
-    
+
         let signer2_sk = SigningKey::from_bytes(&rng.gen());
         let signer2_pk = signer2_sk.verifying_key();
         let signer2_id = ICSignerId::new(signer2_pk.to_bytes());
@@ -931,11 +941,17 @@ mod tests {
         );
 
         let context_members = vec![
-          ICContextIdentity::new(signer2_id.as_bytes()),
-          ICContextIdentity::new(signer3_id.as_bytes()),
+            ICContextIdentity::new(signer2_id.as_bytes()),
+            ICContextIdentity::new(signer3_id.as_bytes()),
         ];
 
-        let _  = add_members_to_context(&pic, context_canister, &context_id, &author_sk, context_members);
+        let _ = add_members_to_context(
+            &pic,
+            context_canister,
+            &context_id,
+            &author_sk,
+            context_members,
+        );
 
         // Add approvals to trigger execution
         for (signer_sk, signer_id) in [(signer2_sk, signer2_id), (signer3_sk, signer3_id)] {
