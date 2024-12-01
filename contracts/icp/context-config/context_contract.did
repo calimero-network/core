@@ -19,4 +19,5 @@ service : () -> {
       vec record { blob; vec ICCapability },
     ) query;
   proxy_contract : (blob) -> (text) query;
+  set_proxy_code : (blob) -> (Result);
 }

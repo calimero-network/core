@@ -1,6 +1,7 @@
 use std::ops::Deref;
 
 use calimero_context_config::repr::{ReprBytes, ReprTransmute};
+use candid::Principal;
 
 use crate::guard::Guard;
 use crate::types::{
@@ -9,8 +10,12 @@ use crate::types::{
 };
 use crate::{Context, CONTEXT_CONFIGS};
 
+use ic_cdk::api::management_canister::main::{
+    create_canister, install_code, CanisterSettings, CreateCanisterArgument, InstallCodeArgument
+};
+
 #[ic_cdk::update]
-pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
+pub async fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
     let request = signed_request
         .parse(|r| r.signer_id)
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
@@ -27,7 +32,7 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
             ContextRequestKind::Add {
                 author_id,
                 application,
-            } => add_context(&request.signer_id, context_id, author_id, application),
+            } => add_context(&request.signer_id, context_id, author_id, application).await,
             ContextRequestKind::UpdateApplication { application } => {
                 update_application(&request.signer_id, &context_id, application)
             }
@@ -44,23 +49,24 @@ pub fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
                 revoke(&request.signer_id, &context_id, capabilities)
             }
             ContextRequestKind::UpdateProxyContract => {
-                // TODO: Implement update_proxy_contract
-                Ok(())
+                update_proxy_contract(&request.signer_id, context_id).await
             }
         },
     }
 }
 
-fn add_context(
+async fn add_context(
     signer_id: &ICSignerId,
     context_id: ICContextId,
     author_id: ICContextIdentity,
     application: ICApplication,
 ) -> Result<(), String> {
-    // 1. Verify signer is the context itself - direct array comparison
     if signer_id.as_bytes() != context_id.as_bytes() {
         return Err("context addition must be signed by the context itself".into());
     }
+
+    let proxy_canister_id = deploy_proxy_contract(&context_id).await
+        .unwrap_or_else(|e| panic!("Failed to deploy proxy contract: {}", e));
 
     CONTEXT_CONFIGS.with(|configs| {
         let mut configs = configs.borrow_mut();
@@ -74,7 +80,7 @@ fn add_context(
             ),
             proxy: Guard::new(
                 author_id.rt().expect("infallible conversion"),
-                format!("{}.{}", configs.next_proxy_id, ic_cdk::api::id()),
+                proxy_canister_id,
             ),
         };
 
@@ -83,10 +89,56 @@ fn add_context(
             return Err("context already exists".into());
         }
 
-        configs.next_proxy_id += 1;
-
         Ok(())
     })
+}
+
+async fn deploy_proxy_contract(
+    context_id: &ICContextId,
+) -> Result<String, String> {
+    // Get the proxy code
+    let proxy_code = CONTEXT_CONFIGS.with(|configs| {
+        configs.borrow().proxy_code.clone()
+    }).ok_or("proxy code not set")?;
+
+    // Create canister with cycles
+    let create_args = CreateCanisterArgument {
+        settings: Some(CanisterSettings {
+            controllers: Some(vec![ic_cdk::api::id()]),
+            compute_allocation: None,
+            memory_allocation: None,
+            freezing_threshold: None,
+            reserved_cycles_limit: None,
+            log_visibility: None,
+            wasm_memory_limit: None,
+        }),
+    };
+    
+    let (canister_record,) = ic_cdk::api::management_canister::main::create_canister(
+        create_args, 
+        500_000_000_000_000u128
+    ).await.map_err(|e| format!("Failed to create canister: {:?}", e))?;
+
+    let canister_id = canister_record.canister_id;
+
+    // Encode init args matching the proxy's init(context_id: ICContextId, ledger_id: Principal)
+    let init_args = candid::encode_args((
+        context_id.clone(),
+        Principal::anonymous(),
+    )).map_err(|e| format!("Failed to encode init args: {}", e))?;
+
+    let install_args = InstallCodeArgument {
+        mode: ic_cdk::api::management_canister::main::CanisterInstallMode::Install,
+        canister_id,
+        wasm_module: proxy_code,
+        arg: init_args,
+    };
+
+    ic_cdk::api::management_canister::main::install_code(install_args)
+        .await
+        .map_err(|e| format!("Failed to install code: {:?}", e))?;
+
+    Ok(canister_id.to_string())
 }
 
 fn update_application(
@@ -281,4 +333,45 @@ fn revoke(
 
         Ok(())
     })
+}
+
+async fn update_proxy_contract(
+    signer_id: &ICSignerId,
+    context_id: ICContextId,
+) -> Result<(), String> {
+    let mut context = CONTEXT_CONFIGS.with(|configs| {
+        let configs = configs.borrow();
+        configs.contexts.get(&context_id)
+            .ok_or_else(|| "context does not exist".to_string())
+            .cloned()
+    })?;
+
+    // Get proxy canister ID
+    let proxy_canister_id = context
+        .proxy
+        .get(signer_id)
+        .map_err(|_| "unauthorized: Proxy capability required".to_string())?
+        .get_mut()
+        .clone();
+
+    // Get the proxy code
+    let proxy_code = CONTEXT_CONFIGS.with(|configs| {
+        configs.borrow().proxy_code.clone()
+    }).ok_or("proxy code not set")?;
+
+    // Update the proxy contract code
+    let install_args = InstallCodeArgument {
+        mode: ic_cdk::api::management_canister::main::CanisterInstallMode::Upgrade(None),
+        canister_id: Principal::from_text(proxy_canister_id)
+            .map_err(|e| format!("Invalid canister ID: {}", e))?,
+        wasm_module: proxy_code,
+        arg: candid::encode_one(&context_id)
+            .map_err(|e| format!("Encoding error: {}", e))?,
+    };
+
+    ic_cdk::api::management_canister::main::install_code(install_args)
+        .await
+        .map_err(|e| format!("Failed to update proxy contract: {:?}", e))?;
+
+    Ok(())
 }
