@@ -93,7 +93,7 @@ async fn add_context(
     })
 }
 
-async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<String, String> {
+async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, String> {
     // Get the proxy code
     let proxy_code = CONTEXT_CONFIGS
         .with(|configs| configs.borrow().proxy_code.clone())
@@ -112,7 +112,7 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<String, Strin
         }),
     };
 
-    let (canister_record,) = ic_cdk::api::management_canister::main::create_canister(
+    let (canister_record,) = create_canister(
         create_args,
         500_000_000_000_000u128,
     )
@@ -132,11 +132,11 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<String, Strin
         arg: init_args,
     };
 
-    ic_cdk::api::management_canister::main::install_code(install_args)
+    install_code(install_args)
         .await
         .map_err(|e| format!("Failed to install code: {:?}", e))?;
 
-    Ok(canister_id.to_string())
+    Ok(canister_id)
 }
 
 fn update_application(
@@ -362,13 +362,12 @@ async fn update_proxy_contract(
     // Update the proxy contract code
     let install_args = InstallCodeArgument {
         mode: ic_cdk::api::management_canister::main::CanisterInstallMode::Upgrade(None),
-        canister_id: Principal::from_text(proxy_canister_id)
-            .map_err(|e| format!("Invalid canister ID: {}", e))?,
+        canister_id: proxy_canister_id,
         wasm_module: proxy_code,
         arg: candid::encode_one(&context_id).map_err(|e| format!("Encoding error: {}", e))?,
     };
 
-    ic_cdk::api::management_canister::main::install_code(install_args)
+    install_code(install_args)
         .await
         .map_err(|e| format!("Failed to update proxy contract: {:?}", e))?;
 

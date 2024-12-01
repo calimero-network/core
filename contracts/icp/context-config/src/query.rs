@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use calimero_context_config::repr::ReprTransmute;
+use candid::Principal;
 use ic_cdk_macros::query;
 
 use crate::types::*;
@@ -33,7 +34,7 @@ fn application_revision(context_id: ICContextId) -> u64 {
 }
 
 #[query]
-fn proxy_contract(context_id: ICContextId) -> String {
+fn proxy_contract(context_id: ICContextId) -> Principal {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs

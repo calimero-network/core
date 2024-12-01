@@ -61,10 +61,6 @@ impl ICSignerId {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(Identity(bytes))
     }
-
-    pub fn as_bytes(&self) -> [u8; 32] {
-        self.0.as_bytes()
-    }
 }
 
 impl Default for ICSignerId {
@@ -97,15 +93,54 @@ impl ICContextId {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(Identity(bytes))
     }
-
-    pub fn as_bytes(&self) -> [u8; 32] {
-        self.0.as_bytes()
-    }
 }
 
 impl Default for ICContextId {
     fn default() -> Self {
         Self(Identity::default())
+    }
+}
+
+impl ReprBytes for ICContextId {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.as_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
+    }
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
+pub struct ICContextIdentity(Identity);
+
+impl ICContextIdentity {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(Identity(bytes))
+    }
+}
+
+impl ReprBytes for ICContextIdentity {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+    type Error = LengthMismatch;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.0.as_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
+    {
+        Identity::from_bytes(f).map(Self)
     }
 }
 

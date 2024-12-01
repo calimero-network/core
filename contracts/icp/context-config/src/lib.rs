@@ -19,7 +19,7 @@ pub mod types;
 pub struct Context {
     pub application: Guard<ICApplication>,
     pub members: Guard<Vec<ICContextIdentity>>,
-    pub proxy: Guard<String>,
+    pub proxy: Guard<Principal>,
 }
 
 pub struct ContextConfigs {

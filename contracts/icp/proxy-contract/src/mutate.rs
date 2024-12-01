@@ -1,25 +1,33 @@
 use std::collections::HashSet;
 
 use candid::{CandidType, Principal};
+use ic_cdk::api::call::CallResult;
 
 use crate::types::*;
 use crate::PROXY_CONTRACT;
 
-async fn check_member(_signer_id: &ICSignerId) -> Result<bool, String> {
-    // let context_canister_id = PROXY_CONTRACT.with(|contract| {
-    //     contract.borrow().context_config_id.clone()
-    // });
+use calimero_context_config::repr::ReprTransmute;
 
-    // let principal = identity_to_principal(&signer_id.0);
-    // TODO: implement this
-    // let call_result: CallResult<(bool,)> = ic_cdk::call(
-    //     Principal::from_text(&context_canister_id)
-    //         .map_err(|e| format!("Invalid context canister ID: {}", e))?,
-    //     "is_member",
-    //     (principal,),
-    // ).await.map_err(|e| format!("Failed to call context contract: {:?}", e))?;
+async fn check_member(signer_id: &ICSignerId) -> Result<bool, String> {
+    let (context_canister_id, context_id) = PROXY_CONTRACT.with(|contract| {
+        (contract.borrow().context_config_id.clone(), contract.borrow().context_id.clone())
+    });
 
-    Ok(true)
+    let identity = ICContextIdentity::new(signer_id.rt().expect("Invalid signer id"));
+
+    let args = candid::encode_args((context_id, identity)).expect("Failed to encode args");
+
+    let call_result: CallResult<(bool, )> = ic_cdk::call(
+        Principal::from_text(&context_canister_id)
+            .map_err(|e| format!("Invalid context canister ID: {}", e))?,
+        "has_member",
+        (args,),
+    ).await;
+
+    match call_result {
+        Ok((is_member,)) => Ok(is_member),
+        Err(e) => Err(format!("Error checking membership: {:?}", e))
+    }
 }
 
 #[ic_cdk::update]
