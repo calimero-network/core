@@ -97,10 +97,6 @@ impl ICContextId {
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(Identity(bytes))
     }
-
-    pub fn as_bytes(&self) -> [u8; 32] {
-        self.0.as_bytes()
-    }
 }
 
 impl ReprBytes for ICContextId {
