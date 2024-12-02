@@ -2,26 +2,23 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use ed25519_consensus::SigningKey;
+use ed25519_dalek::{Signer, SigningKey as DSigningKey};
 use ic_agent::agent::CallResponse;
 use ic_agent::export::Principal;
 use ic_agent::Agent;
-
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
 use super::Protocol;
+use crate::client::env::config::types::icp::{
+    ICApplication, ICApplicationId, ICBlobId, ICContextId, ICContextIdentity, ICPContextRequest,
+    ICPContextRequestKind, ICPRequest, ICPRequestKind, ICPSigned, ICSignerId,
+};
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
-
-use crate::client::env::config::types::icp::{
-    ICApplication, ICApplicationId, ICBlobId, ICContextId, ICContextIdentity, ICSignerId,
-    ICPContextRequestKind, ICPRequest, ICPRequestKind, ICPContextRequest, ICPSigned
-};
-use rand::rngs::OsRng;
-
-use ed25519_dalek::{Signer, SigningKey as DSigningKey};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Icp {}
@@ -248,9 +245,8 @@ impl Network {
             timestamp_ms: current_time,
         };
 
-        let sign_req =  ICPSigned::new(request, |bytes| sign_key.sign(bytes))
-        .expect("Failed to create signed request");
-
+        let sign_req = ICPSigned::new(request, |bytes| sign_key.sign(bytes))
+            .expect("Failed to create signed request");
 
         let args_encoded = candid::encode_one(sign_req).unwrap();
         self.client
