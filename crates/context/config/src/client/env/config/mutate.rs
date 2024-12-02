@@ -140,7 +140,7 @@ impl<'a> Method<Icp> for Mutate<'a> {
         let request = ICPRequest::new(signer_sk.verifying_key().rt()?, self.kind.into());
 
         let signed = ICPSigned::new(request, |b| signer_sk.sign(b))?;
-        
+
         let encoded = candid::encode_one(&signed)?;
 
         Ok(encoded)

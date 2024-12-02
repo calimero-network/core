@@ -234,16 +234,16 @@ impl Network {
                 match candid::decode_one::<Result<(), String>>(&data) {
                     Ok(decoded) => {
                         match decoded {
-                            Ok(()) => Ok(vec![]), // Return empty vec for success
-                            Err(err_msg) => Ok(err_msg.into_bytes()) // Return error message as bytes
+                            Ok(()) => Ok(vec![]),                     // Return empty vec for success
+                            Err(err_msg) => Ok(err_msg.into_bytes()), // Return error message as bytes
                         }
-                    },
+                    }
                     Err(e) => {
                         println!("Failed to decode: {}", e);
                         Ok(e.to_string().into_bytes()) // Return decode error as bytes
                     }
                 }
-            },
+            }
             Ok(CallResponse::Poll(_)) => Ok("Unexpected polling response".as_bytes().to_vec()),
             Err(err) => Ok(err.to_string().into_bytes()),
         }
