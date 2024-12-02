@@ -177,10 +177,11 @@ impl RootCommand {
 impl NodeData {
     fn get_node_data() -> NodeData {
         // Sets the contents of the configuration file to a String
-        let contents = match fs::read_to_string(CONFIG_FILE_PATH) {
+        let config_file_path = crate::read_env();
+        let contents = match fs::read_to_string(&config_file_path) {
             Ok(c) => c,
             Err(_) => {
-                eprintln!("Could not read file `{}`", CONFIG_FILE_PATH);
+                eprintln!("Could not read file `{}`", &config_file_path);
                 exit(1);
             }
         };
@@ -190,7 +191,7 @@ impl NodeData {
             Ok(nd) => nd,
             Err(_) => {
                 // Write `msg` to `stderr`.
-                eprintln!("Unable to load data from `{}`", CONFIG_FILE_PATH);
+                eprintln!("Unable to load data from `{}`", &config_file_path);
                 // Exit the program with exit code `1`.
                 exit(1);
             }
