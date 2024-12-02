@@ -251,6 +251,12 @@ impl ContextConfigs {
                     .expect("unable to update member list")
                     .priviledges()
                     .grant(identity),
+                Capability::Proxy => context
+                    .proxy
+                    .get(signer_id)
+                    .expect("unable to update proxy")
+                    .priviledges()
+                    .grant(identity),
             };
 
             env::log_str(&format!(
@@ -287,6 +293,12 @@ impl ContextConfigs {
                     .members
                     .get(signer_id)
                     .expect("unable to update member list")
+                    .priviledges()
+                    .revoke(&identity),
+                Capability::Proxy => context
+                    .proxy
+                    .get(signer_id)
+                    .expect("unable to update proxy")
                     .priviledges()
                     .revoke(&identity),
             };

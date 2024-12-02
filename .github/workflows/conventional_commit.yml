@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "chore: add commitizen"
+  workflow_dispatch:
 
 jobs:
   validate-commit:
@@ -29,6 +30,15 @@ jobs:
           echo "commit_message=$LAST_COMMIT" >> $GITHUB_ENV
 
       - name: Validate commit message
-        run: commitlint --env-commit-message
+        run: |
+          echo "$commit_message"
+              if ! echo "$commit_message" | grep -Eq "^(feat|fix|chore|docs|style|refactor|perf|test)(\(.+\))?: .+"; then
+                  echo "Invalid commit message format. Ensure it follows Conventional Commits."
+                  exit 1
+              fi
         env:
           commit_message: ${{ env.commit_message }}
+
+      - name: Success message (Optional)
+        if: success()
+        run: echo "Commit message format is valid!"

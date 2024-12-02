@@ -307,6 +307,7 @@ impl ReprBytes for VerifyingKey {
 pub enum Capability {
     ManageApplication,
     ManageMembers,
+    Proxy,
 }
 
 #[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]

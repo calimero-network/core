@@ -1,0 +1,79 @@
+name: End-to-end tests
+
+on:
+  push:
+    branches:
+      - '**'
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'contracts/**'
+      - 'crates/**'
+      - 'e2e-tests/**'
+      - '.github/workflows/e2e_tests.yml'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build apps
+        run: |
+          ./apps/kv-store/build.sh
+
+      - name: Build contracts
+        run: |
+          ./contracts/context-config/build.sh
+          ./contracts/proxy-lib/build.sh
+
+      - name: Build binaries
+        run: |
+          cargo build -p meroctl -p merod -p e2e-tests
+
+      - name: Run e2e tests
+        run: |
+          export NO_COLOR=1
+          echo "Running e2e tests, check job summary for details"
+          echo "# E2E tests 🏗️" >> $GITHUB_STEP_SUMMARY
+          ./target/debug/e2e-tests \
+            --input-dir ./e2e-tests/config \
+            --output-dir ./e2e-tests/corpus \
+            --merod-binary ./target/debug/merod \
+            --meroctl-binary ./target/debug/meroctl \
+            --output-format markdown >> $GITHUB_STEP_SUMMARY
+
+      - name: Run e2e tests
+        if: success() || failure()
+        run: |
+          LOGS_DIR=./e2e-tests/corpus/logs
+          if [ ! -d "$LOGS_DIR" ]; then
+            echo "Directory $LOGS_DIR does not exist."
+            exit 1
+          fi
+
+          echo "# Node logs 📋" >> $GITHUB_STEP_SUMMARY
+
+          for FOLDER in "$LOGS_DIR"/*; do
+            if [ -d "$FOLDER" ]; then
+
+              RUN_LOG="$FOLDER/run.log"
+              if [ -f "$RUN_LOG" ]; then
+                echo "## Node logs: $(basename $FOLDER) 📋" >> $GITHUB_STEP_SUMMARY
+                cat "$RUN_LOG" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "## No run.log found in $FOLDER ⚠️" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done

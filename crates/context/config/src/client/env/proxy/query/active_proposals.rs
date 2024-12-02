@@ -27,10 +27,28 @@ impl Method<Starknet> for ActiveProposalRequest {
     type Returns = u16;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        // No parameters needed for this call
+        Ok(Vec::new())
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.len() != 32 {
+            return Err(eyre::eyre!(
+                "Invalid response length: expected 32 bytes, got {}",
+                response.len()
+            ));
+        }
+
+        // Verify that all bytes except the last two are zero
+        if !response[..30].iter().all(|&b| b == 0) {
+            return Err(eyre::eyre!(
+                "Invalid response format: non-zero bytes in prefix"
+            ));
+        }
+
+        // Take the last two bytes for u16
+        let value = u16::from_be_bytes([response[30], response[31]]);
+
+        Ok(value)
     }
 }

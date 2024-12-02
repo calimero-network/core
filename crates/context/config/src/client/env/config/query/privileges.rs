@@ -2,7 +2,13 @@ use core::{mem, ptr};
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use starknet::core::codec::{Decode, Encode, FeltWriter};
+use starknet_crypto::Felt;
 
+use crate::client::env::config::types::starknet::{
+    CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
+    StarknetPrivileges,
+};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -63,10 +69,60 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let mut call_data = CallData::default();
+
+        // Dereference Repr and encode context_id
+        let context_id: StarknetContextId = (*self.context_id).into();
+        context_id.encode(&mut call_data)?;
+
+        // Add array length
+        call_data.write(Felt::from(self.identities.len() as u64));
+
+        // Add each identity using StarknetIdentity
+        for identity in self.identities {
+            let starknet_id: StarknetContextIdentity = (*identity).into();
+            starknet_id.encode(&mut call_data)?;
+        }
+
+        Ok(call_data.0)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        if response.len() % 32 != 0 {
+            return Err(eyre::eyre!(
+                "Invalid response length: {} bytes is not a multiple of 32",
+                response.len()
+            ));
+        }
+
+        // Convert bytes to Felts
+        let mut felts = Vec::new();
+        let chunks = response.chunks_exact(32);
+
+        // Verify no remainder
+        if !chunks.remainder().is_empty() {
+            return Err(eyre::eyre!("Response length is not a multiple of 32 bytes"));
+        }
+
+        for chunk in chunks {
+            let chunk_array: [u8; 32] = chunk
+                .try_into()
+                .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+            felts.push(Felt::from_bytes_be(&chunk_array));
+        }
+
+        // Check if it's a None response (single zero Felt)
+        if felts.len() == 1 && felts[0] == Felt::ZERO {
+            return Ok(BTreeMap::new());
+        }
+
+        let privileges = StarknetPrivileges::decode(&felts)
+            .map_err(|e| eyre::eyre!("Failed to decode privileges: {:?}", e))?;
+
+        Ok(privileges.into())
     }
 }

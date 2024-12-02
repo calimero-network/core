@@ -10,8 +10,10 @@ use axum::{Json, Router};
 use calimero_config::ConfigFile;
 use calimero_context_config::client::config::Credentials;
 use calimero_context_config::client::protocol::{near, starknet};
-use calimero_context_config::client::relayer::RelayRequest;
-use calimero_context_config::client::transport::{Both, Transport, TransportRequest};
+use calimero_context_config::client::relayer::{RelayRequest, ServerError};
+use calimero_context_config::client::transport::{
+    Both, Transport, TransportArguments, TransportRequest,
+};
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use futures_util::FutureExt;
@@ -119,21 +121,26 @@ impl RelayCommand {
 
         let handle = async move {
             while let Some((request, res_tx)) = rx.recv().await {
-                let payload = request.payload;
+                let args = TransportArguments {
+                    protocol: request.protocol,
+                    request: TransportRequest {
+                        network_id: request.network_id,
+                        contract_id: request.contract_id,
+                        operation: request.operation,
+                    },
+                    payload: request.payload,
+                };
 
-                let request = TransportRequest::new(
-                    request.protocol,
-                    request.network_id,
-                    request.contract_id,
-                    request.operation,
-                );
+                let res = both_transport
+                    .try_send(args)
+                    .await
+                    .map(|res| res.map_err(Into::into))
+                    .map_err(|err| ServerError::UnsupportedProtocol {
+                        found: err.args.protocol,
+                        expected: err.expected,
+                    });
 
-                let _ignored = res_tx.send(
-                    both_transport
-                        .send(request, payload)
-                        .await
-                        .map_err(Into::into),
-                );
+                let _ignored = res_tx.send(res);
             }
         };
 
@@ -153,7 +160,7 @@ impl RelayCommand {
 
 type AppState = mpsc::Sender<RequestPayload>;
 type RequestPayload = (RelayRequest<'static>, HandlerSender);
-type HandlerSender = oneshot::Sender<EyreResult<Vec<u8>>>;
+type HandlerSender = oneshot::Sender<Result<EyreResult<Vec<u8>>, ServerError>>;
 
 async fn handler(
     State(req_tx): State<AppState>,
@@ -169,6 +176,15 @@ async fn handler(
     let res = res_rx
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let res = match res {
+        Ok(res) => res,
+        Err(err) => {
+            debug!("failed to send request to handler: {:?}", err);
+
+            return Ok((StatusCode::BAD_REQUEST, Json(err)).into_response());
+        }
+    };
 
     match res {
         Ok(res) => Ok(res.into_response()),
