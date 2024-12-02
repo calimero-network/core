@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 use bs58::decode::Result as Bs58Result;
@@ -54,7 +53,7 @@ impl ReprBytes for Identity {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq, Copy)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq, Copy, Ord, PartialOrd)]
 pub struct ICSignerId(Identity);
 
 impl ICSignerId {
@@ -109,7 +108,7 @@ impl Default for ICContextId {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(CandidType, Serialize, Deserialize, Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ICProposalId(pub [u8; 32]);
 
 impl ICProposalId {
@@ -267,35 +266,6 @@ impl<T> CandidType for Phantom<T> {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Default)]
-pub struct ICProxyContract {
-    pub context_id: ICContextId,
-    pub context_config_id: String,
-    pub num_approvals: u32,
-    pub proposals: HashMap<ICProposalId, ICProposal>,
-    pub approvals: HashMap<ICProposalId, HashSet<ICSignerId>>,
-    pub num_proposals_pk: HashMap<ICSignerId, u32>,
-    pub active_proposals_limit: u32,
-    pub context_storage: HashMap<Vec<u8>, Vec<u8>>,
-    pub ledger_id: LedgerId,
-}
-
-impl ICProxyContract {
-    pub fn new(context_id: ICContextId, ledger_id: Principal) -> Self {
-        Self {
-            context_id,
-            context_config_id: ic_cdk::api::id().to_string(),
-            num_approvals: 3,
-            proposals: HashMap::new(),
-            approvals: HashMap::new(),
-            num_proposals_pk: HashMap::new(),
-            active_proposals_limit: 10,
-            context_storage: HashMap::new(),
-            ledger_id: ledger_id.into(),
-        }
-    }
-}
-
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub struct LedgerId(Principal);
 
@@ -315,10 +285,4 @@ impl From<LedgerId> for Principal {
     fn from(id: LedgerId) -> Self {
         id.0
     }
-}
-
-#[derive(CandidType, Deserialize, Clone, Debug)]
-pub struct TransferArgs {
-    pub to: Principal,
-    pub amount: u128,
 }

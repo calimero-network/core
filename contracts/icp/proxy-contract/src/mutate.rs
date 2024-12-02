@@ -1,8 +1,18 @@
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
-use candid::{CandidType, Principal};
+use candid::decode_one;
+use candid::Principal;
+use ic_ledger_types::AccountIdentifier;
+use ic_ledger_types::BlockIndex;
+use ic_ledger_types::Memo;
+use ic_ledger_types::Subaccount;
+use ic_ledger_types::Tokens;
+use ic_ledger_types::TransferArgs;
+use ic_ledger_types::TransferError;
+use ic_ledger_types::TransferResult;
 
 use crate::types::*;
+use crate::ICProxyContract;
 use crate::PROXY_CONTRACT;
 
 async fn check_member(_signer_id: &ICSignerId) -> Result<bool, String> {
@@ -41,23 +51,14 @@ async fn mutate(
         return Err("signer is not a member".to_string());
     }
 
-    match &request.kind {
+    match request.kind {
         ICRequestKind::Propose { proposal } => {
-            let num_proposals = PROXY_CONTRACT.with(|contract| {
-                let contract = contract.borrow();
-                contract
-                    .num_proposals_pk
-                    .get(&proposal.author_id)
-                    .copied()
-                    .unwrap_or(0)
-            });
-
-            internal_create_proposal(proposal.clone(), num_proposals)
+            internal_create_proposal(proposal)
         }
         ICRequestKind::Approve { approval } => {
             internal_approve_proposal(
-                approval.signer_id.clone(),
-                approval.proposal_id.clone(),
+                approval.signer_id,
+                approval.proposal_id,
                 approval.added_timestamp,
             )
             .await
@@ -79,13 +80,11 @@ async fn internal_approve_proposal(
             return Err("proposal does not exist".to_string());
         }
 
-        let approvals = contract.approvals.entry(proposal_id.clone()).or_default();
+        let approvals = contract.approvals.entry(proposal_id).or_default();
 
-        if approvals.contains(&signer_id) {
+        if !approvals.insert(signer_id) {
             return Err("proposal already approved".to_string());
         }
-
-        approvals.insert(signer_id);
 
         Ok(approvals.len() as u32 >= contract.num_approvals)
     })?;
@@ -121,8 +120,8 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
                 args,
                 deposit: _,
             } => {
-                let args_bytes =
-                    hex::decode(args).map_err(|e| format!("Invalid args hex encoding: {}", e))?;
+                let args_bytes = candid::encode_one(args)
+                    .map_err(|e| format!("Failed to encode args: {}", e))?;
 
                 let _: () = ic_cdk::call(receiver_id, method_name.as_str(), (args_bytes,))
                     .await
@@ -135,25 +134,23 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
                 let ledger_id = PROXY_CONTRACT.with(|contract| contract.borrow().ledger_id.clone());
 
                 let transfer_args = TransferArgs {
-                    to: receiver_id,
-                    amount,
+                    memo: Memo(0),
+                    amount: Tokens::from_e8s(amount.try_into().map_err(|e| format!("Amount conversion error: {}", e))?),
+                    fee: Tokens::from_e8s(10_000),  // Standard fee is 0.0001 ICP
+                    from_subaccount: None,
+                    to: AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),
+                    created_at_time: None,
                 };
 
-                // First encode to bytes
-                let args_bytes =
-                    candid::encode_one(transfer_args).expect("Failed to encode transfer args");
-
-                // Then wrap in newtype struct like the working version
-                #[derive(CandidType)]
-                struct Args(Vec<u8>);
-
-                let _: () =
-                    ic_cdk::call(Principal::from(ledger_id), "transfer", (Args(args_bytes),))
-                        .await
-                        .map_err(|e| {
-                            ic_cdk::println!("Transfer error: {:?}", e);
-                            format!("Transfer failed: {:?}", e)
-                        })?;
+                let _: (Result<u64, TransferError>,) = ic_cdk::call(
+                    Principal::from(ledger_id), 
+                    "transfer", 
+                    (transfer_args,)
+                )
+                .await
+                .map_err(|e| {
+                    format!("Transfer failed: {:?}", e)
+                })?;
             }
             ICProposalAction::SetNumApprovals { num_approvals } => {
                 PROXY_CONTRACT.with(|contract| {
@@ -178,13 +175,12 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
         }
     }
 
-    remove_proposal(proposal_id.clone());
+    remove_proposal(proposal_id);
     Ok(())
 }
 
 fn internal_create_proposal(
     proposal: ICProposal,
-    num_proposals: u32,
 ) -> Result<Option<ICProposalWithApprovals>, String> {
     if proposal.actions.is_empty() {
         return Err("proposal cannot have empty actions".to_string());
@@ -192,6 +188,12 @@ fn internal_create_proposal(
 
     PROXY_CONTRACT.with(|contract| {
         let mut contract = contract.borrow_mut();
+
+        let num_proposals = contract
+            .num_proposals_pk
+            .get(&proposal.author_id)
+            .copied()
+            .unwrap_or(0);
 
         // Check proposal limit
         if num_proposals >= contract.active_proposals_limit {
@@ -206,18 +208,17 @@ fn internal_create_proposal(
         }
 
         // Store proposal
-        let proposal_id = proposal.id.clone();
+        let proposal_id = proposal.id;
+        let author_id = proposal.author_id;
         contract
             .proposals
-            .insert(proposal_id.clone(), proposal.clone());
+            .insert(proposal_id, proposal);
 
         // Initialize approvals set with author's approval
-        let mut approvals = HashSet::new();
-        approvals.insert(proposal.author_id.clone());
-        contract.approvals.insert(proposal_id.clone(), approvals);
+        let approvals = BTreeSet::from([author_id]);
+        contract.approvals.insert(proposal_id, approvals);
 
         // Update proposal count
-        let author_id = proposal.author_id;
         *contract.num_proposals_pk.entry(author_id).or_insert(0) += 1;
 
         build_proposal_response(&*contract, proposal_id)
@@ -246,10 +247,6 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
             if *amount == 0 {
                 return Err("transfer amount cannot be zero".to_string());
             }
-
-            if *amount > 1_000_000_000 {
-                return Err("transfer amount limit exceeded".to_string());
-            }
         }
         ICProposalAction::SetNumApprovals { num_approvals } => {
             if *num_approvals == 0 {
@@ -275,7 +272,7 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_proposal(proposal_id: ICProposalId) {
+fn remove_proposal(proposal_id: &ICProposalId) {
     PROXY_CONTRACT.with(|contract| {
         let mut contract = contract.borrow_mut();
         contract.approvals.remove(&proposal_id);

@@ -1,5 +1,4 @@
 use calimero_context_config::repr::ReprTransmute;
-use candid::Principal;
 
 use crate::types::*;
 use crate::PROXY_CONTRACT;
