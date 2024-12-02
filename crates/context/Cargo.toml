@@ -13,6 +13,7 @@ ed25519-consensus.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 ic-agent.workspace = true
+ed25519-dalek.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 rand.workspace = true

@@ -5,6 +5,7 @@ use ed25519_consensus::SigningKey;
 use ic_agent::agent::CallResponse;
 use ic_agent::export::Principal;
 use ic_agent::Agent;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -13,6 +14,14 @@ use super::Protocol;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
+
+use crate::client::env::config::types::icp::{
+    ICApplication, ICApplicationId, ICBlobId, ICContextId, ICContextIdentity, ICSignerId,
+    ICPContextRequestKind, ICPRequest, ICPRequestKind, ICPContextRequest, ICPSigned
+};
+use rand::rngs::OsRng;
+
+use ed25519_dalek::{Signer, SigningKey as DSigningKey};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Icp {}
@@ -212,6 +221,38 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, IcpError> {
+        let mut rng = OsRng;
+        let current_time: u64 = 1733150708000u64;
+        let context_sk = self.secret_key.clone();
+        let context_pk = context_sk.verification_key();
+
+        let sign_key = DSigningKey::from_bytes(&context_sk.to_bytes());
+
+        let context_id = ICContextId::new(context_pk.to_bytes());
+
+        let request = ICPRequest {
+            kind: ICPRequestKind::Context(ICPContextRequest {
+                context_id: context_id.clone(),
+                kind: ICPContextRequestKind::Add {
+                    author_id: ICContextIdentity::new([0u8; 32]),
+                    application: ICApplication {
+                        id: ICApplicationId::new([0u8; 32]),
+                        blob: ICBlobId::new([0u8; 32]),
+                        size: 0,
+                        source: String::new(),
+                        metadata: vec![],
+                    },
+                },
+            }),
+            signer_id: ICSignerId::new(context_id.as_bytes()),
+            timestamp_ms: current_time,
+        };
+
+        let sign_req =  ICPSigned::new(request, |bytes| sign_key.sign(bytes))
+        .expect("Failed to create signed request");
+
+
+        let args_encoded = candid::encode_one(sign_req).unwrap();
         self.client
             .fetch_root_key()
             .await
@@ -223,7 +264,7 @@ impl Network {
         let response = self
             .client
             .update(canister_id, method)
-            .with_arg(args)
+            .with_arg(args_encoded)
             .call()
             .await;
         match response {

@@ -18,6 +18,7 @@ hex.workspace = true
 ic-agent.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
+rand.workspace = true
 near-crypto = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
