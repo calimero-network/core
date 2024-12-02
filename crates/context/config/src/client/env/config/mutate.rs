@@ -142,9 +142,9 @@ impl<'a> Method<Icp> for Mutate<'a> {
         let signed = ICPSigned::new(request, |b| signer_sk.sign(b))?;
 
         let encoded2 = Encode!(&signed)?;
-    
+
         let encoded = candid::encode_one(&signed)?;
-        
+
         println!("encoded: {:?}", encoded);
         println!("encoded2: {:?}", encoded2);
 

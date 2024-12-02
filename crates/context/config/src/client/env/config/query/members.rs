@@ -119,10 +119,8 @@ impl Method<Icp> for MembersRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded: Vec<ICContextIdentity> = Decode!(&response, Vec<ICContextIdentity>)?;
 
-        let converted: Result<Vec<ContextIdentity>, _> = decoded
-            .into_iter()
-            .map(|id| id.rt())
-            .collect();
+        let converted: Result<Vec<ContextIdentity>, _> =
+            decoded.into_iter().map(|id| id.rt()).collect();
 
         Ok(converted?)
     }
