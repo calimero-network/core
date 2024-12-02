@@ -1,22 +1,18 @@
-#!/bin/bash
-
-# Exit on error
+#!/bin/sh
 set -e
 
-# Ensure we have the wasm32 target
+cd "$(dirname $0)"
+
+TARGET="${CARGO_TARGET_DIR:-./target}"
+
 rustup target add wasm32-unknown-unknown
 
-# Build the contract
-cargo build --target wasm32-unknown-unknown --release
+cargo build --target wasm32-unknown-unknown --profile app-release
 
-# Generate the candid interface
-candid-extractor target/wasm32-unknown-unknown/release/context_contract.wasm > context_contract.did
+mkdir -p res
 
-# Stop the replica
-dfx stop
+cp $TARGET/wasm32-unknown-unknown/app-release/context_contract.wasm ./res/context_contract.wasm
 
-# Start the replica
-dfx start --background
-
-# Deploy the contract
-dfx deploy
+if command -v wasm-opt > /dev/null; then
+  wasm-opt -Oz ./res/context_contract.wasm -o ./res/context_contract.wasm
+fi
