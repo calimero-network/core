@@ -218,12 +218,10 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, IcpError> {
-        let mut rng = OsRng;
         let current_time: u64 = 1733150708000u64;
-        let context_sk = self.secret_key.clone();
-        let context_pk = context_sk.verification_key();
 
-        let sign_key = DSigningKey::from_bytes(&context_sk.to_bytes());
+        let sign_key = DSigningKey::from_bytes(&[0u8; 32]);
+        let context_pk = sign_key.verifying_key();
 
         let context_id = ICContextId::new(context_pk.to_bytes());
 
@@ -247,6 +245,8 @@ impl Network {
 
         let sign_req = ICPSigned::new(request, |bytes| sign_key.sign(bytes))
             .expect("Failed to create signed request");
+
+        println!("Sign request: {:?}", sign_req);
 
         let args_encoded = candid::encode_one(sign_req).unwrap();
         self.client
