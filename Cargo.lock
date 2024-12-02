@@ -923,7 +923,6 @@ dependencies = [
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
- "rand 0.8.5",
  "reqwest 0.12.9",
  "serde",
  "serde_json",

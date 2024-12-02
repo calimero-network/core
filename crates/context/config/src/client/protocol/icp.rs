@@ -1,21 +1,16 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use candid::{decode_one, Result as CandidResult};
 use ed25519_consensus::SigningKey;
-use ed25519_dalek::{Signer, SigningKey as DSigningKey};
 use ic_agent::agent::CallResponse;
 use ic_agent::export::Principal;
 use ic_agent::Agent;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
 use super::Protocol;
-use crate::client::env::config::types::icp::{
-    ICApplication, ICApplicationId, ICBlobId, ICContextId, ICContextIdentity, ICPContextRequest,
-    ICPContextRequestKind, ICPRequest, ICPRequestKind, ICPSigned, ICSignerId,
-};
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
@@ -218,37 +213,6 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, IcpError> {
-        let current_time: u64 = 1733150708000u64;
-
-        let sign_key = DSigningKey::from_bytes(&[0u8; 32]);
-        let context_pk = sign_key.verifying_key();
-
-        let context_id = ICContextId::new(context_pk.to_bytes());
-
-        let request = ICPRequest {
-            kind: ICPRequestKind::Context(ICPContextRequest {
-                context_id: context_id.clone(),
-                kind: ICPContextRequestKind::Add {
-                    author_id: ICContextIdentity::new([0u8; 32]),
-                    application: ICApplication {
-                        id: ICApplicationId::new([0u8; 32]),
-                        blob: ICBlobId::new([0u8; 32]),
-                        size: 0,
-                        source: String::new(),
-                        metadata: vec![],
-                    },
-                },
-            }),
-            signer_id: ICSignerId::new(context_id.as_bytes()),
-            timestamp_ms: current_time,
-        };
-
-        let sign_req = ICPSigned::new(request, |bytes| sign_key.sign(bytes))
-            .expect("Failed to create signed request");
-
-        println!("Sign request: {:?}", sign_req);
-
-        let args_encoded = candid::encode_one(sign_req).unwrap();
         self.client
             .fetch_root_key()
             .await
@@ -260,19 +224,28 @@ impl Network {
         let response = self
             .client
             .update(canister_id, method)
-            .with_arg(args_encoded)
+            .with_arg(args)
             .call()
             .await;
+
         match response {
-            Ok(CallResponse::Response((data, _certificate))) => Ok(data),
-            Ok(CallResponse::Poll(_)) => Err(IcpError::Custom {
-                operation: ErrorOperation::Query,
-                reason: "Unexpected Poll response".to_string(),
-            }),
-            Err(err) => Err(IcpError::Custom {
-                operation: ErrorOperation::Query,
-                reason: err.to_string(),
-            }),
+            Ok(CallResponse::Response((data, _))) => {
+                // Now try to decode the actual data
+                match candid::decode_one::<Result<(), String>>(&data) {
+                    Ok(decoded) => {
+                        match decoded {
+                            Ok(()) => Ok(vec![]), // Return empty vec for success
+                            Err(err_msg) => Ok(err_msg.into_bytes()) // Return error message as bytes
+                        }
+                    },
+                    Err(e) => {
+                        println!("Failed to decode: {}", e);
+                        Ok(e.to_string().into_bytes()) // Return decode error as bytes
+                    }
+                }
+            },
+            Ok(CallResponse::Poll(_)) => Ok("Unexpected polling response".as_bytes().to_vec()),
+            Err(err) => Ok(err.to_string().into_bytes()),
         }
     }
 }

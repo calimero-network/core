@@ -140,23 +140,22 @@ impl<'a> Method<Icp> for Mutate<'a> {
         let request = ICPRequest::new(signer_sk.verifying_key().rt()?, self.kind.into());
 
         let signed = ICPSigned::new(request, |b| signer_sk.sign(b))?;
-
-        let encoded2 = Encode!(&signed)?;
-
+        
         let encoded = candid::encode_one(&signed)?;
-
-        println!("encoded: {:?}", encoded);
-        println!("encoded2: {:?}", encoded2);
 
         Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if !response.is_empty() {
-            eyre::bail!("unexpected response {:?}", response);
+        if response.is_empty() {
+            // Empty response means success
+            Ok(())
+        } else {
+            // Non-empty response means there was an error message
+            let error_msg = String::from_utf8(response)
+                .map_err(|e| eyre::eyre!("Invalid UTF-8 in error message: {}", e))?;
+            eyre::bail!("{}", error_msg)
         }
-
-        Ok(())
     }
 }
 

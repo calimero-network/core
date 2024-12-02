@@ -9,16 +9,15 @@ license.workspace = true
 [dependencies]
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
-candid.workspace = true
-ed25519-consensus.workspace = true
+candid = { workspace = true, optional = true }
+ed25519-consensus = { workspace = true, optional = true }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
-hex.workspace = true
-ic-agent.workspace = true
-ic-cdk.workspace = true
-ic-cdk-macros.workspace = true
-rand.workspace = true
+hex = { workspace = true, optional = true }
+ic-agent = { workspace = true, optional = true }
+ic-cdk = { workspace = true, optional = true }
+ic-cdk-macros = { workspace = true, optional = true }
 near-crypto = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
@@ -37,15 +36,33 @@ workspace = true
 
 [features]
 client = [
+  "near",
+  "icp",
+  "starknet",
   "dep:either",
   "dep:eyre",
+  "reqwest/json",
+  "url/serde",
+]
+
+near = [
   "dep:near-crypto",
   "dep:near-jsonrpc-client",
   "dep:near-jsonrpc-primitives",
   "dep:near-primitives",
-  "reqwest/json",
+]
+
+icp = [
+  "dep:candid",
+  "dep:ic-agent",
+  "dep:ic-cdk",
+  "dep:ic-cdk-macros",
+  "dep:ed25519-consensus",
+]
+
+starknet = [
+  "dep:hex",
   "dep:starknet",
   "dep:starknet-crypto",
   "dep:starknet-types-core",
-  "url/serde",
 ]

@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
+use std::time;
 
 use bs58::decode::Result as Bs58Result;
 use candid::CandidType;
@@ -283,10 +284,19 @@ pub struct ICPRequest {
 
 impl ICPRequest {
     pub fn new(signer_id: ICSignerId, kind: ICPRequestKind) -> Self {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "This is never expected to overflow"
+        )]
+        let timestamp_ms = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis() as u64;
+
         Self {
             signer_id,
             kind,
-            timestamp_ms: 0, // Default timestamp for tests
+            timestamp_ms,
         }
     }
 }

@@ -20,8 +20,8 @@ pub async fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
 
     // Check request timestamp
-    let current_time = ic_cdk::api::time();
-    if current_time.saturating_sub(request.timestamp_ms) > 1000 * 5 {
+    let current_time_ms = ic_cdk::api::time() / 1_000_000; // Convert nanoseconds to milliseconds
+    if current_time_ms.saturating_sub(request.timestamp_ms) > 5_000 {
         // 5 seconds threshold
         return Err("request expired".to_string());
     }
