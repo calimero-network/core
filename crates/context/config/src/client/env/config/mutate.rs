@@ -14,7 +14,6 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-// use crate::icpTypes::ICMutate;
 use crate::repr::{Repr, ReprTransmute};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
@@ -142,7 +141,12 @@ impl<'a> Method<Icp> for Mutate<'a> {
 
         let signed = ICPSigned::new(request, |b| signer_sk.sign(b))?;
 
+        let encoded2 = Encode!(&signed)?;
+    
         let encoded = candid::encode_one(&signed)?;
+        
+        println!("encoded: {:?}", encoded);
+        println!("encoded2: {:?}", encoded2);
 
         Ok(encoded)
     }

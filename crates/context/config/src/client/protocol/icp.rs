@@ -181,6 +181,7 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, IcpError> {
+        println!("Here access to query");
         self.client
             .fetch_root_key()
             .await
@@ -231,9 +232,9 @@ impl Network {
                 operation: ErrorOperation::Query,
                 reason: "Unexpected Poll response".to_string(),
             }),
-            Err(_) => Err(IcpError::Custom {
+            Err(err) => Err(IcpError::Custom {
                 operation: ErrorOperation::Query,
-                reason: "No response".to_string(),
+                reason: err.to_string(),
             }),
         }
     }

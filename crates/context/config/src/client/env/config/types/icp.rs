@@ -182,6 +182,13 @@ impl ReprBytes for ICBlobId {
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ICMembersRequest {
+    pub context_id: ICContextId,
+    pub offset: usize,
+    pub length: usize,
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ICApplication {
     pub id: ICApplicationId,
     pub blob: ICBlobId,
@@ -220,7 +227,7 @@ pub struct ICPContextRequest {
     pub kind: ICPContextRequestKind,
 }
 
-#[derive(CandidType, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(CandidType, Copy, Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ICCapability {
     ManageApplication,
     ManageMembers,
@@ -303,7 +310,7 @@ pub enum ICPSignedError<E> {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-struct Phantom<T>(#[serde(skip)] std::marker::PhantomData<T>);
+struct Phantom<T>(#[serde(skip)] PhantomData<T>);
 
 impl<T> CandidType for Phantom<T> {
     fn _ty() -> candid::types::Type {
