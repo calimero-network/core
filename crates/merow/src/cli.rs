@@ -3,6 +3,7 @@ use const_format::concatcp;
 use eyre::Result as EyreResult;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::exit;
 use std::process::{Command, Output, Stdio};
@@ -16,9 +17,6 @@ pub const EXAMPLES: &str = r"
   # Start a running node 
   $ merow -- start-node 
 ";
-
-// Points to the Node Cofiguration Filepath relative to the working directory
-const CONFIG_FILE_PATH: &str = "crates/merow/config/default.toml";
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -55,7 +53,7 @@ fn build_command(
     let mut command: Command = Command::new("cargo");
 
     // Sets the default CLI arguments
-    command.args([
+    let _ = command.args([
         "run",
         "-p",
         "merod",
@@ -68,7 +66,7 @@ fn build_command(
 
     // Sets the custom CLI arguments
     if !run_node {
-        command.args([
+        let _ = command.args([
             "init",
             "--server-port",
             server.unwrap(),
@@ -76,19 +74,21 @@ fn build_command(
             swarm.unwrap(),
         ]);
     } else {
-        command.arg("run");
+        let _ = command.arg("run");
     }
 
-    command.stdout(Stdio::piped()); // Capture stdout
-    command.stderr(Stdio::piped()); // Capture stderr
+    // Sets the standard IO configuration
+    // let _ = command.stdout(Stdio::piped()); // Capture stdout
+    // let _ = command.stderr(Stdio::piped()); // Capture stderr
 
     return command;
 }
 
 fn display_command_output(output: Output) {
     println!("Status: {}", output.status);
-    println!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
-    println!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
+    io::stdout().write_all(&output.stdout).unwrap();
+    // println!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
+    // println!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 fn make_direcory(node_home: &str) {
@@ -120,7 +120,7 @@ fn init_node(config: &NodeConfig) -> EyreResult<()> {
         false,
     );
 
-    let child: Output = command.output()?; // Execute the command and get the output
+    let child: Output = command.output().expect("failed to execute process"); // Execute the command and get the output
 
     display_command_output(child);
 
