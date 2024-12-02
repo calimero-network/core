@@ -1,5 +1,7 @@
 use serde::Serialize;
+use starknet::core::codec::Encode;
 
+use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -32,10 +34,39 @@ impl Method<Starknet> for HasMemberRequest {
     const METHOD: &'static str = "has_member";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let mut call_data = CallData::default();
+
+        // Encode context_id
+        let context_pair: FeltPair = self.context_id.into();
+        context_pair.encode(&mut call_data)?;
+
+        // Encode identity
+        let identity_pair: FeltPair = self.identity.into();
+        identity_pair.encode(&mut call_data)?;
+
+        Ok(call_data.0)
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.len() != 32 {
+            return Err(eyre::eyre!(
+                "Invalid response length: expected 32 bytes, got {}",
+                response.len()
+            ));
+        }
+
+        // Check if all bytes except the last one are zero
+        if !response[..31].iter().all(|&b| b == 0) {
+            return Err(eyre::eyre!(
+                "Invalid response format: non-zero bytes in prefix"
+            ));
+        }
+
+        // Check the last byte is either 0 or 1
+        match response[31] {
+            0 => Ok(false),
+            1 => Ok(true),
+            v => Err(eyre::eyre!("Invalid boolean value: {}", v)),
+        }
     }
 }

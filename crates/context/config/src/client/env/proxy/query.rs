@@ -32,7 +32,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
             offset,
             length: limit,
         };
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn proposal(
@@ -43,13 +43,13 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
             proposal_id: Repr::new(proposal_id),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn get_number_of_active_proposals(&self) -> Result<u16, ClientError<T>> {
         let params = ActiveProposalRequest;
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn get_number_of_proposal_approvals(
@@ -60,7 +60,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
             proposal_id: Repr::new(proposal_id),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 
     pub async fn get_proposal_approvers(
@@ -71,6 +71,6 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
             proposal_id: Repr::new(proposal_id),
         };
 
-        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+        utils::send(&self.client, Operation::Read(params)).await
     }
 }

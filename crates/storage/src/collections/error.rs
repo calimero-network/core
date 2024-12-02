@@ -1,6 +1,7 @@
+//! Error types for storage operations.
+
 use thiserror::Error;
 
-// fixme! macro expects `calimero_storage` to be in deps
 use crate::address::PathError;
 use crate::interface::StorageError;
 

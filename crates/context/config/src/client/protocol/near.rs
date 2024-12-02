@@ -4,6 +4,9 @@ use std::{time, vec};
 
 pub use near_crypto::SecretKey;
 use near_crypto::{InMemorySigner, PublicKey, Signer};
+use near_jsonrpc_client::errors::{
+    JsonRpcError, JsonRpcServerError, JsonRpcServerResponseStatusError,
+};
 use near_jsonrpc_client::methods::query::{RpcQueryRequest, RpcQueryResponse};
 use near_jsonrpc_client::methods::send_tx::RpcSendTransactionRequest;
 use near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest;
@@ -25,7 +28,9 @@ use thiserror::Error;
 use url::Url;
 
 use super::Protocol;
-use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
+use crate::client::transport::{
+    AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
+};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Near {}
@@ -151,8 +156,6 @@ impl<'a> NearTransport<'a> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum NearError {
-    #[error("unsupported protocol `{0}`")]
-    UnsupportedProtocol(String),
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid response from RPC while {operation}")]
@@ -185,7 +188,7 @@ pub enum ErrorOperation {
     FetchAccount,
 }
 
-impl Transport for NearTransport<'_> {
+impl ProtocolTransport for NearTransport<'_> {
     type Error = NearError;
 
     async fn send(
@@ -193,12 +196,6 @@ impl Transport for NearTransport<'_> {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
-        if request.protocol != Near::PROTOCOL {
-            return Err(NearError::UnsupportedProtocol(
-                request.protocol.into_owned(),
-            ));
-        }
-
         let Some(network) = self.networks.get(&request.network_id) else {
             return Err(NearError::UnknownNetwork(request.network_id.into_owned()));
         };
@@ -298,12 +295,24 @@ impl Network {
             match response {
                 Ok(response) => break response,
                 Err(err) => {
-                    let Some(RpcTransactionError::TimeoutError) = err.handler_error() else {
-                        return Err(NearError::Custom {
-                            operation: ErrorOperation::Mutate,
-                            reason: err.to_string(),
-                        });
-                    };
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "quite terse, these variants"
+                    )]
+                    match err {
+                        JsonRpcError::ServerError(
+                            JsonRpcServerError::ResponseStatusError(
+                                JsonRpcServerResponseStatusError::TimeoutError,
+                            )
+                            | JsonRpcServerError::HandlerError(RpcTransactionError::TimeoutError),
+                        ) => {}
+                        _ => {
+                            return Err(NearError::Custom {
+                                operation: ErrorOperation::Mutate,
+                                reason: err.to_string(),
+                            });
+                        }
+                    }
 
                     if sent_at.elapsed().as_secs() > 60 {
                         return Err(NearError::TransactionTimeout);

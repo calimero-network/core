@@ -306,3 +306,6 @@ multiple_crate_versions = "allow" # Cannot resolve all these
 missing_errors_doc = "allow"      # TODO: Remove later once documentation has been added
 missing_panics_doc = "allow"      # TODO: Remove later once documentation has been added
 future_not_send = "allow"         # TODO: Remove later once Send is implemented
+
+[patch.crates-io]
+starknet = { git = "https://github.com/xJonathanLEI/starknet-rs", rev = "5c676a6" }

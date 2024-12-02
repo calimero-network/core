@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use std::vec;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextIdentity, ProposalId};
 use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals};
 use calimero_primitives::context::ContextId;
@@ -16,7 +15,7 @@ use crate::AdminState;
 
 //todo split it up into separate files
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Copy, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionType {
     ExternalFunctionCall,
