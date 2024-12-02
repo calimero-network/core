@@ -1,19 +1,10 @@
 use std::collections::BTreeSet;
 
-use candid::decode_one;
 use candid::Principal;
-use ic_ledger_types::AccountIdentifier;
-use ic_ledger_types::BlockIndex;
-use ic_ledger_types::Memo;
-use ic_ledger_types::Subaccount;
-use ic_ledger_types::Tokens;
-use ic_ledger_types::TransferArgs;
-use ic_ledger_types::TransferError;
-use ic_ledger_types::TransferResult;
+use ic_ledger_types::{AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError};
 
 use crate::types::*;
-use crate::ICProxyContract;
-use crate::PROXY_CONTRACT;
+use crate::{ICProxyContract, PROXY_CONTRACT};
 
 async fn check_member(_signer_id: &ICSignerId) -> Result<bool, String> {
     // let context_canister_id = PROXY_CONTRACT.with(|contract| {
@@ -52,9 +43,7 @@ async fn mutate(
     }
 
     match request.kind {
-        ICRequestKind::Propose { proposal } => {
-            internal_create_proposal(proposal)
-        }
+        ICRequestKind::Propose { proposal } => internal_create_proposal(proposal),
         ICRequestKind::Approve { approval } => {
             internal_approve_proposal(
                 approval.signer_id,
@@ -135,22 +124,21 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
 
                 let transfer_args = TransferArgs {
                     memo: Memo(0),
-                    amount: Tokens::from_e8s(amount.try_into().map_err(|e| format!("Amount conversion error: {}", e))?),
-                    fee: Tokens::from_e8s(10_000),  // Standard fee is 0.0001 ICP
+                    amount: Tokens::from_e8s(
+                        amount
+                            .try_into()
+                            .map_err(|e| format!("Amount conversion error: {}", e))?,
+                    ),
+                    fee: Tokens::from_e8s(10_000), // Standard fee is 0.0001 ICP
                     from_subaccount: None,
                     to: AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),
                     created_at_time: None,
                 };
 
-                let _: (Result<u64, TransferError>,) = ic_cdk::call(
-                    Principal::from(ledger_id), 
-                    "transfer", 
-                    (transfer_args,)
-                )
-                .await
-                .map_err(|e| {
-                    format!("Transfer failed: {:?}", e)
-                })?;
+                let _: (Result<u64, TransferError>,) =
+                    ic_cdk::call(Principal::from(ledger_id), "transfer", (transfer_args,))
+                        .await
+                        .map_err(|e| format!("Transfer failed: {:?}", e))?;
             }
             ICProposalAction::SetNumApprovals { num_approvals } => {
                 PROXY_CONTRACT.with(|contract| {
@@ -210,9 +198,7 @@ fn internal_create_proposal(
         // Store proposal
         let proposal_id = proposal.id;
         let author_id = proposal.author_id;
-        contract
-            .proposals
-            .insert(proposal_id, proposal);
+        contract.proposals.insert(proposal_id, proposal);
 
         // Initialize approvals set with author's approval
         let approvals = BTreeSet::from([author_id]);

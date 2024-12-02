@@ -723,7 +723,7 @@ mod tests {
                     let result: Result<Option<ICProposalWithApprovals>, String> =
                         candid::decode_one(&bytes).expect("Failed to decode response");
                     match result {
-                        Ok(Some(proposal_with_approvals)) => {}
+                        Ok(Some(_proposal_with_approvals)) => {}
                         Ok(None) => {
                             // Proposal was executed and removed
                             // Verify proposal no longer exists
@@ -769,18 +769,20 @@ mod tests {
             account: AccountIdentifier::new(&Principal::anonymous(), &Subaccount([0; 32])),
         };
 
-        let response = pic.query_call(
-            mock_ledger,
-            Principal::anonymous(),
-            "account_balance",
-            candid::encode_one(args).unwrap(),
-        ).expect("Failed to query balance");
-        
+        let response = pic
+            .query_call(
+                mock_ledger,
+                Principal::anonymous(),
+                "account_balance",
+                candid::encode_one(args).unwrap(),
+            )
+            .expect("Failed to query balance");
+
         match response {
             WasmResult::Reply(bytes) => {
                 let balance: Tokens = candid::decode_one(&bytes).expect("Failed to decode balance");
                 let final_balance = balance.e8s();
-                 // Verify the transfer was executed
+                // Verify the transfer was executed
                 assert_eq!(
                     final_balance,
                     initial_balance
@@ -917,10 +919,10 @@ mod tests {
                 let calls: Vec<Vec<u8>> =
                     candid::decode_one(&bytes).expect("Failed to decode calls");
                 assert_eq!(calls.len(), 1, "Should have exactly one call");
-                
+
                 // Decode the Candid-encoded argument
-                let received_args: String = candid::decode_one(&calls[0])
-                    .expect("Failed to decode call arguments");
+                let received_args: String =
+                    candid::decode_one(&calls[0]).expect("Failed to decode call arguments");
                 assert_eq!(received_args, test_args, "Call arguments should match");
             }
             _ => panic!("Unexpected response type"),

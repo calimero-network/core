@@ -53,7 +53,9 @@ impl ReprBytes for Identity {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq, Copy, Ord, PartialOrd)]
+#[derive(
+    CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq, Copy, Ord, PartialOrd,
+)]
 pub struct ICSignerId(Identity);
 
 impl ICSignerId {
@@ -108,7 +110,9 @@ impl Default for ICContextId {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    CandidType, Serialize, Deserialize, Copy, Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd,
+)]
 pub struct ICProposalId(pub [u8; 32]);
 
 impl ICProposalId {

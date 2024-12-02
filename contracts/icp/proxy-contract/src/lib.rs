@@ -1,4 +1,5 @@
-use std::{cell::RefCell, collections::{BTreeMap, BTreeSet, HashMap}};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use candid::{CandidType, Principal};
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,6 @@ use crate::types::{
 pub mod mutate;
 pub mod query;
 pub mod types;
-
 
 #[derive(CandidType, Serialize, Deserialize, Default)]
 pub struct ICProxyContract {
@@ -42,7 +42,6 @@ impl ICProxyContract {
         }
     }
 }
-
 
 thread_local! {
   static PROXY_CONTRACT: RefCell<ICProxyContract> = RefCell::new(ICProxyContract::default());
