@@ -1,19 +1,24 @@
 # Node Server
 
-- [Introduction](#introduction)
-  - [Admin API](#1-admin-api)
-  - [JSON rpc](#2-json-rpc)
-  - [Websocket](#3-websocket)
-- [Node Server Workflows](#node-server-workflows)
-  - [Client Login Workflow](#client-login-workflow)
-  - [JSON rpc Workflow](#json-rpc-workflow)
-  - [Websocket Workflow](#websocket-workflow)
-- [Admin API endpoints](#admin-api-endpoints)
-  - [Protected Routes](#protected-routes)
-  - [Unprotected Routes](#unprotected-routes)
-- [JSON rpc endpoint](#json-rpc-endpoint)
-- [Websocket endpoints](#websocket-endpoints)
-- [Examples](#examples)
+- [Node Server](#node-server)
+  - [Introduction](#introduction)
+    - [1. Admin API](#1-admin-api)
+    - [2. JSON rpc](#2-json-rpc)
+      - [Query Method](#query-method)
+      - [Mutate Method](#mutate-method)
+    - [3. Websocket](#3-websocket)
+      - [Subscription Handling:](#subscription-handling)
+      - [Unsubscription Handling:](#unsubscription-handling)
+  - [Node Server Workflows](#node-server-workflows)
+    - [Client Login Workflow](#client-login-workflow)
+    - [JSON rpc Workflow](#json-rpc-workflow)
+    - [Websocket Workflow](#websocket-workflow)
+  - [Admin API endpoints](#admin-api-endpoints)
+    - [Protected Routes](#protected-routes)
+    - [Unprotected Routes](#unprotected-routes)
+  - [JSON rpc endpoint](#json-rpc-endpoint)
+  - [Websocket endpoints](#websocket-endpoints)
+  - [Examples](#examples)
 
 ## Introduction
 
@@ -342,5 +347,4 @@ Examples of Node Server usage can be found within the
 [Admin Dashboard](https://github.com/calimero-network/admin-dashboard) and the
 [Only Peers example](https://github.com/calimero-network/only-peers-client)
 application. All communication with the node is exposed through
-[calimero sdk](https://github.com/calimero-network/core/tree/feat-admin_api_docs/packages/calimero-sdk)
-library.
+[calimero sdk](https://github.com/calimero-network/core-js-sdk) library.

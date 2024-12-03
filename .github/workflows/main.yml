@@ -1,0 +1,20 @@
+name: Sync Fork
+
+on:
+  schedule:
+    - cron: 0 0 * * *  # runs daily at midnight
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Sync fork
+        run: |
+          git remote add upstream https://github.com/calimero-network/core.git
+          git fetch upstream
+          git merge upstream/main --no-edit
+          git push origin main
