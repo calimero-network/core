@@ -1,37 +1,58 @@
 use std::cell::RefCell;
 use candid::{CandidType, Deserialize, Principal};
+use ic_ledger_types::{Tokens, AccountIdentifier, Memo, TransferArgs, Timestamp, BlockIndex, TransferError};
 
 thread_local! {
     static BALANCE: RefCell<u64> = RefCell::new(1_000_000_000);
 }
 
-#[derive(CandidType, Deserialize)]
-struct TransferArgs {
-    to: Principal,
-    amount: u128,
-}
+type TransferResult = Result<BlockIndex, TransferError>;
 
 #[ic_cdk::update]
-fn transfer(args: Vec<u8>) {
-    let transfer_args: TransferArgs = candid::decode_one(&args)
-        .expect("Failed to decode transfer args");
-        
+fn transfer(args: TransferArgs) -> TransferResult {
     ic_cdk::println!("Mock ledger received transfer: to={:?}, amount={}", 
-        transfer_args.to, transfer_args.amount);
-        
+        args.to, args.amount);
+    
+    // Verify fee
+    if args.fee.e8s() != 10_000 {
+        return Err(TransferError::BadFee { 
+            expected_fee: Tokens::from_e8s(10_000) 
+        });
+    }
+
+    let amount_e8s = args.amount.e8s();
+    
     BALANCE.with(|balance| {
         let mut bal = balance.borrow_mut();
-        *bal = bal.saturating_sub(transfer_args.amount.try_into().unwrap());
+        
+        // Check if we have enough balance
+        if amount_e8s > *bal {
+            return Err(TransferError::InsufficientFunds { 
+                balance: Tokens::from_e8s(*bal) 
+            });
+        }
+        
+        // Subtract amount and fee
+        *bal = bal.saturating_sub(amount_e8s);
+        *bal = bal.saturating_sub(args.fee.e8s());
+        
         ic_cdk::println!("New balance: {}", *bal);
-    });
+        
+        // Return mock block index
+        Ok(1)
+    })
 }
 
 #[ic_cdk::query]
-fn balance() -> u128 {
+fn account_balance(args: AccountBalanceArgs) -> Tokens {
     BALANCE.with(|balance| {
-        let bal = *balance.borrow();
-        bal.into()
+        Tokens::from_e8s(*balance.borrow())
     })
+}
+
+#[derive(CandidType, Deserialize)]
+struct AccountBalanceArgs {
+    account: AccountIdentifier,
 }
 
 ic_cdk::export_candid!();
