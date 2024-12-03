@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use candid::{decode_one, Result as CandidResult};
 use ed25519_consensus::SigningKey;
 use ic_agent::agent::CallResponse;
 use ic_agent::export::Principal;
+use ic_agent::identity::BasicIdentity;
 use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -36,6 +36,7 @@ pub struct Credentials {
 
 mod serde_creds {
     use candid::Principal;
+    use hex::FromHexError;
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
 
@@ -46,8 +47,13 @@ mod serde_creds {
         secret_key: String,
     }
 
-    #[derive(Copy, Clone, Debug, Error)]
-    pub enum CredentialsError {}
+    #[derive(Clone, Debug, Error)]
+    pub enum CredentialsError {
+        #[error("failed to parse SigningKey from hex")]
+        ParseError(#[from] FromHexError),
+        #[error("failed to parse SigningKey from string")]
+        IntoError(String),
+    }
 
     impl TryFrom<Credentials> for super::Credentials {
         type Error = CredentialsError;
@@ -89,11 +95,18 @@ pub struct IcpTransport<'a> {
 impl<'a> IcpTransport<'a> {
     #[must_use]
     pub fn new(config: &IcpConfig<'a>) -> Self {
-        let mut networks = BTreeMap::new();
+        let mut networks: BTreeMap<Cow<'a, str>, Network> = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
+            let secret_key_byes = hex::decode(network_config.secret_key.clone()).unwrap();
+            let secret_key_array: [u8; 32] = secret_key_byes.try_into().unwrap();
+            let secret_key: SigningKey = secret_key_array.into();
+
+            let identity = BasicIdentity::from_signing_key(secret_key.clone());
+
             let client = Agent::builder()
                 .with_url(network_config.rpc_url.clone())
+                .with_identity(identity)
                 .build()
                 .unwrap();
 
@@ -181,7 +194,6 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, IcpError> {
-        println!("Here access to query");
         self.client
             .fetch_root_key()
             .await
