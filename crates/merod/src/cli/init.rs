@@ -26,6 +26,7 @@ use calimero_store::Store;
 use clap::{Parser, ValueEnum};
 use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
+use hex::encode;
 use ic_agent::export::Principal;
 use ic_agent::identity::{BasicIdentity, Identity};
 use libp2p::identity::Keypair;
@@ -326,7 +327,7 @@ fn generate_local_signer(
             Ok(ClientLocalSigner {
                 rpc_url,
                 credentials: Credentials::Near(near_protocol::Credentials {
-                    account_id: hex::encode(account_id).parse()?,
+                    account_id: encode(account_id).parse()?,
                     public_key,
                     secret_key,
                 }),
@@ -359,8 +360,8 @@ fn generate_local_signer(
                 rpc_url,
                 credentials: Credentials::Icp(icp_protocol::Credentials {
                     account_id,
-                    public_key,
-                    secret_key: signing_key,
+                    public_key: encode(&account_id),
+                    secret_key: encode(&signing_key),
                 }),
             })
         }

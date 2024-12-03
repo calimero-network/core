@@ -30,21 +30,20 @@ impl AssociatedTransport for IcpTransport<'_> {
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
     pub account_id: Principal,
-    pub public_key: Vec<u8>,
-    pub secret_key: SigningKey,
+    pub public_key: String,
+    pub secret_key: String,
 }
 
 mod serde_creds {
     use candid::Principal;
-    use ed25519_consensus::SigningKey;
     use serde::{Deserialize, Serialize};
     use thiserror::Error;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {
         account_id: Principal,
-        public_key: Vec<u8>,
-        secret_key: SigningKey,
+        public_key: String,
+        secret_key: String,
     }
 
     #[derive(Copy, Clone, Debug, Error)]
@@ -67,7 +66,7 @@ mod serde_creds {
 pub struct NetworkConfig {
     pub rpc_url: Url,
     pub account_id: Principal,
-    pub secret_key: SigningKey,
+    pub secret_key: String,
 }
 
 #[derive(Debug)]
@@ -79,7 +78,7 @@ pub struct IcpConfig<'a> {
 struct Network {
     client: Agent,
     account_id: Principal,
-    secret_key: SigningKey,
+    secret_key: String,
 }
 
 #[derive(Clone, Debug)]

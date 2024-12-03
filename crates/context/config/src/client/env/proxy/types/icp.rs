@@ -331,7 +331,7 @@ impl Into<ProposalWithApprovals> for ICProposalWithApprovals {
 impl From<ICProposalWithApprovals> for Option<ProposalWithApprovals> {
     fn from(value: ICProposalWithApprovals) -> Self {
         Some(ProposalWithApprovals {
-            proposal_id: Repr::from(repr::Repr::new(
+            proposal_id: Repr::from(Repr::new(
                 ProposalId::from_bytes(|bytes| {
                     bytes.copy_from_slice(&value.proposal_id.0);
                     Ok(32)
