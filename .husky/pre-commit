@@ -20,9 +20,3 @@ if git diff --cached --name-only | grep -q '^node-ui/'; then
   echo "Running checks for the node-ui (Next.js app)..."
   (cd node-ui && pnpm prettier && pnpm lint:fix)
 fi
-
-# Check for changes in the 'packages/calimero-sdk' directory
-if git diff --cached --name-only | grep -q '^packages/calimero-sdk/'; then
-  echo "Running checks for the packages/calimero-sdk..."
-  (cd packages/calimero-sdk && pnpm prettier && pnpm lint:fix)
-fi

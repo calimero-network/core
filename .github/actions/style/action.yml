@@ -67,24 +67,3 @@ runs:
           #   exit 1  # Fail if linter detects issues
           # fi
         fi
-
-    # Check for changes in the 'packages/calimero-sdk' directory and run formatting/linting
-    - name: Check for changes in calimero-sdk
-      shell: bash
-      env:
-        ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-      run: |
-        echo "Checking for changes in calimero-sdk files"
-        if echo "$ALL_CHANGED_FILES" | grep -q '^packages/calimero-sdk/'; then
-          echo "Running checks for the calimero-sdk files"
-          cd packages/calimero-sdk
-          if ! pnpm prettier:check .; then
-            echo "Prettier found unformatted files in calimero-sdk."
-            exit 1  # Fail if Prettier detects issues
-          fi
-          # TODO: Uncomment after fixing linting issues
-          # if ! pnpm lint; then
-          #   echo "Linting issues found in calimero-sdk."
-          #   exit 1  # Fail if linter detects issues
-          # fi
-        fi
