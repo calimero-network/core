@@ -164,6 +164,8 @@ jobs:
       - name: Get version info
         id: version_info
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
 
@@ -172,7 +174,7 @@ jobs:
             version="${{ matrix.binary }}-$version"
             echo "Master version: $version"
 
-            if gh release view "$version" >/dev/null 2>&1; then
+            if gh release view "$version" ${{ github.repository }} >/dev/null 2>&1; then
               echo "Master release for this version already exists"
               echo "release_required=false" >> $GITHUB_OUTPUT
             else
