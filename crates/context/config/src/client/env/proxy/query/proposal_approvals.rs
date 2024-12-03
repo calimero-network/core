@@ -1,8 +1,10 @@
+use candid::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
 use super::ProposalId;
+use crate::client::env::proxy::icp::{ICProposalId, ICProposalWithApprovals};
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{
     StarknetProposalId, StarknetProposalWithApprovals,
@@ -89,10 +91,15 @@ impl Method<Icp> for ProposalApprovalsRequest {
     type Returns = ProposalWithApprovals;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let payload: ICProposalId = self.proposal_id.into();
+        Encode!(&payload).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded: ICProposalWithApprovals = Decode!(&response, ICProposalWithApprovals)?;
+
+        let value: Self::Returns = decoded.into();
+
+        Ok(value)
     }
 }

@@ -1,8 +1,10 @@
+use candid::{Decode, Encode};
 use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
 use super::ProposalId;
+use crate::client::env::proxy::icp::{ICProposal, ICProposalId};
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetProposalId};
 use crate::client::env::Method;
@@ -97,10 +99,14 @@ impl Method<Icp> for ProposalRequest {
     type Returns = Option<Proposal>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let payload: ICProposalId = self.proposal_id.into();
+        Encode!(&payload).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
+        // let decoded: Option<ICProposal> = Decode!(&response, Option<ICProposal>)?;
+        // let value = decoded.into();
+        // Ok(value)
     }
 }

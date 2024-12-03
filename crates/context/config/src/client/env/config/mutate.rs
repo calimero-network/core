@@ -1,6 +1,5 @@
 use std::fmt::Debug;
 
-use candid::Encode;
 use ed25519_dalek::{Signer, SigningKey};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;

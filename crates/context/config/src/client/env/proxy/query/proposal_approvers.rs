@@ -1,17 +1,19 @@
 use std::mem;
 
+use candid::{Decode, Encode};
 use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
 use super::ProposalId;
+use crate::client::env::proxy::icp::{ICContextIdentity, ICProposalId};
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetApprovers, StarknetProposalId};
 use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::ContextIdentity;
 
 #[derive(Clone, Debug, Serialize)]
@@ -98,10 +100,16 @@ impl Method<Icp> for ProposalApproversRequest {
     type Returns = Vec<ContextIdentity>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let payload: ICProposalId = self.proposal_id.into();
+        Encode!(&payload).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded: Vec<ICContextIdentity> = Decode!(&response, Vec<ICContextIdentity>)?;
+
+        let converted: Result<Vec<ContextIdentity>, _> =
+            decoded.into_iter().map(|id| id.rt()).collect();
+
+        Ok(converted?)
     }
 }

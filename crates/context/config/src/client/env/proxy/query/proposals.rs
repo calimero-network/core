@@ -1,3 +1,4 @@
+use candid::Encode;
 use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
@@ -90,10 +91,17 @@ impl Method<Icp> for ProposalsRequest {
     type Returns = Vec<Proposal>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Encode!(&self.offset, &self.length).map_err(|e| eyre::eyre!(e))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
+        // let decoded: Vec<ICProposal> = Decode!(&response, Vec<ICProposal>)?;
+
+        // let converted: Result<Vec<Proposal>, _> =
+        // # .rt()  not working
+        // decoded.into_iter().map(|id| id.rt()).collect();
+
+        // Ok(converted?)
     }
 }
