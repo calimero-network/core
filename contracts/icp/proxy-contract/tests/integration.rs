@@ -82,7 +82,10 @@ mod tests {
                         .map_err(|e| format!("Failed to decode response: {}", e))?;
 
                 match result {
-                    Ok(Some(proposal_with_approvals)) => Ok(proposal_with_approvals),
+                    Ok(Some(proposal_with_approvals)) => {
+                        println!("proposal_with_approvals: {:?}", proposal_with_approvals);
+                        Ok(proposal_with_approvals)
+                    }
                     Ok(None) => Err("No proposal returned".to_string()),
                     Err(e) => Err(e),
                 }
@@ -113,7 +116,6 @@ mod tests {
         .expect("failed to read context wasm");
         pic.install_canister(context_canister, context_wasm, vec![], None);
 
-        println!("context_canister: {}", context_canister.to_text());
         // Set proxy code in context contract
         set_proxy_code(&pic, context_canister).expect("Failed to set proxy code");
 
@@ -244,7 +246,6 @@ mod tests {
             Ok(WasmResult::Reply(bytes)) => {
                 let proxy_canister: Principal = candid::decode_one(&bytes)
                     .map_err(|e| format!("Failed to decode proxy canister ID: {}", e))?;
-                println!("proxy_canister: {}", proxy_canister.to_text());
                 Ok((proxy_canister, context_id))
             }
             Ok(WasmResult::Reject(msg)) => Err(format!("Query rejected: {}", msg)),
@@ -286,7 +287,7 @@ mod tests {
             Err(e) => Err(format!("Adding members failed: {}", e)),
         }
     }
-    
+
     // #[test]
     // fn test_create_proposal_transfer() {
     //     let ProxyTestContext {
@@ -722,9 +723,8 @@ mod tests {
         let initial_balance = MOCK_LEDGER_BALANCE.with(|b| *b.borrow());
 
         // Setup signers
-        let signer1_sk = SigningKey::from_bytes(&rng.gen());
-        let signer1_pk = signer1_sk.verifying_key();
-        let signer1_id = ICSignerId::new(signer1_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
         let signer2_sk = SigningKey::from_bytes(&rng.gen());
         let signer2_pk = signer2_sk.verifying_key();
@@ -736,11 +736,11 @@ mod tests {
 
         let transfer_amount = 1_000;
 
-        let receiver_id = Principal::from_text("2vxsx-fae").unwrap();
+        let receiver_id = Principal::from_text("bnz7o-iuaaa-aaaaa-qaaaa-cai").unwrap();
         // Create transfer proposal
         let proposal = ICProposal {
             id: ICProposalId::new([14; 32]),
-            author_id: signer1_id.clone(),
+            author_id: author_id.clone(),
             actions: vec![ICProposalAction::Transfer {
                 receiver_id,
                 amount: transfer_amount,
@@ -751,8 +751,8 @@ mod tests {
         let _ = create_and_verify_proposal(
             &pic,
             proxy_canister,
-            &signer1_sk,
-            &signer1_id,
+            &author_sk,
+            &author_id,
             proposal.clone(),
         );
 
