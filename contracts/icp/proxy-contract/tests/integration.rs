@@ -541,55 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_proposal_invalid_context_value() {
-        let ProxyTestContext {
-            pic,
-            proxy_canister,
-            ..
-        } = setup();
-        let mut rng = rand::thread_rng();
-
-        let signer_sk = SigningKey::from_bytes(&rng.gen());
-        let signer_pk = signer_sk.verifying_key();
-        let signer_id = ICSignerId::new(signer_pk.to_bytes());
-
-        let proposal = ICProposal {
-            id: ICProposalId::new([13; 32]),
-            author_id: signer_id.clone(),
-            actions: vec![ICProposalAction::SetContextValue {
-                key: vec![], // Empty key
-                value: vec![1, 2, 3],
-            }],
-        };
-
-        let request = ICRequest {
-            signer_id: signer_id.clone(),
-            timestamp_ms: get_time_nanos(&pic),
-            kind: ICRequestKind::Propose { proposal },
-        };
-
-        let signed_request = create_signed_request(&signer_sk, request);
-        let response = pic.update_call(
-            proxy_canister,
-            Principal::anonymous(),
-            "mutate",
-            candid::encode_one(signed_request).unwrap(),
-        );
-
-        match response {
-            Ok(WasmResult::Reply(bytes)) => {
-                let result: Result<Option<ICProposalWithApprovals>, String> =
-                    candid::decode_one(&bytes).expect("Failed to decode response");
-                assert!(
-                    result.is_err(),
-                    "Should not be able to set empty context key"
-                );
-            }
-            _ => panic!("Unexpected response type"),
-        }
-    }
-
-    #[test]
     fn test_create_proposal_exceeds_limit() {
         let ProxyTestContext {
             pic,

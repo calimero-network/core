@@ -216,14 +216,11 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
         ICProposalAction::ExternalFunctionCall {
             receiver_id: _,
             method_name,
-            args,
+            args: _,
             deposit: _,
         } => {
             if method_name.is_empty() {
                 return Err("method name cannot be empty".to_string());
-            }
-            if args.is_empty() {
-                return Err("args cannot be empty".to_string());
             }
         }
         ICProposalAction::Transfer {
@@ -246,14 +243,7 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
                 return Err("active proposals limit cannot be zero".to_string());
             }
         }
-        ICProposalAction::SetContextValue { key, value } => {
-            if key.is_empty() {
-                return Err("key cannot be empty".to_string());
-            }
-            if value.is_empty() {
-                return Err("value cannot be empty".to_string());
-            }
-        }
+        ICProposalAction::SetContextValue { .. } => {}
     }
     Ok(())
 }

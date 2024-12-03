@@ -14,7 +14,7 @@ pub mod mutate;
 pub mod query;
 pub mod types;
 
-#[derive(CandidType, Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct ICProxyContract {
     pub context_id: ICContextId,
     pub context_config_id: String,
