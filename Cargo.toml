@@ -14,6 +14,7 @@ members = [
     "./crates/crypto",
     "./crates/meroctl",
     "./crates/merod",
+    "./crates/merow",
     "./crates/network",
     "./crates/node",
     "./crates/node-primitives",
