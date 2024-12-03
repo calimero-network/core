@@ -1,12 +1,13 @@
 # Core Cli Wrapper (crate::merow) 
 
-A CLI wrapper for the Calimero Node that provides a default node configuration file for initializing a node, and quickly running a development environment for testing P2P Calimero Apps. 
+A CLI wrapper for setting up a Calimero Node that provides a custom node configuration file for initializing and running a node. 
 
+*This project is forked from the [original core repository](https://github.com/calimero-network/core) from the Calimero Network, and actively syncs the fork at midnight.*   
 ## Features
 
 - Custom Node Configuration File 
 - Simple Commands to Initialize and Run a Calimero Node 
-- Creates a Node Home Directory (if it doesn't already exist)
+- Creates a Node Home Directory at the root (if it doesn't already exist)
 
 ## Prerequisites
 - Rust:  [Official Rust Installation](https://www.rust-lang.org/tools/install)
@@ -24,37 +25,20 @@ Change to repo
   cd core 
 ```
 
-Check out cli-wrapper
-```bash
-  git branch cli-wrapper
-```
-
 ## Usage
 
 Setup the Default Configuration:  `./crates/merow/config/default.toml` 
 
 ```javascript
-[coordinator]
-name = "coordinator" 
-server_port = 2427
-swarm_port = 2527
-home = "data"
-
-[admin] 
-name = "node1" 
-server_port = 2428 
-swarm_port = 2528
-home = "data"
+[node] 
+name = "node1"        // name of the node 
+server_port = 2428    // server port for admin dashboard 
+swarm_port = 2528     // swarm port 
+home = "data"         // name of the home directory 
 ```
-
-Initialize a coordinator   
-`$ merow -- init-coordinator` 
 
 Initialize a node   
 `$ merow -- init-node` 
-
-Start a running coordinator   
-`$ merow -- start-coordinator` 
 
 Start a running node   
 `$ merow -- start-node` 
@@ -67,24 +51,38 @@ Start a running node
   cargo build 
 ```
 
-### Starting up  a Coordinator (same steps apply for Node Configuration)
-E.g. Initializes Coordinator (with defaults) 
+### Starting up a Node 
+E.g. Initializes Node (with defaults) 
 ```bash
-  cargo run -p merow -- init-coordinator 
+  cargo run -p merow -- init-node 
 ```
 
-Start a running coordinator 
+Start a running node 
 ```bash
-  cargo run -p merow -- start-coordinator 
+  cargo run -p merow -- start-node 
 ```
 
-### Accessing the coordinator via Admin Dashboard
+### Accessing the node via Admin Dashboard
 ```bash
-  http://localhost:<coordinator.server_port>/admin-dashboard/
+  http://localhost:<node.server_port>/admin-dashboard/
 ```
 
-## Roadmap
+## Issues 
+- Standard I/O for handling the Calimero Node during runtime 
 
-- Additional commands for `Dev Context` creation and `Peer Invitation`
-- Add a boolean flag to the Configuration File for Deploying the Admin Dashboard 
-- Multi-node deployment (e.g. node1, node2, ... nodeN)
+
+## Contributing
+Contributions are welcome! 🎉
+
+#### Steps to Contribute: 
+1. Fork the repository: Create a fork of this repository to start making changes.
+2. Checkout the `cli-wrapper` branch, or alternatively create a new branch. Source code for the `cli-wrapper` can be found here `./crates/merow/src` 
+3. Create a pull request: Submit a pull request with your updates to the main branch.
+
+
+#### Ideas for Contributions: 
+- Standard I/O handling: Implement support for standard input/output handling for the Calimero Node during runtime using the CLI wrapper.
+- Tab completion: Add support for tab completion to enhance the user experience.
+- Admin Dashboard deployment: Develop a feature to deploy the Admin Dashboard upon successfully starting the node.
+- Error handling: Improve error handling to ensure a node is initialized and started successfully.
+- Multi-node deployment: Implement support for deploying multiple nodes (e.g., node1, node2, ... nodeN).

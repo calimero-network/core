@@ -1,202 +1,88 @@
-# Welcome to Calimero Network
+# Core Cli Wrapper (crate::merow) 
 
-[![Discord](https://dcbadge.vercel.app/api/server/KHezXS9XvT?style=flat&theme=default-inverted)](https://discord.com/invite/KHezXS9XvT)
-[![SDK publish gh action](https://github.com/calimero-network/core/actions/workflows/calimero_sdk_publish.yml/badge.svg)](https://github.com/calimero-network/core/actions/workflows/calimero_sdk_publish.yml)
-[![npm version](https://badge.fury.io/js/@calimero-is-near%2Fcalimero-p2p-sdk.svg)](https://badge.fury.io/js/@calimero-is-near%2Fcalimero-p2p-sdk)
-[![License](https://img.shields.io/badge/License-Apache--2.0-blue)](#license)
-[![Issues - calimero](https://img.shields.io/github/issues/calimero-network/core)](https://github.com/calimero-network/core/issues)
+A CLI wrapper for setting up a Calimero Node that provides a custom node configuration file for initializing and running a node. 
 
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg">
-    <img alt="Daytona logo" style="" src="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg" width="40%">
-  </picture>
-</div>
+*This project is forked from the [original core repository](https://github.com/calimero-network/core) from the Calimero Network, and actively syncs the fork at midnight.*   
+## Features
 
-Calimero Network is a framework that enables building and running peer-to-peer
-Self-Sovereign applications focusing on data ownership, harnessing the power of
-verifiable off-chain computing and data ownership.
+- Custom Node Configuration File 
+- Simple Commands to Initialize and Run a Calimero Node 
+- Creates a Node Home Directory at the root (if it doesn't already exist)
 
-Calimero Network enables users to own their data. In the Web3 landscape, while
-you can own your money, data ownership and control over access are still
-lacking. Calimero addresses this gap by providing solutions for secure data
-storage and complete control over data access. Users deserve to know what
-happens on the backend level when using software. This transparency is a core
-reason why Calimero is open-source, making sense for an infra framework
-positioned as L0 for privacy and verifiable off-chain computing.
+## Prerequisites
+- Rust:  [Official Rust Installation](https://www.rust-lang.org/tools/install)
 
-Our architecture supports encrypted peer-to-peer communication, ensuring data
-privacy and security through advanced encryption methods. Calimero utilizes
-local storage and nodes, adopting a localized consensus model that enhances
-scalability and efficiency without compromising privacy.
+## Setting up
+Clone the project
 
-## Why Calimero?
-
-Calimero Network embodies a pioneering spirit, offering innovative solutions
-that disrupt the digital landscape. Our mission is to revolutionize data
-ownership principles, bringing control back to users. We aim to redefine
-privacy, security, and user autonomy through a robust framework that supports a
-diverse ecosystem of SSApps. Our vision is to become the L0 for privacy across
-all ecosystems and beyond. Calimero provides an easy-to-integrate solution that
-extends blockchain technology, offering an extra layer of security, privacy, and
-data ownership. Calimero enables verifiable off-chain computing, allowing for
-efficient and cost-effective computation by updating the state only for a
-selective group of peers within a context, rather than the entire network.
-
-**Core Principles**
-
-1. Values - the main values of Calimero are data ownership, privacy, data
-   control, innovation, and simplicity.
-2. Data Ownership and Access Control - SSApps work with encrypted user(peer)
-   data: SSApps and their data are stored on a local storage(node), but have a
-   synchronized state and can run on multiple devices. The data is kept secret
-   from any person who does not have direct access provided by the owner. SSApps
-   run only on user-trusted devices: a user can interact with an SSApp only
-   after the application code and data arrives from encrypted decentralized
-   storage and gets loaded into the trusted execution environment. Once the
-   SSApps are loaded into the user-controlled device, they do not need to
-   interact with any machine or server when offering functionality to the user.
-3. Ethos - Calimero aims to make a significant impact and drive disruptive
-   change within both Web2 and Web3. We are a catalyst for a secure, private,
-   and user-centric digital world, standing as a testament to innovation and the
-   pursuit of an equitable decentralized internet.
-
-## Backstory
-
-Calimero Network was born out of the need to solve major issues in existing
-technology and blockchain systems. We noticed big problems with privacy, data
-control, and scalability that had to be fixed.
-
-Inspired by the core ideas of decentralization, the Calimero team aimed to
-redesign decentralized applications (dApps). Our main focus was on ensuring user
-privacy, giving users control over their data, and improving access management.
-This mission fueled the creation of Calimero Network.
-
-Driven by innovation, Calimero developed special tools like the Protocol SDK and
-specialized nodes. These tools are meant to make decentralized applications more
-functional and secure. Calimero uses an integrated approach to manage
-decentralized identities (DIDs) within client nodes. This allows users to
-effectively and securely manage their digital footprint. Our journey is all
-about striving for a private, efficient, cost-effective, and open decentralized
-web. Our dedication to privacy and security sets new standards in the
-decentralized world, always putting user privacy and data control first.
-
-## Architecture
-
-```mermaid
-flowchart TD
- subgraph DatastoreImpl["Implementations"]
-        rdb["RocksDB"]
-        mem["Memory"]
-        lvl["LevelDB"]
-        s3["S3"]
-  end
- subgraph ctx["Context"]
-    direction LR
-        me["Metadata"]
-        st["State"]
-        id["Identities"]
-        tx["Transactions"]
-  end
- subgraph kad["Kademlia"]
-        pe["Peers"]
-  end
- subgraph net["Network"]
-    direction LR
-        kad
-  end
- subgraph gen["Generic"]
-    direction LR
-        sc["Scope"]
-        fr["Fragment"]
-  end
- subgraph DatastoreWrapper["Content"]
-        ctx
-        net
-        gen
-  end
- subgraph Datastore["Data Store"]
-        DatastoreWrapper
-        DatastoreImpl
-  end
- subgraph BlobstoreImpl["Implementations"]
-    direction LR
-        fs["File System"]
-        blobS3["S3"]
-  end
- subgraph BlobstoreWrapper["Content"]
-    direction LR
-        apps["Applications"]
-        genData["Generic Data"]
-  end
- subgraph Blobstore["Blob Store"]
-        BlobstoreWrapper
-        BlobstoreImpl
-  end
- subgraph Server["Server"]
-    direction LR
-        jrpc["JSONRPC"]
-        ws["WebSocket"]
-        raw["Raw Sockets"]
-  end
- subgraph libp2p["libp2p"]
-    direction LR
-        tcp["TCP::Raw"]
-        tcpws["TCP::WebSocket"]
-        udpqc["UDP::Quic"]
-        udpqcwt["UDP::Quic::WebTransport"]
-  end
- subgraph Network["Network"]
-        libp2p
-  end
-    DatastoreWrapper --o DatastoreImpl
-    BlobstoreWrapper --o BlobstoreImpl
-    client["Client"] --> node["Node"]
-    applications["Apps"] --> capi["C-API"] & client & Server
-    capi --> client
-    cli["CLI"] --> Server & client & auth["Auth Gated Client"]
-    Server --> auth
-    auth --> did["DID"] & client
-    did --> gen
-    node --> Network & runtime["Runtime"] & net & ctx & Blobstore
+```bash
+  git clone https://github.com/kevinjaypatel/core.git 
 ```
 
+Change to repo  
+
+```bash
+  cd core 
+```
+
+## Usage
+
+Setup the Default Configuration:  `./crates/merow/config/default.toml` 
+
+```javascript
+[node] 
+name = "node1"        // name of the node 
+server_port = 2428    // server port for admin dashboard 
+swarm_port = 2528     // swarm port 
+home = "data"         // name of the home directory 
+```
+
+Initialize a node   
+`$ merow -- init-node` 
+
+Start a running node   
+`$ merow -- start-node` 
+
+
+## How to Run (from project root)
+
+### Build the Rust Package
+```bash
+  cargo build 
+```
+
+### Starting up a Node 
+E.g. Initializes Node (with defaults) 
+```bash
+  cargo run -p merow -- init-node 
+```
+
+Start a running node 
+```bash
+  cargo run -p merow -- start-node 
+```
+
+### Accessing the node via Admin Dashboard
+```bash
+  http://localhost:<node.server_port>/admin-dashboard/
+```
+
+## Issues 
+- Standard I/O for handling the Calimero Node during runtime 
+
+
 ## Contributing
+Contributions are welcome! 🎉
 
-Calimero is Open Source under the [Apache License 2.0](LICENSE), and is the
-[copyright of its contributors](NOTICE). If you would like to contribute to the
-software, you must:
+#### Steps to Contribute: 
+1. Fork the repository: Create a fork of this repository to start making changes.
+2. Checkout the `cli-wrapper` branch, or alternatively create a new branch. Source code for the `cli-wrapper` can be found here `./crates/merow/src` 
+3. Create a pull request: Submit a pull request with your updates to the main branch.
 
-1. Read the
-   [Developer Certificate of Origin Version 1.1](https://developercertificate.org/)
-2. Sign all commits to the Calimero project
 
-This ensures that users, distributors, and other contributors can rely on all
-the software related to Calimero being contributed under the terms of the
-[License](LICENSE). No contributions will be accepted without following this
-process.
-
-Afterwards, navigate to the [contributing guide](CONTRIBUTING.md) to get
-started.
-
-## License
-
-This repository contains Calimero, covered under the
-[Apache License 2.0](LICENSE), except where noted (any Calimero logos or
-trademarks are not covered under the Apache License, and should be explicitly
-noted by a LICENSE file.)
-
-Calimero is a product produced from this open source software, exclusively by
-Calimero, Ltd. It is distributed under our commercial terms.
-
-Others are allowed to make their own distribution of the software, but they
-cannot use any of the Calimero trademarks, cloud services, etc.
-
-We explicitly grant permission for you to make a build that includes our
-trademarks while developing Calimero itself. You may not publish or share the
-build, and you may not use that build to run Calimero for any other purpose.
-
-## Questions
-
-For more information on how to use and develop Calimero, talk to us on
-[Discord](https://discord.gg/KHezXS9XvT).
+#### Ideas for Contributions: 
+- Standard I/O handling: Implement support for standard input/output handling for the Calimero Node during runtime using the CLI wrapper.
+- Tab completion: Add support for tab completion to enhance the user experience.
+- Admin Dashboard deployment: Develop a feature to deploy the Admin Dashboard upon successfully starting the node.
+- Error handling: Improve error handling to ensure a node is initialized and started successfully.
+- Multi-node deployment: Implement support for deploying multiple nodes (e.g., node1, node2, ... nodeN).
