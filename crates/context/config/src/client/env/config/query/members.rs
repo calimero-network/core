@@ -5,7 +5,7 @@ use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::icp::{ICContextId, ICContextIdentity, ICMembersRequest};
+use crate::client::env::config::types::icp::{ICContextId, ICContextIdentity};
 use crate::client::env::config::types::starknet::{
     CallData, StarknetMembers, StarknetMembersRequest,
 };
@@ -108,12 +108,7 @@ impl Method<Icp> for MembersRequest {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: ICContextId = (*self.context_id).rt()?;
 
-        let payload: ICMembersRequest = ICMembersRequest {
-            context_id,
-            offset: self.offset,
-            length: self.length,
-        };
-        Encode!(&payload).map_err(|e| eyre::eyre!(e))
+        Encode!(&context_id, &self.offset, &self.length).map_err(|e| eyre::eyre!(e))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
