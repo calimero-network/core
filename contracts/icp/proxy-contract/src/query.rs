@@ -60,7 +60,9 @@ pub fn get_confirmations_count(proposal_id: ICProposalId) -> Option<ICProposalWi
 pub fn get_proposal_approvers(proposal_id: ICProposalId) -> Option<Vec<ICSignerId>> {
     PROXY_CONTRACT.with(|contract| {
         let contract = contract.borrow();
-        contract.approvals.get(&proposal_id)
+        contract
+            .approvals
+            .get(&proposal_id)
             .map(|approvals| approvals.iter().cloned().collect())
     })
 }
