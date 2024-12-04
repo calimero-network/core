@@ -83,8 +83,8 @@ pub struct IcpConfig<'a> {
 #[derive(Clone, Debug)]
 struct Network {
     client: Agent,
-    account_id: Principal,
-    secret_key: String,
+    _account_id: Principal,
+    _secret_key: String,
 }
 
 #[derive(Clone, Debug)]
@@ -114,8 +114,8 @@ impl<'a> IcpTransport<'a> {
                 network_id.clone(),
                 Network {
                     client,
-                    account_id: network_config.account_id.clone(),
-                    secret_key: network_config.secret_key.clone(),
+                    _account_id: network_config.account_id.clone(),
+                    _secret_key: network_config.secret_key.clone(),
                 },
             );
         }
