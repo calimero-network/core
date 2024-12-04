@@ -33,12 +33,12 @@ mod tests {
         let mock_ledger = pic.create_canister();
         pic.add_cycles(mock_ledger, 100_000_000_000_000);
         let mock_ledger_wasm =
-            std::fs::read("mock/ledger/target/wasm32-unknown-unknown/release/mock_ledger.wasm")
+            std::fs::read("mock/ledger/res/mock_ledger.wasm")
                 .expect("failed to read mock ledger wasm");
         pic.install_canister(mock_ledger, mock_ledger_wasm, vec![], None);
 
         // Setup proxy contract
-        let wasm = std::fs::read("target/wasm32-unknown-unknown/release/proxy_contract.wasm")
+        let wasm = std::fs::read("res/proxy_contract.wasm")
             .expect("failed to read wasm");
         let proxy_canister = pic.create_canister();
         pic.add_cycles(proxy_canister, 100_000_000_000_000);
@@ -53,7 +53,7 @@ mod tests {
         let mock_external = pic.create_canister();
         pic.add_cycles(mock_external, 100_000_000_000_000);
         let mock_external_wasm =
-            std::fs::read("mock/external/target/wasm32-unknown-unknown/release/mock_external.wasm")
+            std::fs::read("mock/external/res/mock_external.wasm")
                 .expect("failed to read mock external wasm");
         pic.install_canister(mock_external, mock_external_wasm, vec![], None);
 

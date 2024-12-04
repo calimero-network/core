@@ -11,8 +11,8 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 
 mkdir -p res
 
-cp $TARGET/wasm32-unknown-unknown/app-release/proxy_contract.wasm ./res/proxy_contract.wasm
+cp $TARGET/wasm32-unknown-unknown/app-release/mock_ledger.wasm ./res/mock_ledger.wasm
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/proxy_contract.wasm -o ./res/proxy_contract.wasm
+  wasm-opt -Oz ./res/mock_ledger.wasm -o ./res/mock_ledger.wasm
 fi
