@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bs58.workspace = true
 calimero-context-config = { path = "../../../crates/context/config" }
-candid = "0.10"
+candid = { version = "0.10", features = ["value"] }
 ed25519-dalek.workspace = true
 hex.workspace = true
 ic-cdk = "0.16"

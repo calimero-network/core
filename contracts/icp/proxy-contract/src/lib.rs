@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use candid::Principal;
+use candid::{CandidType, Principal};
+use serde::Deserialize;
 use types::{ICContextId, LedgerId};
 
 use crate::types::{
@@ -11,9 +12,10 @@ use crate::types::{
 
 pub mod mutate;
 pub mod query;
+pub mod sys;
 pub mod types;
 
-#[derive(Default)]
+#[derive(Default, CandidType, Deserialize, Clone)]
 pub struct ICProxyContract {
     pub context_id: ICContextId,
     pub context_config_id: String,
@@ -30,7 +32,7 @@ impl ICProxyContract {
     pub fn new(context_id: ICContextId, ledger_id: Principal) -> Self {
         Self {
             context_id,
-            context_config_id: ic_cdk::api::id().to_string(),
+            context_config_id: ic_cdk::caller().to_string(),
             num_approvals: 3,
             proposals: BTreeMap::new(),
             approvals: BTreeMap::new(),

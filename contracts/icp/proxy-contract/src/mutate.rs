@@ -1,26 +1,35 @@
 use std::collections::BTreeSet;
 
+use calimero_context_config::repr::ReprTransmute;
 use candid::Principal;
+use ic_cdk::api::call::CallResult;
 use ic_ledger_types::{AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError};
 
 use crate::types::*;
 use crate::{ICProxyContract, PROXY_CONTRACT};
 
-async fn check_member(_signer_id: &ICSignerId) -> Result<bool, String> {
-    // let context_canister_id = PROXY_CONTRACT.with(|contract| {
-    //     contract.borrow().context_config_id.clone()
-    // });
+async fn check_member(signer_id: &ICSignerId) -> Result<bool, String> {
+    let (context_canister_id, context_id) = PROXY_CONTRACT.with(|contract| {
+        (
+            contract.borrow().context_config_id.clone(),
+            contract.borrow().context_id.clone(),
+        )
+    });
 
-    // let principal = identity_to_principal(&signer_id.0);
-    // TODO: implement this
-    // let call_result: CallResult<(bool,)> = ic_cdk::call(
-    //     Principal::from_text(&context_canister_id)
-    //         .map_err(|e| format!("Invalid context canister ID: {}", e))?,
-    //     "is_member",
-    //     (principal,),
-    // ).await.map_err(|e| format!("Failed to call context contract: {:?}", e))?;
+    let identity = ICContextIdentity::new(signer_id.rt().expect("Invalid signer id"));
 
-    Ok(true)
+    let call_result: CallResult<(bool,)> = ic_cdk::call(
+        Principal::from_text(&context_canister_id)
+            .map_err(|e| format!("Invalid context canister ID: {}", e))?,
+        "has_member",
+        (context_id, identity),
+    )
+    .await;
+
+    match call_result {
+        Ok((is_member,)) => Ok(is_member),
+        Err(e) => Err(format!("Error checking membership: {:?}", e)),
+    }
 }
 
 #[ic_cdk::update]

@@ -5,10 +5,11 @@ thread_local! {
 }
 
 #[ic_cdk::update]
-fn test_method(args: Vec<u8>) {
+fn test_method(args: Vec<u8>) -> Vec<u8> {
     CALLS.with(|calls| {
-        calls.borrow_mut().push(args);
-    });
+        calls.borrow_mut().push(args.clone());
+        args // Return the same args back
+    })
 }
 
 #[ic_cdk::query]
