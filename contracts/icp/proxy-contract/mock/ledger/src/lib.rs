@@ -1,9 +1,7 @@
 use std::cell::RefCell;
 
 use candid::{CandidType, Deserialize};
-use ic_ledger_types::{
-    AccountIdentifier, BlockIndex, Tokens, TransferArgs, TransferError,
-};
+use ic_ledger_types::{AccountIdentifier, BlockIndex, Tokens, TransferArgs, TransferError};
 
 thread_local! {
     static BALANCE: RefCell<u64> = RefCell::new(1_000_000_000);
