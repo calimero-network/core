@@ -34,18 +34,16 @@ fn application_revision(context_id: ICContextId) -> u64 {
 }
 
 #[query]
-fn proxy_contract(context_id: ICContextId) -> String {
-    CONTEXT_CONFIGS
-        .with(|configs: &std::cell::RefCell<crate::ContextConfigs>| {
-            let configs = configs.borrow();
-            let context = configs
-                .contexts
-                .get(&context_id)
-                .expect("context does not exist");
+fn proxy_contract(context_id: ICContextId) -> Principal {
+    CONTEXT_CONFIGS.with(|configs| {
+        let configs = configs.borrow();
+        let context = configs
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
 
-            (*context.proxy).clone()
-        })
-        .to_string()
+        (*context.proxy).clone()
+    })
 }
 
 #[query]

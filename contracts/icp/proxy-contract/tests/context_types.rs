@@ -29,6 +29,7 @@ pub enum ContextRequestKind {
     AddMembers {
         members: Vec<ICContextIdentity>,
     },
+    UpdateProxyContract,
 }
 
 #[derive(CandidType, Serialize, Deserialize, Debug, Clone)]

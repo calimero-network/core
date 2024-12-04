@@ -22,10 +22,12 @@ pub struct Context {
     pub proxy: Guard<Principal>,
 }
 
+#[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct ContextConfigs {
     pub contexts: HashMap<ICContextId, Context>,
     pub proxy_code: Option<Vec<u8>>,
     pub owner: Principal,
+    pub ledger_id: Principal,
 }
 
 impl Default for ContextConfigs {
@@ -34,6 +36,7 @@ impl Default for ContextConfigs {
             contexts: HashMap::new(),
             proxy_code: None,
             owner: ic_cdk::api::caller(),
+            ledger_id: Principal::anonymous(),
         }
     }
 }

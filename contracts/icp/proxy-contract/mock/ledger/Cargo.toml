@@ -11,3 +11,4 @@ candid = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 ic-cdk = "0.16"
 ic-cdk-macros = "0.16"
+ic-ledger-types = "0.14.0"

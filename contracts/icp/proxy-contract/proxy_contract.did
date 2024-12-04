@@ -31,7 +31,6 @@ service : (blob, principal) -> {
   get_active_proposals_limit : () -> (nat32) query;
   get_confirmations_count : (blob) -> (opt ICProposalWithApprovals) query;
   get_context_value : (blob) -> (opt blob) query;
-  get_ledger_id : () -> (principal) query;
   get_num_approvals : () -> (nat32) query;
   get_proposal_approvals_with_signer : (blob) -> (
       vec ICProposalApprovalWithSigner,

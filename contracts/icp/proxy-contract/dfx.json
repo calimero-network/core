@@ -4,6 +4,18 @@
       "candid": "proxy_contract.did",
       "package": "proxy_contract",
       "type": "rust"
+    },
+    "mock_ledger": {
+      "type": "rust",
+      "package": "mock_ledger",
+      "candid": "mock/ledger/ledger.did",
+      "path": "mock/ledger"
+    },
+    "mock_external": {
+      "type": "rust",
+      "package": "mock_external",
+      "candid": "mock/external/external.did",
+      "path": "mock/external"
     }
   },
   "defaults": {

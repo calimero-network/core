@@ -9,11 +9,12 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bs58.workspace = true
 calimero-context-config = { path = "../../../crates/context/config" }
-candid = "0.10"
+candid = { version = "0.10", features = ["value"] }
 ed25519-dalek.workspace = true
 hex.workspace = true
 ic-cdk = "0.16"
 ic-cdk-macros = "0.16"
+ic-ledger-types = "0.14.0"
 serde = { version = "1.0", features = ["derive"] }
 thiserror.workspace = true
 

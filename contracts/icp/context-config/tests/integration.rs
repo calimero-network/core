@@ -23,15 +23,14 @@ fn setup() -> (PocketIc, Principal) {
     );
 
     // Set the proxy code
-    let proxy_code = std::fs::read(
-        "../proxy-contract/target/wasm32-unknown-unknown/release/proxy_contract.wasm",
-    )
-    .expect("failed to read proxy wasm");
+    let proxy_code = std::fs::read("../proxy-contract/res/proxy_contract.wasm")
+        .expect("failed to read proxy wasm");
+    let ledger_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap();
     pic.update_call(
         canister,
         Principal::anonymous(),
         "set_proxy_code",
-        candid::encode_one(proxy_code).unwrap(),
+        candid::encode_args((proxy_code, ledger_id)).unwrap(),
     )
     .expect("Failed to set proxy code");
 
