@@ -34,7 +34,7 @@ fn application_revision(context_id: ICContextId) -> u64 {
 }
 
 #[query]
-fn proxy_contract(context_id: ICContextId) -> Principal {
+fn proxy_contract(context_id: ICContextId) -> String {
     CONTEXT_CONFIGS.with(|configs| {
         let configs = configs.borrow();
         let context = configs
@@ -43,7 +43,7 @@ fn proxy_contract(context_id: ICContextId) -> Principal {
             .expect("context does not exist");
 
         (*context.proxy).clone()
-    })
+    }).to_string()
 }
 
 #[query]
