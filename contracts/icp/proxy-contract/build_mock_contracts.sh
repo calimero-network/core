@@ -11,3 +11,6 @@ echo "Building mock ledger contract..."
 
 echo "Building mock external contract..."
 ./mock/external/build.sh
+
+echo "Building context-config contract..."
+../context-config/build.sh
