@@ -104,9 +104,10 @@ impl Method<Icp> for ProposalRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
-        // let decoded: Option<ICProposal> = Decode!(&response, Option<ICProposal>)?;
-        // let value = decoded.into();
-        // Ok(value)
+        let decoded = Decode!(&response, Option<ICProposal>)?;
+        match decoded {
+            Some(value) => Ok(Some(value.into())),
+            None => Ok(None),
+        }
     }
 }

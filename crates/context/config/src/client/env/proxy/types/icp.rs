@@ -9,28 +9,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
 use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
-use crate::types::{IntoResult, ProposalId, SignerId};
-use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
-
-/// Base identity type
-#[derive(
-    CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Hash,
-)]
-pub struct Identity([u8; 32]);
-
-impl Identity {
-    pub fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> [u8; 32] {
-        self.0
-    }
-
-    pub fn as_slice(&self) -> &[u8] {
-        &self.0[..]
-    }
-}
+use crate::types::{Identity, IntoResult, ProposalId, SignerId};
+use crate::{Proposal, ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 
 impl Default for Identity {
     fn default() -> Self {
@@ -38,25 +18,8 @@ impl Default for Identity {
     }
 }
 
-impl ReprBytes for Identity {
-    type EncodeBytes<'a> = [u8; 32];
-    type DecodeBytes = [u8; 32];
-    type Error = LengthMismatch;
-
-    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.0
-    }
-
-    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
-    where
-        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
-    {
-        Self::DecodeBytes::from_bytes(f).map(Self)
-    }
-}
-
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq, Copy)]
-pub struct ICSignerId(Identity);
+pub struct ICSignerId(pub(crate) Identity);
 
 impl ICSignerId {
     pub fn new(bytes: [u8; 32]) -> Self {
@@ -93,7 +56,7 @@ impl ReprBytes for ICSignerId {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct ICContextId(Identity);
 
 impl ICContextId {
@@ -125,7 +88,7 @@ impl ReprBytes for ICContextId {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct ICContextIdentity(Identity);
 
 impl ICContextIdentity {
@@ -151,7 +114,7 @@ impl ReprBytes for ICContextIdentity {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct ICProposalId(pub [u8; 32]);
 
 impl ReprBytes for ICProposalId {
@@ -222,7 +185,7 @@ impl From<ProposalAction> for ICProposalAction {
                 method_name,
                 args,
                 deposit,
-                gas,
+                gas: _,
             } => ICProposalAction::ExternalFunctionCall {
                 receiver_id: Principal::from_text(receiver_id).expect("Invalid Principal"),
                 method_name,
@@ -307,7 +270,71 @@ impl ReprBytes for ICProposal {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+impl From<ICProposal> for Proposal {
+    fn from(value: ICProposal) -> Self {
+        Proposal {
+            id: Repr::new(value.id.into()),
+            author_id: Repr::new(value.author_id.into()),
+            actions: value
+                .actions
+                .into_iter()
+                .map(|proposal| proposal.into())
+                .collect(),
+        }
+    }
+}
+
+impl From<ICProposalId> for ProposalId {
+    fn from(value: ICProposalId) -> Self {
+        ProposalId(value.0.into())
+    }
+}
+
+impl From<ICSignerId> for SignerId {
+    fn from(value: ICSignerId) -> Self {
+        SignerId(value.0)
+    }
+}
+
+impl From<ICProposalAction> for ProposalAction {
+    fn from(value: ICProposalAction) -> Self {
+        match value {
+            ICProposalAction::ExternalFunctionCall {
+                receiver_id,
+                method_name,
+                args,
+                deposit,
+            } => ProposalAction::ExternalFunctionCall {
+                receiver_id: receiver_id.to_string(),
+                method_name,
+                args,
+                deposit,
+                gas: 0,
+            },
+            ICProposalAction::Transfer {
+                receiver_id,
+                amount,
+            } => ProposalAction::Transfer {
+                receiver_id: receiver_id.to_string(),
+                amount,
+            },
+            ICProposalAction::SetNumApprovals { num_approvals } => {
+                ProposalAction::SetNumApprovals { num_approvals }
+            }
+            ICProposalAction::SetActiveProposalsLimit {
+                active_proposals_limit,
+            } => ProposalAction::SetActiveProposalsLimit {
+                active_proposals_limit,
+            },
+            ICProposalAction::SetContextValue { key, value } => ProposalAction::SetContextValue {
+                key: key.into(),
+                value: value.into(),
+            },
+        }
+    }
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct ICProposalWithApprovals {
     pub proposal_id: ICProposalId,
     pub num_approvals: usize,
@@ -343,7 +370,7 @@ impl From<ICProposalWithApprovals> for Option<ProposalWithApprovals> {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct ICProposalApprovalWithSigner {
     pub proposal_id: ICProposalId,
     pub signer_id: ICSignerId,
@@ -493,7 +520,7 @@ impl<T> CandidType for Phantom<T> {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Default)]
+#[derive(CandidType, Serialize, Deserialize, Default, Debug)]
 pub struct ICProxyContract {
     pub context_id: ICContextId,
     pub context_config_id: String,
@@ -522,7 +549,7 @@ impl ICProxyContract {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct LedgerId(Principal);
 
 impl Default for LedgerId {
@@ -543,7 +570,7 @@ impl From<LedgerId> for Principal {
     }
 }
 
-#[derive(CandidType, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, Clone, Copy, Debug)]
 pub struct TransferArgs {
     pub to: Principal,
     pub amount: u128,

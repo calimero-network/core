@@ -1,8 +1,9 @@
-use candid::Encode;
+use candid::{Decode, Encode};
 use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
+use crate::client::env::proxy::icp::ICProposal;
 use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetProposalsRequest};
 use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
@@ -95,13 +96,10 @@ impl Method<Icp> for ProposalsRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
-        // let decoded: Vec<ICProposal> = Decode!(&response, Vec<ICProposal>)?;
+        let decoded = Decode!(&response, Vec<ICProposal>)?;
 
-        // let converted: Result<Vec<Proposal>, _> =
-        // # .rt()  not working
-        // decoded.into_iter().map(|id| id.rt()).collect();
+        let converted: Vec<Proposal> = decoded.into_iter().map(|id| id.into()).collect();
 
-        // Ok(converted?)
+        Ok(converted)
     }
 }
