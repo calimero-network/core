@@ -74,6 +74,12 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      # Install pocket-ic for ICP Contract tests
+      - name: Install PocketIC server
+        uses: dfinity/pocketic@main
+        with:
+          pocket-ic-server-version: "7.0.0"
+
       - name: Run tests
         run: |
           chmod +x $GITHUB_WORKSPACE/scripts/build-all-apps.sh

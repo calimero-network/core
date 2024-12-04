@@ -1,0 +1,17 @@
+{
+  "canisters": {
+    "context_contract": {
+      "candid": "context_contract.did",
+      "package": "context_contract",
+      "type": "rust"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}
