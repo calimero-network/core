@@ -22,6 +22,7 @@ pub struct Context {
     pub proxy: Guard<Principal>,
 }
 
+#[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct ContextConfigs {
     pub contexts: HashMap<ICContextId, Context>,
     pub proxy_code: Option<Vec<u8>>,

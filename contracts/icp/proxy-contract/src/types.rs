@@ -180,7 +180,7 @@ pub enum ICProposalAction {
     },
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ICProposal {
     pub id: ICProposalId,
     pub author_id: ICSignerId,
