@@ -29,7 +29,6 @@ COPY crates ./crates
 COPY contracts ./contracts
 COPY apps ./apps
 COPY node-ui ./node-ui
-COPY packages ./packages
 
 # Build the node UI
 WORKDIR /app/node-ui
