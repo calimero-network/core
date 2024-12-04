@@ -12,8 +12,8 @@ use crate::types::{
 
 pub mod mutate;
 pub mod query;
-pub mod types;
 pub mod sys;
+pub mod types;
 
 #[derive(Default, CandidType, Deserialize, Clone)]
 pub struct ICProxyContract {

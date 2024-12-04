@@ -1,8 +1,7 @@
-use candid::{CandidType, Principal, Deserialize};
+use candid::{CandidType, Deserialize, Principal};
 use ic_cdk;
 
-use crate::PROXY_CONTRACT;
-use crate::ICProxyContract;
+use crate::{ICProxyContract, PROXY_CONTRACT};
 
 #[derive(CandidType, Deserialize)]
 struct StableStorage {
@@ -17,16 +16,14 @@ fn pre_upgrade() {
         Principal::from_text(&contract.borrow().context_config_id)
             .expect("Invalid context canister ID")
     });
-    
+
     if caller != context_canister {
         ic_cdk::trap("unauthorized: only context contract can upgrade proxy");
     }
 
     // Store the contract state
-    let state = PROXY_CONTRACT.with(|contract| {
-        StableStorage {
-            proxy_contract: contract.borrow().clone(),
-        }
+    let state = PROXY_CONTRACT.with(|contract| StableStorage {
+        proxy_contract: contract.borrow().clone(),
     });
 
     // Write state to stable storage
@@ -47,4 +44,4 @@ fn post_upgrade() {
         }
         Err(err) => ic_cdk::trap(&format!("Failed to restore stable storage: {}", err)),
     }
-} 
+}

@@ -299,9 +299,9 @@ mod tests {
         } = setup();
 
         // First test: Try direct upgrade (should fail)
-        let proxy_wasm = std::fs::read("res/proxy_contract.wasm")
-            .expect("failed to read proxy wasm");
-        
+        let proxy_wasm =
+            std::fs::read("res/proxy_contract.wasm").expect("failed to read proxy wasm");
+
         let unauthorized_result = pic.upgrade_canister(
             proxy_canister,
             proxy_wasm.clone(),
@@ -330,20 +330,23 @@ mod tests {
 
         create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
             .expect("Transfer proposal creation should succeed");
-        
+
         // Query initial state - get the proposal
-        let initial_proposal = pic.query_call(
-            proxy_canister,
-            Principal::anonymous(),
-            "proposal",
-            candid::encode_one(ICProposalId::new([1; 32])).unwrap(),
-        )
-        .and_then(|r| match r {
-            WasmResult::Reply(bytes) => Ok(candid::decode_one::<Option<ICProposal>>(&bytes).unwrap()),
-            _ => panic!("Unexpected response type"),
-        })
-        .expect("Query failed")
-        .expect("Proposal not found");
+        let initial_proposal = pic
+            .query_call(
+                proxy_canister,
+                Principal::anonymous(),
+                "proposal",
+                candid::encode_one(ICProposalId::new([1; 32])).unwrap(),
+            )
+            .and_then(|r| match r {
+                WasmResult::Reply(bytes) => {
+                    Ok(candid::decode_one::<Option<ICProposal>>(&bytes).unwrap())
+                }
+                _ => panic!("Unexpected response type"),
+            })
+            .expect("Query failed")
+            .expect("Proposal not found");
 
         // Create update request to context contract
         let update_request = Request {
@@ -366,8 +369,8 @@ mod tests {
         // Handle the response directly
         match response {
             Ok(WasmResult::Reply(bytes)) => {
-                let result: Result<(), String> = candid::decode_one(&bytes)
-                    .expect("Failed to decode response");
+                let result: Result<(), String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
                 assert!(result.is_ok(), "Context update should succeed");
             }
             Ok(WasmResult::Reject(msg)) => panic!("Context update was rejected: {}", msg),
@@ -375,22 +378,24 @@ mod tests {
         }
 
         // Verify state was preserved after upgrade
-        let final_proposal = pic.query_call(
-            proxy_canister,
-            Principal::anonymous(),
-            "proposal",
-            candid::encode_one(ICProposalId::new([1; 32])).unwrap(),
-        )
-        .and_then(|r| match r {
-            WasmResult::Reply(bytes) => Ok(candid::decode_one::<Option<ICProposal>>(&bytes).unwrap()),
-            _ => panic!("Unexpected response type"),
-        })
-        .expect("Query failed")
-        .expect("Proposal not found");
+        let final_proposal = pic
+            .query_call(
+                proxy_canister,
+                Principal::anonymous(),
+                "proposal",
+                candid::encode_one(ICProposalId::new([1; 32])).unwrap(),
+            )
+            .and_then(|r| match r {
+                WasmResult::Reply(bytes) => {
+                    Ok(candid::decode_one::<Option<ICProposal>>(&bytes).unwrap())
+                }
+                _ => panic!("Unexpected response type"),
+            })
+            .expect("Query failed")
+            .expect("Proposal not found");
 
         assert_eq!(
-            initial_proposal, 
-            final_proposal,
+            initial_proposal, final_proposal,
             "Proposal state not preserved after upgrade"
         );
     }

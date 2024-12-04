@@ -1,4 +1,4 @@
-use candid::{CandidType, Principal, Deserialize};
+use candid::{CandidType, Deserialize, Principal};
 use ic_cdk;
 
 use crate::CONTEXT_CONFIGS;
@@ -19,10 +19,8 @@ fn pre_upgrade() {
     });
 
     // Store the contract state
-    let state = CONTEXT_CONFIGS.with(|configs| {
-        StableStorage {
-            configs: configs.borrow().clone(),
-        }
+    let state = CONTEXT_CONFIGS.with(|configs| StableStorage {
+        configs: configs.borrow().clone(),
     });
 
     // Write state to stable storage
