@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       is_release_candidate: ${{ steps.check_release_candidate.outputs.is_release_candidate }}
-      binary_matrix: ${{ steps.setup_matrix.outputs.binaries }}
+      binary_matrix: ${{ steps.setup_matrix.outputs.binary_matrix }}
     steps:
       - name: Check if release candidate
         id: check_release_candidate
