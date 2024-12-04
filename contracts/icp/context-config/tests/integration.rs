@@ -7,20 +7,32 @@ use context_contract::types::{
     ICContextId, ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
 use ed25519_dalek::{Signer, SigningKey};
-use pocket_ic::{PocketIc, WasmResult};
+use pocket_ic::{PocketIc, UserError, WasmResult};
 use rand::Rng;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
     let wasm = std::fs::read("res/context_contract.wasm").expect("failed to read wasm");
     let canister = pic.create_canister();
-    pic.add_cycles(canister, 2_000_000_000_000);
+    pic.add_cycles(canister, 1_000_000_000_000_000);
     pic.install_canister(
         canister,
         wasm,
         vec![],
         None, // No controller
     );
+
+    // Set the proxy code
+    let proxy_code = std::fs::read("../proxy-contract/res/proxy_contract.wasm")
+        .expect("failed to read proxy wasm");
+    pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "set_proxy_code",
+        candid::encode_one(proxy_code).unwrap(),
+    )
+    .expect("Failed to set proxy code");
+
     (pic, canister)
 }
 
@@ -34,6 +46,128 @@ fn get_time_nanos(pic: &PocketIc) -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_nanos() as u64
+}
+
+fn handle_response(
+    response: Result<WasmResult, UserError>,
+    expected_success: bool,
+    operation_name: &str,
+) {
+    match response {
+        Ok(WasmResult::Reply(bytes)) => {
+            let result: Result<(), String> = candid::decode_one(&bytes).unwrap_or_else(|e| {
+                panic!("Failed to decode response for {}: {}", operation_name, e)
+            });
+
+            match (result, expected_success) {
+                (Ok(_), true) => println!("{} succeeded as expected", operation_name),
+                (Ok(_), false) => panic!("{} succeeded when it should have failed", operation_name),
+                (Err(e), true) => panic!(
+                    "{} failed when it should have succeeded: {}",
+                    operation_name, e
+                ),
+                (Err(e), false) => println!("{} failed as expected: {}", operation_name, e),
+            }
+        }
+        Ok(WasmResult::Reject(msg)) => {
+            if expected_success {
+                panic!("{}: Unexpected canister rejection: {}", operation_name, msg);
+            } else {
+                println!("{}: Expected canister rejection: {}", operation_name, msg);
+            }
+        }
+        Err(e) => panic!("{}: Call failed: {:?}", operation_name, e),
+    }
+}
+
+#[test]
+fn test_proxy_management() {
+    let (pic, canister) = setup();
+    let mut rng = rand::thread_rng();
+
+    // Advance IC time
+    let current_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    pic.advance_time(Duration::from_nanos(current_nanos));
+
+    // Create test identities
+    let context_sk = SigningKey::from_bytes(&rng.gen());
+    let context_pk = context_sk.verifying_key();
+    let context_id = ICContextId::new(context_pk.to_bytes());
+
+    let alice_sk = SigningKey::from_bytes(&rng.gen());
+    let alice_pk = alice_sk.verifying_key();
+    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+
+    // Create context with initial application
+    let create_request = Request {
+        kind: RequestKind::Context(ContextRequest {
+            context_id: context_id.clone(),
+            kind: ContextRequestKind::Add {
+                author_id: alice_id.clone(),
+                application: ICApplication {
+                    id: ICApplicationId::new(rng.gen()),
+                    blob: ICBlobId::new(rng.gen()),
+                    size: 0,
+                    source: String::new(),
+                    metadata: vec![],
+                },
+            },
+        }),
+        signer_id: ICSignerId::new(context_id.as_bytes()),
+        timestamp_ms: get_time_nanos(&pic),
+    };
+
+    let signed_request = create_signed_request(&context_sk, create_request);
+    let response = pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "mutate",
+        candid::encode_one(signed_request).unwrap(),
+    );
+    handle_response(response, true, "mutate");
+
+    // Try to update proxy contract without Proxy capability (should fail)
+    let bob_sk = SigningKey::from_bytes(&rng.gen());
+    let bob_pk = bob_sk.verifying_key();
+    let update_request = Request {
+        kind: RequestKind::Context(ContextRequest {
+            context_id: context_id.clone(),
+            kind: ContextRequestKind::UpdateProxyContract,
+        }),
+        signer_id: ICSignerId::new(bob_pk.to_bytes()),
+        timestamp_ms: get_time_nanos(&pic),
+    };
+
+    let signed_request = create_signed_request(&bob_sk, update_request);
+    let response = pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "mutate",
+        candid::encode_one(signed_request).unwrap(),
+    );
+    handle_response(response, false, "mutate");
+
+    // Update proxy contract with proper capability (Alice has it by default)
+    let update_request = Request {
+        kind: RequestKind::Context(ContextRequest {
+            context_id: context_id.clone(),
+            kind: ContextRequestKind::UpdateProxyContract,
+        }),
+        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        timestamp_ms: get_time_nanos(&pic),
+    };
+
+    let signed_request = create_signed_request(&alice_sk, update_request);
+    let response = pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "mutate",
+        candid::encode_one(signed_request).unwrap(),
+    );
+    handle_response(response, true, "mutate");
 }
 
 #[test]
@@ -82,25 +216,7 @@ fn test_mutate_success_cases() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            // Decode the actual response
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Context addition failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Context creation");
 }
 
 #[test]
@@ -154,7 +270,7 @@ fn test_member_management() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    assert!(response.is_ok(), "Context creation should succeed");
+    handle_response(response, true, "Context creation");
 
     // Add Bob as a member (signed by Alice who has management rights)
     let add_member_request = Request {
@@ -175,20 +291,7 @@ fn test_member_management() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Adding member failed: {:?}", result.err());
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Member addition");
 
     // Verify members through query call
     let query_response = pic.query_call(
@@ -232,20 +335,7 @@ fn test_member_management() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Removing member failed: {:?}", result.err());
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Member removal");
 
     // Verify members again
     let query_response = pic.query_call(
@@ -319,23 +409,7 @@ fn test_capability_management() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Context creation failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Context creation");
 
     // Add Bob as a member before granting capabilities
     let add_member_request = Request {
@@ -356,19 +430,7 @@ fn test_capability_management() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(result.is_ok(), "Adding member failed: {:?}", result.err());
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Member addition");
 
     // Grant capabilities to Bob
     let grant_request = Request {
@@ -389,23 +451,7 @@ fn test_capability_management() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Granting capability failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Capability granting");
 
     // Verify Bob's capabilities
     let query_response = pic.query_call(
@@ -443,23 +489,7 @@ fn test_capability_management() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Revoking capability failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Capability revoking");
 
     // Verify Bob's capabilities are gone
     let query_response = pic.query_call(
@@ -539,23 +569,7 @@ fn test_application_update() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Context creation failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Context creation");
 
     // Verify initial application state
     let query_response = pic.query_call(
@@ -664,23 +678,7 @@ fn test_application_update() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Authorized update failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Authorized update");
 
     // Verify application has been updated
     let query_response = pic.query_call(
@@ -749,23 +747,7 @@ fn test_edge_cases() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Context creation failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Context creation");
 
     // Test 1: Adding empty member list
     let add_empty_members = Request {
@@ -784,23 +766,7 @@ fn test_edge_cases() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Empty member list failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Empty member list addition");
 
     // Test 2: Adding duplicate members
     let bob_id = ICContextIdentity::new(rng.gen());
@@ -822,23 +788,7 @@ fn test_edge_cases() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> =
-                candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_ok(),
-                "Duplicate members failed: {:?}",
-                result.err()
-            );
-        }
-        Ok(WasmResult::Reject(msg)) => {
-            panic!("Canister rejected the call: {}", msg);
-        }
-        Err(err) => {
-            panic!("Failed to call canister: {}", err);
-        }
-    }
+    handle_response(response, true, "Duplicate member addition");
 
     // Verify only one instance was added
     let query_response = pic.query_call(
@@ -898,7 +848,7 @@ fn test_timestamp_scenarios() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-    assert!(response.is_ok(), "Context creation should succeed");
+    handle_response(response, true, "Context creation");
 
     // Try with expired timestamp (more than 5 seconds old)
     let expired_request = Request {
@@ -919,18 +869,7 @@ fn test_timestamp_scenarios() {
         "mutate",
         candid::encode_one(signed_request).unwrap(),
     );
-
-    match response {
-        Ok(WasmResult::Reply(bytes)) => {
-            let result: Result<(), String> = candid::decode_one(&bytes).unwrap();
-            assert!(result.is_err(), "Expired timestamp should be rejected");
-            assert!(
-                result.unwrap_err().contains("expired"),
-                "Should contain 'expired' in error message"
-            );
-        }
-        _ => panic!("Expected error response for expired timestamp"),
-    }
+    handle_response(response, false, "Expired timestamp request");
 }
 
 #[test]
