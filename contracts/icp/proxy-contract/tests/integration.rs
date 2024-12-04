@@ -5,13 +5,16 @@ use context_types::*;
 mod tests {
     use std::cell::RefCell;
     use std::time::UNIX_EPOCH;
+
     use calimero_context_config::repr::ReprBytes;
     use candid::Principal;
     use ed25519_dalek::{Signer, SigningKey};
     use ic_ledger_types::{AccountBalanceArgs, AccountIdentifier, Subaccount, Tokens};
     use pocket_ic::{PocketIc, WasmResult};
     use proxy_contract::types::{
-        ICContextId, ICContextIdentity, ICPSigned, ICProposal, ICProposalAction, ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals, ICRequest, ICRequestKind, ICSignerId
+        ICContextId, ICContextIdentity, ICPSigned, ICProposal, ICProposalAction,
+        ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals, ICRequest,
+        ICRequestKind, ICSignerId,
     };
     use rand::Rng;
 
@@ -79,9 +82,7 @@ mod tests {
                         .map_err(|e| format!("Failed to decode response: {}", e))?;
 
                 match result {
-                    Ok(Some(proposal_with_approvals)) => {
-                        Ok(proposal_with_approvals)
-                    }
+                    Ok(Some(proposal_with_approvals)) => Ok(proposal_with_approvals),
                     Ok(None) => Err("No proposal returned".to_string()),
                     Err(e) => Err(e),
                 }
@@ -114,9 +115,8 @@ mod tests {
         // Setup mock ledger
         let mock_ledger = pic.create_canister();
         pic.add_cycles(mock_ledger, 100_000_000_000_000);
-        let mock_ledger_wasm =
-            std::fs::read("mock/ledger/res/mock_ledger.wasm")
-                .expect("failed to read mock ledger wasm");
+        let mock_ledger_wasm = std::fs::read("mock/ledger/res/mock_ledger.wasm")
+            .expect("failed to read mock ledger wasm");
         pic.install_canister(mock_ledger, mock_ledger_wasm, vec![], None);
 
         // Set proxy code in context contract
@@ -125,9 +125,8 @@ mod tests {
         // Setup mock external
         let mock_external = pic.create_canister();
         pic.add_cycles(mock_external, 100_000_000_000_000);
-        let mock_external_wasm =
-            std::fs::read("mock/external/res/mock_external.wasm")
-                .expect("failed to read mock external wasm");
+        let mock_external_wasm = std::fs::read("mock/external/res/mock_external.wasm")
+            .expect("failed to read mock external wasm");
         pic.install_canister(mock_external, mock_external_wasm, vec![], None);
 
         // Create initial author key
@@ -150,10 +149,14 @@ mod tests {
     }
 
     // Helper function to set proxy code in context contract
-    fn set_proxy_code(pic: &PocketIc, context_canister: Principal, ledger_id: Principal) -> Result<(), String> {
+    fn set_proxy_code(
+        pic: &PocketIc,
+        context_canister: Principal,
+        ledger_id: Principal,
+    ) -> Result<(), String> {
         // Read proxy contract wasm
-        let proxy_wasm = std::fs::read("res/proxy_contract.wasm")
-            .expect("failed to read proxy wasm");
+        let proxy_wasm =
+            std::fs::read("res/proxy_contract.wasm").expect("failed to read proxy wasm");
 
         let response = pic.update_call(
             context_canister,

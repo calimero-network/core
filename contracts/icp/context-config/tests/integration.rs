@@ -23,9 +23,8 @@ fn setup() -> (PocketIc, Principal) {
     );
 
     // Set the proxy code
-    let proxy_code = std::fs::read("../proxy-contract/res/proxy_contract.wasm").expect(
-        "failed to read proxy wasm",
-    );
+    let proxy_code = std::fs::read("../proxy-contract/res/proxy_contract.wasm")
+        .expect("failed to read proxy wasm");
     pic.update_call(
         canister,
         Principal::anonymous(),

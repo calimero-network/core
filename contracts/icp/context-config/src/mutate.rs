@@ -100,8 +100,7 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, St
         .ok_or("proxy code not set")?;
 
     // Get the ledger ID
-    let ledger_id = CONTEXT_CONFIGS
-        .with(|configs| configs.borrow().ledger_id.clone());
+    let ledger_id = CONTEXT_CONFIGS.with(|configs| configs.borrow().ledger_id.clone());
     // Create canister with cycles
     let create_args = CreateCanisterArgument {
         settings: Some(CanisterSettings {
