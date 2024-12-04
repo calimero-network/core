@@ -12,10 +12,7 @@ use rand::Rng;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
-
-    // Deploy the context contract
-    let wasm = std::fs::read("target/wasm32-unknown-unknown/release/context_contract.wasm")
-        .expect("failed to read wasm");
+    let wasm = std::fs::read("res/context_contract.wasm").expect("failed to read wasm");
     let canister = pic.create_canister();
     pic.add_cycles(canister, 1_000_000_000_000_000);
     pic.install_canister(
@@ -26,10 +23,9 @@ fn setup() -> (PocketIc, Principal) {
     );
 
     // Set the proxy code
-    let proxy_code = std::fs::read(
-        "../proxy-contract/target/wasm32-unknown-unknown/release/proxy_contract.wasm",
-    )
-    .expect("failed to read proxy wasm");
+    let proxy_code = std::fs::read("../proxy-contract/res/proxy_contract.wasm").expect(
+        "failed to read proxy wasm",
+    );
     pic.update_call(
         canister,
         Principal::anonymous(),

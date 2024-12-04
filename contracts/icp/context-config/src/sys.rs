@@ -1,7 +1,9 @@
+use candid::Principal;
+
 use crate::CONTEXT_CONFIGS;
 
 #[ic_cdk::update]
-pub fn set_proxy_code(proxy_code: Vec<u8>) -> Result<(), String> {
+pub fn set_proxy_code(proxy_code: Vec<u8>, ledger_id: Principal) -> Result<(), String> {
     CONTEXT_CONFIGS.with(|configs| {
         let mut configs = configs.borrow_mut();
 
@@ -10,6 +12,7 @@ pub fn set_proxy_code(proxy_code: Vec<u8>) -> Result<(), String> {
             return Err("Unauthorized: only owner can set proxy code".to_string());
         }
 
+        configs.ledger_id = ledger_id;
         configs.proxy_code = Some(proxy_code);
         Ok(())
     })

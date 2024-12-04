@@ -99,6 +99,9 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, St
         .with(|configs| configs.borrow().proxy_code.clone())
         .ok_or("proxy code not set")?;
 
+    // Get the ledger ID
+    let ledger_id = CONTEXT_CONFIGS
+        .with(|configs| configs.borrow().ledger_id.clone());
     // Create canister with cycles
     let create_args = CreateCanisterArgument {
         settings: Some(CanisterSettings {
@@ -119,7 +122,7 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, St
     let canister_id = canister_record.canister_id;
 
     // Encode init args matching the proxy's init(context_id: ICContextId, ledger_id: Principal)
-    let init_args = candid::encode_args((context_id.clone(), Principal::anonymous()))
+    let init_args = candid::encode_args((context_id.clone(), ledger_id))
         .map_err(|e| format!("Failed to encode init args: {}", e))?;
 
     let install_args = InstallCodeArgument {

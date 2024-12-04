@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use candid::Principal;
-use serde::{Deserialize, Serialize};
 use types::{ICContextId, LedgerId};
 
 use crate::types::{
@@ -14,7 +13,7 @@ pub mod mutate;
 pub mod query;
 pub mod types;
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Default)]
 pub struct ICProxyContract {
     pub context_id: ICContextId,
     pub context_config_id: String,

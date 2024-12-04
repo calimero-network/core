@@ -12,6 +12,8 @@ cd "$(dirname $0)"
 ../contracts/registry/build.sh
 ../contracts/context-config/build.sh
 ../contracts/proxy-lib/build-test-deps.sh
-
+../contracts/icp/context-config/build.sh
+../contracts/icp/proxy-contract/build_mock_contracts.sh
+../contracts/icp/proxy-contract/build.sh
 # Run cargo test
 cargo test

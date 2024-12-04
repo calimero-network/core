@@ -5,16 +5,13 @@ use context_types::*;
 mod tests {
     use std::cell::RefCell;
     use std::time::UNIX_EPOCH;
-
     use calimero_context_config::repr::ReprBytes;
     use candid::Principal;
     use ed25519_dalek::{Signer, SigningKey};
     use ic_ledger_types::{AccountBalanceArgs, AccountIdentifier, Subaccount, Tokens};
     use pocket_ic::{PocketIc, WasmResult};
     use proxy_contract::types::{
-        ICContextId, ICContextIdentity, ICPSigned, ICProposal, ICProposalAction,
-        ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals, ICRequest,
-        ICRequestKind, ICSignerId,
+        ICContextId, ICContextIdentity, ICPSigned, ICProposal, ICProposalAction, ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals, ICRequest, ICRequestKind, ICSignerId
     };
     use rand::Rng;
 
@@ -83,7 +80,6 @@ mod tests {
 
                 match result {
                     Ok(Some(proposal_with_approvals)) => {
-                        println!("proposal_with_approvals: {:?}", proposal_with_approvals);
                         Ok(proposal_with_approvals)
                     }
                     Ok(None) => Err("No proposal returned".to_string()),
@@ -98,6 +94,7 @@ mod tests {
         pic: PocketIc,
         proxy_canister: Principal,
         context_canister: Principal,
+        mock_ledger: Principal,
         mock_external: Principal,
         author_sk: SigningKey,
         context_id: ICContextId,
@@ -110,28 +107,26 @@ mod tests {
         // Setup context contract first
         let context_canister = pic.create_canister();
         pic.add_cycles(context_canister, 100_000_000_000_000_000);
-        let context_wasm = std::fs::read(
-            "../context-config/target/wasm32-unknown-unknown/release/context_contract.wasm",
-        )
-        .expect("failed to read context wasm");
+        let context_wasm = std::fs::read("../context-config/res/context_contract.wasm")
+            .expect("failed to read context wasm");
         pic.install_canister(context_canister, context_wasm, vec![], None);
-
-        // Set proxy code in context contract
-        set_proxy_code(&pic, context_canister).expect("Failed to set proxy code");
 
         // Setup mock ledger
         let mock_ledger = pic.create_canister();
         pic.add_cycles(mock_ledger, 100_000_000_000_000);
         let mock_ledger_wasm =
-            std::fs::read("mock/ledger/target/wasm32-unknown-unknown/release/mock_ledger.wasm")
+            std::fs::read("mock/ledger/res/mock_ledger.wasm")
                 .expect("failed to read mock ledger wasm");
         pic.install_canister(mock_ledger, mock_ledger_wasm, vec![], None);
+
+        // Set proxy code in context contract
+        set_proxy_code(&pic, context_canister, mock_ledger).expect("Failed to set proxy code");
 
         // Setup mock external
         let mock_external = pic.create_canister();
         pic.add_cycles(mock_external, 100_000_000_000_000);
         let mock_external_wasm =
-            std::fs::read("mock/external/target/wasm32-unknown-unknown/release/mock_external.wasm")
+            std::fs::read("mock/external/res/mock_external.wasm")
                 .expect("failed to read mock external wasm");
         pic.install_canister(mock_external, mock_external_wasm, vec![], None);
 
@@ -147,6 +142,7 @@ mod tests {
             pic,
             proxy_canister,
             context_canister,
+            mock_ledger,
             mock_external,
             author_sk,
             context_id,
@@ -154,16 +150,16 @@ mod tests {
     }
 
     // Helper function to set proxy code in context contract
-    fn set_proxy_code(pic: &PocketIc, context_canister: Principal) -> Result<(), String> {
+    fn set_proxy_code(pic: &PocketIc, context_canister: Principal, ledger_id: Principal) -> Result<(), String> {
         // Read proxy contract wasm
-        let proxy_wasm = std::fs::read("target/wasm32-unknown-unknown/release/proxy_contract.wasm")
+        let proxy_wasm = std::fs::read("res/proxy_contract.wasm")
             .expect("failed to read proxy wasm");
 
         let response = pic.update_call(
             context_canister,
             Principal::anonymous(),
             "set_proxy_code",
-            candid::encode_one(proxy_wasm).unwrap(),
+            candid::encode_args((proxy_wasm, ledger_id)).unwrap(),
         );
 
         match response {
@@ -288,423 +284,423 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_create_proposal_transfer() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_transfer() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([1; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![ICProposalAction::Transfer {
-    //             receiver_id: Principal::anonymous(),
-    //             amount: 1000000,
-    //         }],
-    //     };
+        let proposal = ICProposal {
+            id: ICProposalId::new([1; 32]),
+            author_id: author_id.clone(),
+            actions: vec![ICProposalAction::Transfer {
+                receiver_id: Principal::anonymous(),
+                amount: 1000000,
+            }],
+        };
 
-    //     create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
-    //         .expect("Transfer proposal creation should succeed");
-    // }
+        create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
+            .expect("Transfer proposal creation should succeed");
+    }
 
-    // #[test]
-    // fn test_create_proposal_external_call() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_external_call() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([3; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![ICProposalAction::ExternalFunctionCall {
-    //             receiver_id: Principal::anonymous(),
-    //             method_name: "test_method".to_string(),
-    //             args: "deadbeef".to_string(),
-    //             deposit: 0,
-    //         }],
-    //     };
+        let proposal = ICProposal {
+            id: ICProposalId::new([3; 32]),
+            author_id: author_id.clone(),
+            actions: vec![ICProposalAction::ExternalFunctionCall {
+                receiver_id: Principal::anonymous(),
+                method_name: "test_method".to_string(),
+                args: "deadbeef".to_string(),
+                deposit: 0,
+            }],
+        };
 
-    //     create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
-    //         .expect("External call proposal creation should succeed");
-    // }
+        create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
+            .expect("External call proposal creation should succeed");
+    }
 
-    // #[test]
-    // fn test_create_proposal_set_context() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_set_context() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([5; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![ICProposalAction::SetContextValue {
-    //             key: vec![1, 2, 3],
-    //             value: vec![4, 5, 6],
-    //         }],
-    //     };
+        let proposal = ICProposal {
+            id: ICProposalId::new([5; 32]),
+            author_id: author_id.clone(),
+            actions: vec![ICProposalAction::SetContextValue {
+                key: vec![1, 2, 3],
+                value: vec![4, 5, 6],
+            }],
+        };
 
-    //     create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
-    //         .expect("Setting context value should succeed");
-    // }
+        create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
+            .expect("Setting context value should succeed");
+    }
 
-    // #[test]
-    // fn test_create_proposal_multiple_actions() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_multiple_actions() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([6; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![
-    //             ICProposalAction::SetNumApprovals { num_approvals: 2 },
-    //             ICProposalAction::SetActiveProposalsLimit {
-    //                 active_proposals_limit: 5,
-    //             },
-    //         ],
-    //     };
+        let proposal = ICProposal {
+            id: ICProposalId::new([6; 32]),
+            author_id: author_id.clone(),
+            actions: vec![
+                ICProposalAction::SetNumApprovals { num_approvals: 2 },
+                ICProposalAction::SetActiveProposalsLimit {
+                    active_proposals_limit: 5,
+                },
+            ],
+        };
 
-    //     create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
-    //         .expect("Multiple actions proposal creation should succeed");
-    // }
+        create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal)
+            .expect("Multiple actions proposal creation should succeed");
+    }
 
-    // #[test]
-    // fn test_create_proposal_invalid_transfer_amount() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_invalid_transfer_amount() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([8; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![ICProposalAction::Transfer {
-    //             receiver_id: Principal::anonymous(),
-    //             amount: 0, // Invalid amount
-    //         }],
-    //     };
+        let proposal = ICProposal {
+            id: ICProposalId::new([8; 32]),
+            author_id: author_id.clone(),
+            actions: vec![ICProposalAction::Transfer {
+                receiver_id: Principal::anonymous(),
+                amount: 0, // Invalid amount
+            }],
+        };
 
-    //     let request = ICRequest {
-    //         signer_id: author_id.clone(),
-    //         timestamp_ms: get_time_nanos(&pic),
-    //         kind: ICRequestKind::Propose { proposal },
-    //     };
+        let request = ICRequest {
+            signer_id: author_id.clone(),
+            timestamp_ms: get_time_nanos(&pic),
+            kind: ICRequestKind::Propose { proposal },
+        };
 
-    //     let signed_request = create_signed_request(&author_sk, request);
-    //     let response = pic.update_call(
-    //         proxy_canister,
-    //         Principal::anonymous(),
-    //         "mutate",
-    //         candid::encode_one(signed_request).unwrap(),
-    //     );
+        let signed_request = create_signed_request(&author_sk, request);
+        let response = pic.update_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
 
-    //     match response {
-    //         Ok(WasmResult::Reply(bytes)) => {
-    //             let result: Result<Option<ICProposalWithApprovals>, String> =
-    //                 candid::decode_one(&bytes).expect("Failed to decode response");
-    //             assert!(
-    //                 result.is_err(),
-    //                 "Expected error for invalid transfer amount"
-    //             );
-    //         }
-    //         Ok(WasmResult::Reject(msg)) => {
-    //             panic!("Canister rejected the call: {}", msg);
-    //         }
-    //         Err(err) => {
-    //             panic!("Failed to call canister: {}", err);
-    //         }
-    //     }
-    // }
+        match response {
+            Ok(WasmResult::Reply(bytes)) => {
+                let result: Result<Option<ICProposalWithApprovals>, String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
+                assert!(
+                    result.is_err(),
+                    "Expected error for invalid transfer amount"
+                );
+            }
+            Ok(WasmResult::Reject(msg)) => {
+                panic!("Canister rejected the call: {}", msg);
+            }
+            Err(err) => {
+                panic!("Failed to call canister: {}", err);
+            }
+        }
+    }
 
-    // #[test]
-    // fn test_create_proposal_invalid_method_name() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_invalid_method_name() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([9; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![ICProposalAction::ExternalFunctionCall {
-    //             receiver_id: Principal::anonymous(),
-    //             method_name: "".to_string(), // Invalid method name
-    //             args: "deadbeef".to_string(),
-    //             deposit: 0,
-    //         }],
-    //     };
+        let proposal = ICProposal {
+            id: ICProposalId::new([9; 32]),
+            author_id: author_id.clone(),
+            actions: vec![ICProposalAction::ExternalFunctionCall {
+                receiver_id: Principal::anonymous(),
+                method_name: "".to_string(), // Invalid method name
+                args: "deadbeef".to_string(),
+                deposit: 0,
+            }],
+        };
 
-    //     let request = ICRequest {
-    //         signer_id: author_id.clone(),
-    //         timestamp_ms: get_time_nanos(&pic),
-    //         kind: ICRequestKind::Propose { proposal },
-    //     };
+        let request = ICRequest {
+            signer_id: author_id.clone(),
+            timestamp_ms: get_time_nanos(&pic),
+            kind: ICRequestKind::Propose { proposal },
+        };
 
-    //     let signed_request = create_signed_request(&author_sk, request);
-    //     let response = pic.update_call(
-    //         proxy_canister,
-    //         Principal::anonymous(),
-    //         "mutate",
-    //         candid::encode_one(signed_request).unwrap(),
-    //     );
+        let signed_request = create_signed_request(&author_sk, request);
+        let response = pic.update_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
 
-    //     match response {
-    //         Ok(WasmResult::Reply(bytes)) => {
-    //             let result: Result<Option<ICProposalWithApprovals>, String> =
-    //                 candid::decode_one(&bytes).expect("Failed to decode response");
-    //             assert!(result.is_err(), "Expected error for invalid method name");
-    //         }
-    //         Ok(WasmResult::Reject(msg)) => {
-    //             panic!("Canister rejected the call: {}", msg);
-    //         }
-    //         Err(err) => {
-    //             panic!("Failed to call canister: {}", err);
-    //         }
-    //     }
-    // }
+        match response {
+            Ok(WasmResult::Reply(bytes)) => {
+                let result: Result<Option<ICProposalWithApprovals>, String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
+                assert!(result.is_err(), "Expected error for invalid method name");
+            }
+            Ok(WasmResult::Reject(msg)) => {
+                panic!("Canister rejected the call: {}", msg);
+            }
+            Err(err) => {
+                panic!("Failed to call canister: {}", err);
+            }
+        }
+    }
 
-    // #[test]
-    // fn test_approve_own_proposal() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_approve_own_proposal() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     // Create proposal
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([10; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
-    //     };
+        // Create proposal
+        let proposal = ICProposal {
+            id: ICProposalId::new([10; 32]),
+            author_id: author_id.clone(),
+            actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
+        };
 
-    //     let _ = create_and_verify_proposal(
-    //         &pic,
-    //         proxy_canister,
-    //         &author_sk,
-    //         &author_id,
-    //         proposal.clone(),
-    //     );
+        let _ = create_and_verify_proposal(
+            &pic,
+            proxy_canister,
+            &author_sk,
+            &author_id,
+            proposal.clone(),
+        );
 
-    //     // Try to approve own proposal
-    //     let approval = ICProposalApprovalWithSigner {
-    //         signer_id: author_id.clone(),
-    //         proposal_id: proposal.id,
-    //         added_timestamp: get_time_nanos(&pic),
-    //     };
+        // Try to approve own proposal
+        let approval = ICProposalApprovalWithSigner {
+            signer_id: author_id.clone(),
+            proposal_id: proposal.id,
+            added_timestamp: get_time_nanos(&pic),
+        };
 
-    //     let request = ICRequest {
-    //         signer_id: author_id.clone(),
-    //         timestamp_ms: get_time_nanos(&pic),
-    //         kind: ICRequestKind::Approve { approval },
-    //     };
+        let request = ICRequest {
+            signer_id: author_id.clone(),
+            timestamp_ms: get_time_nanos(&pic),
+            kind: ICRequestKind::Approve { approval },
+        };
 
-    //     let signed_request = create_signed_request(&author_sk, request);
-    //     let result = pic.update_call(
-    //         proxy_canister,
-    //         Principal::anonymous(),
-    //         "mutate",
-    //         candid::encode_one(signed_request).unwrap(),
-    //     );
+        let signed_request = create_signed_request(&author_sk, request);
+        let result = pic.update_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
 
-    //     match result {
-    //         Ok(WasmResult::Reply(bytes)) => {
-    //             let result: Result<Option<ICProposalWithApprovals>, String> =
-    //                 candid::decode_one(&bytes).expect("Failed to decode response");
-    //             assert!(
-    //                 matches!(result, Err(e) if e.contains("already approved")),
-    //                 "Should not be able to approve own proposal twice"
-    //             );
-    //         }
-    //         _ => panic!("Unexpected response type"),
-    //     }
-    // }
+        match result {
+            Ok(WasmResult::Reply(bytes)) => {
+                let result: Result<Option<ICProposalWithApprovals>, String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
+                assert!(
+                    matches!(result, Err(e) if e.contains("already approved")),
+                    "Should not be able to approve own proposal twice"
+                );
+            }
+            _ => panic!("Unexpected response type"),
+        }
+    }
 
-    // #[test]
-    // fn test_approve_non_existent_proposal() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_approve_non_existent_proposal() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let approval = ICProposalApprovalWithSigner {
-    //         signer_id: author_id.clone(),
-    //         proposal_id: ICProposalId::new([11; 32]),
-    //         added_timestamp: get_time_nanos(&pic),
-    //     };
+        let approval = ICProposalApprovalWithSigner {
+            signer_id: author_id.clone(),
+            proposal_id: ICProposalId::new([11; 32]),
+            added_timestamp: get_time_nanos(&pic),
+        };
 
-    //     let request = ICRequest {
-    //         signer_id: author_id.clone(),
-    //         timestamp_ms: get_time_nanos(&pic),
-    //         kind: ICRequestKind::Approve { approval },
-    //     };
+        let request = ICRequest {
+            signer_id: author_id.clone(),
+            timestamp_ms: get_time_nanos(&pic),
+            kind: ICRequestKind::Approve { approval },
+        };
 
-    //     let signed_request = create_signed_request(&author_sk, request);
-    //     let response = pic.update_call(
-    //         proxy_canister,
-    //         Principal::anonymous(),
-    //         "mutate",
-    //         candid::encode_one(signed_request).unwrap(),
-    //     );
+        let signed_request = create_signed_request(&author_sk, request);
+        let response = pic.update_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
 
-    //     match response {
-    //         Ok(WasmResult::Reply(bytes)) => {
-    //             let result: Result<Option<ICProposalWithApprovals>, String> =
-    //                 candid::decode_one(&bytes).expect("Failed to decode response");
-    //             assert!(
-    //                 result.is_err(),
-    //                 "Should not be able to approve non-existent proposal"
-    //             );
-    //         }
-    //         _ => panic!("Unexpected response type"),
-    //     }
-    // }
+        match response {
+            Ok(WasmResult::Reply(bytes)) => {
+                let result: Result<Option<ICProposalWithApprovals>, String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
+                assert!(
+                    result.is_err(),
+                    "Should not be able to approve non-existent proposal"
+                );
+            }
+            _ => panic!("Unexpected response type"),
+        }
+    }
 
-    // #[test]
-    // fn test_create_proposal_empty_actions() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_empty_actions() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([12; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![], // Empty actions
-    //     };
+        let proposal = ICProposal {
+            id: ICProposalId::new([12; 32]),
+            author_id: author_id.clone(),
+            actions: vec![], // Empty actions
+        };
 
-    //     let request = ICRequest {
-    //         signer_id: author_id.clone(),
-    //         timestamp_ms: get_time_nanos(&pic),
-    //         kind: ICRequestKind::Propose { proposal },
-    //     };
+        let request = ICRequest {
+            signer_id: author_id.clone(),
+            timestamp_ms: get_time_nanos(&pic),
+            kind: ICRequestKind::Propose { proposal },
+        };
 
-    //     let signed_request = create_signed_request(&author_sk, request);
-    //     let response = pic.update_call(
-    //         proxy_canister,
-    //         Principal::anonymous(),
-    //         "mutate",
-    //         candid::encode_one(signed_request).unwrap(),
-    //     );
+        let signed_request = create_signed_request(&author_sk, request);
+        let response = pic.update_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
 
-    //     match response {
-    //         Ok(WasmResult::Reply(bytes)) => {
-    //             let result: Result<Option<ICProposalWithApprovals>, String> =
-    //                 candid::decode_one(&bytes).expect("Failed to decode response");
-    //             assert!(result.is_err(), "Should fail with empty actions");
-    //             assert!(
-    //                 matches!(result, Err(e) if e.contains("empty actions")),
-    //                 "Error should mention empty actions"
-    //             );
-    //         }
-    //         _ => panic!("Unexpected response type"),
-    //     }
-    // }
+        match response {
+            Ok(WasmResult::Reply(bytes)) => {
+                let result: Result<Option<ICProposalWithApprovals>, String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
+                assert!(result.is_err(), "Should fail with empty actions");
+                assert!(
+                    matches!(result, Err(e) if e.contains("empty actions")),
+                    "Error should mention empty actions"
+                );
+            }
+            _ => panic!("Unexpected response type"),
+        }
+    }
 
-    // #[test]
-    // fn test_create_proposal_exceeds_limit() {
-    //     let ProxyTestContext {
-    //         pic,
-    //         proxy_canister,
-    //         author_sk,
-    //         ..
-    //     } = setup();
+    #[test]
+    fn test_create_proposal_exceeds_limit() {
+        let ProxyTestContext {
+            pic,
+            proxy_canister,
+            author_sk,
+            ..
+        } = setup();
 
-    //     let author_pk = author_sk.verifying_key();
-    //     let author_id = ICSignerId::new(author_pk.to_bytes());
+        let author_pk = author_sk.verifying_key();
+        let author_id = ICSignerId::new(author_pk.to_bytes());
 
-    //     // Create max number of proposals
-    //     for i in 0..10 {
-    //         let proposal = ICProposal {
-    //             id: ICProposalId::new([i as u8; 32]),
-    //             author_id: author_id.clone(),
-    //             actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
-    //         };
-    //         let _ =
-    //             create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal);
-    //     }
+        // Create max number of proposals
+        for i in 0..10 {
+            let proposal = ICProposal {
+                id: ICProposalId::new([i as u8; 32]),
+                author_id: author_id.clone(),
+                actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
+            };
+            let _ =
+                create_and_verify_proposal(&pic, proxy_canister, &author_sk, &author_id, proposal);
+        }
 
-    //     // Try to create one more
-    //     let proposal = ICProposal {
-    //         id: ICProposalId::new([11; 32]),
-    //         author_id: author_id.clone(),
-    //         actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
-    //     };
+        // Try to create one more
+        let proposal = ICProposal {
+            id: ICProposalId::new([11; 32]),
+            author_id: author_id.clone(),
+            actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
+        };
 
-    //     let request = ICRequest {
-    //         signer_id: author_id.clone(),
-    //         timestamp_ms: get_time_nanos(&pic),
-    //         kind: ICRequestKind::Propose { proposal },
-    //     };
+        let request = ICRequest {
+            signer_id: author_id.clone(),
+            timestamp_ms: get_time_nanos(&pic),
+            kind: ICRequestKind::Propose { proposal },
+        };
 
-    //     let signed_request = create_signed_request(&author_sk, request);
-    //     let response = pic.update_call(
-    //         proxy_canister,
-    //         Principal::anonymous(),
-    //         "mutate",
-    //         candid::encode_one(signed_request).unwrap(),
-    //     );
+        let signed_request = create_signed_request(&author_sk, request);
+        let response = pic.update_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
 
-    //     match response {
-    //         Ok(WasmResult::Reply(bytes)) => {
-    //             let result: Result<Option<ICProposalWithApprovals>, String> =
-    //                 candid::decode_one(&bytes).expect("Failed to decode response");
-    //             assert!(
-    //                 result.is_err(),
-    //                 "Should not be able to exceed proposal limit"
-    //             );
-    //         }
-    //         _ => panic!("Unexpected response type"),
-    //     }
-    // }
+        match response {
+            Ok(WasmResult::Reply(bytes)) => {
+                let result: Result<Option<ICProposalWithApprovals>, String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
+                assert!(
+                    result.is_err(),
+                    "Should not be able to exceed proposal limit"
+                );
+            }
+            _ => panic!("Unexpected response type"),
+        }
+    }
 
     #[test]
     fn test_proposal_execution_transfer() {
@@ -712,6 +708,7 @@ mod tests {
             pic,
             proxy_canister,
             mock_external,
+            mock_ledger,
             author_sk,
             context_canister,
             context_id,
@@ -736,13 +733,13 @@ mod tests {
 
         let transfer_amount = 1_000;
 
-        let receiver_id = Principal::from_text("bnz7o-iuaaa-aaaaa-qaaaa-cai").unwrap();
+        // let receiver_id = Principal::from_text("bnz7o-iuaaa-aaaaa-qaaaa-cai").unwrap();
         // Create transfer proposal
         let proposal = ICProposal {
             id: ICProposalId::new([14; 32]),
             author_id: author_id.clone(),
             actions: vec![ICProposalAction::Transfer {
-                receiver_id,
+                receiver_id: mock_external,
                 amount: transfer_amount,
             }],
         };
@@ -838,7 +835,7 @@ mod tests {
 
         let response = pic
             .query_call(
-                mock_external,
+                mock_ledger,
                 Principal::anonymous(),
                 "account_balance",
                 candid::encode_one(args).unwrap(),
