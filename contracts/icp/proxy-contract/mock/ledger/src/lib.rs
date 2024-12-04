@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
-use candid::{CandidType, Deserialize, Principal};
+use candid::{CandidType, Deserialize};
 use ic_ledger_types::{
-    AccountIdentifier, BlockIndex, Memo, Timestamp, Tokens, TransferArgs, TransferError,
+    AccountIdentifier, BlockIndex, Tokens, TransferArgs, TransferError,
 };
 
 thread_local! {
