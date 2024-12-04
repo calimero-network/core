@@ -4897,6 +4897,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock_external"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk 0.16.0",
+ "ic-cdk-macros 0.16.0",
+]
+
+[[package]]
+name = "mock_ledger"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk 0.16.0",
+ "ic-cdk-macros 0.16.0",
+ "ic-ledger-types",
+ "serde",
+]
+
+[[package]]
 name = "more-asserts"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
