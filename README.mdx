@@ -1,13 +1,15 @@
 # Core Cli Wrapper (crate::merow) 
+[CONTRIBUTING]: CONTRIBUTING.md
+[setting up a calimero node]: https://calimero-network.github.io/getting-started/setup/
 
-A CLI wrapper for setting up a Calimero Node that provides a custom node configuration file for initializing and running a node. 
+A CLI wrapper for [setting up a calimero node] that provides a custom node configuration file for initializing and running a node. 
 
-*This project is forked from the [original core repository](https://github.com/calimero-network/core) from the Calimero Network, and actively syncs the fork at midnight.*   
+*This project is forked from the [original core repository](https://github.com/calimero-network/core) from the Calimero Network, and actively syncs every hour.*   
 ## Features
 
 - Custom Node Configuration File 
 - Simple Commands to Initialize and Run a Calimero Node 
-- Creates a Node Home Directory at the root (if it doesn't already exist)
+- Creates a Node Home Directory at the root (if it doesn't exist)
 
 ## Prerequisites
 - Rust:  [Official Rust Installation](https://www.rust-lang.org/tools/install)
@@ -37,16 +39,8 @@ swarm_port = 2528     // swarm port
 home = "data"         // name of the home directory 
 ```
 
-Initialize a node   
-`$ merow -- init-node` 
 
-Start a running node   
-`$ merow -- start-node` 
-
-
-## How to Run (from project root)
-
-### Build the Rust Package
+ Build the Rust Package
 ```bash
   cargo build 
 ```
@@ -67,22 +61,6 @@ Start a running node
   http://localhost:<node.server_port>/admin-dashboard/
 ```
 
-## Issues 
-- Standard I/O for handling the Calimero Node during runtime 
-
 
 ## Contributing
-Contributions are welcome! 🎉
-
-#### Steps to Contribute: 
-1. Fork the repository: Create a fork of this repository to start making changes.
-2. Checkout the `cli-wrapper` branch, or alternatively create a new branch. Source code for the `cli-wrapper` can be found here `./crates/merow/src` 
-3. Create a pull request: Submit a pull request with your updates to the main branch.
-
-
-#### Ideas for Contributions: 
-- Standard I/O handling: Implement support for standard input/output handling for the Calimero Node during runtime using the CLI wrapper.
-- Tab completion: Add support for tab completion to enhance the user experience.
-- Admin Dashboard deployment: Develop a feature to deploy the Admin Dashboard upon successfully starting the node.
-- Error handling: Improve error handling to ensure a node is initialized and started successfully.
-- Multi-node deployment: Implement support for deploying multiple nodes (e.g., node1, node2, ... nodeN).
+- Please see [CONTRIBUTING][] 
