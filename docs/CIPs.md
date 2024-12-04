@@ -6,12 +6,10 @@ Goals:
 
 - Third-party system representation
 - Preserve privacy
-- anonymize votes
-- anonymize what is being voted on until finalization (where the effect is to be
-  public)
+  - anonymize votes
+  - anonymize what is being voted on until finalization (where the effect is to be public)
 - Allow for fractional representation
-- Fractions of context members, down to individual identities, should have
-  equivalent external representation
+  - Fractions of context members, down to individual identities, should have equivalent external representation
 
 Implementation options:
 
