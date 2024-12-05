@@ -127,8 +127,6 @@ impl<'a> IcpTransport<'a> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum IcpError {
-    #[error("unsupported protocol `{0}`")]
-    UnsupportedProtocol(String),
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid canister id `{0}`")]

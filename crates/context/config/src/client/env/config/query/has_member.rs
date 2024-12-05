@@ -80,7 +80,7 @@ impl Method<Icp> for HasMemberRequest {
     const METHOD: &'static str = "has_member";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id: ICContextId = (*self.context_id).rt()?;
+        let context_id: ICContextId = self.context_id.rt()?;
         let identity: ICContextIdentity = (*self.identity).rt()?;
         let payload = (context_id, identity);
 

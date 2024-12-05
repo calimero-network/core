@@ -139,7 +139,7 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         // Convert context_id and identities to ICP types
-        let context_id: ICContextId = (*self.context_id).rt()?;
+        let context_id: ICContextId = self.context_id.rt()?;
         let identities: Vec<ICContextIdentity> = self
             .identities
             .iter()

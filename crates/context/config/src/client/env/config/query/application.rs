@@ -101,7 +101,7 @@ impl Method<Icp> for ApplicationRequest {
     const METHOD: &'static str = "application";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id: ICContextId = (*self.context_id).rt()?;
+        let context_id: ICContextId = self.context_id.rt()?;
         Encode!(&context_id).map_err(|e| eyre::eyre!(e))
     }
 

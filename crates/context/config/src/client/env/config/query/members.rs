@@ -106,7 +106,7 @@ impl Method<Icp> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id: ICContextId = (*self.context_id).rt()?;
+        let context_id: ICContextId = self.context_id.rt()?;
 
         Encode!(&context_id, &self.offset, &self.length).map_err(|e| eyre::eyre!(e))
     }
