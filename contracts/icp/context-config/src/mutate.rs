@@ -24,7 +24,7 @@ pub async fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
     let time_diff = current_time.saturating_sub(request.timestamp_ms);
     if time_diff > 1000 * 5 {
         return Err(format!(
-            "request expired: diff={}ms, current={}, request={}", 
+            "request expired: diff={}ms, current={}, request={}",
             time_diff, current_time, request.timestamp_ms
         ));
     }
