@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use ed25519_consensus::SigningKey;
-use ic_agent::agent::CallResponse;
 use ic_agent::export::Principal;
 use ic_agent::identity::BasicIdentity;
 use ic_agent::Agent;
@@ -234,20 +233,17 @@ impl Network {
             .client
             .update(canister_id, method)
             .with_arg(args)
-            .call()
+            .call_and_wait()
             .await;
 
         match response {
-            Ok(CallResponse::Response((data, _))) => {
-                match candid::decode_one::<Result<Vec<u8>, String>>(&data) {
-                    Ok(decoded) => match decoded {
-                        Ok(return_data) => Ok(return_data),
-                        Err(err_msg) => Ok(err_msg.into_bytes()),
-                    },
-                    Err(e) => Ok(e.to_string().into_bytes()),
-                }
-            }
-            Ok(CallResponse::Poll(_)) => Ok("Unexpected polling response".as_bytes().to_vec()),
+            Ok(data) => match candid::decode_one::<Result<Vec<u8>, String>>(&data) {
+                Ok(decoded) => match decoded {
+                    Ok(return_data) => Ok(return_data),
+                    Err(err_msg) => Ok(err_msg.into_bytes()),
+                },
+                Err(e) => Ok(e.to_string().into_bytes()),
+            },
             Err(err) => Ok(err.to_string().into_bytes()),
         }
     }
