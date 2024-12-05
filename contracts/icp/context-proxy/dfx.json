@@ -1,0 +1,29 @@
+{
+  "canisters": {
+    "proxy_contract": {
+      "package": "calimero_context_proxy_icp",
+      "candid": "./res/calimero_context_proxy_icp.did",
+      "type": "rust"
+    },
+    "mock_ledger": {
+      "type": "rust",
+      "package": "mock_ledger",
+      "candid": "./mock/ledger/res/calimero_mock_ledger_icp.did",
+      "path": "mock/ledger"
+    },
+    "mock_external": {
+      "type": "rust",
+      "package": "mock_external",
+      "candid": "./mock/external/res/calimero_mock_external_icp.did",
+      "path": "mock/external"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

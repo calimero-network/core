@@ -15,7 +15,7 @@ const_format.workspace = true
 eyre.workspace = true
 near-workspaces.workspace = true
 nix = { version = "0.29.0", features = ["signal"] }
-rand = { workspace = true }
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }

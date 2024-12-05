@@ -18,7 +18,7 @@ chrono.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, optional = true }
-hex = {workspace = true, features = ["serde"] }
+hex = { workspace = true, features = ["serde"] }
 ic-canister-sig-creation.workspace = true
 ic-signature-verification.workspace = true
 jsonwebtoken.workspace = true
@@ -43,12 +43,12 @@ tracing.workspace = true
 web3.workspace = true
 x509-parser.workspace = true
 
-calimero-context = { path = "../context" }
-calimero-context-config = { path = "../context/config" }
-calimero-node-primitives = { path = "../node-primitives" }
-calimero-primitives = { path = "../primitives" }
-calimero-server-primitives = { path = "../server-primitives" }
-calimero-store = { path = "../store", features = ["serde"] }
+calimero-context.workspace = true
+calimero-context-config.workspace = true
+calimero-node-primitives.workspace = true
+calimero-primitives.workspace = true
+calimero-server-primitives.workspace = true
+calimero-store = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 color-eyre.workspace = true

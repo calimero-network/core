@@ -11,9 +11,9 @@ serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
-calimero-primitives = { path = "../primitives" }
+calimero-primitives.workspace = true
 # TODO: extract runtime primitives to a separate crate
-calimero-runtime = { path = "../runtime" }
+calimero-runtime.workspace = true
 
 [lints]
 workspace = true

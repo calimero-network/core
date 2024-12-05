@@ -1,5 +1,5 @@
 [package]
-name = "context_contract"
+name = "calimero-context-config-icp"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 bs58.workspace = true
-calimero-context-config = { path = "../../../crates/context/config" }
+calimero-context-config.workspace = true
 candid = "0.10"
 ed25519-dalek.workspace = true
 ic-cdk = "0.16"

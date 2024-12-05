@@ -1,6 +1,6 @@
 data/
 corpus/
-res/
+**/res/*
 target
 target/
 .DS_Store

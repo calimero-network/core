@@ -1,18 +1,18 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use calimero_context_config::repr::ReprBytes;
-use candid::Principal;
-use context_contract::types::{
+use calimero_context_config_icp::types::{
     ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, ICCapability,
     ICContextId, ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
 };
+use candid::Principal;
 use ed25519_dalek::{Signer, SigningKey};
 use pocket_ic::{PocketIc, UserError, WasmResult};
 use rand::Rng;
 
 fn setup() -> (PocketIc, Principal) {
     let pic = PocketIc::new();
-    let wasm = std::fs::read("res/context_contract.wasm").expect("failed to read wasm");
+    let wasm = std::fs::read("res/calimero_context_config_icp.wasm").expect("failed to read wasm");
     let canister = pic.create_canister();
     pic.add_cycles(canister, 1_000_000_000_000_000);
     pic.install_canister(
@@ -23,7 +23,7 @@ fn setup() -> (PocketIc, Principal) {
     );
 
     // Set the proxy code
-    let proxy_code = std::fs::read("../proxy-contract/res/proxy_contract.wasm")
+    let proxy_code = std::fs::read("../context-proxy/res/calimero_context_proxy_icp.wasm")
         .expect("failed to read proxy wasm");
     let ledger_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap();
     pic.update_call(

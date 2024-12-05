@@ -1,8 +1,8 @@
 {
   "canisters": {
     "context_contract": {
-      "candid": "context_contract.did",
-      "package": "context_contract",
+      "package": "calimero-context-config-icp",
+      "candid": "./res/calimero_context_config_icp.did",
       "type": "rust"
     }
   },
