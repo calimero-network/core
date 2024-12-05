@@ -244,9 +244,7 @@ impl Network {
                         Ok(return_data) => Ok(return_data),
                         Err(err_msg) => Ok(err_msg.into_bytes()),
                     },
-                    Err(e) => {
-                        Ok(e.to_string().into_bytes())
-                    }
+                    Err(e) => Ok(e.to_string().into_bytes()),
                 }
             }
             Ok(CallResponse::Poll(_)) => Ok("Unexpected polling response".as_bytes().to_vec()),
