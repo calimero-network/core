@@ -237,16 +237,7 @@ impl Network {
             .await;
 
         match response {
-            Ok(data) => match candid::decode_one::<Result<Vec<u8>, String>>(&data) {
-                Ok(decoded) => match decoded {
-                    Ok(return_data) => Ok(return_data),
-                    Err(err_msg) => Ok(err_msg.into_bytes()),
-                },
-                Err(e) => Err(IcpError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                }),
-            },
+            Ok(data) => Ok(data),
             Err(err) => Err(IcpError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: err.to_string(),
