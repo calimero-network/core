@@ -239,17 +239,14 @@ impl Network {
 
         match response {
             Ok(CallResponse::Response((data, _))) => {
-                // Now try to decode the actual data
-                match candid::decode_one::<Result<(), String>>(&data) {
-                    Ok(decoded) => {
-                        match decoded {
-                            Ok(()) => Ok(vec![]),                     // Return empty vec for success
-                            Err(err_msg) => Ok(err_msg.into_bytes()), // Return error message as bytes
-                        }
-                    }
+                match candid::decode_one::<Result<Vec<u8>, String>>(&data) {
+                    Ok(decoded) => match decoded {
+                        Ok(return_data) => Ok(return_data),
+                        Err(err_msg) => Ok(err_msg.into_bytes()),
+                    },
                     Err(e) => {
                         println!("Failed to decode: {}", e);
-                        Ok(e.to_string().into_bytes()) // Return decode error as bytes
+                        Ok(e.to_string().into_bytes())
                     }
                 }
             }
