@@ -24,7 +24,6 @@ libp2p.workspace = true
 multiaddr.workspace = true
 near-crypto.workspace = true
 rand.workspace = true
-ring.workspace = true
 starknet.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 toml_edit.workspace = true

@@ -4823,7 +4823,6 @@ dependencies = [
  "multiaddr",
  "near-crypto",
  "rand 0.8.5",
- "ring 0.17.8",
  "starknet",
  "tokio",
  "toml_edit",
