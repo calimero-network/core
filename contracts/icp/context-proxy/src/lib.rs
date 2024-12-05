@@ -1,58 +1,71 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use calimero_context_config::icp::repr::ICRepr;
+use calimero_context_config::icp::types::ICSigned;
+use calimero_context_config::icp::{
+    ICProposal, ICProposalApprovalWithSigner, ICProposalWithApprovals, ICProxyMutateRequest,
+};
+use calimero_context_config::types::{ContextId, ProposalId, SignerId};
 use candid::{CandidType, Principal};
 use serde::Deserialize;
-use types::{ICContextId, LedgerId};
 
-use crate::types::{
-    ICPSigned, ICProposal, ICProposalApprovalWithSigner, ICProposalId, ICProposalWithApprovals,
-    ICRequest, ICSignerId,
-};
+mod mutate;
+mod query;
+mod sys;
 
-pub mod mutate;
-pub mod query;
-pub mod sys;
-pub mod types;
-
-#[derive(Default, CandidType, Deserialize, Clone)]
-pub struct ICProxyContract {
-    pub context_id: ICContextId,
-    pub context_config_id: String,
-    pub num_approvals: u32,
-    pub proposals: BTreeMap<ICProposalId, ICProposal>,
-    pub approvals: BTreeMap<ICProposalId, BTreeSet<ICSignerId>>,
-    pub num_proposals_pk: BTreeMap<ICSignerId, u32>,
-    pub active_proposals_limit: u32,
-    pub context_storage: HashMap<Vec<u8>, Vec<u8>>,
-    pub ledger_id: LedgerId,
+thread_local! {
+  static PROXY_CONTRACT: RefCell<Option<ICProxyContract>> = RefCell::new(None);
 }
 
-impl ICProxyContract {
-    pub fn new(context_id: ICContextId, ledger_id: Principal) -> Self {
-        Self {
+#[derive(CandidType, Deserialize, Debug)]
+pub struct ICProxyContract {
+    pub context_id: ICRepr<ContextId>,
+    pub context_config_id: Principal,
+    pub num_approvals: u32,
+    pub proposals: BTreeMap<ICRepr<ProposalId>, ICProposal>,
+    pub approvals: BTreeMap<ICRepr<ProposalId>, BTreeSet<ICRepr<SignerId>>>,
+    pub num_proposals_pk: BTreeMap<ICRepr<SignerId>, u32>,
+    pub active_proposals_limit: u32,
+    pub context_storage: HashMap<Vec<u8>, Vec<u8>>,
+    pub ledger_id: Principal,
+}
+
+#[ic_cdk::init]
+fn init(context_id: ICRepr<ContextId>, ledger_id: Principal) {
+    PROXY_CONTRACT.with(|contract| {
+        *contract.borrow_mut() = Some(ICProxyContract {
             context_id,
-            context_config_id: ic_cdk::caller().to_string(),
+            context_config_id: ic_cdk::caller(),
             num_approvals: 3,
             proposals: BTreeMap::new(),
             approvals: BTreeMap::new(),
             num_proposals_pk: BTreeMap::new(),
             active_proposals_limit: 10,
             context_storage: HashMap::new(),
-            ledger_id: ledger_id.into(),
-        }
-    }
-}
-
-thread_local! {
-  static PROXY_CONTRACT: RefCell<ICProxyContract> = RefCell::new(ICProxyContract::default());
-}
-
-#[ic_cdk::init]
-fn init(context_id: types::ICContextId, ledger_id: Principal) {
-    PROXY_CONTRACT.with(|contract| {
-        *contract.borrow_mut() = ICProxyContract::new(context_id, ledger_id);
+            ledger_id,
+        });
     });
+}
+
+fn with_state<F, R>(f: F) -> R
+where
+    F: FnOnce(&ICProxyContract) -> R,
+{
+    PROXY_CONTRACT.with(|state| {
+        let state = state.borrow();
+        f(state.as_ref().expect("cannister is being upgraded"))
+    })
+}
+
+fn with_state_mut<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut ICProxyContract) -> R,
+{
+    PROXY_CONTRACT.with(|state| {
+        let mut state = state.borrow_mut();
+        f(state.as_mut().expect("cannister is being upgraded"))
+    })
 }
 
 ic_cdk::export_candid!();

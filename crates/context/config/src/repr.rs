@@ -83,7 +83,8 @@ pub trait ReprBytes: Sized {
     type EncodeBytes<'a>: AsRef<[u8]>
     where
         Self: 'a;
-    type DecodeBytes: DecodeTarget;
+    type DecodeBytes: DecodeTarget + AsRef<[u8]>;
+
     type Error: CoreError;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_>;

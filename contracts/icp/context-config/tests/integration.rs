@@ -1,10 +1,12 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use calimero_context_config::repr::ReprBytes;
-use calimero_context_config_icp::types::{
-    ContextRequest, ContextRequestKind, ICApplication, ICApplicationId, ICBlobId, ICCapability,
-    ICContextId, ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
+use calimero_context_config::icp::repr::ICRepr;
+use calimero_context_config::icp::types::{
+    ICApplication, ICCapability, ICContextRequest, ICContextRequestKind, ICRequest, ICRequestKind,
+    ICSigned,
 };
+use calimero_context_config::repr::{ReprBytes, ReprTransmute};
+use calimero_context_config::types::{ContextIdentity, SignerId};
 use candid::Principal;
 use ed25519_dalek::{Signer, SigningKey};
 use pocket_ic::{PocketIc, UserError, WasmResult};
@@ -37,9 +39,8 @@ fn setup() -> (PocketIc, Principal) {
     (pic, canister)
 }
 
-fn create_signed_request(signer_key: &SigningKey, request: Request) -> ICPSigned<Request> {
-    ICPSigned::new(request, |bytes| signer_key.sign(bytes))
-        .expect("Failed to create signed request")
+fn create_signed_request(signer_key: &SigningKey, request: ICRequest) -> ICSigned<ICRequest> {
+    ICSigned::new(request, |bytes| signer_key.sign(bytes)).expect("Failed to create signed request")
 }
 
 fn get_time_nanos(pic: &PocketIc) -> u64 {
@@ -96,28 +97,28 @@ fn test_proxy_management() {
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.rt().expect("infallible conversion");
 
     let alice_sk = SigningKey::from_bytes(&rng.gen());
     let alice_pk = alice_sk.verifying_key();
-    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+    let alice_id = alice_pk.rt().expect("infallible conversion");
 
     // Create context with initial application
-    let create_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: alice_id.clone(),
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
                 application: ICApplication {
-                    id: ICApplicationId::new(rng.gen()),
-                    blob: ICBlobId::new(rng.gen()),
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: context_id.rt().expect("infallible conversion"),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -133,12 +134,12 @@ fn test_proxy_management() {
     // Try to update proxy contract without Proxy capability (should fail)
     let bob_sk = SigningKey::from_bytes(&rng.gen());
     let bob_pk = bob_sk.verifying_key();
-    let update_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::UpdateProxyContract,
+    let update_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::UpdateProxyContract,
         }),
-        signer_id: ICSignerId::new(bob_pk.to_bytes()),
+        signer_id: bob_pk.rt().expect("infallible conversion"),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -152,12 +153,12 @@ fn test_proxy_management() {
     handle_response(response, false, "mutate");
 
     // Update proxy contract with proper capability (Alice has it by default)
-    let update_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::UpdateProxyContract,
+    let update_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::UpdateProxyContract,
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -186,27 +187,27 @@ fn test_mutate_success_cases() {
     // Create context keys and ID
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.rt().expect("infallible conversion");
 
     // Get current IC time in nanoseconds
     let current_time = get_time_nanos(&pic);
 
     // Create the request with IC time in nanoseconds
-    let request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: ICContextIdentity::new(rng.gen()),
+    let request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                 application: ICApplication {
-                    id: ICApplicationId::new(rng.gen()),
-                    blob: ICBlobId::new(rng.gen()),
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: current_time,
     };
 
@@ -235,32 +236,32 @@ fn test_member_management() {
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.rt().expect("infallible conversion");
 
     let alice_sk = SigningKey::from_bytes(&rng.gen());
     let alice_pk = alice_sk.verifying_key();
-    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+    let alice_id = alice_pk.rt().expect("infallible conversion");
 
     let bob_sk = SigningKey::from_bytes(&rng.gen());
     let bob_pk = bob_sk.verifying_key();
-    let bob_id = ICContextIdentity::new(bob_pk.to_bytes());
+    let bob_id = bob_pk.rt().expect("infallible conversion");
 
     // First create the context with Alice as author
-    let create_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: alice_id.clone(),
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
                 application: ICApplication {
-                    id: ICApplicationId::new(rng.gen()),
-                    blob: ICBlobId::new(rng.gen()),
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -274,14 +275,14 @@ fn test_member_management() {
     handle_response(response, true, "Context creation");
 
     // Add Bob as a member (signed by Alice who has management rights)
-    let add_member_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::AddMembers {
-                members: vec![bob_id.clone()],
+    let add_member_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::AddMembers {
+                members: vec![bob_id],
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -299,12 +300,12 @@ fn test_member_management() {
         canister,
         Principal::anonymous(),
         "members",
-        candid::encode_args((context_id.clone(), 0_usize, 10_usize)).unwrap(),
+        candid::encode_args((context_id, 0_usize, 10_usize)).unwrap(),
     );
 
     match query_response {
         Ok(WasmResult::Reply(bytes)) => {
-            let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
+            let members: Vec<ICRepr<ContextIdentity>> = candid::decode_one(&bytes).unwrap();
             assert_eq!(
                 members.len(),
                 2,
@@ -318,14 +319,14 @@ fn test_member_management() {
     }
 
     // Try to remove Bob (signed by Alice)
-    let remove_member_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::RemoveMembers {
-                members: vec![bob_id.clone()],
+    let remove_member_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::RemoveMembers {
+                members: vec![bob_id],
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -343,11 +344,11 @@ fn test_member_management() {
         canister,
         Principal::anonymous(),
         "members",
-        candid::encode_args((context_id.clone(), 0_usize, 10_usize)).unwrap(),
+        candid::encode_args((context_id, 0_usize, 10_usize)).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
-        let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
+        let members: Vec<ICRepr<ContextIdentity>> = candid::decode_one(&bytes).unwrap();
         assert_eq!(members.len(), 1, "Should have one member (Alice)");
         assert!(
             members.contains(&alice_id),
@@ -374,32 +375,32 @@ fn test_capability_management() {
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.rt().expect("infallible conversion");
 
     let alice_sk = SigningKey::from_bytes(&rng.gen());
     let alice_pk = alice_sk.verifying_key();
-    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+    let alice_id = alice_pk.rt().expect("infallible conversion");
 
     let bob_sk = SigningKey::from_bytes(&rng.gen());
     let bob_pk = bob_sk.verifying_key();
-    let bob_id = ICContextIdentity::new(bob_pk.to_bytes());
+    let bob_id = bob_pk.rt().expect("infallible conversion");
 
     // First create the context with Alice as author
-    let create_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: alice_id.clone(),
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
                 application: ICApplication {
-                    id: ICApplicationId::new(rng.gen()),
-                    blob: ICBlobId::new(rng.gen()),
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -413,14 +414,14 @@ fn test_capability_management() {
     handle_response(response, true, "Context creation");
 
     // Add Bob as a member before granting capabilities
-    let add_member_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::AddMembers {
-                members: vec![bob_id.clone()],
+    let add_member_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::AddMembers {
+                members: vec![bob_id],
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -434,14 +435,14 @@ fn test_capability_management() {
     handle_response(response, true, "Member addition");
 
     // Grant capabilities to Bob
-    let grant_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Grant {
-                capabilities: vec![(bob_id.clone(), ICCapability::ManageMembers)],
+    let grant_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Grant {
+                capabilities: vec![(bob_id, ICCapability::ManageMembers)],
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -459,27 +460,30 @@ fn test_capability_management() {
         canister,
         Principal::anonymous(),
         "privileges",
-        candid::encode_one((context_id.clone(), vec![bob_id.clone()])).unwrap(),
+        candid::encode_one((context_id, vec![bob_id])).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
-        let privileges: std::collections::BTreeMap<ICSignerId, Vec<ICCapability>> =
+        let privileges: std::collections::BTreeMap<ICRepr<SignerId>, Vec<ICCapability>> =
             candid::decode_one(&bytes).unwrap();
+
+        let bob_id: SignerId = bob_pk.to_bytes().rt().expect("infallible conversion");
+
         let bob_capabilities = privileges
-            .get(&ICSignerId::new(bob_pk.to_bytes()))
+            .get(&bob_id)
             .expect("Bob should have capabilities");
         assert_eq!(bob_capabilities, &[ICCapability::ManageMembers]);
     }
 
     // Revoke Bob's capabilities
-    let revoke_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Revoke {
-                capabilities: vec![(bob_id.clone(), ICCapability::ManageMembers)],
+    let revoke_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Revoke {
+                capabilities: vec![(bob_id, ICCapability::ManageMembers)],
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -497,21 +501,16 @@ fn test_capability_management() {
         canister,
         Principal::anonymous(),
         "privileges",
-        candid::encode_one((context_id.clone(), vec![bob_id.clone()])).unwrap(),
+        candid::encode_one((context_id, vec![bob_id])).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
-        let privileges: std::collections::BTreeMap<ICSignerId, Vec<ICCapability>> =
+        let privileges: std::collections::BTreeMap<ICRepr<SignerId>, Vec<ICCapability>> =
             candid::decode_one(&bytes).unwrap();
-        assert!(
-            privileges
-                .get(&ICSignerId::new(bob_pk.to_bytes()))
-                .is_none()
-                || privileges
-                    .get(&ICSignerId::new(bob_pk.to_bytes()))
-                    .unwrap()
-                    .is_empty()
-        );
+
+        let bob_id: SignerId = bob_pk.to_bytes().rt().expect("infallible conversion");
+
+        assert!(privileges.get(&bob_id).is_none() || privileges.get(&bob_id).unwrap().is_empty());
     }
 }
 
@@ -530,36 +529,36 @@ fn test_application_update() {
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.to_bytes().rt().expect("infallible conversion");
 
     let alice_sk = SigningKey::from_bytes(&rng.gen());
     let alice_pk = alice_sk.verifying_key();
-    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+    let alice_id = alice_pk.to_bytes().rt().expect("infallible conversion");
 
     let bob_sk = SigningKey::from_bytes(&rng.gen());
     let bob_pk = bob_sk.verifying_key();
-    // let bob_id = ICContextIdentity::new(bob_pk.to_bytes());
+    // let bob_id = ICRepr<ContextIdentity>::new(bob_pk.to_bytes());
 
     // Initial application IDs
-    let initial_app_id = ICApplicationId::new(rng.gen());
-    let initial_blob_id = ICBlobId::new(rng.gen());
+    let initial_app_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
+    let initial_blob_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
 
     // Create context with initial application
-    let create_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: alice_id.clone(),
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
                 application: ICApplication {
-                    id: initial_app_id.clone(),
-                    blob: initial_blob_id.clone(),
+                    id: initial_app_id,
+                    blob: initial_blob_id,
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -577,7 +576,7 @@ fn test_application_update() {
         canister,
         Principal::anonymous(),
         "application",
-        candid::encode_one(context_id.clone()).unwrap(),
+        candid::encode_one(context_id).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
@@ -591,7 +590,7 @@ fn test_application_update() {
         canister,
         Principal::anonymous(),
         "application_revision",
-        candid::encode_one(context_id.clone()).unwrap(),
+        candid::encode_one(context_id).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
@@ -600,23 +599,23 @@ fn test_application_update() {
     }
 
     // Try unauthorized application update (Bob)
-    let new_app_id = ICApplicationId::new(rng.gen());
-    let new_blob_id = ICBlobId::new(rng.gen());
+    let new_app_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
+    let new_blob_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
 
-    let update_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::UpdateApplication {
+    let update_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::UpdateApplication {
                 application: ICApplication {
-                    id: new_app_id.clone(),
-                    blob: new_blob_id.clone(),
+                    id: new_app_id,
+                    blob: new_blob_id,
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(bob_pk.to_bytes()),
+        signer_id: (bob_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -645,7 +644,7 @@ fn test_application_update() {
         canister,
         Principal::anonymous(),
         "application",
-        candid::encode_one(context_id.clone()).unwrap(),
+        candid::encode_one(context_id).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
@@ -655,20 +654,20 @@ fn test_application_update() {
     }
 
     // Authorized application update (Alice)
-    let update_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::UpdateApplication {
+    let update_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::UpdateApplication {
                 application: ICApplication {
-                    id: new_app_id.clone(),
-                    blob: new_blob_id.clone(),
+                    id: new_app_id,
+                    blob: new_blob_id,
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -686,7 +685,7 @@ fn test_application_update() {
         canister,
         Principal::anonymous(),
         "application",
-        candid::encode_one(context_id.clone()).unwrap(),
+        candid::encode_one(context_id).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
@@ -700,7 +699,7 @@ fn test_application_update() {
         canister,
         Principal::anonymous(),
         "application_revision",
-        candid::encode_one(context_id.clone()).unwrap(),
+        candid::encode_one(context_id).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
@@ -717,27 +716,27 @@ fn test_edge_cases() {
     // Setup context and identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.to_bytes().rt().expect("infallible conversion");
     let alice_sk = SigningKey::from_bytes(&rng.gen());
     let alice_pk = alice_sk.verifying_key();
-    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+    let alice_id = alice_pk.to_bytes().rt().expect("infallible conversion");
 
     // Create initial context
-    let create_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: alice_id.clone(),
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
                 application: ICApplication {
-                    id: ICApplicationId::new(rng.gen()),
-                    blob: ICBlobId::new(rng.gen()),
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -751,12 +750,12 @@ fn test_edge_cases() {
     handle_response(response, true, "Context creation");
 
     // Test 1: Adding empty member list
-    let add_empty_members = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::AddMembers { members: vec![] },
+    let add_empty_members = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::AddMembers { members: vec![] },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -770,15 +769,15 @@ fn test_edge_cases() {
     handle_response(response, true, "Empty member list addition");
 
     // Test 2: Adding duplicate members
-    let bob_id = ICContextIdentity::new(rng.gen());
-    let add_duplicate_members = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::AddMembers {
-                members: vec![bob_id.clone(), bob_id.clone()],
+    let bob_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
+    let add_duplicate_members = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::AddMembers {
+                members: vec![bob_id, bob_id],
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -796,11 +795,11 @@ fn test_edge_cases() {
         canister,
         Principal::anonymous(),
         "members",
-        candid::encode_one((context_id.clone(), 0_usize, 10_usize)).unwrap(),
+        candid::encode_one((context_id, 0_usize, 10_usize)).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
-        let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
+        let members: Vec<ICRepr<ContextIdentity>> = candid::decode_one(&bytes).unwrap();
         assert_eq!(
             members.iter().filter(|&m| m == &bob_id).count(),
             1,
@@ -817,28 +816,28 @@ fn test_timestamp_scenarios() {
     // Setup initial context
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.to_bytes().rt().expect("infallible conversion");
     let alice_sk = SigningKey::from_bytes(&rng.gen());
     let alice_pk = alice_sk.verifying_key();
-    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+    let alice_id = alice_pk.to_bytes().rt().expect("infallible conversion");
 
     // Create initial context with current timestamp
     let current_time = get_time_nanos(&pic);
-    let create_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: alice_id.clone(),
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
                 application: ICApplication {
-                    id: ICApplicationId::new(rng.gen()),
-                    blob: ICBlobId::new(rng.gen()),
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: current_time,
     };
 
@@ -852,14 +851,14 @@ fn test_timestamp_scenarios() {
     handle_response(response, true, "Context creation");
 
     // Try with expired timestamp (more than 5 seconds old)
-    let expired_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::AddMembers {
-                members: vec![ICContextIdentity::new(rng.gen())],
+    let expired_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::AddMembers {
+                members: vec![rng.gen::<[_; 32]>().rt().expect("infallible conversion")],
             },
         }),
-        signer_id: ICSignerId::new(alice_pk.to_bytes()),
+        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: current_time - 6_000_000_000, // 6 seconds ago
     };
 
@@ -881,27 +880,27 @@ fn test_concurrent_operations() {
     // Setup initial context
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
-    let context_id = ICContextId::new(context_pk.to_bytes());
+    let context_id = context_pk.to_bytes().rt().expect("infallible conversion");
     let alice_sk = SigningKey::from_bytes(&rng.gen());
     let alice_pk = alice_sk.verifying_key();
-    let alice_id = ICContextIdentity::new(alice_pk.to_bytes());
+    let alice_id = alice_pk.to_bytes().rt().expect("infallible conversion");
 
     // Create initial context
-    let create_request = Request {
-        kind: RequestKind::Context(ContextRequest {
-            context_id: context_id.clone(),
-            kind: ContextRequestKind::Add {
-                author_id: alice_id.clone(),
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
                 application: ICApplication {
-                    id: ICApplicationId::new(rng.gen()),
-                    blob: ICBlobId::new(rng.gen()),
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
                     size: 0,
                     source: String::new(),
                     metadata: vec![],
                 },
             },
         }),
-        signer_id: ICSignerId::new(context_id.as_bytes()),
+        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
     };
 
@@ -918,15 +917,15 @@ fn test_concurrent_operations() {
     let timestamp = get_time_nanos(&pic);
     let mut requests = Vec::new();
     for _ in 0..3 {
-        let new_member = ICContextIdentity::new(rng.gen());
-        let request = Request {
-            kind: RequestKind::Context(ContextRequest {
-                context_id: context_id.clone(),
-                kind: ContextRequestKind::AddMembers {
+        let new_member = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
+        let request = ICRequest {
+            kind: ICRequestKind::Context(ICContextRequest {
+                context_id,
+                kind: ICContextRequestKind::AddMembers {
                     members: vec![new_member],
                 },
             }),
-            signer_id: ICSignerId::new(alice_pk.to_bytes()),
+            signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
             timestamp_ms: timestamp,
         };
         requests.push(create_signed_request(&alice_sk, request));
@@ -956,11 +955,11 @@ fn test_concurrent_operations() {
         canister,
         Principal::anonymous(),
         "members",
-        candid::encode_one((context_id.clone(), 0_usize, 10_usize)).unwrap(),
+        candid::encode_one((context_id, 0_usize, 10_usize)).unwrap(),
     );
 
     if let Ok(WasmResult::Reply(bytes)) = query_response {
-        let members: Vec<ICContextIdentity> = candid::decode_one(&bytes).unwrap();
+        let members: Vec<ICRepr<ContextIdentity>> = candid::decode_one(&bytes).unwrap();
         assert_eq!(
             members.len(),
             4,

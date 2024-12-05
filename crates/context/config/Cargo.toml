@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
+candid = { workspace = true, optional = true }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
@@ -43,3 +44,5 @@ client = [
   "dep:starknet-types-core",
   "url/serde",
 ]
+
+icp = ["candid"]

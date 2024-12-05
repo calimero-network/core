@@ -1,26 +1,27 @@
 use candid::{CandidType, Deserialize, Principal};
-use ic_cdk;
 
-use crate::CONTEXT_CONFIGS;
+use crate::{with_state_mut, ContextConfigs, CONTEXT_CONFIGS};
 
 #[derive(CandidType, Deserialize)]
 struct StableStorage {
-    configs: crate::ContextConfigs,
+    saved_state: ContextConfigs,
 }
 
 #[ic_cdk::pre_upgrade]
 fn pre_upgrade() {
-    // Verify caller is the owner
-    CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
-        if ic_cdk::api::caller() != configs.owner {
-            ic_cdk::trap("unauthorized: only owner can upgrade context contract");
-        }
-    });
+    let state = CONTEXT_CONFIGS.with(|configs| {
+        let configs = configs
+            .borrow_mut()
+            .take()
+            .expect("cannister is being upgraded");
 
-    // Store the contract state
-    let state = CONTEXT_CONFIGS.with(|configs| StableStorage {
-        configs: configs.borrow().clone(),
+        if ic_cdk::api::caller() != configs.owner {
+            ic_cdk::trap("unauthorized: only owner can upgrade context cannister");
+        }
+
+        StableStorage {
+            saved_state: configs,
+        }
     });
 
     // Write state to stable storage
@@ -32,11 +33,17 @@ fn pre_upgrade() {
 
 #[ic_cdk::post_upgrade]
 fn post_upgrade() {
-    // Restore the contract state
+    // Restore the cannister state
     match ic_cdk::storage::stable_restore::<(StableStorage,)>() {
-        Ok((state,)) => {
+        Ok((StableStorage { saved_state },)) => {
             CONTEXT_CONFIGS.with(|configs| {
-                *configs.borrow_mut() = state.configs;
+                let mut configs = configs.borrow_mut();
+
+                if configs.is_some() {
+                    ic_cdk::trap("cannister state already exists??");
+                }
+
+                *configs = Some(saved_state);
             });
         }
         Err(err) => ic_cdk::trap(&format!("Failed to restore stable storage: {}", err)),
@@ -45,16 +52,14 @@ fn post_upgrade() {
 
 #[ic_cdk::update]
 pub fn set_proxy_code(proxy_code: Vec<u8>, ledger_id: Principal) -> Result<(), String> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let mut configs = configs.borrow_mut();
-
-        // Check if caller is the owner
+    with_state_mut(|configs| {
         if ic_cdk::api::caller() != configs.owner {
             return Err("Unauthorized: only owner can set proxy code".to_string());
         }
 
         configs.ledger_id = ledger_id;
         configs.proxy_code = Some(proxy_code);
+
         Ok(())
     })
 }

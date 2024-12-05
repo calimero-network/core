@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 bs58.workspace = true
-calimero-context-config.workspace = true
+calimero-context-config = { workspace = true, features = ["icp"] }
 candid = "0.10"
 ed25519-dalek.workspace = true
 ic-cdk = "0.16"
