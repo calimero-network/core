@@ -242,9 +242,15 @@ impl Network {
                     Ok(return_data) => Ok(return_data),
                     Err(err_msg) => Ok(err_msg.into_bytes()),
                 },
-                Err(e) => Ok(e.to_string().into_bytes()),
+                Err(e) => Err(IcpError::Custom {
+                    operation: ErrorOperation::Mutate,
+                    reason: e.to_string(),
+                }),
             },
-            Err(err) => Ok(err.to_string().into_bytes()),
+            Err(err) => Err(IcpError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: err.to_string(),
+            }),
         }
     }
 }
