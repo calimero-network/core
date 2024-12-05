@@ -146,15 +146,11 @@ impl<'a> Method<Icp> for Mutate<'a> {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() {
-            // Empty response means success
-            Ok(())
-        } else {
-            // Non-empty response means there was an error message
-            let error_msg = String::from_utf8(response)
-                .map_err(|e| eyre::eyre!("Invalid UTF-8 in the error response: {}", e))?;
-            eyre::bail!("Error response received from the system: '{}'", error_msg);
+        if !response.is_empty() {
+            eyre::bail!("unexpected response {:?}", response);
         }
+
+        Ok(())
     }
 }
 
