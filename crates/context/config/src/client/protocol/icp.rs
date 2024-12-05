@@ -245,7 +245,6 @@ impl Network {
                         Err(err_msg) => Ok(err_msg.into_bytes()),
                     },
                     Err(e) => {
-                        println!("Failed to decode: {}", e);
                         Ok(e.to_string().into_bytes())
                     }
                 }
