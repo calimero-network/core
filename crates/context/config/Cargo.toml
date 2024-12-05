@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
-candid = { workspace = true, optional = true }
+candid.workspace = true
 ed25519-consensus = { workspace = true, optional = true }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
@@ -53,7 +53,6 @@ near = [
 ]
 
 icp = [
-  "dep:candid",
   "dep:ic-agent",
   "dep:ic-cdk",
   "dep:ic-cdk-macros",
