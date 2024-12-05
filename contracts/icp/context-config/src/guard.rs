@@ -2,17 +2,16 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
-use calimero_context_config::types::Revision;
+use calimero_context_config::icp::repr::ICRepr;
+use calimero_context_config::types::{Revision, SignerId};
 use candid::CandidType;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::types::ICSignerId;
-
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, Debug)]
 pub struct Guard<T> {
     inner: T,
     revision: Revision,
-    privileged: BTreeSet<ICSignerId>,
+    privileged: BTreeSet<ICRepr<SignerId>>,
 }
 
 #[derive(Debug)]
@@ -27,18 +26,15 @@ impl fmt::Display for UnauthorizedAccess {
 }
 
 impl<T> Guard<T> {
-    pub fn new(creator: ICSignerId, inner: T) -> Self {
+    pub fn new(creator: SignerId, inner: T) -> Self {
         Self {
             inner,
             revision: 0,
-            privileged: BTreeSet::from([creator]),
+            privileged: BTreeSet::from([ICRepr::new(creator)]),
         }
     }
 
-    pub fn get(
-        &mut self,
-        signer_id: &ICSignerId,
-    ) -> Result<GuardHandle<'_, T>, UnauthorizedAccess> {
+    pub fn get(&mut self, signer_id: &SignerId) -> Result<GuardHandle<'_, T>, UnauthorizedAccess> {
         if !self.privileged.contains(signer_id) {
             return Err(UnauthorizedAccess { _priv: () });
         }
@@ -49,7 +45,7 @@ impl<T> Guard<T> {
         self.inner
     }
 
-    pub fn privileged(&self) -> &BTreeSet<ICSignerId> {
+    pub fn privileged(&self) -> &BTreeSet<ICRepr<SignerId>> {
         &self.privileged
     }
 
@@ -120,15 +116,15 @@ impl<T> Drop for GuardMut<'_, T> {
 
 #[derive(Debug)]
 pub struct Privileges<'a> {
-    inner: &'a mut BTreeSet<ICSignerId>,
+    inner: &'a mut BTreeSet<ICRepr<SignerId>>,
 }
 
 impl Privileges<'_> {
-    pub fn grant(&mut self, signer_id: ICSignerId) {
-        self.inner.insert(signer_id);
+    pub fn grant(&mut self, signer_id: SignerId) {
+        self.inner.insert(ICRepr::new(signer_id));
     }
 
-    pub fn revoke(&mut self, signer_id: &ICSignerId) {
+    pub fn revoke(&mut self, signer_id: &SignerId) {
         self.inner.remove(signer_id);
     }
 }

@@ -1,1 +1,0 @@
-service : { balance : () -> (nat) query; transfer : (blob) -> () }

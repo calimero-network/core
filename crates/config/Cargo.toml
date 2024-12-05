@@ -17,9 +17,9 @@ multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
 
-calimero-context = { path = "../context" }
-calimero-server = { path = "../server", features = ["admin"] }
-calimero-network = { path = "../network" }
+calimero-context.workspace = true
+calimero-server = { workspace = true, features = ["admin"] }
+calimero-network.workspace = true
 
 [lints]
 workspace = true

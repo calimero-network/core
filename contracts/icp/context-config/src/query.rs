@@ -1,29 +1,29 @@
 use std::collections::BTreeMap;
 
+use calimero_context_config::icp::repr::ICRepr;
+use calimero_context_config::icp::types::{ICApplication, ICCapability};
 use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::types::{ContextId, ContextIdentity, SignerId};
 use candid::Principal;
 use ic_cdk_macros::query;
 
-use crate::types::*;
-use crate::CONTEXT_CONFIGS;
+use crate::with_state;
 
 #[query]
-fn application(context_id: ICContextId) -> ICApplication {
-    CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
+fn application(context_id: ICRepr<ContextId>) -> ICApplication {
+    with_state(|configs| {
         let context = configs
             .contexts
             .get(&context_id)
             .expect("context does not exist");
 
-        (*context.application).clone()
+        context.application.clone()
     })
 }
 
 #[query]
-fn application_revision(context_id: ICContextId) -> u64 {
-    CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
+fn application_revision(context_id: ICRepr<ContextId>) -> u64 {
+    with_state(|configs| {
         let context = configs
             .contexts
             .get(&context_id)
@@ -34,24 +34,24 @@ fn application_revision(context_id: ICContextId) -> u64 {
 }
 
 #[query]
-fn proxy_contract(context_id: ICContextId) -> String {
-    CONTEXT_CONFIGS
-        .with(|configs| {
-            let configs = configs.borrow();
-            let context = configs
-                .contexts
-                .get(&context_id)
-                .expect("context does not exist");
+fn proxy_contract(context_id: ICRepr<ContextId>) -> Principal {
+    with_state(|configs| {
+        let context = configs
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
 
-            (*context.proxy).clone()
-        })
-        .to_string()
+        context.proxy.clone()
+    })
 }
 
 #[query]
-fn members(context_id: ICContextId, offset: usize, length: usize) -> Vec<ICContextIdentity> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
+fn members(
+    context_id: ICRepr<ContextId>,
+    offset: usize,
+    length: usize,
+) -> Vec<ICRepr<ContextIdentity>> {
+    with_state(|configs| {
         let context = configs
             .contexts
             .get(&context_id)
@@ -63,9 +63,8 @@ fn members(context_id: ICContextId, offset: usize, length: usize) -> Vec<ICConte
 }
 
 #[query]
-fn has_member(context_id: ICContextId, identity: ICContextIdentity) -> bool {
-    CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
+fn has_member(context_id: ICRepr<ContextId>, identity: ICRepr<ContextIdentity>) -> bool {
+    with_state(|configs| {
         let context = configs
             .contexts
             .get(&context_id)
@@ -76,9 +75,8 @@ fn has_member(context_id: ICContextId, identity: ICContextIdentity) -> bool {
 }
 
 #[query]
-fn members_revision(context_id: ICContextId) -> u64 {
-    CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
+fn members_revision(context_id: ICRepr<ContextId>) -> u64 {
+    with_state(|configs| {
         let context = configs
             .contexts
             .get(&context_id)
@@ -90,17 +88,16 @@ fn members_revision(context_id: ICContextId) -> u64 {
 
 #[query]
 fn privileges(
-    context_id: ICContextId,
-    identities: Vec<ICContextIdentity>,
-) -> BTreeMap<ICSignerId, Vec<ICCapability>> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
+    context_id: ICRepr<ContextId>,
+    identities: Vec<ICRepr<ContextIdentity>>,
+) -> BTreeMap<ICRepr<SignerId>, Vec<ICCapability>> {
+    with_state(|configs| {
         let context = configs
             .contexts
             .get(&context_id)
             .expect("context does not exist");
 
-        let mut privileges: BTreeMap<ICSignerId, Vec<ICCapability>> = BTreeMap::new();
+        let mut privileges: BTreeMap<ICRepr<SignerId>, Vec<ICCapability>> = BTreeMap::new();
 
         let application_privileges = context.application.privileged();
         let member_privileges = context.members.privileged();
@@ -121,14 +118,15 @@ fn privileges(
             }
         } else {
             for identity in identities {
-                let entry = privileges
-                    .entry(identity.rt().expect("infallible conversion"))
-                    .or_default();
+                let signer_id = identity.rt().expect("infallible conversion");
 
-                if application_privileges.contains(&identity.rt().expect("infallible conversion")) {
+                let entry = privileges.entry(signer_id).or_default();
+
+                if application_privileges.contains(&signer_id) {
                     entry.push(ICCapability::ManageApplication);
                 }
-                if member_privileges.contains(&identity.rt().expect("infallible conversion")) {
+
+                if member_privileges.contains(&signer_id) {
                     entry.push(ICCapability::ManageMembers);
                 }
             }

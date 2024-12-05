@@ -18,7 +18,7 @@ strum = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 thunderdome.workspace = true
 
-calimero-primitives = { path = "../primitives" }
+calimero-primitives.workspace = true
 
 [dev-dependencies]
 tempdir.workspace = true

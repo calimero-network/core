@@ -1,22 +1,24 @@
 use std::ops::Deref;
 
+use calimero_context_config::icp::repr::ICRepr;
+use calimero_context_config::icp::types::{
+    ICApplication, ICCapability, ICContextRequest, ICContextRequestKind, ICRequest, ICRequestKind,
+    ICSigned,
+};
 use calimero_context_config::repr::{ReprBytes, ReprTransmute};
+use calimero_context_config::types::{ContextId, ContextIdentity, SignerId};
 use candid::Principal;
 use ic_cdk::api::management_canister::main::{
     create_canister, install_code, CanisterSettings, CreateCanisterArgument, InstallCodeArgument,
 };
 
 use crate::guard::Guard;
-use crate::types::{
-    ContextRequest, ContextRequestKind, ICApplication, ICCapability, ICContextId,
-    ICContextIdentity, ICPSigned, ICSignerId, Request, RequestKind,
-};
-use crate::{Context, CONTEXT_CONFIGS};
+use crate::{with_state, with_state_mut, Context};
 
 #[ic_cdk::update]
-pub async fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
+pub async fn mutate(signed_request: ICSigned<ICRequest>) -> Result<(), String> {
     let request = signed_request
-        .parse(|r| r.signer_id)
+        .parse(|r| *r.signer_id)
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
 
     // Add debug logging
@@ -30,27 +32,27 @@ pub async fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
     }
 
     match request.kind {
-        RequestKind::Context(ContextRequest { context_id, kind }) => match kind {
-            ContextRequestKind::Add {
+        ICRequestKind::Context(ICContextRequest { context_id, kind }) => match kind {
+            ICContextRequestKind::Add {
                 author_id,
                 application,
-            } => add_context(&request.signer_id, context_id, author_id, application).await,
-            ContextRequestKind::UpdateApplication { application } => {
+            } => add_context(&request.signer_id, context_id, *author_id, application).await,
+            ICContextRequestKind::UpdateApplication { application } => {
                 update_application(&request.signer_id, &context_id, application)
             }
-            ContextRequestKind::AddMembers { members } => {
+            ICContextRequestKind::AddMembers { members } => {
                 add_members(&request.signer_id, &context_id, members)
             }
-            ContextRequestKind::RemoveMembers { members } => {
+            ICContextRequestKind::RemoveMembers { members } => {
                 remove_members(&request.signer_id, &context_id, members)
             }
-            ContextRequestKind::Grant { capabilities } => {
+            ICContextRequestKind::Grant { capabilities } => {
                 grant(&request.signer_id, &context_id, capabilities)
             }
-            ContextRequestKind::Revoke { capabilities } => {
+            ICContextRequestKind::Revoke { capabilities } => {
                 revoke(&request.signer_id, &context_id, capabilities)
             }
-            ContextRequestKind::UpdateProxyContract => {
+            ICContextRequestKind::UpdateProxyContract => {
                 update_proxy_contract(&request.signer_id, context_id).await
             }
         },
@@ -58,28 +60,26 @@ pub async fn mutate(signed_request: ICPSigned<Request>) -> Result<(), String> {
 }
 
 async fn add_context(
-    signer_id: &ICSignerId,
-    context_id: ICContextId,
-    author_id: ICContextIdentity,
+    signer_id: &SignerId,
+    context_id: ICRepr<ContextId>,
+    author_id: ContextIdentity,
     application: ICApplication,
 ) -> Result<(), String> {
     if signer_id.as_bytes() != context_id.as_bytes() {
         return Err("context addition must be signed by the context itself".into());
     }
 
-    let proxy_canister_id = deploy_proxy_contract(&context_id)
+    let proxy_canister_id = deploy_proxy_contract(context_id)
         .await
         .unwrap_or_else(|e| panic!("Failed to deploy proxy contract: {}", e));
 
-    CONTEXT_CONFIGS.with(|configs| {
-        let mut configs = configs.borrow_mut();
-
+    with_state_mut(|configs| {
         // Create context with guards
         let context = Context {
             application: Guard::new(author_id.rt().expect("infallible conversion"), application),
             members: Guard::new(
                 author_id.rt().expect("infallible conversion"),
-                vec![author_id.rt().expect("infallible conversion")],
+                [author_id.rt().expect("infallible conversion")].into(),
             ),
             proxy: Guard::new(
                 author_id.rt().expect("infallible conversion"),
@@ -96,14 +96,13 @@ async fn add_context(
     })
 }
 
-async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, String> {
+async fn deploy_proxy_contract(context_id: ICRepr<ContextId>) -> Result<Principal, String> {
     // Get the proxy code
-    let proxy_code = CONTEXT_CONFIGS
-        .with(|configs| configs.borrow().proxy_code.clone())
-        .ok_or("proxy code not set")?;
+    let proxy_code =
+        with_state(|configs| configs.proxy_code.clone()).ok_or("proxy code not set")?;
 
     // Get the ledger ID
-    let ledger_id = CONTEXT_CONFIGS.with(|configs| configs.borrow().ledger_id.clone());
+    let ledger_id = with_state(|configs| configs.ledger_id.clone());
     // Create canister with cycles
     let create_args = CreateCanisterArgument {
         settings: Some(CanisterSettings {
@@ -123,8 +122,8 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, St
 
     let canister_id = canister_record.canister_id;
 
-    // Encode init args matching the proxy's init(context_id: ICContextId, ledger_id: Principal)
-    let init_args = candid::encode_args((context_id.clone(), ledger_id))
+    // Encode init args matching the proxy's init(context_id: ICRepr<ContextId>, ledger_id: Principal)
+    let init_args = candid::encode_args((context_id, ledger_id))
         .map_err(|e| format!("Failed to encode init args: {}", e))?;
 
     let install_args = InstallCodeArgument {
@@ -142,13 +141,11 @@ async fn deploy_proxy_contract(context_id: &ICContextId) -> Result<Principal, St
 }
 
 fn update_application(
-    signer_id: &ICSignerId,
-    context_id: &ICContextId,
+    signer_id: &SignerId,
+    context_id: &ContextId,
     application: ICApplication,
 ) -> Result<(), String> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let mut configs = configs.borrow_mut();
-
+    with_state_mut(|configs| {
         // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
@@ -170,13 +167,11 @@ fn update_application(
 }
 
 fn add_members(
-    signer_id: &ICSignerId,
-    context_id: &ICContextId,
-    members: Vec<ICContextIdentity>,
+    signer_id: &SignerId,
+    context_id: &ContextId,
+    members: Vec<ICRepr<ContextIdentity>>,
 ) -> Result<(), String> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let mut configs = configs.borrow_mut();
-
+    with_state_mut(|configs| {
         // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
@@ -189,7 +184,7 @@ fn add_members(
 
         // Add each member
         for member in members {
-            ctx_members.push(member);
+            ctx_members.insert(member);
         }
 
         Ok(())
@@ -197,13 +192,11 @@ fn add_members(
 }
 
 fn remove_members(
-    signer_id: &ICSignerId,
-    context_id: &ICContextId,
-    members: Vec<ICContextIdentity>,
+    signer_id: &SignerId,
+    context_id: &ContextId,
+    members: Vec<ICRepr<ContextIdentity>>,
 ) -> Result<(), String> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let mut configs = configs.borrow_mut();
-
+    with_state_mut(|configs| {
         // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
@@ -218,10 +211,7 @@ fn remove_members(
             .get_mut();
 
         for member in members {
-            // Remove member from the list
-            if let Some(pos) = ctx_members.iter().position(|x| x == &member) {
-                ctx_members.remove(pos);
-            }
+            ctx_members.remove(&member);
 
             // Revoke privileges
             ctx_members
@@ -238,13 +228,11 @@ fn remove_members(
 }
 
 fn grant(
-    signer_id: &ICSignerId,
-    context_id: &ICContextId,
-    capabilities: Vec<(ICContextIdentity, ICCapability)>,
+    signer_id: &SignerId,
+    context_id: &ContextId,
+    capabilities: Vec<(ICRepr<ContextIdentity>, ICCapability)>,
 ) -> Result<(), String> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let mut configs = configs.borrow_mut();
-
+    with_state_mut(|configs| {
         let context = configs
             .contexts
             .get_mut(context_id)
@@ -290,13 +278,11 @@ fn grant(
 }
 
 fn revoke(
-    signer_id: &ICSignerId,
-    context_id: &ICContextId,
-    capabilities: Vec<(ICContextIdentity, ICCapability)>,
+    signer_id: &SignerId,
+    context_id: &ContextId,
+    capabilities: Vec<(ICRepr<ContextIdentity>, ICCapability)>,
 ) -> Result<(), String> {
-    CONTEXT_CONFIGS.with(|configs| {
-        let mut configs = configs.borrow_mut();
-
+    with_state_mut(|configs| {
         let context = configs
             .contexts
             .get_mut(context_id)
@@ -336,30 +322,25 @@ fn revoke(
 }
 
 async fn update_proxy_contract(
-    signer_id: &ICSignerId,
-    context_id: ICContextId,
+    signer_id: &SignerId,
+    context_id: ICRepr<ContextId>,
 ) -> Result<(), String> {
-    let mut context = CONTEXT_CONFIGS.with(|configs| {
-        let configs = configs.borrow();
-        configs
+    let (proxy_canister_id, proxy_code) = with_state_mut(|configs| {
+        let context = configs
             .contexts
-            .get(&context_id)
-            .ok_or_else(|| "context does not exist".to_string())
-            .cloned()
+            .get_mut(&context_id)
+            .ok_or_else(|| "context does not exist".to_string())?;
+
+        let proxy_cannister = *context
+            .proxy
+            .get(signer_id)
+            .map_err(|_| "unauthorized: Proxy capability required".to_string())?
+            .get_mut();
+
+        let proxy_code = configs.proxy_code.clone().ok_or("proxy code not set")?;
+
+        Ok::<_, String>((proxy_cannister, proxy_code))
     })?;
-
-    // Get proxy canister ID
-    let proxy_canister_id = context
-        .proxy
-        .get(signer_id)
-        .map_err(|_| "unauthorized: Proxy capability required".to_string())?
-        .get_mut()
-        .clone();
-
-    // Get the proxy code
-    let proxy_code = CONTEXT_CONFIGS
-        .with(|configs| configs.borrow().proxy_code.clone())
-        .ok_or("proxy code not set")?;
 
     // Update the proxy contract code
     let install_args = InstallCodeArgument {
