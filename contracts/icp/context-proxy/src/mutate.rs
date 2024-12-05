@@ -1,30 +1,24 @@
 use std::collections::BTreeSet;
 
-use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::icp::repr::ICRepr;
+use calimero_context_config::icp::types::ICSigned;
+use calimero_context_config::icp::{
+    ICProposal, ICProposalAction, ICProposalApprovalWithSigner, ICProposalWithApprovals,
+    ICProxyMutateRequest,
+};
+use calimero_context_config::types::{ProposalId, SignerId};
 use candid::Principal;
 use ic_cdk::api::call::CallResult;
 use ic_ledger_types::{AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError};
 
-use crate::types::*;
-use crate::{ICProxyContract, PROXY_CONTRACT};
+use crate::{with_state, with_state_mut, ICProxyContract};
 
-async fn check_member(signer_id: &ICSignerId) -> Result<bool, String> {
-    let (context_canister_id, context_id) = PROXY_CONTRACT.with(|contract| {
-        (
-            contract.borrow().context_config_id.clone(),
-            contract.borrow().context_id.clone(),
-        )
-    });
+async fn check_member(signer_id: ICRepr<SignerId>) -> Result<bool, String> {
+    let (context_canister_id, context_id) =
+        with_state(|contract| (contract.context_config_id, contract.context_id));
 
-    let identity = ICContextIdentity::new(signer_id.rt().expect("Invalid signer id"));
-
-    let call_result: CallResult<(bool,)> = ic_cdk::call(
-        Principal::from_text(&context_canister_id)
-            .map_err(|e| format!("Invalid context canister ID: {}", e))?,
-        "has_member",
-        (context_id, identity),
-    )
-    .await;
+    let call_result: CallResult<(bool,)> =
+        ic_cdk::call(context_canister_id, "has_member", (context_id, signer_id)).await;
 
     match call_result {
         Ok((is_member,)) => Ok(is_member),
@@ -34,53 +28,39 @@ async fn check_member(signer_id: &ICSignerId) -> Result<bool, String> {
 
 #[ic_cdk::update]
 async fn mutate(
-    signed_request: ICPSigned<ICRequest>,
+    signed_request: ICSigned<ICProxyMutateRequest>,
 ) -> Result<Option<ICProposalWithApprovals>, String> {
     let request = signed_request
-        .parse(|r| r.signer_id)
+        .parse(|i| match i {
+            ICProxyMutateRequest::Propose { proposal } => *proposal.author_id,
+            ICProxyMutateRequest::Approve { approval } => *approval.signer_id,
+        })
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
 
-    // Check request timestamp
-    let current_time = ic_cdk::api::time();
-    if current_time.saturating_sub(request.timestamp_ms) > 1000 * 5 {
-        return Err("request expired".to_string());
-    }
-
-    // Check membership
-    if !check_member(&request.signer_id).await? {
-        return Err("signer is not a member".to_string());
-    }
-
-    match request.kind {
-        ICRequestKind::Propose { proposal } => internal_create_proposal(proposal),
-        ICRequestKind::Approve { approval } => {
-            internal_approve_proposal(
-                approval.signer_id,
-                approval.proposal_id,
-                approval.added_timestamp,
-            )
-            .await
-        }
+    match request {
+        ICProxyMutateRequest::Propose { proposal } => internal_create_proposal(proposal).await,
+        ICProxyMutateRequest::Approve { approval } => internal_approve_proposal(approval).await,
     }
 }
 
 async fn internal_approve_proposal(
-    signer_id: ICSignerId,
-    proposal_id: ICProposalId,
-    _added_timestamp: u64,
+    approval: ICProposalApprovalWithSigner,
 ) -> Result<Option<ICProposalWithApprovals>, String> {
-    // First phase: Update approvals and check if we need to execute
-    let should_execute = PROXY_CONTRACT.with(|contract| {
-        let mut contract = contract.borrow_mut();
+    // Check membership
+    if !check_member(approval.signer_id).await? {
+        return Err("signer is not a member".to_string());
+    }
 
+    // First phase: Update approvals and check if we need to execute
+    let should_execute = with_state_mut(|contract| {
         // Check if proposal exists
-        if !contract.proposals.contains_key(&proposal_id) {
+        if !contract.proposals.contains_key(&approval.proposal_id) {
             return Err("proposal does not exist".to_string());
         }
 
-        let approvals = contract.approvals.entry(proposal_id).or_default();
+        let approvals = contract.approvals.entry(approval.proposal_id).or_default();
 
-        if !approvals.insert(signer_id) {
+        if !approvals.insert(approval.signer_id) {
             return Err("proposal already approved".to_string());
         }
 
@@ -89,25 +69,16 @@ async fn internal_approve_proposal(
 
     // Execute if needed
     if should_execute {
-        execute_proposal(&proposal_id).await?;
+        execute_proposal(&approval.proposal_id).await?;
     }
 
     // Build final response
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
-        build_proposal_response(&*contract, proposal_id)
-    })
+    with_state(|contract| build_proposal_response(&*contract, approval.proposal_id))
 }
 
-async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
-    let proposal = PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
-        contract
-            .proposals
-            .get(proposal_id)
-            .cloned()
-            .ok_or_else(|| "proposal does not exist".to_string())
-    })?;
+async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
+    let proposal =
+        remove_proposal(proposal_id).ok_or_else(|| "proposal does not exist".to_string())?;
 
     // Execute each action
     for action in proposal.actions {
@@ -129,7 +100,7 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
                 receiver_id,
                 amount,
             } => {
-                let ledger_id = PROXY_CONTRACT.with(|contract| contract.borrow().ledger_id.clone());
+                let ledger_id = with_state(|contract| contract.ledger_id.clone());
 
                 let transfer_args = TransferArgs {
                     memo: Memo(0),
@@ -150,42 +121,41 @@ async fn execute_proposal(proposal_id: &ICProposalId) -> Result<(), String> {
                         .map_err(|e| format!("Transfer failed: {:?}", e))?;
             }
             ICProposalAction::SetNumApprovals { num_approvals } => {
-                PROXY_CONTRACT.with(|contract| {
-                    let mut contract = contract.borrow_mut();
+                with_state_mut(|contract| {
                     contract.num_approvals = num_approvals;
                 });
             }
             ICProposalAction::SetActiveProposalsLimit {
                 active_proposals_limit,
             } => {
-                PROXY_CONTRACT.with(|contract| {
-                    let mut contract = contract.borrow_mut();
+                with_state_mut(|contract| {
                     contract.active_proposals_limit = active_proposals_limit;
                 });
             }
             ICProposalAction::SetContextValue { key, value } => {
-                PROXY_CONTRACT.with(|contract| {
-                    let mut contract = contract.borrow_mut();
-                    contract.context_storage.insert(key.clone(), value.clone());
+                with_state_mut(|contract| {
+                    contract.context_storage.insert(key, value);
                 });
             }
         }
     }
 
-    remove_proposal(proposal_id);
     Ok(())
 }
 
-fn internal_create_proposal(
+async fn internal_create_proposal(
     proposal: ICProposal,
 ) -> Result<Option<ICProposalWithApprovals>, String> {
+    // Check membership
+    if !check_member(proposal.author_id).await? {
+        return Err("signer is not a member".to_string());
+    }
+
     if proposal.actions.is_empty() {
         return Err("proposal cannot have empty actions".to_string());
     }
 
-    PROXY_CONTRACT.with(|contract| {
-        let mut contract = contract.borrow_mut();
-
+    with_state_mut(|contract| {
         let num_proposals = contract
             .num_proposals_pk
             .get(&proposal.author_id)
@@ -257,11 +227,10 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_proposal(proposal_id: &ICProposalId) {
-    PROXY_CONTRACT.with(|contract| {
-        let mut contract = contract.borrow_mut();
-        contract.approvals.remove(&proposal_id);
-        if let Some(proposal) = contract.proposals.remove(&proposal_id) {
+fn remove_proposal(proposal_id: &ProposalId) -> Option<ICProposal> {
+    with_state_mut(|contract| {
+        contract.approvals.remove(proposal_id);
+        if let Some(proposal) = contract.proposals.remove(proposal_id) {
             let author_id = proposal.author_id;
             if let Some(count) = contract.num_proposals_pk.get_mut(&author_id) {
                 *count = count.saturating_sub(1);
@@ -269,13 +238,17 @@ fn remove_proposal(proposal_id: &ICProposalId) {
                     contract.num_proposals_pk.remove(&author_id);
                 }
             }
+
+            return Some(proposal);
         }
-    });
+
+        None
+    })
 }
 
 fn build_proposal_response(
     contract: &ICProxyContract,
-    proposal_id: ICProposalId,
+    proposal_id: ICRepr<ProposalId>,
 ) -> Result<Option<ICProposalWithApprovals>, String> {
     let approvals = contract.approvals.get(&proposal_id);
 

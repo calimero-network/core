@@ -1,34 +1,29 @@
-use crate::types::*;
-use crate::PROXY_CONTRACT;
+use calimero_context_config::icp::repr::ICRepr;
+use calimero_context_config::icp::{
+    ICProposal, ICProposalApprovalWithSigner, ICProposalWithApprovals,
+};
+use calimero_context_config::types::{ProposalId, SignerId};
+
+use crate::with_state;
 
 #[ic_cdk::query]
 pub fn get_num_approvals() -> u32 {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
-        contract.num_approvals
-    })
+    with_state(|contract| contract.num_approvals)
 }
 
 #[ic_cdk::query]
 pub fn get_active_proposals_limit() -> u32 {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
-        contract.active_proposals_limit
-    })
+    with_state(|contract| contract.active_proposals_limit)
 }
 
 #[ic_cdk::query]
-pub fn proposal(proposal_id: ICProposalId) -> Option<ICProposal> {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
-        contract.proposals.get(&proposal_id).cloned()
-    })
+pub fn proposal(proposal_id: ICRepr<ProposalId>) -> Option<ICProposal> {
+    with_state(|contract| contract.proposals.get(&proposal_id).cloned())
 }
 
 #[ic_cdk::query]
 pub fn proposals(from_index: usize, limit: usize) -> Vec<ICProposal> {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
+    with_state(|contract| {
         contract
             .proposals
             .values()
@@ -40,14 +35,14 @@ pub fn proposals(from_index: usize, limit: usize) -> Vec<ICProposal> {
 }
 
 #[ic_cdk::query]
-pub fn get_confirmations_count(proposal_id: ICProposalId) -> Option<ICProposalWithApprovals> {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
+pub fn get_confirmations_count(proposal_id: ICRepr<ProposalId>) -> Option<ICProposalWithApprovals> {
+    with_state(|contract| {
         contract.proposals.get(&proposal_id).map(|_| {
             let num_approvals = contract
                 .approvals
                 .get(&proposal_id)
                 .map_or(0, |approvals| approvals.len());
+
             ICProposalWithApprovals {
                 proposal_id,
                 num_approvals,
@@ -57,9 +52,8 @@ pub fn get_confirmations_count(proposal_id: ICProposalId) -> Option<ICProposalWi
 }
 
 #[ic_cdk::query]
-pub fn get_proposal_approvers(proposal_id: ICProposalId) -> Option<Vec<ICSignerId>> {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
+pub fn get_proposal_approvers(proposal_id: ICRepr<ProposalId>) -> Option<Vec<ICRepr<SignerId>>> {
+    with_state(|contract| {
         contract
             .approvals
             .get(&proposal_id)
@@ -69,10 +63,9 @@ pub fn get_proposal_approvers(proposal_id: ICProposalId) -> Option<Vec<ICSignerI
 
 #[ic_cdk::query]
 pub fn get_proposal_approvals_with_signer(
-    proposal_id: ICProposalId,
+    proposal_id: ICRepr<ProposalId>,
 ) -> Vec<ICProposalApprovalWithSigner> {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
+    with_state(|contract| {
         if let Some(approvals) = contract.approvals.get(&proposal_id) {
             approvals
                 .iter()
@@ -90,16 +83,12 @@ pub fn get_proposal_approvals_with_signer(
 
 #[ic_cdk::query]
 pub fn get_context_value(key: Vec<u8>) -> Option<Vec<u8>> {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
-        contract.context_storage.get(&key).cloned()
-    })
+    with_state(|contract| contract.context_storage.get(&key).cloned())
 }
 
 #[ic_cdk::query]
 pub fn context_storage_entries(from_index: usize, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-    PROXY_CONTRACT.with(|contract| {
-        let contract = contract.borrow();
+    with_state(|contract| {
         contract
             .context_storage
             .iter()

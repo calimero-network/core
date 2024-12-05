@@ -159,7 +159,7 @@ impl ProxyContractHelper {
         Ok(res)
     }
 
-    pub async fn view_proposal_approvers(
+    pub async fn _view_proposal_approvers(
         &self,
         caller: &Account,
         proposal_id: &Repr<ProposalId>,

@@ -48,7 +48,7 @@ fn transfer(args: TransferArgs) -> TransferResult {
 }
 
 #[ic_cdk::query]
-fn account_balance(args: AccountBalanceArgs) -> Tokens {
+fn account_balance(_args: AccountBalanceArgs) -> Tokens {
     BALANCE.with(|balance| Tokens::from_e8s(*balance.borrow()))
 }
 

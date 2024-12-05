@@ -6,7 +6,7 @@ type ICApplication = record {
   size : nat64;
 };
 type ICCapability = variant { Proxy; ManageMembers; ManageApplication };
-type ICPSigned = record { signature : blob; _phantom : null; payload : blob };
+type ICSigned = record { signature : blob; _phantom : null; payload : blob };
 type Result = variant { Ok; Err : text };
 service : () -> {
   application : (blob) -> (ICApplication) query;
@@ -14,7 +14,7 @@ service : () -> {
   has_member : (blob, blob) -> (bool) query;
   members : (blob, nat64, nat64) -> (vec blob) query;
   members_revision : (blob) -> (nat64) query;
-  mutate : (ICPSigned) -> (Result);
+  mutate : (ICSigned) -> (Result);
   privileges : (blob, vec blob) -> (
       vec record { blob; vec ICCapability },
     ) query;
