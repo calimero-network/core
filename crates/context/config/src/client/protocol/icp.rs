@@ -225,7 +225,7 @@ impl Network {
             .fetch_root_key()
             .await
             .map_err(|_| IcpError::Custom {
-                operation: ErrorOperation::Query,
+                operation: ErrorOperation::Mutate,
                 reason: "Failed to fetch root key".to_string(),
             })?;
 
