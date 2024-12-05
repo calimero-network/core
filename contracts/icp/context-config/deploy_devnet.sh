@@ -1,10 +1,7 @@
 #!/bin/bash
 
 # Build the contract
-bash ./build.sh
-
-# Generate the candid interface
-candid-extractor res/context_contract.wasm > context_contract.did
+./build.sh
 
 # Stop the replica
 dfx stop

@@ -14,8 +14,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 url = { workspace = true, features = ["serde"] }
 
-calimero-node-primitives = { path = "../node-primitives" }
-calimero-primitives = { path = "../primitives" }
+calimero-node-primitives.workspace = true
+calimero-primitives.workspace = true
 
 [lints]
 workspace = true

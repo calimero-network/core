@@ -20,8 +20,8 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 
-calimero-primitives = { path = "../../primitives" }
-calimero-store = { path = "..", features = ["datatypes"] }
+calimero-primitives.workspace = true
+calimero-store = { workspace = true, features = ["datatypes"] }
 
 [dev-dependencies]
 tokio-util.workspace = true

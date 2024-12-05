@@ -34,14 +34,15 @@ members = [
     "./apps/gen-ext",
     "./apps/visited",
 
-    "./contracts/context-config",
-    "./contracts/registry",
-    "./contracts/proxy-lib",
-    "./contracts/test-counter",
+    "./contracts/near/registry",
+    "./contracts/near/context-config",
+    "./contracts/near/context-proxy",
+    "./contracts/near/test-counter",
+
     "./contracts/icp/context-config",
-    "./contracts/icp/proxy-contract",
-    "./contracts/icp/proxy-contract/mock/ledger",
-    "./contracts/icp/proxy-contract/mock/external",
+    "./contracts/icp/context-proxy",
+    "./contracts/icp/context-proxy/mock/ledger",
+    "./contracts/icp/context-proxy/mock/external",
 
     "./e2e-tests",
 ]
@@ -67,7 +68,7 @@ dirs = "5.0.1"
 ed25519-dalek = "2.1.1"
 either = "1.13.0"
 eyre = "0.6.12"
-fixedstr = { version = "0.5.7", features = ["flex-str", "serde", "std"] }
+fixedstr = "0.5.7"
 fragile = "2.0.0"
 futures-util = "0.3.30"
 generic-array = "1.0.0"
@@ -131,7 +132,6 @@ tracing-subscriber = "0.3.17"
 trybuild = "1.0"
 ureq = "2.9.7"
 url = "2.5.2"
-uuid = { version = "1.10.0", features = ["serde"] }
 velcro = "0.5.4"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
@@ -139,8 +139,45 @@ web3 = "0.19.0"
 local-ip-address = "0.6.1"
 rcgen = "0.13.1"
 x509-parser = "0.16.0"
-axum-server = { version = "0.6", features = ["tls-rustls"] }
+axum-server = "0.6"
 axum-server-dual-protocol = "0.6.0"
+
+calimero-config = { path = "./crates/config" }
+calimero-context = { path = "./crates/context" }
+calimero-context-config = { path = "./crates/context/config" }
+calimero-crypto = { path = "./crates/crypto" }
+meroctl = { path = "./crates/meroctl" }
+merod = { path = "./crates/merod" }
+calimero-network = { path = "./crates/network" }
+calimero-node = { path = "./crates/node" }
+calimero-node-primitives = { path = "./crates/node-primitives" }
+calimero-primitives = { path = "./crates/primitives" }
+calimero-runtime = { path = "./crates/runtime" }
+calimero-sdk = { path = "./crates/sdk" }
+calimero-sdk-near = { path = "./crates/sdk/libs/near" }
+calimero-sdk-macros = { path = "./crates/sdk/macros" }
+calimero-server = { path = "./crates/server" }
+calimero-server-primitives = { path = "./crates/server-primitives" }
+calimero-storage = { path = "./crates/storage" }
+calimero-storage-macros = { path = "./crates/storage-macros" }
+calimero-store = { path = "./crates/store" }
+calimero-blobstore = { path = "./crates/store/blobs" }
+e2e-tests = { path = "./e2e-tests" }
+
+kv-store = { path = "./apps/kv-store" }
+only-peers = { path = "./apps/only-peers" }
+gen-ext = { path = "./apps/gen-ext" }
+visited = { path = "./apps/visited" }
+
+calimero-registry = { path = "./contracts/near/registry" }
+calimero-context-config-near = { path = "./contracts/near/context-config" }
+calimero-context-proxy-near = { path = "./contracts/near/context-proxy" }
+calimero-test-counter-near = { path = "./contracts/near/test-counter" }
+
+calimero-context-contract-icp = { path = "./contracts/icp/context-config" }
+calimero-proxy-contract-icp = { path = "./contracts/icp/context-proxy" }
+calimero-mock-ledger-icp = { path = "./contracts/icp/context-proxy/mock/ledger" }
+calimero-mock-external-icp = { path = "./contracts/icp/context-proxy/mock/external" }
 
 [profile.release]
 strip = "symbols"

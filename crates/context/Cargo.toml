@@ -17,12 +17,12 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
 
-calimero-context-config = { path = "./config", features = ["client"] }
-calimero-blobstore = { path = "../store/blobs" }
-calimero-primitives = { path = "../primitives", features = ["borsh", "rand"] }
-calimero-network = { path = "../network" }
-calimero-node-primitives = { path = "../node-primitives" }
-calimero-store = { path = "../store", features = ["datatypes"] }
+calimero-context-config = { workspace = true, features = ["client"] }
+calimero-blobstore.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
+calimero-network.workspace = true
+calimero-node-primitives.workspace = true
+calimero-store = { workspace = true, features = ["datatypes"] }
 
 [lints]
 workspace = true

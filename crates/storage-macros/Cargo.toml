@@ -18,8 +18,8 @@ syn.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true
-calimero-sdk = { path = "../sdk" }
-calimero-storage = { path = "../storage" }
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
 
 [lints]
 workspace = true

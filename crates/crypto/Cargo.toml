@@ -11,7 +11,7 @@ curve25519-dalek.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 ring.workspace = true
 
-calimero-primitives = { path = "../primitives", features = ["rand"] }
+calimero-primitives = { workspace = true, features = ["rand"] }
 
 [dev-dependencies]
 eyre.workspace = true

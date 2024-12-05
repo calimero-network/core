@@ -9,6 +9,6 @@
   },
   "near": {
     "contextConfigContract": "./contracts/context-config/res/calimero_context_config_near.wasm",
-    "proxyLibContract": "./contracts/proxy-lib/res/proxy_lib.wasm"
+    "proxyLibContract": "./contracts/context-proxy/res/calimero_context_proxy_near.wasm"
   }
 }
