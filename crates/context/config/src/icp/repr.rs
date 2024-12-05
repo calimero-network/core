@@ -9,6 +9,7 @@ use crate::repr::{self, ReprBytes};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
+#[repr(transparent)]
 pub struct ICRepr<T> {
     #[serde(bound = "for<'a> T: ReprBytes<DecodeBytes: Deserialize<'a>>")]
     #[serde(deserialize_with = "repr_deserialize")]

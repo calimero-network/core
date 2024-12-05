@@ -917,8 +917,6 @@ dependencies = [
  "eyre",
  "hex",
  "ic-agent",
- "ic-cdk 0.16.0",
- "ic-cdk-macros 0.16.0",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",

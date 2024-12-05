@@ -61,11 +61,11 @@ impl Method<Icp> for ActiveProposalRequest {
     type Returns = u16;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self).map_err(|e| eyre::eyre!(e))
+        Encode!(&self).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        let value = Decode!(&response, Self::Returns)?;
         Ok(value)
     }
 }

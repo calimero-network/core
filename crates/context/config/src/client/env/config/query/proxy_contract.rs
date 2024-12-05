@@ -3,13 +3,13 @@ use serde::Serialize;
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::icp::ICContextId;
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprTransmute};
+use crate::icp::repr::ICRepr;
+use crate::repr::Repr;
 use crate::types::ContextId;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -67,12 +67,12 @@ impl Method<Icp> for ProxyContractRequest {
     type Returns = String;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id: ICContextId = self.context_id.rt()?;
-        Encode!(&context_id).map_err(|e| eyre::eyre!(e))
+        let context_id = ICRepr::new(*self.context_id);
+        Encode!(&context_id).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value: Self::Returns = Decode!(&response, Self::Returns)?;
+        let value = Decode!(&response, Self::Returns)?;
         Ok(value)
     }
 }

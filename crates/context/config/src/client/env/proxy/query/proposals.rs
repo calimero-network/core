@@ -3,12 +3,12 @@ use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use crate::client::env::proxy::icp::ICProposal;
 use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetProposalsRequest};
 use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icp::ICProposal;
 use crate::Proposal;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -92,7 +92,7 @@ impl Method<Icp> for ProposalsRequest {
     type Returns = Vec<Proposal>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Encode!(&self.offset, &self.length).map_err(|e| eyre::eyre!(e))
+        Encode!(&self.offset, &self.length).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
