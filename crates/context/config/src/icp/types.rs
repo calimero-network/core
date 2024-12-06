@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
@@ -167,7 +168,10 @@ impl ICRequest {
         Self {
             signer_id: ICRepr::new(signer_id),
             kind,
-            timestamp_ms: 0, // Default timestamp for tests
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis() as u64,
         }
     }
 }

@@ -146,11 +146,15 @@ impl<'a> Method<Icp> for Mutate<'a> {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if !response.is_empty() {
-            eyre::bail!("unexpected response {:?}", response);
+        match candid::decode_one::<Result<(), String>>(&response) {
+            Ok(decoded) => match decoded {
+                Ok(()) => Ok(()),
+                Err(err_msg) => eyre::bail!("unexpected response {:?}", err_msg),
+            },
+            Err(e) => {
+                eyre::bail!("unexpected response {:?}", e)
+            }
         }
-
-        Ok(())
     }
 }
 
