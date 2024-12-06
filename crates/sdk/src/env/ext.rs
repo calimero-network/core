@@ -105,18 +105,13 @@ impl DraftProposal {
     // Add an action to call an external function
     #[must_use]
     pub fn external_function_call(
-        mut self, 
-        receiver_id: String, 
-        method_name: String, 
-        args: String, 
-        deposit: u128, 
-        gas: u64
+        mut self,
+        receiver_id: String,
+        method_name: String,
+        args: String,
+        deposit: u128,
+        gas: u64,
     ) -> Self {
-        println!("receiver_id: {:?}", receiver_id);
-        println!("method_name: {:?}", method_name);
-        println!("args: {:?}", args);
-        println!("deposit: {:?}", deposit);
-        println!("gas: {:?}", gas);
         self.actions.push(ProposalAction::ExternalFunctionCall {
             receiver_id: AccountId(receiver_id),
             method_name,
@@ -130,21 +125,25 @@ impl DraftProposal {
     /// Add an action to set a context value
     #[must_use]
     pub fn set_context_value(mut self, key: Box<[u8]>, value: Box<[u8]>) -> Self {
-        self.actions.push(ProposalAction::SetContextValue { key, value });
+        self.actions
+            .push(ProposalAction::SetContextValue { key, value });
         self
     }
 
     /// Add an action to set number of approvals
     #[must_use]
     pub fn set_num_approvals(mut self, num_approvals: u32) -> Self {
-        self.actions.push(ProposalAction::SetNumApprovals { num_approvals });
+        self.actions
+            .push(ProposalAction::SetNumApprovals { num_approvals });
         self
     }
 
     /// Add an action to set active proposals limit
     #[must_use]
     pub fn set_active_proposals_limit(mut self, active_proposals_limit: u32) -> Self {
-        self.actions.push(ProposalAction::SetActiveProposalsLimit { active_proposals_limit });
+        self.actions.push(ProposalAction::SetActiveProposalsLimit {
+            active_proposals_limit,
+        });
         self
     }
 
