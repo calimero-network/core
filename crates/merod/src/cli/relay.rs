@@ -71,7 +71,10 @@ impl RelayCommand {
                         ),
                         Credentials::Starknet(_) => {
                             bail!("Expected NEAR credentials, but got Starknet credentials.")
-                        }
+                        },
+                        Credentials::Icp(_) => {
+                            bail!("Expected NEAR credentials, but got Starknet credentials.")
+                        },
                         _ => bail!("Expected NEAR credentials."),
                     };
                     Ok((
@@ -100,6 +103,7 @@ impl RelayCommand {
                             (credentials.account_id, credentials.secret_key)
                         }
                         Credentials::Near(_) => bail!("Expected Starknet credentials."),
+                        Credentials::Icp(_) => bail!("Expected Starknet credentials."),
                         _ => bail!("Expected NEAR credentials."),
                     };
                     Ok((
