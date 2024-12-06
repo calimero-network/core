@@ -97,9 +97,6 @@ impl Method<Icp> for ProposalApprovalsRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, ICProposalWithApprovals)?;
-
-        let value = decoded.into();
-
-        Ok(value)
+        Ok(decoded.into())
     }
 }

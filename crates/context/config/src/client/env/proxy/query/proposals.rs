@@ -96,10 +96,10 @@ impl Method<Icp> for ProposalsRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded = Decode!(&response, Vec<ICProposal>)?;
+        let proposals = Decode!(&response, Vec<ICProposal>)?;
 
-        let converted: Vec<Proposal> = decoded.into_iter().map(|id| id.into()).collect();
+        let proposals = proposals.into_iter().map(|id| id.into()).collect();
 
-        Ok(converted)
+        Ok(proposals)
     }
 }
