@@ -48,9 +48,21 @@ mv "$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
 rm "$TARBALL_NAME"
 
 # Add $HOME/.local/bin to PATH if not already present
-if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-  echo "Added $HOME/.local/bin to PATH. Reload your shell or run: source ~/.bashrc"
+if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
+  SHELL_CONFIG_FILE="$HOME/.bashrc"
+  case "$SHELL" in
+    */zsh) SHELL_CONFIG_FILE="$HOME/.zshrc" ;;
+    */fish) SHELL_CONFIG_FILE="$HOME/.config/fish/config.fish" ;;
+    */csh|*/tcsh) SHELL_CONFIG_FILE="$HOME/.cshrc" ;;
+  esac
+
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG_FILE"
+  echo "Added $HOME/.local/bin to PATH in $SHELL_CONFIG_FILE. Please reload your shell or run: source $SHELL_CONFIG_FILE"
 fi
 
-echo "$BINARY_NAME installed successfully in $INSTALL_DIR. Run '$BINARY_NAME --version' to verify."
+# Final message
+echo "$BINARY_NAME installed successfully in $INSTALL_DIR."
+echo "To verify the installation, make sure $INSTALL_DIR is in your PATH."
+echo "Run the following command to update your current shell session if needed:"
+echo "source <your-shell-config-file>"
+echo "Then run '$BINARY_NAME --version' to confirm the installation."
