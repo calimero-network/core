@@ -45,7 +45,8 @@ impl Client<AnyTransport> {
                 }))
             }
             ClientSelectedSigner::Local => {
-                let local_client = Self::from_local_config(&config.signer.local);
+                let local_client =
+                    Self::from_local_config(&config.signer.local).expect("validation error");
 
                 Either::Right(local_client.transport)
             }
@@ -54,7 +55,7 @@ impl Client<AnyTransport> {
         Self::new(transport)
     }
 
-    pub fn from_local_config(config: &LocalConfig) -> Client<LocalTransports> {
+    pub fn from_local_config(config: &LocalConfig) -> eyre::Result<Client<LocalTransports>> {
         let near_transport = near::NearTransport::new(&near::NearConfig {
             networks: config
                 .near
@@ -66,19 +67,22 @@ impl Client<AnyTransport> {
                             credentials.secret_key.clone(),
                         ),
                         Credentials::Starknet(_) | Credentials::Icp(_) => {
-                            panic!("Expected Near credentials but got {:?}", config.credentials)
+                            eyre::bail!(
+                                "Expected Near credentials but got {:?}",
+                                config.credentials
+                            )
                         }
                     };
-                    (
+                    Ok((
                         network.clone().into(),
                         near::NetworkConfig {
                             rpc_url: config.rpc_url.clone(),
                             account_id,
                             access_key: secret_key,
                         },
-                    )
+                    ))
                 })
-                .collect(),
+                .collect::<eyre::Result<_>>()?,
         });
 
         let starknet_transport = starknet::StarknetTransport::new(&starknet::StarknetConfig {
@@ -91,22 +95,22 @@ impl Client<AnyTransport> {
                             (credentials.account_id, credentials.secret_key)
                         }
                         Credentials::Near(_) | Credentials::Icp(_) => {
-                            panic!(
+                            eyre::bail!(
                                 "Expected Starknet credentials but got {:?}",
                                 config.credentials
                             )
                         }
                     };
-                    (
+                    Ok((
                         network.clone().into(),
                         starknet::NetworkConfig {
                             rpc_url: config.rpc_url.clone(),
                             account_id,
                             access_key: secret_key,
                         },
-                    )
+                    ))
                 })
-                .collect(),
+                .collect::<eyre::Result<_>>()?,
         });
 
         let icp_transport = icp::IcpTransport::new(&icp::IcpConfig {
@@ -120,19 +124,19 @@ impl Client<AnyTransport> {
                             credentials.secret_key.clone(),
                         ),
                         Credentials::Near(_) | Credentials::Starknet(_) => {
-                            panic!("Expected ICP credentials but got {:?}", config.credentials)
+                            eyre::bail!("Expected ICP credentials but got {:?}", config.credentials)
                         }
                     };
-                    (
+                    Ok((
                         network.clone().into(),
                         icp::NetworkConfig {
                             rpc_url: config.rpc_url.clone(),
                             account_id,
                             secret_key,
                         },
-                    )
+                    ))
                 })
-                .collect(),
+                .collect::<eyre::Result<_>>()?,
         });
 
         let all_transports = Both {
@@ -143,7 +147,7 @@ impl Client<AnyTransport> {
             },
         };
 
-        Client::new(all_transports)
+        Ok(Client::new(all_transports))
     }
 }
 
