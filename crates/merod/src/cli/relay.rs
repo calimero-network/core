@@ -71,10 +71,10 @@ impl RelayCommand {
                         ),
                         Credentials::Starknet(_) => {
                             bail!("Expected NEAR credentials, but got Starknet credentials.")
-                        },
+                        }
                         Credentials::Icp(_) => {
                             bail!("Expected NEAR credentials, but got Starknet credentials.")
-                        },
+                        }
                         _ => bail!("Expected NEAR credentials."),
                     };
                     Ok((
