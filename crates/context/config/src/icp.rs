@@ -174,8 +174,8 @@ impl TryFrom<ProxyMutateRequest> for ICProxyMutateRequest {
         let request = match request {
             ProxyMutateRequest::Propose { proposal } => ICProxyMutateRequest::Propose {
                 proposal: ICProposal {
-                    id: proposal.id.rt().expect("infallible conversion"),
-                    author_id: proposal.author_id.rt().expect("infallible conversion"),
+                    id: proposal.id.rt().map_err(|e| e.to_string())?,
+                    author_id: proposal.author_id.rt().map_err(|e| e.to_string())?,
                     actions: proposal
                         .actions
                         .into_iter()
@@ -185,8 +185,8 @@ impl TryFrom<ProxyMutateRequest> for ICProxyMutateRequest {
             },
             ProxyMutateRequest::Approve { approval } => ICProxyMutateRequest::Approve {
                 approval: ICProposalApprovalWithSigner {
-                    proposal_id: approval.proposal_id.rt().expect("infallible conversion"),
-                    signer_id: approval.signer_id.rt().expect("infallible conversion"),
+                    proposal_id: approval.proposal_id.rt().map_err(|e| e.to_string())?,
+                    signer_id: approval.signer_id.rt().map_err(|e| e.to_string())?,
                     added_timestamp: approval.added_timestamp,
                 },
             },

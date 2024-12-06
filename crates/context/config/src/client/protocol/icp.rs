@@ -196,7 +196,7 @@ impl Network {
             .await
             .map_err(|_| IcpError::Custom {
                 operation: ErrorOperation::Query,
-                reason: "Failed to fetch root key".to_string(),
+                reason: "Failed to fetch root key".to_owned(),
             })?;
 
         let response = self
@@ -209,7 +209,7 @@ impl Network {
         response.map_or(
             Err(IcpError::Custom {
                 operation: ErrorOperation::Query,
-                reason: "Error while quering".to_string(),
+                reason: "Error while quering".to_owned(),
             }),
             |response| Ok(response),
         )
@@ -226,7 +226,7 @@ impl Network {
             .await
             .map_err(|_| IcpError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: "Failed to fetch root key".to_string(),
+                reason: "Failed to fetch root key".to_owned(),
             })?;
 
         let response = self
