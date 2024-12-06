@@ -5,11 +5,10 @@ use calimero_context_config::icp::types::{ICApplication, ICCapability};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::types::{ContextId, ContextIdentity, SignerId};
 use candid::Principal;
-use ic_cdk_macros::query;
 
 use crate::with_state;
 
-#[query]
+#[ic_cdk::query]
 fn application(context_id: ICRepr<ContextId>) -> ICApplication {
     with_state(|configs| {
         let context = configs
@@ -21,7 +20,7 @@ fn application(context_id: ICRepr<ContextId>) -> ICApplication {
     })
 }
 
-#[query]
+#[ic_cdk::query]
 fn application_revision(context_id: ICRepr<ContextId>) -> u64 {
     with_state(|configs| {
         let context = configs
@@ -33,7 +32,7 @@ fn application_revision(context_id: ICRepr<ContextId>) -> u64 {
     })
 }
 
-#[query]
+#[ic_cdk::query]
 fn proxy_contract(context_id: ICRepr<ContextId>) -> Principal {
     with_state(|configs| {
         let context = configs
@@ -45,7 +44,7 @@ fn proxy_contract(context_id: ICRepr<ContextId>) -> Principal {
     })
 }
 
-#[query]
+#[ic_cdk::query]
 fn members(
     context_id: ICRepr<ContextId>,
     offset: usize,
@@ -62,7 +61,7 @@ fn members(
     })
 }
 
-#[query]
+#[ic_cdk::query]
 fn has_member(context_id: ICRepr<ContextId>, identity: ICRepr<ContextIdentity>) -> bool {
     with_state(|configs| {
         let context = configs
@@ -74,7 +73,7 @@ fn has_member(context_id: ICRepr<ContextId>, identity: ICRepr<ContextIdentity>) 
     })
 }
 
-#[query]
+#[ic_cdk::query]
 fn members_revision(context_id: ICRepr<ContextId>) -> u64 {
     with_state(|configs| {
         let context = configs
@@ -86,7 +85,7 @@ fn members_revision(context_id: ICRepr<ContextId>) -> u64 {
     })
 }
 
-#[query]
+#[ic_cdk::query]
 fn privileges(
     context_id: ICRepr<ContextId>,
     identities: Vec<ICRepr<ContextIdentity>>,

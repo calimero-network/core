@@ -104,7 +104,7 @@ impl RelayCommand {
                         }
                         Credentials::Near(_) => bail!("Expected Starknet credentials."),
                         Credentials::Icp(_) => bail!("Expected Starknet credentials."),
-                        _ => bail!("Expected NEAR credentials."),
+                        _ => bail!("Expected Starknet credentials."),
                     };
                     Ok((
                         Cow::from(network.clone()),
