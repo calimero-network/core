@@ -808,6 +808,7 @@ fn test_edge_cases() {
     }
 }
 
+#[ignore = "we're deprecating timestamp checks, in favor of nonce checks"]
 #[test]
 fn test_timestamp_scenarios() {
     let (pic, canister) = setup();

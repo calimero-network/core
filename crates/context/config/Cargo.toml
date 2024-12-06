@@ -16,8 +16,6 @@ either = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 ic-agent = { workspace = true, optional = true }
-ic-cdk = { workspace = true, optional = true }
-ic-cdk-macros = { workspace = true, optional = true }
 near-crypto = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
@@ -57,8 +55,6 @@ icp = ["candid"]
 icp_client = [
   "icp",
   "dep:ic-agent",
-  "dep:ic-cdk",
-  "dep:ic-cdk-macros",
   "dep:ed25519-consensus",
 ]
 

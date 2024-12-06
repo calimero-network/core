@@ -3,7 +3,6 @@ use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::icp::{ICApplication, ICContextId};
 use crate::client::env::config::types::starknet::{
     Application as StarknetApplication, CallData, FeltPair,
 };
@@ -11,7 +10,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprTransmute};
+use crate::icp::repr::ICRepr;
+use crate::icp::types::ICApplication;
+use crate::repr::Repr;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -101,13 +102,12 @@ impl Method<Icp> for ApplicationRequest {
     const METHOD: &'static str = "application";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id: ICContextId = self.context_id.rt()?;
-        Encode!(&context_id).map_err(|e| eyre::eyre!(e))
+        let context_id = ICRepr::new(self.context_id);
+        Encode!(&context_id).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded: ICApplication = Decode!(&response, ICApplication)?;
-        let value: Self::Returns = decoded.into();
-        Ok(value)
+        let decoded = Decode!(&response, ICApplication)?;
+        Ok(decoded.into())
     }
 }

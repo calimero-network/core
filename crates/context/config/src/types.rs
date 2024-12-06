@@ -6,7 +6,6 @@ use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use bs58::decode::Result as Bs58Result;
-use candid::CandidType;
 use ed25519_dalek::{Signature, SignatureError, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
@@ -69,7 +68,6 @@ impl<'a> Application<'a> {
     Hash,
     Serialize,
     Deserialize,
-    CandidType,
 )]
 pub struct Identity(pub(crate) [u8; 32]);
 

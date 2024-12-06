@@ -5,7 +5,6 @@ use serde::Serialize;
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::icp::{ICContextId, ICContextIdentity};
 use crate::client::env::config::types::starknet::{
     CallData, StarknetMembers, StarknetMembersRequest,
 };
@@ -13,7 +12,8 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::{Repr, ReprTransmute};
+use crate::icp::repr::ICRepr;
+use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -106,17 +106,23 @@ impl Method<Icp> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id: ICContextId = self.context_id.rt()?;
+        let context_id = ICRepr::new(*self.context_id);
 
-        Encode!(&context_id, &self.offset, &self.length).map_err(|e| eyre::eyre!(e))
+        Encode!(&context_id, &self.offset, &self.length).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded: Vec<ICContextIdentity> = Decode!(&response, Vec<ICContextIdentity>)?;
+        let members = Decode!(&response, Vec<ICRepr<ContextIdentity>>)?;
 
-        let converted: Result<Vec<ContextIdentity>, _> =
-            decoded.into_iter().map(|id| id.rt()).collect();
+        // safety: `ICRepr<T>` is a transparent wrapper around `T`
+        #[expect(
+            clippy::transmute_undefined_repr,
+            reason = "ICRepr<T> is a transparent wrapper around T"
+        )]
+        let members = unsafe {
+            mem::transmute::<Vec<ICRepr<ContextIdentity>>, Vec<ContextIdentity>>(members)
+        };
 
-        Ok(converted?)
+        Ok(members)
     }
 }
