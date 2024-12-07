@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use hex;
 use starknet::core::codec::{Decode, Encode, Error, FeltWriter};
 use starknet::core::types::Felt;
 

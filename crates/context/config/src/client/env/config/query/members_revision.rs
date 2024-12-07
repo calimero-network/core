@@ -1,10 +1,13 @@
+use candid::{Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::Encode;
+use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, ContextId as StarknetContextId};
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icp::repr::ICRepr;
 use crate::repr::Repr;
 use crate::types::{ContextId, Revision};
 
@@ -61,5 +64,21 @@ impl Method<Starknet> for MembersRevisionRequest {
         let revision = u64::from_be_bytes(revision_bytes.try_into()?);
 
         Ok(revision)
+    }
+}
+
+impl Method<Icp> for MembersRevisionRequest {
+    type Returns = Revision;
+
+    const METHOD: &'static str = "members_revision";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id = ICRepr::new(*self.context_id);
+        Encode!(&context_id).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value = Decode!(&response, Self::Returns)?;
+        Ok(value)
     }
 }

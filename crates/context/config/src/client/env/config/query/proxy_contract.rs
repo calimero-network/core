@@ -1,11 +1,14 @@
+use candid::{Decode, Encode, Principal};
 use serde::Serialize;
-use starknet::core::codec::Encode;
+use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icp::repr::ICRepr;
 use crate::repr::Repr;
 use crate::types::ContextId;
 
@@ -55,5 +58,22 @@ impl Method<Starknet> for ProxyContractRequest {
 
         // Format felt as hex string with 0x prefix
         Ok(format!("0x{:x}", felt))
+    }
+}
+
+impl Method<Icp> for ProxyContractRequest {
+    const METHOD: &'static str = "proxy_contract";
+
+    type Returns = String;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id = ICRepr::new(*self.context_id);
+        Encode!(&context_id).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let value: Principal = Decode!(&response, Principal)?;
+        let value_as_string = value.to_text();
+        Ok(value_as_string)
     }
 }

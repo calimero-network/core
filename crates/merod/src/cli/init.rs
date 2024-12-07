@@ -12,7 +12,7 @@ use calimero_context_config::client::config::{
     ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
-    near as near_protocol, starknet as starknet_protocol,
+    icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
 };
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
@@ -24,10 +24,15 @@ use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::Store;
 use clap::{Parser, ValueEnum};
+use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
+use hex::encode;
+use ic_agent::export::Principal;
+use ic_agent::identity::{BasicIdentity, Identity};
 use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
+use rand::rngs::OsRng;
 use starknet::signers::SigningKey;
 use tracing::{info, warn};
 use url::Url;
@@ -38,6 +43,7 @@ use crate::{cli, defaults};
 pub enum ConfigProtocol {
     Near,
     Starknet,
+    Icp,
 }
 
 impl ConfigProtocol {
@@ -45,6 +51,7 @@ impl ConfigProtocol {
         match self {
             ConfigProtocol::Near => "near",
             ConfigProtocol::Starknet => "starknet",
+            ConfigProtocol::Icp => "icp",
         }
     }
 }
@@ -255,12 +262,31 @@ impl InitCommand {
                             ]
                             .into_iter()
                             .collect(),
+                            icp: [
+                                (
+                                    "ic".to_owned(),
+                                    generate_local_signer(
+                                        "https://ic0.app".parse()?,
+                                        ConfigProtocol::Icp,
+                                    )?,
+                                ),
+                                (
+                                    "local".to_owned(),
+                                    generate_local_signer(
+                                        "http://127.0.0.1:4943".parse()?,
+                                        ConfigProtocol::Icp,
+                                    )?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
                         },
                     },
                     new: ClientNew {
                         network: match self.protocol {
                             ConfigProtocol::Near => "testnet".into(),
                             ConfigProtocol::Starknet => "sepolia".into(),
+                            ConfigProtocol::Icp => "ic".into(),
                         },
                         protocol: self.protocol.as_str().to_owned(),
                         contract_id: match self.protocol {
@@ -269,6 +295,7 @@ impl InitCommand {
                                 "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                                     .parse()?
                             }
+                            ConfigProtocol::Icp => "br5f7-7uaaa-aaaaa-qaaca-cai".parse()?,
                         },
                     },
                 },
@@ -300,7 +327,7 @@ fn generate_local_signer(
             Ok(ClientLocalSigner {
                 rpc_url,
                 credentials: Credentials::Near(near_protocol::Credentials {
-                    account_id: hex::encode(account_id).parse()?,
+                    account_id: encode(account_id).parse()?,
                     public_key,
                     secret_key,
                 }),
@@ -317,6 +344,24 @@ fn generate_local_signer(
                     account_id: public_key,
                     public_key,
                     secret_key,
+                }),
+            })
+        }
+        ConfigProtocol::Icp => {
+            let mut rng = OsRng;
+
+            let signing_key = IcpSigningKey::new(&mut rng);
+            let identity = BasicIdentity::from_signing_key(signing_key.clone());
+
+            let public_key = identity.public_key().unwrap();
+            let account_id = Principal::self_authenticating(&public_key);
+
+            Ok(ClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Icp(icp_protocol::Credentials {
+                    account_id,
+                    public_key: encode(&account_id),
+                    secret_key: encode(&signing_key),
                 }),
             })
         }

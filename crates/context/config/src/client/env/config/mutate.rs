@@ -1,16 +1,18 @@
 use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
-use starknet::core::codec::Encode;
+use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
 use crate::client::env::{utils, Method};
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
+use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
@@ -126,7 +128,37 @@ impl<'a> Method<Starknet> for Mutate<'a> {
     }
 }
 
-impl<'a, T: Transport + Debug> ContextConfigMutateRequest<'a, T> {
+impl<'a> Method<Icp> for Mutate<'a> {
+    type Returns = ();
+
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let signer_sk = SigningKey::from_bytes(&self.signing_key);
+
+        let request = ICRequest::new(signer_sk.verifying_key().rt()?, self.kind.into());
+
+        let signed = ICSigned::new(request, |b| signer_sk.sign(b))?;
+
+        let encoded = candid::encode_one(&signed)?;
+
+        Ok(encoded)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        match candid::decode_one::<Result<(), String>>(&response) {
+            Ok(decoded) => match decoded {
+                Ok(()) => Ok(()),
+                Err(err_msg) => eyre::bail!("unexpected response {:?}", err_msg),
+            },
+            Err(e) => {
+                eyre::bail!("unexpected response {:?}", e)
+            }
+        }
+    }
+}
+
+impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
     pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ClientError<T>> {
         let request = Mutate {
             signing_key,

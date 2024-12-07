@@ -1,11 +1,14 @@
+use candid::{Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::{Decode, Encode};
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
 use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetProposalsRequest};
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icp::ICProposal;
 use crate::Proposal;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -80,5 +83,23 @@ impl Method<Starknet> for ProposalsRequest {
             .map_err(|e| eyre::eyre!("Failed to decode proposals: {:?}", e))?;
 
         Ok(proposals.into())
+    }
+}
+
+impl Method<Icp> for ProposalsRequest {
+    const METHOD: &'static str = "proposals";
+
+    type Returns = Vec<Proposal>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        Encode!(&self.offset, &self.length).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let proposals = Decode!(&response, Vec<ICProposal>)?;
+
+        let proposals = proposals.into_iter().map(|id| id.into()).collect();
+
+        Ok(proposals)
     }
 }

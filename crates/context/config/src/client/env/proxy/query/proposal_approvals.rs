@@ -1,19 +1,22 @@
-use serde::Serialize;
-use starknet::core::codec::{Decode, Encode};
+use candid::{Decode, Encode};
+use serde::{Deserialize, Serialize};
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
-use super::ProposalId;
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{
     StarknetProposalId, StarknetProposalWithApprovals,
 };
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
-use crate::ProposalWithApprovals;
+use crate::icp::repr::ICRepr;
+use crate::icp::ICProposalWithApprovals;
+use crate::types::ProposalId;
+use crate::{ProposalWithApprovals, Repr};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct ProposalApprovalsRequest {
     pub(super) proposal_id: Repr<ProposalId>,
 }
@@ -79,5 +82,21 @@ impl Method<Starknet> for ProposalApprovalsRequest {
             .map_err(|e| eyre::eyre!("Failed to decode approvals: {:?}", e))?;
 
         Ok(approvals.into())
+    }
+}
+
+impl Method<Icp> for ProposalApprovalsRequest {
+    const METHOD: &'static str = "get_confirmations_count";
+
+    type Returns = ProposalWithApprovals;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let payload = ICRepr::new(*self.proposal_id);
+        Encode!(&payload).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded = Decode!(&response, ICProposalWithApprovals)?;
+        Ok(decoded.into())
     }
 }

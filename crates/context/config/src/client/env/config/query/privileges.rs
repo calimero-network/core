@@ -1,8 +1,9 @@
 use core::{mem, ptr};
 use std::collections::BTreeMap;
 
+use candid::{Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::{Decode, Encode, FeltWriter};
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::{
@@ -10,8 +11,11 @@ use crate::client::env::config::types::starknet::{
     StarknetPrivileges,
 };
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icp::repr::ICRepr;
+use crate::icp::types::ICCapability;
 use crate::repr::Repr;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
@@ -23,6 +27,7 @@ pub(super) struct PrivilegesRequest<'a> {
 
 impl<'a> PrivilegesRequest<'a> {
     pub const fn new(context_id: ContextId, identities: &'a [ContextIdentity]) -> Self {
+        // safety: `Repr<T>` is a transparent wrapper around `T`
         let identities = unsafe {
             &*(ptr::from_ref::<[ContextIdentity]>(identities) as *const [Repr<ContextIdentity>])
         };
@@ -124,5 +129,37 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
             .map_err(|e| eyre::eyre!("Failed to decode privileges: {:?}", e))?;
 
         Ok(privileges.into())
+    }
+}
+
+impl<'a> Method<Icp> for PrivilegesRequest<'a> {
+    type Returns = BTreeMap<SignerId, Vec<Capability>>;
+
+    const METHOD: &'static str = "privileges";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id = ICRepr::new(*self.context_id);
+
+        // safety:
+        //  `Repr<T>` is a transparent wrapper around `T` and
+        //  `ICRepr<T>` is a transparent wrapper around `T`
+
+        let identities = unsafe {
+            &*(ptr::from_ref::<[Repr<ContextIdentity>]>(self.identities)
+                as *const [ICRepr<ContextIdentity>])
+        };
+
+        let payload = (context_id, identities);
+
+        Encode!(&payload).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded = Decode!(&response, BTreeMap<ICRepr<SignerId>, Vec<ICCapability>>)?;
+
+        Ok(decoded
+            .into_iter()
+            .map(|(k, v)| (*k, v.into_iter().map(Into::into).collect()))
+            .collect())
     }
 }

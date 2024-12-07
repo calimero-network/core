@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::client::protocol::icp::Credentials as IcpCredentials;
 use crate::client::protocol::near::Credentials as NearCredentials;
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
 
@@ -24,6 +25,7 @@ pub struct ClientNew {
 pub struct LocalConfig {
     pub near: BTreeMap<String, ClientLocalSigner>,
     pub starknet: BTreeMap<String, ClientLocalSigner>,
+    pub icp: BTreeMap<String, ClientLocalSigner>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -62,4 +64,5 @@ pub struct ClientLocalSigner {
 pub enum Credentials {
     Near(NearCredentials),
     Starknet(StarknetCredentials),
+    Icp(IcpCredentials),
 }

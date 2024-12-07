@@ -1,14 +1,18 @@
+use candid::{Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::{Decode, Encode};
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use super::ProposalId;
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetProposalId};
 use crate::client::env::Method;
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::icp::repr::ICRepr;
+use crate::icp::ICProposal;
 use crate::repr::Repr;
+use crate::types::ProposalId;
 use crate::Proposal;
 
 #[derive(Clone, Debug, Serialize)]
@@ -87,5 +91,21 @@ impl Method<Starknet> for ProposalRequest {
             }
             v => Err(eyre::eyre!("Invalid option discriminant: {}", v)),
         }
+    }
+}
+
+impl Method<Icp> for ProposalRequest {
+    const METHOD: &'static str = "proposals";
+
+    type Returns = Option<Proposal>;
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let payload = ICRepr::new(*self.proposal_id);
+        Encode!(&payload).map_err(Into::into)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded = Decode!(&response, Option<ICProposal>)?;
+        Ok(decoded.map(Into::into))
     }
 }

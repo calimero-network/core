@@ -13,14 +13,16 @@ pub mod relayer;
 pub mod transport;
 pub mod utils;
 
-use config::{ClientConfig, ClientSelectedSigner, Credentials};
-use protocol::{near, starknet, Protocol};
+use config::{ClientConfig, ClientSelectedSigner, Credentials, LocalConfig};
+use protocol::{icp, near, starknet, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
-pub type AnyTransport = Either<
-    relayer::RelayerTransport,
-    Both<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
+pub type LocalTransports = Both<
+    near::NearTransport<'static>,
+    Both<starknet::StarknetTransport<'static>, icp::IcpTransport<'static>>,
 >;
+
+pub type AnyTransport = Either<relayer::RelayerTransport, LocalTransports>;
 
 #[derive(Clone, Debug)]
 pub struct Client<T> {
@@ -38,70 +40,114 @@ impl Client<AnyTransport> {
     pub fn from_config(config: &ClientConfig) -> Self {
         let transport = match config.signer.selected {
             ClientSelectedSigner::Relayer => {
-                // If the selected signer is Relayer, use the Left variant.
                 Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
                     url: config.signer.relayer.url.clone(),
                 }))
             }
+            ClientSelectedSigner::Local => {
+                let local_client =
+                    Self::from_local_config(&config.signer.local).expect("validation error");
 
-            ClientSelectedSigner::Local => Either::Right(Both {
-                left: near::NearTransport::new(&near::NearConfig {
-                    networks: config
-                        .signer
-                        .local
-                        .near
-                        .iter()
-                        .map(|(network, config)| {
-                            let (account_id, secret_key) = match &config.credentials {
-                                Credentials::Near(credentials) => (
-                                    credentials.account_id.clone(),
-                                    credentials.secret_key.clone(),
-                                ),
-                                Credentials::Starknet(_) => {
-                                    panic!("Expected Near credentials but got something else.")
-                                }
-                            };
-                            (
-                                network.clone().into(),
-                                near::NetworkConfig {
-                                    rpc_url: config.rpc_url.clone(),
-                                    account_id,
-                                    access_key: secret_key,
-                                },
-                            )
-                        })
-                        .collect(),
-                }),
-                right: starknet::StarknetTransport::new(&starknet::StarknetConfig {
-                    networks: config
-                        .signer
-                        .local
-                        .starknet
-                        .iter()
-                        .map(|(network, config)| {
-                            let (account_id, secret_key) = match &config.credentials {
-                                Credentials::Starknet(credentials) => {
-                                    (credentials.account_id, credentials.secret_key)
-                                }
-                                Credentials::Near(_) => {
-                                    panic!("Expected Starknet credentials but got something else.")
-                                }
-                            };
-                            (
-                                network.clone().into(),
-                                starknet::NetworkConfig {
-                                    rpc_url: config.rpc_url.clone(),
-                                    account_id,
-                                    access_key: secret_key,
-                                },
-                            )
-                        })
-                        .collect(),
-                }),
-            }),
+                Either::Right(local_client.transport)
+            }
         };
 
         Self::new(transport)
+    }
+
+    pub fn from_local_config(config: &LocalConfig) -> eyre::Result<Client<LocalTransports>> {
+        let near_transport = near::NearTransport::new(&near::NearConfig {
+            networks: config
+                .near
+                .iter()
+                .map(|(network, config)| {
+                    let (account_id, secret_key) = match &config.credentials {
+                        Credentials::Near(credentials) => (
+                            credentials.account_id.clone(),
+                            credentials.secret_key.clone(),
+                        ),
+                        Credentials::Starknet(_) | Credentials::Icp(_) => {
+                            eyre::bail!(
+                                "Expected Near credentials but got {:?}",
+                                config.credentials
+                            )
+                        }
+                    };
+                    Ok((
+                        network.clone().into(),
+                        near::NetworkConfig {
+                            rpc_url: config.rpc_url.clone(),
+                            account_id,
+                            access_key: secret_key,
+                        },
+                    ))
+                })
+                .collect::<eyre::Result<_>>()?,
+        });
+
+        let starknet_transport = starknet::StarknetTransport::new(&starknet::StarknetConfig {
+            networks: config
+                .starknet
+                .iter()
+                .map(|(network, config)| {
+                    let (account_id, secret_key) = match &config.credentials {
+                        Credentials::Starknet(credentials) => {
+                            (credentials.account_id, credentials.secret_key)
+                        }
+                        Credentials::Near(_) | Credentials::Icp(_) => {
+                            eyre::bail!(
+                                "Expected Starknet credentials but got {:?}",
+                                config.credentials
+                            )
+                        }
+                    };
+                    Ok((
+                        network.clone().into(),
+                        starknet::NetworkConfig {
+                            rpc_url: config.rpc_url.clone(),
+                            account_id,
+                            access_key: secret_key,
+                        },
+                    ))
+                })
+                .collect::<eyre::Result<_>>()?,
+        });
+
+        let icp_transport = icp::IcpTransport::new(&icp::IcpConfig {
+            networks: config
+                .icp
+                .iter()
+                .map(|(network, config)| {
+                    let (account_id, secret_key) = match &config.credentials {
+                        Credentials::Icp(credentials) => (
+                            credentials.account_id.clone(),
+                            credentials.secret_key.clone(),
+                        ),
+                        Credentials::Near(_) | Credentials::Starknet(_) => {
+                            eyre::bail!("Expected ICP credentials but got {:?}", config.credentials)
+                        }
+                    };
+                    Ok((
+                        network.clone().into(),
+                        icp::NetworkConfig {
+                            rpc_url: config.rpc_url.clone(),
+                            account_id,
+                            secret_key,
+                        },
+                    ))
+                })
+                .collect::<eyre::Result<_>>()?,
+        });
+
+        let all_transports = Both {
+            left: near_transport,
+            right: Both {
+                left: starknet_transport,
+                right: icp_transport,
+            },
+        };
+
+        Ok(Client::new(all_transports))
     }
 }
 
@@ -177,6 +223,17 @@ impl<T: Transport> Client<T> {
             contract_id,
             client: self,
         })
+    }
+}
+
+impl<T: Transport> Transport for Client<T> {
+    type Error = T::Error;
+
+    async fn try_send<'a>(
+        &self,
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>> {
+        self.transport.try_send(args).await
     }
 }
 

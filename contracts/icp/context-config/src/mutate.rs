@@ -21,11 +21,14 @@ pub async fn mutate(signed_request: ICSigned<ICRequest>) -> Result<(), String> {
         .parse(|r| *r.signer_id)
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
 
-    // Check request timestamp
-    let current_time = ic_cdk::api::time();
-    if current_time.saturating_sub(request.timestamp_ms) > 1000 * 5 {
-        // 5 seconds threshold
-        return Err("request expired".to_string());
+    // Add debug logging
+    let current_time = ic_cdk::api::time() / 1_000_000;
+    let time_diff = current_time.saturating_sub(request.timestamp_ms);
+    if time_diff > 1000 * 5 {
+        return Err(format!(
+            "request expired: diff={}ms, current={}, request={}",
+            time_diff, current_time, request.timestamp_ms
+        ));
     }
 
     match request.kind {

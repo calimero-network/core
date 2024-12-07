@@ -1,3 +1,4 @@
+use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
 use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
@@ -5,10 +6,13 @@ use starknet_crypto::{poseidon_hash_many, Felt};
 
 use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
 use crate::client::env::{utils, Method};
+use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
+use crate::icp::types::ICSigned;
+use crate::icp::{ICProposalWithApprovals, ICProxyMutateRequest};
 use crate::repr::ReprTransmute;
 use crate::types::Signed;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
@@ -115,6 +119,30 @@ impl Method<Starknet> for Mutate {
             proposal_id,
             num_approvals,
         }))
+    }
+}
+
+impl Method<Icp> for Mutate {
+    type Returns = Option<ProposalWithApprovals>;
+
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let signer_sk = SigningKey::from_bytes(&self.signing_key);
+
+        let payload: ICProxyMutateRequest =
+            self.raw_request.try_into().map_err(eyre::Report::msg)?;
+
+        let signed = ICSigned::new(payload, |b| signer_sk.sign(b))?;
+
+        let encoded = candid::encode_one(&signed)?;
+
+        Ok(encoded)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded = Decode!(&response, Option<ICProposalWithApprovals>)?;
+        Ok(decoded.map(Into::into))
     }
 }
 

@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
@@ -13,6 +14,7 @@ use crate::types::{
     Application, ApplicationId, ApplicationMetadata, ApplicationSource, BlobId, Capability,
     ContextId, ContextIdentity, IntoResult, SignerId,
 };
+use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ICApplication {
@@ -53,6 +55,15 @@ pub struct ICContextRequest {
     pub kind: ICContextRequestKind,
 }
 
+impl<'a> From<ContextRequest<'a>> for ICContextRequest {
+    fn from(value: ContextRequest<'a>) -> Self {
+        Self {
+            context_id: value.context_id.rt().expect("infallible conversion"),
+            kind: value.kind.into(),
+        }
+    }
+}
+
 #[derive(CandidType, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ICCapability {
     ManageApplication,
@@ -84,9 +95,65 @@ pub enum ICContextRequestKind {
     UpdateProxyContract,
 }
 
+impl From<ContextRequestKind<'_>> for ICContextRequestKind {
+    fn from(value: ContextRequestKind<'_>) -> Self {
+        match value {
+            ContextRequestKind::Add {
+                author_id,
+                application,
+            } => ICContextRequestKind::Add {
+                author_id: author_id.rt().expect("infallible conversion"),
+                application: application.into(),
+            },
+            ContextRequestKind::UpdateApplication { application } => {
+                ICContextRequestKind::UpdateApplication {
+                    application: application.into(),
+                }
+            }
+            ContextRequestKind::AddMembers { members } => ICContextRequestKind::AddMembers {
+                members: members
+                    .into_owned()
+                    .into_iter()
+                    .map(|m| m.rt().expect("infallible conversion"))
+                    .collect(),
+            },
+            ContextRequestKind::RemoveMembers { members } => ICContextRequestKind::RemoveMembers {
+                members: members
+                    .into_owned()
+                    .into_iter()
+                    .map(|m| m.rt().expect("infallible conversion"))
+                    .collect(),
+            },
+            ContextRequestKind::Grant { capabilities } => ICContextRequestKind::Grant {
+                capabilities: capabilities
+                    .into_owned()
+                    .into_iter()
+                    .map(|(id, cap)| (id.rt().expect("infallible conversion"), cap.into()))
+                    .collect(),
+            },
+            ContextRequestKind::Revoke { capabilities } => ICContextRequestKind::Revoke {
+                capabilities: capabilities
+                    .into_owned()
+                    .into_iter()
+                    .map(|(id, cap)| (id.rt().expect("infallible conversion"), cap.into()))
+                    .collect(),
+            },
+            ContextRequestKind::UpdateProxyContract => ICContextRequestKind::UpdateProxyContract,
+        }
+    }
+}
+
 #[derive(CandidType, Deserialize, Debug, Clone)]
 pub enum ICRequestKind {
     Context(ICContextRequest),
+}
+
+impl<'a> From<RequestKind<'a>> for ICRequestKind {
+    fn from(value: RequestKind<'a>) -> Self {
+        match value {
+            RequestKind::Context(context) => ICRequestKind::Context(context.into()),
+        }
+    }
 }
 
 #[derive(CandidType, Deserialize, Debug, Clone)]
@@ -101,7 +168,10 @@ impl ICRequest {
         Self {
             signer_id: ICRepr::new(signer_id),
             kind,
-            timestamp_ms: 0, // Default timestamp for tests
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis() as u64,
         }
     }
 }
