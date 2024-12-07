@@ -33,7 +33,7 @@ fn application_revision(context_id: ICRepr<ContextId>) -> u64 {
 }
 
 #[ic_cdk::query]
-fn proxy_contract(context_id: ICRepr<ContextId>) -> String {
+fn proxy_contract(context_id: ICRepr<ContextId>) -> Principal {
     with_state(|configs| {
         let context = configs
             .contexts
@@ -42,7 +42,6 @@ fn proxy_contract(context_id: ICRepr<ContextId>) -> String {
 
         context.proxy.clone()
     })
-    .to_string()
 }
 
 #[ic_cdk::query]
