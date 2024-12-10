@@ -65,7 +65,7 @@ impl Method<Icp> for ActiveProposalRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value = Decode!(&response, Self::Returns)?;
-        Ok(value)
+        let value = Decode!(&response, u32)?;
+        Ok(value as u16)
     }
 }

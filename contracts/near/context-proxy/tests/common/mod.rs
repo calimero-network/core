@@ -23,12 +23,18 @@ pub fn generate_keypair() -> Result<SigningKey> {
 
 pub async fn create_account_with_balance(
     worker: &Worker<Sandbox>,
-    account_id: &str,
+    prefix: &str,
     balance: u128,
 ) -> Result<Account> {
+    let random_suffix: u32 = rand::thread_rng().gen_range(0..999999);
+
+    // Take first 8 chars of prefix and combine with random number
+    let prefix = prefix.chars().take(8).collect::<String>();
+    let account_id = format!("{}{}", prefix, random_suffix);
+
     let root_account = worker.root_account()?;
     let account = root_account
-        .create_subaccount(account_id)
+        .create_subaccount(&account_id)
         .initial_balance(NearToken::from_near(balance))
         .transact()
         .await?

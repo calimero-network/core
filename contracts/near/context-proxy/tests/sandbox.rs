@@ -17,6 +17,7 @@ mod common;
 
 async fn setup_test(
     worker: &Worker<Sandbox>,
+    test_name: &str,
 ) -> Result<(
     ConfigContractHelper,
     ProxyContractHelper,
@@ -28,7 +29,7 @@ async fn setup_test(
     let bytes = fs::read(common::proxy_lib_helper::PROXY_CONTRACT_WASM)?;
     let alice_sk: SigningKey = common::generate_keypair()?;
     let context_sk = common::generate_keypair()?;
-    let relayer_account = common::create_account_with_balance(&worker, "account", 1000).await?;
+    let relayer_account = common::create_account_with_balance(&worker, test_name, 1000).await?;
 
     let _test = config_helper
         .config_contract
@@ -66,7 +67,7 @@ async fn update_proxy_code() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
     let (config_helper, _proxy_helper, relayer_account, context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "update_proxy_code").await?;
 
     // Call the update function
     let res = config_helper
@@ -88,7 +89,7 @@ async fn update_proxy_code() -> Result<()> {
 async fn test_create_proposal() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_create_proposal").await?;
 
     let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
@@ -113,7 +114,7 @@ async fn test_create_proposal() -> Result<()> {
 async fn test_view_proposal() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_view_proposal").await?;
 
     let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
@@ -150,7 +151,7 @@ async fn test_view_proposal() -> Result<()> {
 async fn test_create_proposal_with_existing_id() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_create_proposal_with_existing_id").await?;
 
     let proposal_id = proxy_helper.generate_proposal_id();
     let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
@@ -170,7 +171,7 @@ async fn test_create_proposal_with_existing_id() -> Result<()> {
 async fn test_create_proposal_by_non_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (_config_helper, proxy_helper, relayer_account, _context_sk, _alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_create_proposal_by_non_member").await?;
 
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
@@ -199,7 +200,7 @@ async fn test_create_multiple_proposals() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_create_multiple_proposals").await?;
 
     let proposal_1_id = proxy_helper.generate_proposal_id();
     let proposal_2_id = proxy_helper.generate_proposal_id();
@@ -236,7 +237,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
     let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_create_proposal_and_approve_by_member").await?;
 
     // Add Bob as a context member
     let bob_sk: SigningKey = common::generate_keypair()?;
@@ -271,7 +272,7 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_create_proposal_and_approve_by_non_member").await?;
 
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
@@ -304,7 +305,7 @@ async fn setup_action_test(
     worker: &Worker<Sandbox>,
 ) -> Result<(ProxyContractHelper, Account, Vec<SigningKey>)> {
     let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "setup_action_test").await?;
 
     let bob_sk = common::generate_keypair()?;
     let charlie_sk = common::generate_keypair()?;
@@ -602,7 +603,7 @@ async fn test_view_proposals() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
-        setup_test(&worker).await?;
+        setup_test(&worker, "test_view_proposals").await?;
 
     let proposal1_actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 5,
@@ -713,6 +714,78 @@ async fn test_view_proposals() -> Result<()> {
     assert_eq!(
         &proposals[1].actions[0], &proposal3_actions[0],
         "first proposal actions should match proposal 3"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_delete_proposal() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+        setup_test(&worker, "test_delete_proposal").await?;
+
+    // First create a proposal that we'll want to delete
+    let target_proposal_id = proxy_helper.generate_proposal_id();
+    let target_proposal = proxy_helper.create_proposal_request(
+        &target_proposal_id,
+        &alice_sk,
+        &vec![ProposalAction::SetNumApprovals { num_approvals: 2 }],
+    )?;
+
+    // Create the target proposal
+    let res: Option<ProposalWithApprovals> = proxy_helper
+        .proxy_mutate(&relayer_account, &target_proposal)
+        .await?
+        .json()?;
+    assert!(res.is_some(), "Target proposal should be created");
+
+    // Verify target proposal exists
+    let stored_proposal: Option<Proposal> = proxy_helper
+        .view_proposal(&relayer_account, target_proposal_id)
+        .await?;
+    assert!(
+        stored_proposal.is_some(),
+        "Target proposal should exist before deletion"
+    );
+
+    // Create delete proposal
+    let delete_proposal_id = proxy_helper.generate_proposal_id();
+    let delete_proposal = proxy_helper.create_proposal_request(
+        &delete_proposal_id,
+        &alice_sk,
+        &vec![ProposalAction::DeleteProposal {
+            proposal_id: Repr::new(target_proposal_id),
+        }],
+    )?;
+
+    // Execute delete proposal (should execute immediately)
+    let response = proxy_helper
+        .proxy_mutate(&relayer_account, &delete_proposal)
+        .await?;
+
+    // Check if the execution was successful
+    assert!(
+        response.outcome().is_success(),
+        "Delete proposal execution should succeed"
+    );
+
+    // Verify target proposal no longer exists
+    let stored_proposal: Option<Proposal> = proxy_helper
+        .view_proposal(&relayer_account, target_proposal_id)
+        .await?;
+    assert!(
+        stored_proposal.is_none(),
+        "Target proposal should be deleted"
+    );
+
+    // Verify delete proposal doesn't exist (since it executed immediately)
+    let stored_delete_proposal: Option<Proposal> = proxy_helper
+        .view_proposal(&relayer_account, delete_proposal_id)
+        .await?;
+    assert!(
+        stored_delete_proposal.is_none(),
+        "Delete proposal should not be stored"
     );
 
     Ok(())

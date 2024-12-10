@@ -278,8 +278,8 @@ impl Network {
             Ok(chain_id) => chain_id,
             Err(e) => {
                 return Err(StarknetError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: e.to_string(),
+                    operation: ErrorOperation::Mutate,
+                    reason: format!("Failed to get chain ID: {:#}", e),
                 })
             }
         };

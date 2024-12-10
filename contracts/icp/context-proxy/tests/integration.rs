@@ -50,7 +50,7 @@ fn create_and_verify_proposal(
     canister: Principal,
     signer_sk: &SigningKey,
     proposal: ICProposal,
-) -> Result<ICProposalWithApprovals, String> {
+) -> Result<Option<ICProposalWithApprovals>, String> {
     let request = ICProxyMutateRequest::Propose { proposal };
 
     let signed_request = create_signed_request(signer_sk, request);
@@ -70,8 +70,7 @@ fn create_and_verify_proposal(
                     .map_err(|e| format!("Failed to decode response: {}", e))?;
 
             match result {
-                Ok(Some(proposal_with_approvals)) => Ok(proposal_with_approvals),
-                Ok(None) => Err("No proposal returned".to_string()),
+                Ok(proposal_with_approvals) => Ok(proposal_with_approvals),
                 Err(e) => Err(e),
             }
         }
@@ -1096,5 +1095,240 @@ fn test_proposal_execution_external_call() {
             assert_eq!(received_args, test_args, "Call arguments should match");
         }
         _ => panic!("Unexpected response type"),
+    }
+}
+
+#[test]
+fn test_proposal_execution_external_call_with_deposit() {
+    let mut rng = rand::thread_rng();
+
+    let ProxyTestContext {
+        pic,
+        proxy_canister,
+        mock_external,
+        author_sk,
+        context_canister,
+        context_id,
+        mock_ledger,
+        ..
+    } = setup();
+
+    let author_pk = author_sk.verifying_key();
+    let author_id = author_pk.rt().expect("infallible conversion");
+
+    let signer2_sk = SigningKey::from_bytes(&rng.gen());
+    let signer2_pk = signer2_sk.verifying_key();
+    let signer2_id = signer2_pk.rt().expect("infallible conversion");
+
+    let signer3_sk = SigningKey::from_bytes(&rng.gen());
+    let signer3_pk = signer3_sk.verifying_key();
+    let signer3_id = signer3_pk.rt().expect("infallible conversion");
+
+    let proposal_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
+
+    // Create external call proposal
+    let deposit_amount = 1_000_000;
+    let test_args = "01020304".to_string(); // Test arguments as string
+    let proposal = ICProposal {
+        id: proposal_id,
+        author_id,
+        actions: vec![ICProposalAction::ExternalFunctionCall {
+            receiver_id: mock_external,
+            method_name: "test_method".to_string(),
+            args: test_args.clone(),
+            deposit: deposit_amount,
+        }],
+    };
+
+    // Create and verify initial proposal
+    let _ = create_and_verify_proposal(&pic, proxy_canister, &author_sk, proposal);
+
+    let context_members = vec![
+        signer2_pk.rt().expect("infallible conversion"),
+        signer3_pk.rt().expect("infallible conversion"),
+    ];
+
+    let _ = add_members_to_context(
+        &pic,
+        context_canister,
+        context_id,
+        &author_sk,
+        context_members,
+    );
+
+    // Add approvals to trigger execution
+    for (signer_sk, signer_id) in [(signer2_sk, signer2_id), (signer3_sk, signer3_id)] {
+        let approval = ICProposalApprovalWithSigner {
+            signer_id,
+            proposal_id,
+            added_timestamp: get_time_nanos(&pic),
+        };
+
+        let request = ICProxyMutateRequest::Approve { approval };
+        let signed_request = create_signed_request(&signer_sk, request);
+
+        let response = pic
+            .update_call(
+                proxy_canister,
+                Principal::anonymous(),
+                "mutate",
+                candid::encode_one(signed_request).unwrap(),
+            )
+            .expect("Failed to approve proposal");
+
+        match response {
+            WasmResult::Reply(bytes) => {
+                let result: Result<Option<ICProposalWithApprovals>, String> =
+                    candid::decode_one(&bytes).expect("Failed to decode response");
+
+                if let Ok(None) = result {
+                    // Proposal was executed, verify it's gone
+                    let query_response = pic
+                        .query_call(
+                            proxy_canister,
+                            Principal::anonymous(),
+                            "proposal",
+                            candid::encode_one(proposal_id).unwrap(),
+                        )
+                        .expect("Query failed");
+
+                    match query_response {
+                        WasmResult::Reply(bytes) => {
+                            let stored_proposal: Option<ICProposal> = candid::decode_one(&bytes)
+                                .expect("Failed to decode stored proposal");
+                            assert!(
+                                stored_proposal.is_none(),
+                                "Proposal should be removed after execution"
+                            );
+                        }
+                        WasmResult::Reject(msg) => panic!("Query rejected: {}", msg),
+                    }
+                }
+            }
+            WasmResult::Reject(msg) => panic!("Approval rejected: {}", msg),
+        }
+    }
+
+    // Verify the transfer was executed by checking mock ledger balance
+    let args = AccountBalanceArgs {
+        account: AccountIdentifier::new(&mock_external, &Subaccount([0; 32])),
+    };
+
+    let response = pic
+        .query_call(
+            mock_ledger,
+            Principal::anonymous(),
+            "account_balance",
+            candid::encode_one(args).unwrap(),
+        )
+        .expect("Failed to query balance");
+
+    match response {
+        WasmResult::Reply(bytes) => {
+            let balance: Tokens = candid::decode_one(&bytes).expect("Failed to decode balance");
+            let gas_fee = 10_000;
+            assert_eq!(
+                balance.e8s(),
+                MOCK_LEDGER_BALANCE.with(|b| *b.borrow()) - deposit_amount as u64 - gas_fee as u64,
+                "External contract should have received the deposit"
+            );
+        }
+        WasmResult::Reject(msg) => panic!("Balance query rejected: {}", msg),
+    }
+
+    // Verify the external call was executed
+    let response = pic
+        .query_call(
+            mock_external,
+            Principal::anonymous(),
+            "get_calls",
+            candid::encode_args(()).unwrap(),
+        )
+        .expect("Query failed");
+
+    match response {
+        WasmResult::Reply(bytes) => {
+            let calls: Vec<Vec<u8>> = candid::decode_one(&bytes).expect("Failed to decode calls");
+            assert_eq!(calls.len(), 1, "Should have exactly one call");
+
+            // Decode the Candid-encoded argument
+            let received_args: String =
+                candid::decode_one(&calls[0]).expect("Failed to decode call arguments");
+            assert_eq!(received_args, test_args, "Call arguments should match");
+        }
+        _ => panic!("Unexpected response type"),
+    }
+}
+
+#[test]
+fn test_delete_proposal() {
+    let mut rng = rand::thread_rng();
+
+    let ProxyTestContext {
+        pic,
+        proxy_canister,
+        author_sk,
+        ..
+    } = setup();
+
+    let author_pk = author_sk.verifying_key();
+    let author_id = author_pk.rt().expect("infallible conversion");
+
+    // First create a proposal that we'll want to delete
+    let target_proposal_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
+    let target_proposal = ICProposal {
+        id: target_proposal_id,
+        author_id,
+        actions: vec![ICProposalAction::SetNumApprovals { num_approvals: 2 }],
+    };
+
+    // Create and verify target proposal
+    let target_proposal_result =
+        create_and_verify_proposal(&pic, proxy_canister, &author_sk, target_proposal)
+            .expect("Target proposal creation should succeed");
+    assert!(
+        target_proposal_result.is_some(),
+        "Target proposal should be created"
+    );
+
+    // Create delete proposal
+    let delete_proposal_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
+    let delete_proposal = ICProposal {
+        id: delete_proposal_id,
+        author_id,
+        actions: vec![ICProposalAction::DeleteProposal {
+            proposal_id: target_proposal_id,
+        }],
+    };
+
+    // Execute delete proposal immediately
+    let delete_proposal_result =
+        create_and_verify_proposal(&pic, proxy_canister, &author_sk, delete_proposal)
+            .expect("Delete proposal execution should succeed");
+    assert!(
+        delete_proposal_result.is_none(),
+        "Delete proposal should execute immediately"
+    );
+
+    // Verify target proposal no longer exists
+    let query_response = pic
+        .query_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "proposal",
+            candid::encode_one(target_proposal_id).unwrap(),
+        )
+        .expect("Query failed");
+
+    match query_response {
+        WasmResult::Reply(bytes) => {
+            let stored_proposal: Option<ICProposal> =
+                candid::decode_one(&bytes).expect("Failed to decode stored proposal");
+            assert!(
+                stored_proposal.is_none(),
+                "Target proposal should be deleted"
+            );
+        }
+        WasmResult::Reject(msg) => panic!("Query rejected: {}", msg),
     }
 }

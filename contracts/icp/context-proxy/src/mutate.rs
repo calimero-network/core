@@ -87,8 +87,32 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                 receiver_id,
                 method_name,
                 args,
-                deposit: _,
+                deposit,
             } => {
+                // If there's a deposit, transfer it first
+                if deposit > 0 {
+                    let ledger_id = with_state(|contract| contract.ledger_id.clone());
+
+                    let transfer_args = TransferArgs {
+                        memo: Memo(0),
+                        amount: Tokens::from_e8s(
+                            deposit
+                                .try_into()
+                                .map_err(|e| format!("Amount conversion error: {}", e))?,
+                        ),
+                        fee: Tokens::from_e8s(10_000), // Standard fee is 0.0001 ICP
+                        from_subaccount: None,
+                        to: AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),
+                        created_at_time: None,
+                    };
+
+                    let _: (Result<u64, TransferError>,) =
+                        ic_cdk::call(Principal::from(ledger_id), "transfer", (transfer_args,))
+                            .await
+                            .map_err(|e| format!("Transfer failed: {:?}", e))?;
+                }
+
+                // Then make the actual cross-contract call
                 let args_bytes = candid::encode_one(args)
                     .map_err(|e| format!("Failed to encode args: {}", e))?;
 
@@ -137,6 +161,7 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                     contract.context_storage.insert(key, value);
                 });
             }
+            ICProposalAction::DeleteProposal { proposal_id: _ } => {}
         }
     }
 
@@ -153,6 +178,14 @@ async fn internal_create_proposal(
 
     if proposal.actions.is_empty() {
         return Err("proposal cannot have empty actions".to_string());
+    }
+
+    // Check if the proposal contains a delete action
+    for action in &proposal.actions {
+        if let ICProposalAction::DeleteProposal { proposal_id } = action {
+            remove_proposal(proposal_id);
+            return Ok(None);
+        }
     }
 
     with_state_mut(|contract| {
@@ -223,6 +256,7 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
             }
         }
         ICProposalAction::SetContextValue { .. } => {}
+        ICProposalAction::DeleteProposal { .. } => {}
     }
     Ok(())
 }
