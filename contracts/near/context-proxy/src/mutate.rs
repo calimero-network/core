@@ -281,8 +281,8 @@ impl ProxyContract {
         );
 
         // If this is a delete proposal, execute it immediately
-        if let Some(ProposalAction::DeleteProposal { proposal_id: _ }) = proposal.actions.first() {
-            self.remove_proposal(proposal.id);
+        if let Some(ProposalAction::DeleteProposal { proposal_id }) = proposal.actions.first() {
+            self.remove_proposal(*proposal_id);
             return Promise::new(env::current_account_id());
         }
 
