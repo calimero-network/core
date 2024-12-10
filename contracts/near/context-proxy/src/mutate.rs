@@ -274,11 +274,18 @@ impl ProxyContract {
 }
 
 impl ProxyContract {
-    fn propose(&self, proposal: Proposal) -> Promise {
+    fn propose(&mut self, proposal: Proposal) -> Promise {
         require!(
             !self.proposals.contains_key(&proposal.id),
             "Proposal already exists"
         );
+
+        // If this is a delete proposal, execute it immediately
+        if let Some(ProposalAction::DeleteProposal { proposal_id: _ }) = proposal.actions.first() {
+            self.remove_proposal(proposal.id);
+            return Promise::new(env::current_account_id());
+        }
+
         let author_id = proposal.author_id;
         let num_proposals = self.num_proposals_pk.get(&author_id).unwrap_or(&0) + 1;
         assert!(

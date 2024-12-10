@@ -55,6 +55,7 @@ pub enum StarknetProposalActionWithArgs {
     SetNumApprovals(Felt),
     SetActiveProposalsLimit(Felt),
     SetContextValue(Vec<Felt>, Vec<Felt>),
+    DeleteProposal(StarknetProposalId),
 }
 
 #[derive(Debug, Encode, Decode)]
@@ -278,6 +279,9 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                     value.chunks(16).map(Felt::from_bytes_be_slice).collect(),
                 )
             }
+            ProposalAction::DeleteProposal { proposal_id } => {
+                StarknetProposalActionWithArgs::DeleteProposal(proposal_id.into())
+            }
         }
     }
 }
@@ -325,6 +329,11 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                 ProposalAction::SetContextValue {
                     key: key.iter().flat_map(|felt| felt.to_bytes_be()).collect(),
                     value: value.iter().flat_map(|felt| felt.to_bytes_be()).collect(),
+                }
+            }
+            StarknetProposalActionWithArgs::DeleteProposal(proposal_id) => {
+                ProposalAction::DeleteProposal {
+                    proposal_id: Repr::new(proposal_id.into()),
                 }
             }
         }

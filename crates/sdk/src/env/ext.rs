@@ -63,6 +63,12 @@ pub enum ProposalAction {
         /// The value to set.
         value: Box<[u8]>,
     },
+
+    /// Delete a proposal.
+    DeleteProposal {
+        /// The ID of the proposal to delete.
+        proposal_id: ProposalId,
+    },
 }
 
 /// Unique identifier for an account.
@@ -144,6 +150,14 @@ impl DraftProposal {
         self.actions.push(ProposalAction::SetActiveProposalsLimit {
             active_proposals_limit,
         });
+        self
+    }
+
+    /// Add an action to delete a proposal.
+    #[must_use]
+    pub fn delete_proposal(mut self, proposal_id: ProposalId) -> Self {
+        self.actions
+            .push(ProposalAction::DeleteProposal { proposal_id });
         self
     }
 

@@ -161,6 +161,7 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                     contract.context_storage.insert(key, value);
                 });
             }
+            ICProposalAction::DeleteProposal { proposal_id: _ } => {}
         }
     }
 
@@ -177,6 +178,14 @@ async fn internal_create_proposal(
 
     if proposal.actions.is_empty() {
         return Err("proposal cannot have empty actions".to_string());
+    }
+
+    // Check if the proposal contains a delete action
+    for action in &proposal.actions {
+        if let ICProposalAction::DeleteProposal { proposal_id } = action {
+            remove_proposal(proposal_id);
+            return Ok(None);
+        }
     }
 
     with_state_mut(|contract| {
@@ -247,6 +256,7 @@ fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {
             }
         }
         ICProposalAction::SetContextValue { .. } => {}
+        ICProposalAction::DeleteProposal { .. } => {}
     }
     Ok(())
 }

@@ -32,6 +32,9 @@ pub enum ICProposalAction {
         key: Vec<u8>,
         value: Vec<u8>,
     },
+    DeleteProposal {
+        proposal_id: ICRepr<ProposalId>,
+    },
 }
 
 impl TryFrom<ProposalAction> for ICProposalAction {
@@ -74,6 +77,9 @@ impl TryFrom<ProposalAction> for ICProposalAction {
                 key: key.into(),
                 value: value.into(),
             },
+            ProposalAction::DeleteProposal { proposal_id } => ICProposalAction::DeleteProposal {
+                proposal_id: proposal_id.rt().map_err(|e| e.to_string())?,
+            },
         };
 
         Ok(action)
@@ -113,6 +119,9 @@ impl From<ICProposalAction> for ProposalAction {
             ICProposalAction::SetContextValue { key, value } => ProposalAction::SetContextValue {
                 key: key.into_boxed_slice(),
                 value: value.into_boxed_slice(),
+            },
+            ICProposalAction::DeleteProposal { proposal_id } => ProposalAction::DeleteProposal {
+                proposal_id: proposal_id.rt().expect("infallible conversion"),
             },
         }
     }

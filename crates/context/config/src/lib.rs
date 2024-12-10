@@ -156,6 +156,9 @@ pub enum ProposalAction {
         key: Box<[u8]>,
         value: Box<[u8]>,
     },
+    DeleteProposal {
+        proposal_id: Repr<ProposalId>,
+    },
 }
 
 // The proposal the user makes specifying the receiving account and actions they want to execute (1 tx)
