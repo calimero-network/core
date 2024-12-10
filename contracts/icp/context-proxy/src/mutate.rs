@@ -87,8 +87,32 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                 receiver_id,
                 method_name,
                 args,
-                deposit: _,
+                deposit,
             } => {
+                // If there's a deposit, transfer it first
+                if deposit > 0 {
+                    let ledger_id = with_state(|contract| contract.ledger_id.clone());
+
+                    let transfer_args = TransferArgs {
+                        memo: Memo(0),
+                        amount: Tokens::from_e8s(
+                            deposit
+                                .try_into()
+                                .map_err(|e| format!("Amount conversion error: {}", e))?,
+                        ),
+                        fee: Tokens::from_e8s(10_000), // Standard fee is 0.0001 ICP
+                        from_subaccount: None,
+                        to: AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),
+                        created_at_time: None,
+                    };
+
+                    let _: (Result<u64, TransferError>,) =
+                        ic_cdk::call(Principal::from(ledger_id), "transfer", (transfer_args,))
+                            .await
+                            .map_err(|e| format!("Transfer failed: {:?}", e))?;
+                }
+
+                // Then make the actual cross-contract call
                 let args_bytes = candid::encode_one(args)
                     .map_err(|e| format!("Failed to encode args: {}", e))?;
 

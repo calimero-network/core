@@ -52,7 +52,7 @@ pub fn get_confirmations_count(proposal_id: ICRepr<ProposalId>) -> Option<ICProp
 }
 
 #[ic_cdk::query]
-pub fn get_proposal_approvers(proposal_id: ICRepr<ProposalId>) -> Option<Vec<ICRepr<SignerId>>> {
+pub fn proposal_approvers(proposal_id: ICRepr<ProposalId>) -> Option<Vec<ICRepr<SignerId>>> {
     with_state(|contract| {
         contract
             .approvals

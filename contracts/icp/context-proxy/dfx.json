@@ -1,19 +1,19 @@
 {
   "canisters": {
     "proxy_contract": {
-      "package": "calimero_context_proxy_icp",
+      "package": "calimero-context-proxy-icp",
       "candid": "./res/calimero_context_proxy_icp.did",
       "type": "rust"
     },
     "mock_ledger": {
       "type": "rust",
-      "package": "mock_ledger",
+      "package": "calimero-mock-ledger-icp",
       "candid": "./mock/ledger/res/calimero_mock_ledger_icp.did",
       "path": "mock/ledger"
     },
     "mock_external": {
       "type": "rust",
-      "package": "mock_external",
+      "package": "calimero-mock-external-icp",
       "candid": "./mock/external/res/calimero_mock_external_icp.did",
       "path": "mock/external"
     }

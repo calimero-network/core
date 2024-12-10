@@ -104,7 +104,7 @@ impl Method<Icp> for ProposalApproversRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let identities = Decode!(&response, Vec<ICRepr<ContextIdentity>>)?;
+        let identities = Decode!(&response, Option<Vec<ICRepr<ContextIdentity>>>)?;
 
         // safety: `ICRepr<T>` is a transparent wrapper around `T`
         #[expect(
@@ -112,7 +112,9 @@ impl Method<Icp> for ProposalApproversRequest {
             reason = "ICRepr<T> is a transparent wrapper around T"
         )]
         let identities = unsafe {
-            mem::transmute::<Vec<ICRepr<ContextIdentity>>, Vec<ContextIdentity>>(identities)
+            mem::transmute::<Vec<ICRepr<ContextIdentity>>, Vec<ContextIdentity>>(
+                identities.expect("error unwrapping identities"),
+            )
         };
 
         Ok(identities)
