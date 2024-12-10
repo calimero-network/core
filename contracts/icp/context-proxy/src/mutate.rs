@@ -186,12 +186,12 @@ async fn internal_create_proposal(
             // Get the proposal to be deleted
             let to_delete = with_state(|contract| contract.proposals.get(proposal_id).cloned())
                 .ok_or("Proposal to delete does not exist")?;
-            
+
             // Check if the current user is the author of the proposal to be deleted
             if to_delete.author_id != proposal.author_id {
                 return Err("Only the proposal author can delete their proposals".to_string());
             }
-            
+
             remove_proposal(proposal_id);
             return Ok(None);
         }
