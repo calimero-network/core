@@ -282,13 +282,15 @@ impl ProxyContract {
 
         // If this is a delete proposal, execute it immediately
         if let Some(ProposalAction::DeleteProposal { proposal_id }) = proposal.actions.first() {
-            let existing_proposal = self.proposals.get(proposal_id)
+            let existing_proposal = self
+                .proposals
+                .get(proposal_id)
                 .expect("Proposal to delete does not exist");
             require!(
                 existing_proposal.author_id == proposal.author_id,
                 "Can only delete own proposals"
             );
-            
+
             self.remove_proposal(*proposal_id);
             return Promise::new(env::current_account_id());
         }
