@@ -155,7 +155,7 @@ impl DraftProposal {
 
     /// Add an action to delete a proposal.
     #[must_use]
-    pub fn delete_proposal(mut self, proposal_id: ProposalId) -> Self {
+    pub fn delete(mut self, proposal_id: ProposalId) -> Self {
         self.actions
             .push(ProposalAction::DeleteProposal { proposal_id });
         self
