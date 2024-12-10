@@ -104,19 +104,20 @@ impl Method<Icp> for ProposalApproversRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let identities = Decode!(&response, Option<Vec<ICRepr<ContextIdentity>>>)?;
+        let Some(identities) = Decode!(&response, Option<Vec<ICRepr<ContextIdentity>>>)? else {
+            return Ok(Vec::new()); // Return empty Vec when None
+        };
 
         // safety: `ICRepr<T>` is a transparent wrapper around `T`
         #[expect(
             clippy::transmute_undefined_repr,
             reason = "ICRepr<T> is a transparent wrapper around T"
         )]
-        let identities = unsafe {
-            mem::transmute::<Vec<ICRepr<ContextIdentity>>, Vec<ContextIdentity>>(
-                identities.expect("error unwrapping identities"),
-            )
-        };
-
-        Ok(identities)
+        unsafe {
+            Ok(mem::transmute::<
+                Vec<ICRepr<ContextIdentity>>,
+                Vec<ContextIdentity>,
+            >(identities))
+        }
     }
 }
