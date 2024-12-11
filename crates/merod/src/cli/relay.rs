@@ -10,7 +10,7 @@ use calimero_config::ConfigFile;
 use calimero_context_config::client::relayer::{RelayRequest, ServerError};
 use calimero_context_config::client::transport::{Transport, TransportArguments, TransportRequest};
 use calimero_context_config::client::Client;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 use futures_util::FutureExt;
 use tokio::net::TcpListener;
@@ -31,12 +31,6 @@ pub struct RelayCommand {
     #[clap(verbatim_doc_comment, value_parser = addr_from_str)]
     #[clap(default_value = "0.0.0.0", hide_default_value = true)]
     pub listen: SocketAddr,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-pub enum CallType {
-    Query,
-    Mutate,
 }
 
 impl RelayCommand {

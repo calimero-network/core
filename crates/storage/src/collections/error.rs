@@ -1,5 +1,6 @@
 //! Error types for storage operations.
 
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::address::PathError;
@@ -15,4 +16,13 @@ pub enum StoreError {
     /// Error while interacting with a path.
     #[error(transparent)]
     PathError(#[from] PathError),
+}
+
+impl Serialize for StoreError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
 }
