@@ -8,7 +8,7 @@ use calimero_sdk::types::Error;
 use calimero_storage::collections::{UnorderedMap, UnorderedSet};
 
 #[app::state]
-#[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct VisitedCities {
     visited: UnorderedMap<String, UnorderedSet<String>>,
