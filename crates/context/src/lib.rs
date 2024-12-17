@@ -12,8 +12,7 @@ use calimero_context_config::client::env::proxy::ContextProxy;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
-    Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig, ContextIdentity, ProposalId,
+    Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig, ApplicationSource as ApplicationSourceConfig, ContextIdentity, ContextStorageEntry, ProposalId
 };
 use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use calimero_network::client::NetworkClient;
@@ -1365,6 +1364,31 @@ impl ContextManager {
             .get_context_value(key)
             .await
             .map_err(|err| eyre::eyre!("Failed to fetch context value: {}", err))?;
+        Ok(response)
+    }
+
+    pub async fn get_context_storage_entries(
+        &self,
+        context_id: ContextId,
+        offset: usize,
+        limit: usize,
+    ) -> EyreResult<Vec<ContextStorageEntry>> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .get_context_storage_entries(offset, limit)
+            .await
+            .map_err(|err| eyre::eyre!("Failed to fetch context storage entries: {}", err))?;
         Ok(response)
     }
 }

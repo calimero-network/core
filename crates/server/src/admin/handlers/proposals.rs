@@ -4,7 +4,7 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ContextIdentity, ProposalId};
+use calimero_context_config::types::{ContextIdentity, ContextStorageEntry, ProposalId};
 use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals};
 use calimero_primitives::context::ContextId;
 use serde::{Deserialize, Serialize};
@@ -123,10 +123,23 @@ pub struct GetContextValueRequest {
     pub key: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Copy, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextStorageEntriesRequest {
+    pub offset: usize,
+    pub limit: usize,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetContextValueResponse {
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextStorageEntriesResponse {
+    pub data: Vec<ContextStorageEntry>,
 }
 
 pub async fn get_proposals_handler(
@@ -181,6 +194,26 @@ pub async fn get_context_value_handler(
         Ok(context_value) => ApiResponse {
             payload: GetContextValueResponse {
                 data: context_value,
+            },
+        }
+        .into_response(),
+        Err(err) => parse_api_error(err).into_response(),
+    }
+}
+
+pub async fn get_context_storage_entries_handler(
+    Path(context_id): Path<ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<GetContextStorageEntriesRequest>,
+) -> impl IntoResponse {
+    match state
+        .ctx_manager
+        .get_context_storage_entries(context_id, req.offset, req.limit)
+        .await
+    {
+        Ok(context_storage_entries) => ApiResponse {
+            payload: GetContextStorageEntriesResponse {
+                data: context_storage_entries,
             },
         }
         .into_response(),

@@ -1,6 +1,6 @@
-use candid::{Decode as CandidDecode, Encode as CandidEncode};
+use candid::{Decode, Encode};
 use serde::Serialize;
-use starknet::core::codec::Encode;
+use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
 use crate::client::env::proxy::starknet::{CallData, ContextVariableKey};
@@ -90,13 +90,13 @@ impl Method<Icp> for ContextVariableRequest {
         // Convert the key to ICRepr
         let payload = ICRepr::new(self.key);
         // Use candid's Encode macro to serialize the data
-        CandidEncode!(&payload).map_err(Into::into)
+        Encode!(&payload).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         // Use candid's Decode macro to deserialize the response
         // The response will be an Option<Vec<u8>>
-        let decoded = CandidDecode!(&response, Vec<u8>)?;
+        let decoded = Decode!(&response, Vec<u8>)?;
         Ok(decoded)
     }
 }

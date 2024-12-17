@@ -1,4 +1,5 @@
 use active_proposals::ActiveProposalRequest;
+use context_storage_entries::ContextStorageEntriesRequest;
 use context_variable::ContextVariableRequest;
 use proposal::ProposalRequest;
 use proposal_approvals::ProposalApprovalsRequest;
@@ -9,10 +10,11 @@ use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
-use crate::types::ContextIdentity;
+use crate::types::{ContextIdentity, ContextStorageEntry};
 use crate::{Proposal, ProposalId, ProposalWithApprovals};
 
 mod active_proposals;
+mod context_storage_entries;
 mod context_variable;
 mod proposal;
 mod proposal_approvals;
@@ -79,6 +81,16 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     pub async fn get_context_value(&self, key: Vec<u8>) -> Result<Vec<u8>, ClientError<T>> {
         let params = ContextVariableRequest { key };
 
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn get_context_storage_entries(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<ContextStorageEntry>, ClientError<T>> {
+        let params = ContextStorageEntriesRequest { offset, limit };
+        
         utils::send(&self.client, Operation::Read(params)).await
     }
 }
