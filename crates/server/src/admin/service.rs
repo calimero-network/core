@@ -20,7 +20,9 @@ use tracing::info;
 
 use super::handlers::did::delete_did_handler;
 use super::handlers::proposals::{
-    get_context_value_handler, get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler, get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler
+    get_context_value_handler, get_number_of_active_proposals_handler,
+    get_number_of_proposal_approvals_handler, get_proposal_approvers_handler, get_proposal_handler,
+    get_proposals_handler,
 };
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::add_client_key::{
@@ -163,10 +165,11 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/proposals/:proposal_id",
             get(get_proposal_handler),
-        ).route(
-          "/contexts/:context_id/proposals/get_context_value",
-          post(get_context_value_handler),
-      );
+        )
+        .route(
+            "/contexts/:context_id/proposals/get_context_value",
+            post(get_context_value_handler),
+        );
 
     let dev_router = Router::new()
         .route(

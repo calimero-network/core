@@ -1355,13 +1355,16 @@ impl ContextManager {
             bail!("Context not found");
         };
 
-        let response = self.config_client.query::<ContextProxy>(
-            context_config.protocol.as_ref().into(),
-            context_config.network.as_ref().into(),
-            context_config.proxy_contract.as_ref().into(),
-        ).get_context_value(key)
-        .await
-        .map_err(|err| eyre::eyre!("Failed to fetch context value: {}", err))?;
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .get_context_value(key)
+            .await
+            .map_err(|err| eyre::eyre!("Failed to fetch context value: {}", err))?;
         Ok(response)
     }
 }

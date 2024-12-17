@@ -178,14 +178,12 @@ pub async fn get_context_value_handler(
         .get_context_value(context_id, req.key.as_bytes().to_vec())
         .await
     {
-        Ok(context_value) => {
-            ApiResponse {
-                payload: GetContextValueResponse {
-                    data: context_value,
-                },
-            }
-            .into_response()
+        Ok(context_value) => ApiResponse {
+            payload: GetContextValueResponse {
+                data: context_value,
+            },
         }
+        .into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
 }

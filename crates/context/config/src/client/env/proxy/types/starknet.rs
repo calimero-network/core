@@ -1,4 +1,4 @@
-use starknet::core::codec::{Decode, Encode, FeltWriter, Error};
+use starknet::core::codec::{Decode, Encode, Error, FeltWriter};
 use starknet::core::types::{Felt, U256};
 
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
@@ -27,33 +27,33 @@ pub struct ContextVariableKey(pub Vec<u8>);
 
 // Implement From for the conversion
 impl From<Vec<u8>> for ContextVariableKey {
-  fn from(key: Vec<u8>) -> Self {
-      ContextVariableKey(key)
-  }
+    fn from(key: Vec<u8>) -> Self {
+        ContextVariableKey(key)
+    }
 }
 
 // Implement Encode for ContextVariableKey
 impl Encode for ContextVariableKey {
     fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
         let bytes = &self.0;
-        
+
         // Use exactly 16 bytes per chunk
         let chunk_size = 16;
         let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
-        
+
         // Write number of chunks first
         writer.write(Felt::from(num_chunks));
-        
+
         // Process each chunk
         for i in 0..num_chunks {
             let start = i * chunk_size;
             let end = std::cmp::min((i + 1) * chunk_size, bytes.len());
             let chunk = &bytes[start..end];
-            
+
             let chunk_hex = hex::encode(chunk);
             let chunk_felt = Felt::from_hex(&format!("0x{}", chunk_hex))
                 .map_err(|e| Error::custom(&format!("Invalid chunk hex: {}", e)))?;
-            
+
             writer.write(chunk_felt);
         }
 

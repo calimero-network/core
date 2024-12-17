@@ -13,11 +13,11 @@ use crate::types::ContextIdentity;
 use crate::{Proposal, ProposalId, ProposalWithApprovals};
 
 mod active_proposals;
+mod context_variable;
 mod proposal;
 mod proposal_approvals;
 mod proposal_approvers;
 mod proposals;
-mod context_variable;
 
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {
@@ -76,13 +76,8 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         utils::send(&self.client, Operation::Read(params)).await
     }
 
-    pub async fn get_context_value(
-        &self,
-        key: Vec<u8>,
-    ) -> Result<Vec<u8>, ClientError<T>> {
-        let params = ContextVariableRequest {
-            key,
-        };
+    pub async fn get_context_value(&self, key: Vec<u8>) -> Result<Vec<u8>, ClientError<T>> {
+        let params = ContextVariableRequest { key };
 
         utils::send(&self.client, Operation::Read(params)).await
     }
