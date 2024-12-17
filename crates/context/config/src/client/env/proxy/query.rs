@@ -1,4 +1,5 @@
 use active_proposals::ActiveProposalRequest;
+use context_variable::ContextVariableRequest;
 use proposal::ProposalRequest;
 use proposal_approvals::ProposalApprovalsRequest;
 use proposal_approvers::ProposalApproversRequest;
@@ -16,6 +17,7 @@ mod proposal;
 mod proposal_approvals;
 mod proposal_approvers;
 mod proposals;
+mod context_variable;
 
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {
@@ -69,6 +71,17 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     ) -> Result<Vec<ContextIdentity>, ClientError<T>> {
         let params = ProposalApproversRequest {
             proposal_id: Repr::new(proposal_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn get_context_value(
+        &self,
+        key: Vec<u8>,
+    ) -> Result<Vec<u8>, ClientError<T>> {
+        let params = ContextVariableRequest {
+            key,
         };
 
         utils::send(&self.client, Operation::Read(params)).await

@@ -1343,4 +1343,25 @@ impl ContextManager {
             .await
             .map_err(|err| eyre::eyre!("Failed to fetch proposal approvers: {}", err))
     }
+
+    pub async fn get_context_value(
+        &self,
+        context_id: ContextId,
+        key: Vec<u8>,
+    ) -> EyreResult<Vec<u8>> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let response = self.config_client.query::<ContextProxy>(
+            context_config.protocol.as_ref().into(),
+            context_config.network.as_ref().into(),
+            context_config.proxy_contract.as_ref().into(),
+        ).get_context_value(key)
+        .await
+        .map_err(|err| eyre::eyre!("Failed to fetch context value: {}", err))?;
+        Ok(response)
+    }
 }

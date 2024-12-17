@@ -117,6 +117,18 @@ pub struct GetProposalsRequest {
     pub limit: usize,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextValueRequest {
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextValueResponse {
+    pub data: Vec<u8>,
+}
+
 pub async fn get_proposals_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -152,6 +164,28 @@ pub async fn get_proposal_handler(
             },
         }
         .into_response(),
+        Err(err) => parse_api_error(err).into_response(),
+    }
+}
+
+pub async fn get_context_value_handler(
+    Path(context_id): Path<ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<GetContextValueRequest>,
+) -> impl IntoResponse {
+    match state
+        .ctx_manager
+        .get_context_value(context_id, req.key.as_bytes().to_vec())
+        .await
+    {
+        Ok(context_value) => {
+            ApiResponse {
+                payload: GetContextValueResponse {
+                    data: context_value,
+                },
+            }
+            .into_response()
+        }
         Err(err) => parse_api_error(err).into_response(),
     }
 }
