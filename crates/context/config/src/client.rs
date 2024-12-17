@@ -66,7 +66,7 @@ impl Client<AnyTransport> {
                             credentials.account_id.clone(),
                             credentials.secret_key.clone(),
                         ),
-                        Credentials::Starknet(_) | Credentials::Icp(_) => {
+                        Credentials::Starknet(_) | Credentials::Icp(_) | Credentials::Evm(_) => {
                             eyre::bail!(
                                 "Expected Near credentials but got {:?}",
                                 config.credentials
@@ -94,7 +94,7 @@ impl Client<AnyTransport> {
                         Credentials::Starknet(credentials) => {
                             (credentials.account_id, credentials.secret_key)
                         }
-                        Credentials::Near(_) | Credentials::Icp(_) => {
+                        Credentials::Near(_) | Credentials::Icp(_) | Credentials::Evm(_) => {
                             eyre::bail!(
                                 "Expected Starknet credentials but got {:?}",
                                 config.credentials
@@ -123,7 +123,7 @@ impl Client<AnyTransport> {
                             credentials.account_id.clone(),
                             credentials.secret_key.clone(),
                         ),
-                        Credentials::Near(_) | Credentials::Starknet(_) => {
+                        Credentials::Near(_) | Credentials::Starknet(_) | Credentials::Evm(_) => {
                             eyre::bail!("Expected ICP credentials but got {:?}", config.credentials)
                         }
                     };

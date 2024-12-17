@@ -26,6 +26,7 @@ pub struct LocalConfig {
     pub near: BTreeMap<String, ClientLocalSigner>,
     pub starknet: BTreeMap<String, ClientLocalSigner>,
     pub icp: BTreeMap<String, ClientLocalSigner>,
+    pub evm: BTreeMap<String, ClientLocalSigner>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -58,6 +59,13 @@ pub struct ClientLocalSigner {
     pub credentials: Credentials,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvmCredentials {
+    pub account_id: String,
+    pub public_key: String,
+    pub secret_key: String,
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -65,4 +73,5 @@ pub enum Credentials {
     Near(NearCredentials),
     Starknet(StarknetCredentials),
     Icp(IcpCredentials),
+    Evm(EvmCredentials),
 }

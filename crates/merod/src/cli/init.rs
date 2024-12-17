@@ -9,7 +9,7 @@ use calimero_config::{
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientLocalSigner, ClientNew, ClientRelayerSigner, ClientSelectedSigner,
-    ClientSigner, Credentials, LocalConfig,
+    ClientSigner, Credentials, EvmCredentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
     icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
@@ -33,7 +33,9 @@ use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
+use secp256k1::Secp256k1;
 use starknet::signers::SigningKey;
+use tiny_keccak::{Hasher, Keccak};
 use tracing::{info, warn};
 use url::Url;
 
@@ -44,6 +46,7 @@ pub enum ConfigProtocol {
     Near,
     Starknet,
     Icp,
+    Evm,
 }
 
 impl ConfigProtocol {
@@ -52,6 +55,7 @@ impl ConfigProtocol {
             ConfigProtocol::Near => "near",
             ConfigProtocol::Starknet => "starknet",
             ConfigProtocol::Icp => "icp",
+            ConfigProtocol::Evm => "evm",
         }
     }
 }
@@ -280,6 +284,24 @@ impl InitCommand {
                             ]
                             .into_iter()
                             .collect(),
+                            evm: [
+                                (
+                                    "mainnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://mainnet.infura.io".parse()?,
+                                        ConfigProtocol::Evm,
+                                    )?,
+                                ),
+                                (
+                                    "sepolia".to_owned(),
+                                    generate_local_signer(
+                                        "https://sepolia.infura.io".parse()?,
+                                        ConfigProtocol::Evm,
+                                    )?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
                         },
                     },
                     new: ClientNew {
@@ -287,6 +309,7 @@ impl InitCommand {
                             ConfigProtocol::Near => "testnet".into(),
                             ConfigProtocol::Starknet => "sepolia".into(),
                             ConfigProtocol::Icp => "ic".into(),
+                            ConfigProtocol::Evm => "sepolia".into(),
                         },
                         protocol: self.protocol.as_str().to_owned(),
                         contract_id: match self.protocol {
@@ -296,6 +319,10 @@ impl InitCommand {
                                     .parse()?
                             }
                             ConfigProtocol::Icp => "br5f7-7uaaa-aaaaa-qaaca-cai".parse()?,
+                            ConfigProtocol::Evm => {
+                                "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
+                                    .parse()?
+                            }
                         },
                     },
                 },
@@ -362,6 +389,30 @@ fn generate_local_signer(
                     account_id,
                     public_key: encode(&account_id),
                     secret_key: encode(&signing_key),
+                }),
+            })
+        }
+        ConfigProtocol::Evm => {
+            let secp = Secp256k1::new();
+            let (secret_key, public_key) = secp.generate_keypair(&mut OsRng);
+
+            let secret_key_hex = encode(secret_key.secret_bytes());
+            let public_key_hex = encode(&public_key.serialize());
+
+            let public_key_bytes = public_key.serialize_uncompressed();
+            let mut hasher = Keccak::v256();
+            hasher.update(&public_key_bytes[1..]);
+            let mut hash = [0u8; 32];
+            hasher.finalize(&mut hash);
+
+            let address = format!("0x{}", encode(&hash[12..]));
+
+            Ok(ClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Evm(EvmCredentials {
+                    account_id: address,
+                    public_key: public_key_hex,
+                    secret_key: secret_key_hex,
                 }),
             })
         }
