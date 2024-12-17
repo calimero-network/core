@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use bootstrap::BootstrapCommand;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
@@ -11,6 +12,7 @@ use crate::defaults;
 use crate::output::{Format, Output, Report};
 
 mod app;
+mod bootstrap;
 mod call;
 mod context;
 mod identity;
@@ -54,6 +56,7 @@ pub enum SubCommands {
     JsonRpc(CallCommand),
     Proxy(ProxyCommand),
     Call(CallCommand),
+    Bootstrap(BootstrapCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -69,6 +72,16 @@ pub struct RootArgs {
 
     #[arg(long, value_name = "FORMAT", default_value_t, value_enum)]
     pub output_format: Format,
+}
+
+impl RootArgs {
+    pub const fn new(home: Utf8PathBuf, node_name: String, output_format: Format) -> Self {
+        Self {
+            home,
+            node_name,
+            output_format,
+        }
+    }
 }
 
 pub struct Environment {
@@ -94,6 +107,7 @@ impl RootCommand {
             SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(&environment).await,
             SubCommands::Proxy(proxy) => proxy.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
+            SubCommands::Bootstrap(call) => call.run(&environment).await,
         };
 
         if let Err(err) = result {

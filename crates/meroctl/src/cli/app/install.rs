@@ -1,3 +1,4 @@
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
@@ -36,20 +37,33 @@ impl Report for InstallApplicationResponse {
 
 impl InstallCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
+        InstallCommand::install_app(self.path, self.hash, self.metadata, self.url, environment)
+            .await;
+
+        Ok(())
+    }
+
+    pub async fn install_app(
+        path: Option<Utf8PathBuf>,
+        hash: Option<Hash>,
+        metadata: Option<String>,
+        url: Option<String>,
+        environment: &Environment,
+    ) -> Result<ApplicationId> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let mut is_dev_installation = false;
-        let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
+        let metadata = metadata.map(String::into_bytes).unwrap_or_default();
 
-        let request = if let Some(app_path) = self.path {
+        let request = if let Some(app_path) = path {
             is_dev_installation = true;
             serde_json::to_value(InstallDevApplicationRequest::new(
                 app_path.canonicalize_utf8()?,
                 metadata,
             ))?
-        } else if let Some(app_url) = self.url {
+        } else if let Some(app_url) = url {
             serde_json::to_value(InstallApplicationRequest::new(
                 Url::parse(&app_url)?,
-                self.hash,
+                hash,
                 metadata,
             ))?
         } else {
@@ -76,6 +90,6 @@ impl InstallCommand {
 
         environment.output.write(&response);
 
-        Ok(())
+        Ok(response.data.application_id)
     }
 }

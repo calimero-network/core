@@ -38,21 +38,38 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        drop(JoinCommand::join(
+            self.private_key,
+            self.invitation_payload,
+            environment,
+        ));
+        Ok(())
+    }
+
+    pub async fn join(
+        private_key: PrivateKey,
+        invitation_payload: ContextInvitationPayload,
+        environment: &Environment,
+    ) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
         let response: JoinContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/join")?,
-            Some(JoinContextRequest::new(
-                self.private_key,
-                self.invitation_payload,
-            )),
+            Some(JoinContextRequest::new(private_key, invitation_payload)),
             &config.identity,
             RequestType::Post,
         )
         .await?;
 
         environment.output.write(&response);
+
+        let join_result = response.data;
+
+        let join_result = join_result
+            .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
+
+        println!("Join result {:?}", join_result);
 
         Ok(())
     }
