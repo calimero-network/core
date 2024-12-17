@@ -90,7 +90,7 @@ impl<'a, T: Transport> ContextProxyQuery<'a, T> {
         limit: usize,
     ) -> Result<Vec<ContextStorageEntry>, ClientError<T>> {
         let params = ContextStorageEntriesRequest { offset, limit };
-        
+
         utils::send(&self.client, Operation::Read(params)).await
     }
 }

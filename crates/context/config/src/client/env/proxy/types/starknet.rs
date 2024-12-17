@@ -446,64 +446,66 @@ pub struct StarknetContextStorageEntriesRequest {
 // First, create a type to represent the response structure
 #[derive(Debug)]
 pub struct ContextStorageEntriesResponse {
-    pub entries: Vec<(Vec<Felt>, Vec<Felt>)>
+    pub entries: Vec<(Vec<Felt>, Vec<Felt>)>,
 }
 
 impl<'a> Decode<'a> for ContextStorageEntriesResponse {
-  fn decode_iter<T>(iter: &mut T) -> Result<Self, Error>
-  where
-      T: Iterator<Item = &'a Felt>
-  {
-      // First felt is number of entries
-      let num_entries = match iter.next() {
-          Some(felt) => felt.to_bytes_be()[31] as usize,
-          None => return Ok(Self { entries: vec![] })
-      };
+    fn decode_iter<T>(iter: &mut T) -> Result<Self, Error>
+    where
+        T: Iterator<Item = &'a Felt>,
+    {
+        // First felt is number of entries
+        let num_entries = match iter.next() {
+            Some(felt) => felt.to_bytes_be()[31] as usize,
+            None => return Ok(Self { entries: vec![] }),
+        };
 
-      let mut entries = Vec::new();
-      
-      // Read exactly num_entries pairs
-      for _ in 0..num_entries {
-          // Get key array length and contents
-          if let Some(key_len) = iter.next() {
-              let key_len = key_len.to_bytes_be()[31] as usize;
-              let mut key = Vec::new();
-              for _ in 0..key_len {
-                  if let Some(felt) = iter.next() {
-                      key.push(*felt);
-                  }
-              }
+        let mut entries = Vec::new();
 
-              // Get value array length and contents
-              if let Some(value_len) = iter.next() {
-                  let value_len = value_len.to_bytes_be()[31] as usize;
-                  let mut value = Vec::new();
-                  for _ in 0..value_len {
-                      if let Some(felt) = iter.next() {
-                          value.push(*felt);
-                      }
-                  }
-                  entries.push((key, value));
-              }
-          }
-      }
+        // Read exactly num_entries pairs
+        for _ in 0..num_entries {
+            // Get key array length and contents
+            if let Some(key_len) = iter.next() {
+                let key_len = key_len.to_bytes_be()[31] as usize;
+                let mut key = Vec::new();
+                for _ in 0..key_len {
+                    if let Some(felt) = iter.next() {
+                        key.push(*felt);
+                    }
+                }
 
-      Ok(Self { entries })
-  }
+                // Get value array length and contents
+                if let Some(value_len) = iter.next() {
+                    let value_len = value_len.to_bytes_be()[31] as usize;
+                    let mut value = Vec::new();
+                    for _ in 0..value_len {
+                        if let Some(felt) = iter.next() {
+                            value.push(*felt);
+                        }
+                    }
+                    entries.push((key, value));
+                }
+            }
+        }
+
+        Ok(Self { entries })
+    }
 }
 
 impl From<(Vec<Felt>, Vec<Felt>)> for ContextStorageEntry {
     fn from((key_felts, value_felts): (Vec<Felt>, Vec<Felt>)) -> Self {
-        let key = key_felts.iter()
+        let key = key_felts
+            .iter()
             .flat_map(|f| f.to_bytes_be())
             .filter(|&b| b != 0)
             .collect();
-        
-        let value = value_felts.iter()
+
+        let value = value_felts
+            .iter()
             .flat_map(|f| f.to_bytes_be())
             .filter(|&b| b != 0)
             .collect();
-            
+
         ContextStorageEntry { key, value }
     }
 }

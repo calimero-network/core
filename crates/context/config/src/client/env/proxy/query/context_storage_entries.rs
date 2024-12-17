@@ -1,9 +1,11 @@
 use candid::{Decode, Encode};
-use starknet::core::codec::{Encode as StarknetEncode, Decode as StarknetDecode};
 use serde::Serialize;
+use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use crate::client::env::proxy::starknet::{CallData, ContextStorageEntriesResponse, StarknetContextStorageEntriesRequest};
+use crate::client::env::proxy::starknet::{
+    CallData, ContextStorageEntriesResponse, StarknetContextStorageEntriesRequest,
+};
 use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
@@ -29,7 +31,7 @@ impl Method<Near> for ContextStorageEntriesRequest {
         // Decode the response as Vec of tuples with boxed slices
         let entries: Vec<(Box<[u8]>, Box<[u8]>)> = serde_json::from_slice(&response)
             .map_err(|e| eyre::eyre!("Failed to decode response: {}", e))?;
-        
+
         // Convert to ContextStorageEntry
         Ok(entries
             .into_iter()
@@ -60,22 +62,21 @@ impl Method<Starknet> for ContextStorageEntriesRequest {
         if response.is_empty() {
             return Ok(vec![]);
         }
-    
+
         // Convert bytes to Felts
         let chunks = response.chunks_exact(32);
         let felts: Vec<Felt> = chunks
             .map(|chunk| {
-                let chunk_array: [u8; 32] = chunk.try_into()
+                let chunk_array: [u8; 32] = chunk
+                    .try_into()
                     .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
                 Ok(Felt::from_bytes_be(&chunk_array))
             })
             .collect::<eyre::Result<Vec<Felt>>>()?;
-    
+
         let response = ContextStorageEntriesResponse::decode_iter(&mut felts.iter())?;
-        
-        Ok(response.entries.into_iter()
-          .map(Into::into)
-          .collect())
+
+        Ok(response.entries.into_iter().map(Into::into).collect())
     }
 }
 
@@ -94,7 +95,7 @@ impl Method<Icp> for ContextStorageEntriesRequest {
         // Decode the response as Vec of tuples
         let entries: Vec<(Vec<u8>, Vec<u8>)> = Decode!(&response, Vec<(Vec<u8>, Vec<u8>)>)
             .map_err(|e| eyre::eyre!("Failed to decode response: {}", e))?;
-        
+
         // Convert to ContextStorageEntry
         Ok(entries
             .into_iter()

@@ -139,7 +139,18 @@ impl ReprBytes for ContextId {
     }
 }
 
-#[derive(Eq, Ord, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[derive(
+    Eq,
+    Ord,
+    Debug,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    BorshSerialize,
+    BorshDeserialize,
+    Serialize,
+    Deserialize,
+)]
 pub struct ContextStorageEntry {
     pub key: Vec<u8>,
     pub value: Vec<u8>,
