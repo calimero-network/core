@@ -39,7 +39,7 @@ impl Encode for ContextVariableKey {
 
         // Use exactly 16 bytes per chunk
         let chunk_size = 16;
-        #[allow(clippy::integer_division)]
+        #[allow(clippy::integer_division, reason = "Using integer division for ceiling division calculation")]
         let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
         // Write number of chunks first
@@ -289,19 +289,22 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                     serde_json::Value::Object(map) => {
                         // For objects, serialize each value to a felt
                         map.into_iter()
-                            .map(|(_, value)| {
-                                Felt::from_bytes_be_slice(value.to_string().as_bytes())
-                            })
+                            .map(|(_, value)| Felt::from_bytes_be_slice(value.to_string().as_bytes()))
                             .collect()
-                    }
+                    },
                     serde_json::Value::Array(arr) => {
                         // For arrays, convert each element
                         arr.into_iter()
                             .map(|value| Felt::from_bytes_be_slice(value.to_string().as_bytes()))
                             .collect()
-                    }
-                    // Single value
-                    value => vec![Felt::from_bytes_be_slice(value.to_string().as_bytes())],
+                    },
+                    // Explicitly match all other variants
+                    value @ (serde_json::Value::Null 
+                           | serde_json::Value::Bool(_) 
+                           | serde_json::Value::Number(_) 
+                           | serde_json::Value::String(_)) => {
+                        vec![Felt::from_bytes_be_slice(value.to_string().as_bytes())]
+                    },
                 };
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
