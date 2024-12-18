@@ -3,13 +3,17 @@ use const_format::concatcp;
 use eyre::Result as EyreResult;
 use start::StartBootstrapCommand;
 
-use crate::cli::Environment;
+use super::Environment;
 
 mod start;
 
 pub const EXAMPLES: &str = r"
-  #
+  # Setup and run 2 nodes with demo app
   $ meroctl -- --node-name node1 bootstrap start --merod-path /path/to/merod
+
+# Setup and run 2 nodes with provided app
+  $ meroctl -- --node-name node1 bootstrap start --merod-path /path/to/merod --app-path /path/to/app
+
 ";
 
 #[derive(Debug, Parser)]

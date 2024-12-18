@@ -37,8 +37,10 @@ impl Report for InstallApplicationResponse {
 
 impl InstallCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        InstallCommand::install_app(self.path, self.hash, self.metadata, self.url, environment)
-            .await;
+        drop(
+            InstallCommand::install_app(self.path, self.hash, self.metadata, self.url, environment)
+                .await,
+        );
 
         Ok(())
     }

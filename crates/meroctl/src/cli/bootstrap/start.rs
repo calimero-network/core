@@ -1,7 +1,7 @@
-use std::cell::RefCell;
 use std::process::Stdio;
 use std::time::Duration;
 
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -34,296 +34,360 @@ pub struct StartBootstrapCommand {
 impl StartBootstrapCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         println!("Starting bootstrap process");
-        let nodes_dir: Utf8PathBuf = "data".into();
+        let nodes_dir: Utf8PathBuf = environment.args.home.clone();
         let binary = self.merod_path.clone();
+        let mut processes: Vec<Child> = vec![];
 
-        // TODO Check if merod is provided
+        let mut app_path = self.app_path.clone();
 
-        // TODO Check if app is provided -> default from releases
+        // TODO app default from releases
+
+        let mut demo_app = false;
+        if app_path.is_none() {
+            println!("Downloading demo app...");
+            demo_app = true;
+
+            let wasm_url = "https://github.com/calimero-network/core-app-template/raw/refs/heads/master/logic/res/logic.wasm";
+            let output_path: Utf8PathBuf = "output/app.wasm".into();
+            app_path = Some(output_path.clone());
+
+            if let Err(e) = self.download_wasm(wasm_url, output_path).await {
+                bail!("Failed to download the WASM file: {:?}", e);
+            }
+        }
 
         let node1_log_dir: Utf8PathBuf = "output/node_1_output".into();
         let node1_name = "node1".to_owned();
-        let node_1_process: RefCell<Option<Child>> = RefCell::new(None);
-        let root_args = RootArgs::new(
-            nodes_dir.clone(),
-            node1_name.clone(),
-            crate::output::Format::Json,
+        let node1_server_port: u32 = 2428;
+        let node1_environment = &Environment::new(
+            RootArgs::new(
+                nodes_dir.clone(),
+                node1_name.to_owned(),
+                crate::output::Format::Json,
+            ),
+            Output::new(crate::output::Format::Json),
         );
-        let node1_environment =
-            &Environment::new(root_args, Output::new(crate::output::Format::Json));
 
-        println!("Initializing node {:?}.", node1_name);
-
-        let init_res = init(
-            binary.clone(),
-            nodes_dir.clone(),
-            node1_log_dir.clone(),
-            node1_name.clone(),
-            2528,
-            2428,
-        )
-        .await
-        .map_err(|e| {
-            println!("Error init node: {}", e);
-        });
-
-        println!("Node {:?} initialized.", node1_name);
-
-        println!("Starting node {:?} -> 10 sec", node1_name);
-
-        let _child = run(
-            binary.clone(),
-            nodes_dir.clone(),
-            node1_log_dir,
-            node1_name.clone(),
-            node_1_process,
-        )
-        .await
-        .map_err(|e| {
-            println!("Error run node: {}", e);
-        });
-
-        sleep(Duration::from_secs(10)).await;
-        println!("Node {:?} started.", node1_name);
+        let node1_process = self
+            .initialize_and_start_node(
+                binary.clone(),
+                nodes_dir.to_owned(),
+                node1_log_dir.to_owned(),
+                &node1_name,
+                2528,
+                node1_server_port,
+            )
+            .await?;
+        processes.push(node1_process);
 
         println!("Creating context in {:?}", node1_name);
-        let (context_id, public_key) =
-            create_context_in_bootstrap(self.app_path, node1_environment).await?;
+        let (context_id, public_key, application_id) =
+            StartBootstrapCommand::create_context_in_bootstrap(
+                app_path.to_owned(),
+                node1_environment,
+            )
+            .await?;
 
-        // NODE 2
         let node2_name = "node2".to_owned();
         let node2_log_dir: Utf8PathBuf = "output/node_2_output".into();
-        let node_2_process: RefCell<Option<Child>> = RefCell::new(None);
-        let root_args = RootArgs::new(
-            nodes_dir.clone(),
-            node2_name.clone(),
-            crate::output::Format::Json,
+        let node2_server_port: u32 = 2429;
+        let node2_environment = &Environment::new(
+            RootArgs::new(
+                nodes_dir.clone(),
+                node2_name.to_owned(),
+                crate::output::Format::Json,
+            ),
+            Output::new(crate::output::Format::Json),
         );
-        let node2_environment =
-            &Environment::new(root_args, Output::new(crate::output::Format::Json));
 
-        println!("Initializing node {:?}", node2_name);
+        let node2_process = self
+            .initialize_and_start_node(
+                binary,
+                nodes_dir.to_owned(),
+                node2_log_dir.to_owned(),
+                &node2_name,
+                2529,
+                node2_server_port,
+            )
+            .await?;
+        processes.push(node2_process);
 
-        let init_res = init(
-            binary.clone(),
-            nodes_dir.clone(),
-            node2_log_dir.clone(),
-            node2_name.clone(),
-            2529,
-            2429,
-        )
-        .await
-        .map_err(|e| {
-            println!("Error init node: {}", e);
-            // ApiError {
-            //     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            //     message: e.to_string(),
-            // }
-        });
+        let invitee_private_key = PrivateKey::random(&mut rand::thread_rng());
 
-        println!("Starting node {:?} -> 10 sec", node2_name);
-        let node2 = run(
-            binary,
-            nodes_dir.clone(),
-            node2_log_dir,
-            node2_name.clone(),
-            node_2_process,
-        )
-        .await
-        .map_err(|e| {
-            println!("Error run node: {}", e);
-        });
-
-        sleep(Duration::from_secs(10)).await;
-        println!("Node {:?} started.", node2_name);
-
-        //invite other peer
-
-        //create node2 context identity
-        println!(
-            "Inviting node {:?} into context {:?}",
-            node2_name,
-            context_id.as_str()
-        );
-        let node2_private_key = PrivateKey::random(&mut rand::thread_rng());
-        let invitation_payload = InviteCommand::invite(
+        self.invite_and_join_node(
             context_id,
             public_key,
-            node2_private_key.public_key(),
-            node1_environment,
+            invitee_private_key,
+            &node1_environment,
+            &node2_environment,
         )
         .await?;
-        println!("Node {:?} invited into context.", node2_name);
 
-        println!("Joining node {:?} into context.", node2_name);
-        let _ = JoinCommand::join(node2_private_key, invitation_payload, node2_environment).await?;
-        println!("Node {:?} joined context.", node2_name);
+        println!("************************************************");
+        println!("🚀 Bootstrap finished. Nodes are ready to use! 🚀");
 
-        println!("Bootstrap finished. Nodes are ready to use!");
+        if demo_app {
+            println!(
+                "Application is available at https://calimero-network.github.io/core-app-template/"
+            );
+            println!("Open it in a separate window for each node.");
+            println!(
+                "Application id for node {:?} is {:?} and url is http://localhost:{}",
+                node1_environment.args.node_name,
+                application_id.to_string(),
+                node1_server_port
+            );
+            println!(
+                "Application id for node {:?} is {:?} and url is http://localhost:{}",
+                node1_environment.args.node_name,
+                application_id.to_string(),
+                node2_server_port
+            );
+        }
+        println!("************************************************");
 
-        // TODO break when one of the nodes exits
-        loop {}
+        self.monitor_processes(processes).await;
 
         Ok(())
     }
-}
 
-pub async fn init(
-    binary: Utf8PathBuf,
-    nodes_dir: Utf8PathBuf,
-    log_dir: Utf8PathBuf,
-    node_name: String,
-    swarm_port: u32,
-    server_port: u32,
-) -> EyreResult<()> {
-    create_dir_all(&nodes_dir.join(&node_name)).await?;
-    create_dir_all(&log_dir).await?;
+    async fn initialize_and_start_node(
+        &self,
+        binary: Utf8PathBuf,
+        nodes_dir: Utf8PathBuf,
+        log_dir: Utf8PathBuf,
+        node_name: &str,
+        swarm_port: u32,
+        server_port: u32,
+    ) -> EyreResult<Child> {
+        println!("Initializing node {:?}", node_name);
 
-    let mut child = run_cmd(
-        binary.clone(),
-        nodes_dir.clone(),
-        log_dir.clone(),
-        node_name.clone(),
-        &[
-            "init",
-            "--swarm-port",
-            swarm_port.to_string().as_str(),
-            "--server-port",
-            server_port.to_string().as_str(),
-        ],
-        "init",
-    )
-    .await?;
-    let result = child.wait().await?;
-    if !result.success() {
-        bail!("Failed to initialize node '{}'", node_name);
+        self.init(
+            binary.to_owned(),
+            nodes_dir.to_owned(),
+            log_dir.to_owned(),
+            node_name.to_owned(),
+            swarm_port,
+            server_port,
+        )
+        .await?;
+
+        println!("Starting node {:?}.", node_name);
+
+        let process = self
+            .run_node(binary, nodes_dir, log_dir, node_name.to_owned())
+            .await?;
+
+        sleep(Duration::from_secs(10)).await;
+        println!("Node {:?} started successfully.", &node_name);
+        Ok(process)
     }
 
-    let mut config_args = vec!["config"];
+    async fn invite_and_join_node(
+        &self,
+        context_id: ContextId,
+        inviter_public_key: PublicKey,
+        invitee_private_key: PrivateKey,
+        invitor_environment: &Environment,
+        invitee_environment: &Environment,
+    ) -> EyreResult<()> {
+        println!(
+            "Inviting node {:?} to context {:?}",
+            invitee_environment.args.node_name, context_id
+        );
 
-    let mut child = run_cmd(
-        binary,
-        nodes_dir,
-        log_dir,
-        node_name.clone(),
-        &config_args,
-        "config",
-    )
-    .await?;
-    let result = child.wait().await?;
-    if !result.success() {
-        bail!("Failed to configure node '{}'", node_name);
+        let invitation_payload = InviteCommand::invite(
+            context_id,
+            inviter_public_key,
+            invitee_private_key.public_key(),
+            invitor_environment,
+        )
+        .await?;
+
+        println!(
+            "Node {:?} successfully invited.",
+            invitee_environment.args.node_name
+        );
+
+        println!(
+            "Joining node {:?} to context.",
+            invitee_environment.args.node_name
+        );
+        JoinCommand::join(invitee_private_key, invitation_payload, invitee_environment).await?;
+        println!(
+            "Node {:?} joined successfully.",
+            invitee_environment.args.node_name
+        );
+
+        Ok(())
     }
 
-    Ok(())
-}
+    pub async fn init(
+        &self,
+        binary: Utf8PathBuf,
+        nodes_dir: Utf8PathBuf,
+        log_dir: Utf8PathBuf,
+        node_name: String,
+        swarm_port: u32,
+        server_port: u32,
+    ) -> EyreResult<()> {
+        create_dir_all(&nodes_dir.join(&node_name)).await?;
+        create_dir_all(&log_dir).await?;
 
-pub async fn run(
-    binary: Utf8PathBuf,
-    nodes_dir: Utf8PathBuf,
-    log_dir: Utf8PathBuf,
-    node_name: String,
-    process: RefCell<Option<Child>>,
-) -> EyreResult<()> {
-    let child = run_cmd(binary, nodes_dir, log_dir, node_name, &["run"], "run").await?;
+        let mut child = self
+            .run_cmd(
+                binary.clone(),
+                nodes_dir.clone(),
+                log_dir.clone(),
+                node_name.clone(),
+                &[
+                    "init",
+                    "--swarm-port",
+                    &swarm_port.to_string().as_str(),
+                    "--server-port",
+                    &server_port.to_string().as_str(),
+                ],
+                "init",
+            )
+            .await?;
 
-    *process.borrow_mut() = Some(child);
-
-    Ok(())
-}
-
-pub async fn create_context_in_bootstrap(
-    app_path: Option<Utf8PathBuf>,
-    environment: &Environment,
-) -> EyreResult<(ContextId, PublicKey)> {
-    let config = load_config(&environment.args.home, &environment.args.node_name)?;
-    let multiaddr = fetch_multiaddr(&config)?;
-    let client = Client::new();
-
-    let app_hash = Some(Hash::new("hash".as_bytes()));
-    let app_metadata = Some("".to_owned());
-    let url = Some("".to_owned());
-
-    let application_id =
-        InstallCommand::install_app(app_path, app_hash, app_metadata, url, environment)
-            .await
-            .map_err(|e| {
-                println!("Error install app: {}", e);
-                // ApiError {
-                //     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                //     message: e.to_string(),
-                // }
-            });
-
-    let application_id = match application_id {
-        Ok(app_id) => app_id,
-        Err(e) => {
-            bail!("Error install app");
+        let result = child.wait().await?;
+        if !result.success() {
+            bail!("Failed to initialize node '{}'", node_name);
         }
-    };
-    //create context
 
-    let create_context_result = create_context(
-        environment,
-        &client,
-        multiaddr,
-        None,
-        application_id,
-        None,
-        &config.identity,
-    )
-    .await
-    .map_err(|e| {
-        println!("Error create context: {}", e);
-        // ApiError {
-        //     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-        //     message: e.to_string(),
-        // }
-    });
-
-    let (context_id, public_key) = match create_context_result {
-        Ok((context_id, public_key)) => (context_id, public_key),
-        Err(e) => {
-            bail!("Error create context");
+        let mut child = self
+            .run_cmd(
+                binary,
+                nodes_dir,
+                log_dir,
+                node_name.clone(),
+                &["config"],
+                "config",
+            )
+            .await?;
+        let result = child.wait().await?;
+        if !result.success() {
+            bail!("Failed to configure node '{}'", node_name);
         }
-    };
-    println!("Context created: {:?}", context_id.as_str());
+        Ok(())
+    }
 
-    Ok((context_id, public_key))
-}
+    pub async fn run_node(
+        &self,
+        binary: Utf8PathBuf,
+        nodes_dir: Utf8PathBuf,
+        log_dir: Utf8PathBuf,
+        node_name: String,
+    ) -> EyreResult<Child> {
+        Ok(self
+            .run_cmd(binary, nodes_dir, log_dir, node_name, &["run"], "run")
+            .await?)
+    }
 
-// cargo run -p meroctl -- --home <path_to_home> --node-name <node_name> context create --watch <path>
+    pub async fn create_context_in_bootstrap(
+        app_path: Option<Utf8PathBuf>,
+        environment: &Environment,
+    ) -> EyreResult<(ContextId, PublicKey, ApplicationId)> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let multiaddr = fetch_multiaddr(&config)?;
+        let client = Client::new();
 
-async fn run_cmd(
-    binary: Utf8PathBuf,
-    nodes_dir: Utf8PathBuf,
-    log_dir: Utf8PathBuf,
-    node_name: String,
-    args: &[&str],
-    log_suffix: &str,
-) -> EyreResult<Child> {
-    let mut root_args = vec!["--home", &nodes_dir.as_str(), "--node-name", &node_name];
+        let app_hash = Some(Hash::new("hash".as_bytes()));
+        let app_metadata = Some("".to_owned());
+        let url = Some("".to_owned());
 
-    root_args.extend(args);
+        let application_id =
+            InstallCommand::install_app(app_path, app_hash, app_metadata, url, environment).await?;
 
-    let log_file = log_dir.join(format!("{}.log", log_suffix));
-    let mut log_file = File::create(&log_file).await?;
+        let (context_id, public_key) = create_context(
+            environment,
+            &client,
+            multiaddr,
+            None,
+            application_id,
+            None,
+            &config.identity,
+        )
+        .await?;
 
-    // output_writer
-    //     .write_string(format!("Command: '{:}' {:?}", &binary, root_args));
+        println!("Context created: {:?}", context_id.as_str());
 
-    let mut child = Command::new(&binary)
-        .args(root_args)
-        .stdout(Stdio::piped())
-        .spawn()?;
+        Ok((context_id, public_key, application_id))
+    }
 
-    if let Some(mut stdout) = child.stdout.take() {
-        drop(tokio::spawn(async move {
-            if let Err(err) = copy(&mut stdout, &mut log_file).await {
-                eprintln!("Error copying stdout: {:?}", err);
+    async fn run_cmd(
+        &self,
+        binary: Utf8PathBuf,
+        nodes_dir: Utf8PathBuf,
+        log_dir: Utf8PathBuf,
+        node_name: String,
+        args: &[&str],
+        log_suffix: &str,
+    ) -> EyreResult<Child> {
+        let mut root_args = vec!["--home", &nodes_dir.as_str(), "--node-name", &node_name];
+        root_args.extend(args);
+
+        let log_file = log_dir.join(format!("{}.log", log_suffix));
+        let mut log_file = File::create(&log_file).await?;
+
+        let mut child = Command::new(&binary)
+            .args(root_args)
+            .stdout(Stdio::piped())
+            .spawn()?;
+
+        if let Some(mut stdout) = child.stdout.take() {
+            drop(tokio::spawn(async move {
+                if let Err(err) = copy(&mut stdout, &mut log_file).await {
+                    eprintln!("Error copying stdout: {:?}", err);
+                }
+            }));
+        }
+
+        Ok(child)
+    }
+
+    async fn monitor_processes(&self, mut processes: Vec<Child>) {
+        loop {
+            for (i, process) in processes.iter_mut().enumerate() {
+                match process.try_wait() {
+                    Ok(Some(status)) => {
+                        println!("Node {} exited with status: {:?}", i + 1, status);
+                        return;
+                    }
+                    Ok(None) => continue,
+                    Err(e) => {
+                        println!("Error checking node status: {:?}", e);
+                        return;
+                    }
+                }
             }
-        }));
+            sleep(Duration::from_secs(1)).await;
+        }
     }
 
-    Ok(child)
+    async fn download_wasm(&self, url: &str, output_path: Utf8PathBuf) -> EyreResult<()> {
+        let client = Client::new();
+
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| eyre::eyre!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            bail!("Request failed with status: {}", response.status());
+        }
+
+        let mut file = File::create(&output_path)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to create file: {}", e))?;
+
+        let _ = copy(&mut response.bytes().await?.as_ref(), &mut file)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to copy response bytes: {}", e))?;
+
+        println!("Demo app downloaded successfully.");
+        Ok(())
+    }
 }
