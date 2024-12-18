@@ -29,13 +29,16 @@ impl Method<Near> for ContextStorageEntriesRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         // Decode the response as Vec of tuples with boxed slices
-        let entries: Vec<(Vec<u8>, Vec<u8>)> = serde_json::from_slice(&response)
+        let entries: Vec<(Box<[u8]>, Box<[u8]>)> = serde_json::from_slice(&response)
             .map_err(|e| eyre::eyre!("Failed to decode response: {}", e))?;
 
         // Convert to ContextStorageEntry
         Ok(entries
             .into_iter()
-            .map(|(key, value)| ContextStorageEntry { key, value })
+            .map(|(key, value)| ContextStorageEntry {
+                key: key.into(),
+                value: value.into(),
+            })
             .collect())
     }
 }
