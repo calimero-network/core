@@ -288,6 +288,7 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 // Parse the JSON string into a Value first
                 let args_value: serde_json::Value =
                     serde_json::from_str(&args).expect("Invalid JSON arguments");
+
                 // Convert JSON values to Starknet-compatible felt arguments
                 let felt_args = match args_value {
                     serde_json::Value::Object(map) => map
@@ -542,26 +543,22 @@ fn json_value_to_felt(value: serde_json::Value) -> Result<Felt, eyre::Error> {
             } else {
                 Ok(Felt::from_bytes_be_slice(s.as_bytes()))
             }
-        }
+        },
         serde_json::Value::Number(n) => {
             if let Some(n) = n.as_u64() {
-                // Handle integers directly
                 Ok(Felt::from(n))
             } else {
-                // Fall back to string conversion for other numbers
                 Ok(Felt::from_bytes_be_slice(n.to_string().as_bytes()))
             }
-        }
+        },
         serde_json::Value::Array(arr) => {
-            let json_str = serde_json::to_string(&arr)
-                .map_err(|e| anyhow!("Failed to serialize array: {}", e))?;
+            let json_str = serde_json::to_string(&arr)?;
             Ok(Felt::from_bytes_be_slice(json_str.as_bytes()))
-        }
+        },
         serde_json::Value::Object(obj) => {
-            let json_str = serde_json::to_string(&obj)
-                .map_err(|e| anyhow!("Failed to serialize object: {}", e))?;
+            let json_str = serde_json::to_string(&obj)?;
             Ok(Felt::from_bytes_be_slice(json_str.as_bytes()))
-        }
+        },
         serde_json::Value::Bool(b) => Ok(Felt::from(b as u64)),
         serde_json::Value::Null => Ok(Felt::ZERO),
     }
