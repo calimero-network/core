@@ -4857,7 +4857,7 @@ dependencies = [
 
 [[package]]
 name = "merod"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "calimero-blobstore",
