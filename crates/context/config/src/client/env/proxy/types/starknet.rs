@@ -289,7 +289,9 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                     serde_json::from_str(&args).expect("Invalid JSON arguments");
 
                 let mut felt_args = Vec::new();
-                ValueCodec(&args_value).encode(&mut felt_args).expect("Failed to encode arguments");
+                ValueCodec(&args_value)
+                    .encode(&mut felt_args)
+                    .expect("Failed to encode arguments");
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
@@ -526,36 +528,39 @@ impl<'a> Encode for ValueCodec<'a> {
             serde_json::Value::Bool(b) => {
                 writer.write(Felt::from(*b as u64));
                 Ok(())
-            },
+            }
             serde_json::Value::String(s) => {
                 if s.starts_with("0x") {
                     // Handle hex string directly as a single Felt
-                    writer.write(Felt::from_hex(&s).map_err(|e| Error::custom(&format!("Invalid hex string: {}", e)))?);
+                    writer.write(
+                        Felt::from_hex(&s)
+                            .map_err(|e| Error::custom(&format!("Invalid hex string: {}", e)))?,
+                    );
                 } else {
                     // Regular string - split into chunks
                     let chunk_size = 31;
                     let chunks: Vec<_> = s.as_bytes().chunks(chunk_size).collect();
-                    
+
                     // Write number of chunks first
                     writer.write(Felt::from(chunks.len()));
-                    
+
                     // Write each chunk as a Felt
                     for chunk in chunks {
                         writer.write(Felt::from_bytes_be_slice(chunk));
                     }
                 }
                 Ok(())
-            },
+            }
             serde_json::Value::Array(arr) => {
                 // Write array length first
                 writer.write(Felt::from(arr.len()));
-                
+
                 // Encode each array element
                 for item in arr {
                     ValueCodec(item).encode(writer)?;
                 }
                 Ok(())
-            },
+            }
             serde_json::Value::Number(n) => {
                 if let Some(n) = n.as_u64() {
                     writer.write(Felt::from(n));
@@ -565,7 +570,7 @@ impl<'a> Encode for ValueCodec<'a> {
                     ValueCodec(&serde_json::Value::String(s)).encode(writer)?;
                 }
                 Ok(())
-            },
+            }
             serde_json::Value::Object(obj) => {
                 writer.write(Felt::from(obj.len()));
                 for (key, value) in obj {
@@ -573,11 +578,11 @@ impl<'a> Encode for ValueCodec<'a> {
                     ValueCodec(value).encode(writer)?;
                 }
                 Ok(())
-            },
+            }
             serde_json::Value::Null => {
                 writer.write(Felt::ZERO);
                 Ok(())
-            },
+            }
         }
     }
 }
