@@ -61,7 +61,6 @@ enum PrivilegeScope {
 enum ContextPrivilegeScope {
     Application,
     MemberList,
-    MemberNonces,
     Proxy,
 }
 
