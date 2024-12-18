@@ -167,11 +167,11 @@ pub(crate) fn setup(
             get(get_proposal_handler),
         )
         .route(
-            "/contexts/:context_id/proposals/get_context_value",
+            "/contexts/:context_id/proposals/get-context-value",
             post(get_context_value_handler),
         )
         .route(
-            "/contexts/:context_id/proposals/context_storage_entries",
+            "/contexts/:context_id/proposals/context-storage-entries",
             post(get_context_storage_entries_handler),
         );
 
