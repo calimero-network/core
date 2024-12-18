@@ -39,6 +39,7 @@ impl Encode for ContextVariableKey {
 
         // Use exactly 16 bytes per chunk
         let chunk_size = 16;
+        #[allow(clippy::integer_division)]
         let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
         // Write number of chunks first
