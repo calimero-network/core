@@ -105,33 +105,41 @@ impl From<ContextRequestKind<'_>> for ICContextRequestKind {
                 author_id: author_id.rt().expect("infallible conversion"),
                 application: application.into(),
             },
-            ContextRequestKind::UpdateApplication { application } => {
+            ContextRequestKind::UpdateApplication { application, nonce } => {
                 ICContextRequestKind::UpdateApplication {
                     application: application.into(),
                 }
             }
-            ContextRequestKind::AddMembers { members } => ICContextRequestKind::AddMembers {
+            ContextRequestKind::AddMembers { members, nonce } => ICContextRequestKind::AddMembers {
                 members: members
                     .into_owned()
                     .into_iter()
                     .map(|m| m.rt().expect("infallible conversion"))
                     .collect(),
             },
-            ContextRequestKind::RemoveMembers { members } => ICContextRequestKind::RemoveMembers {
-                members: members
-                    .into_owned()
-                    .into_iter()
-                    .map(|m| m.rt().expect("infallible conversion"))
-                    .collect(),
-            },
-            ContextRequestKind::Grant { capabilities } => ICContextRequestKind::Grant {
+            ContextRequestKind::RemoveMembers { members, nonce } => {
+                ICContextRequestKind::RemoveMembers {
+                    members: members
+                        .into_owned()
+                        .into_iter()
+                        .map(|m| m.rt().expect("infallible conversion"))
+                        .collect(),
+                }
+            }
+            ContextRequestKind::Grant {
+                capabilities,
+                nonce,
+            } => ICContextRequestKind::Grant {
                 capabilities: capabilities
                     .into_owned()
                     .into_iter()
                     .map(|(id, cap)| (id.rt().expect("infallible conversion"), cap.into()))
                     .collect(),
             },
-            ContextRequestKind::Revoke { capabilities } => ICContextRequestKind::Revoke {
+            ContextRequestKind::Revoke {
+                capabilities,
+                nonce,
+            } => ICContextRequestKind::Revoke {
                 capabilities: capabilities
                     .into_owned()
                     .into_iter()

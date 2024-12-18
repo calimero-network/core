@@ -89,18 +89,23 @@ pub enum ContextRequestKind<'a> {
     UpdateApplication {
         #[serde(borrow)]
         application: Application<'a>,
+        nonce: u64,
     },
     AddMembers {
         members: Cow<'a, [Repr<ContextIdentity>]>,
+        nonce: u64,
     },
     RemoveMembers {
         members: Cow<'a, [Repr<ContextIdentity>]>,
+        nonce: u64,
     },
     Grant {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
+        nonce: u64,
     },
     Revoke {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
+        nonce: u64,
     },
     UpdateProxyContract,
 }

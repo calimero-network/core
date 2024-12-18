@@ -6,7 +6,7 @@ use calimero_context_config::types::{
 };
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
 use near_sdk::serde_json::{self, json};
-use near_sdk::store::IterableSet;
+use near_sdk::store::{IterableMap, IterableSet};
 use near_sdk::{env, near, require, AccountId, Gas, NearToken, Promise, PromiseError};
 
 use super::{
@@ -40,19 +40,30 @@ impl ContextConfigs {
                     let _is_sent_on_drop =
                         self.add_context(&request.signer_id, context_id, author_id, application);
                 }
-                ContextRequestKind::UpdateApplication { application } => {
+                ContextRequestKind::UpdateApplication { application, nonce } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.update_application(&request.signer_id, context_id, application);
                 }
-                ContextRequestKind::AddMembers { members } => {
+                ContextRequestKind::AddMembers { members, nonce } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.add_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::RemoveMembers { members } => {
+                ContextRequestKind::RemoveMembers { members, nonce } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.remove_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::Grant { capabilities } => {
+                ContextRequestKind::Grant {
+                    capabilities,
+                    nonce,
+                } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.grant(&request.signer_id, context_id, capabilities.into_owned());
                 }
-                ContextRequestKind::Revoke { capabilities } => {
+                ContextRequestKind::Revoke {
+                    capabilities,
+                    nonce,
+                } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
                 ContextRequestKind::UpdateProxyContract => {
@@ -65,6 +76,24 @@ impl ContextConfigs {
 }
 
 impl ContextConfigs {
+    fn check_and_increment_nonce(
+        &mut self,
+        nonce: &u64,
+        signer_id: &SignerId,
+        context_id: Repr<ContextId>,
+    ) {
+        let context: &mut Context = self
+            .contexts
+            .get_mut(&context_id)
+            .expect("context does not exist");
+        let context_identity = signer_id.rt().expect("Infallible");
+        let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
+        require!(current_nonce < *nonce, "invalid nonce");
+        let _ = context
+            .member_nonces
+            .insert(context_identity.clone(), *nonce);
+    }
+
     fn add_context(
         &mut self,
         signer_id: &SignerId,
@@ -110,6 +139,7 @@ impl ContextConfigs {
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
+            member_nonces: IterableMap::new(b"n"),
             proxy: Guard::new(
                 Prefix::Privileges(PrivilegeScope::Context(
                     *context_id,

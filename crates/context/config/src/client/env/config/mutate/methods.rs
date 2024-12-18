@@ -33,7 +33,10 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {
                 context_id: Repr::new(context_id),
-                kind: ContextRequestKind::UpdateApplication { application },
+                kind: ContextRequestKind::UpdateApplication {
+                    application,
+                    nonce: 0,
+                },
             }),
         }
     }
@@ -53,6 +56,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::AddMembers {
                     members: members.into(),
+                    nonce: 0,
                 },
             }),
         }
@@ -73,6 +77,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::RemoveMembers {
                     members: members.into(),
+                    nonce: 0,
                 },
             }),
         }
@@ -94,6 +99,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::Grant {
                     capabilities: capabilities.into(),
+                    nonce: 0,
                 },
             }),
         }
@@ -115,6 +121,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::Revoke {
                     capabilities: capabilities.into(),
+                    nonce: 0,
                 },
             }),
         }
