@@ -1,4 +1,3 @@
-use eyre::anyhow;
 use starknet::core::codec::{Decode, Encode, Error, FeltWriter};
 use starknet::core::types::{Felt, U256};
 
@@ -289,22 +288,8 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 let args_value: serde_json::Value =
                     serde_json::from_str(&args).expect("Invalid JSON arguments");
 
-                // Convert JSON values to Starknet-compatible felt arguments
-                let felt_args = match args_value {
-                    serde_json::Value::Object(map) => map
-                        .into_iter()
-                        .map(|(_, value)| json_value_to_felt(value))
-                        .collect::<Result<Vec<_>, _>>()
-                        .expect("Failed to convert arguments to Felt"),
-                    serde_json::Value::Array(arr) => arr
-                        .into_iter()
-                        .map(json_value_to_felt)
-                        .collect::<Result<Vec<_>, _>>()
-                        .expect("Failed to convert arguments to Felt"),
-                    value => {
-                        vec![json_value_to_felt(value).expect("Failed to convert argument to Felt")]
-                    }
-                };
+                let mut felt_args = Vec::new();
+                ValueCodec(&args_value).encode(&mut felt_args).expect("Failed to encode arguments");
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
@@ -533,33 +518,66 @@ impl From<(Vec<Felt>, Vec<Felt>)> for ContextStorageEntry {
     }
 }
 
-// Helper function to convert JSON values to Felts
-fn json_value_to_felt(value: serde_json::Value) -> Result<Felt, eyre::Error> {
-    match value {
-        serde_json::Value::String(s) => {
-            if s.starts_with("0x") {
-                // Handle hex strings directly
-                Felt::from_hex(&s).map_err(|e| anyhow!("Invalid hex string: {}", e))
-            } else {
-                Ok(Felt::from_bytes_be_slice(s.as_bytes()))
-            }
-        },
-        serde_json::Value::Number(n) => {
-            if let Some(n) = n.as_u64() {
-                Ok(Felt::from(n))
-            } else {
-                Ok(Felt::from_bytes_be_slice(n.to_string().as_bytes()))
-            }
-        },
-        serde_json::Value::Array(arr) => {
-            let json_str = serde_json::to_string(&arr)?;
-            Ok(Felt::from_bytes_be_slice(json_str.as_bytes()))
-        },
-        serde_json::Value::Object(obj) => {
-            let json_str = serde_json::to_string(&obj)?;
-            Ok(Felt::from_bytes_be_slice(json_str.as_bytes()))
-        },
-        serde_json::Value::Bool(b) => Ok(Felt::from(b as u64)),
-        serde_json::Value::Null => Ok(Felt::ZERO),
+struct ValueCodec<'a>(&'a serde_json::Value);
+
+impl<'a> Encode for ValueCodec<'a> {
+    fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
+        match self.0 {
+            serde_json::Value::Bool(b) => {
+                writer.write(Felt::from(*b as u64));
+                Ok(())
+            },
+            serde_json::Value::String(s) => {
+                if s.starts_with("0x") {
+                    // Handle hex string directly as a single Felt
+                    writer.write(Felt::from_hex(&s).map_err(|e| Error::custom(&format!("Invalid hex string: {}", e)))?);
+                } else {
+                    // Regular string - split into chunks
+                    let chunk_size = 31;
+                    let chunks: Vec<_> = s.as_bytes().chunks(chunk_size).collect();
+                    
+                    // Write number of chunks first
+                    writer.write(Felt::from(chunks.len()));
+                    
+                    // Write each chunk as a Felt
+                    for chunk in chunks {
+                        writer.write(Felt::from_bytes_be_slice(chunk));
+                    }
+                }
+                Ok(())
+            },
+            serde_json::Value::Array(arr) => {
+                // Write array length first
+                writer.write(Felt::from(arr.len()));
+                
+                // Encode each array element
+                for item in arr {
+                    ValueCodec(item).encode(writer)?;
+                }
+                Ok(())
+            },
+            serde_json::Value::Number(n) => {
+                if let Some(n) = n.as_u64() {
+                    writer.write(Felt::from(n));
+                } else {
+                    // For other numbers, convert to string and encode as string
+                    let s = n.to_string();
+                    ValueCodec(&serde_json::Value::String(s)).encode(writer)?;
+                }
+                Ok(())
+            },
+            serde_json::Value::Object(obj) => {
+                writer.write(Felt::from(obj.len()));
+                for (key, value) in obj {
+                    ValueCodec(&serde_json::Value::String(key.clone())).encode(writer)?;
+                    ValueCodec(value).encode(writer)?;
+                }
+                Ok(())
+            },
+            serde_json::Value::Null => {
+                writer.write(Felt::ZERO);
+                Ok(())
+            },
+        }
     }
 }
