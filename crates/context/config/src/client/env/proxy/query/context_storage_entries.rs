@@ -35,10 +35,7 @@ impl Method<Near> for ContextStorageEntriesRequest {
         // Convert to ContextStorageEntry
         Ok(entries
             .into_iter()
-            .map(|(key, value)| ContextStorageEntry {
-                key,
-                value
-            })
+            .map(|(key, value)| ContextStorageEntry { key, value })
             .collect())
     }
 }
