@@ -42,7 +42,7 @@ impl Encode for ContextVariableKey {
         let chunk_size = 16;
         #[allow(
             clippy::integer_division,
-            reason = "Using integer division for ceiling calculation is intentional here"
+            reason = "Using integer division for ceiling division calculation"
         )]
         let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
