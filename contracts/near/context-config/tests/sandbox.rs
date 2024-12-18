@@ -3,18 +3,17 @@ use std::collections::{BTreeMap, HashMap};
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
-    Application, Capability, ContextIdentity, Revision, Signed, SignerId,
-    ContextId
+    Application, Capability, ContextId, ContextIdentity, Revision, Signed, SignerId,
 };
 use calimero_context_config::{
     ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals,
     ProxyMutateRequest, Request, RequestKind, SystemRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
-use near_workspaces::Contract;
 use eyre::Ok;
 use near_sdk::AccountId;
 use near_workspaces::types::NearToken;
+use near_workspaces::Contract;
 use rand::Rng;
 use serde_json::json;
 use tokio::{fs, time};
@@ -32,15 +31,19 @@ impl Member {
     }
 }
 
-async fn fetch_nonce(contract: &Contract, context_id: Repr<ContextId>, member_pk: Repr<ContextIdentity>)-> eyre::Result<Option<u64>> {
+async fn fetch_nonce(
+    contract: &Contract,
+    context_id: Repr<ContextId>,
+    member_pk: Repr<ContextIdentity>,
+) -> eyre::Result<Option<u64>> {
     let res: Option<u64> = contract
-    .view("fetch_nonce")
-    .args_json(json!({
-        "context_id": context_id,
-        "member_id": member_pk,
-    }))
-    .await?
-    .json()?;
+        .view("fetch_nonce")
+        .args_json(json!({
+            "context_id": context_id,
+            "member_id": member_pk,
+        }))
+        .await?
+        .json()?;
     Ok(res)
 }
 
@@ -260,10 +263,8 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id]);
 
-    let mut nonces: HashMap<Member, u64> = Member::all()
-    .iter()
-    .map(|&member| (member, 1))
-    .collect();
+    let mut nonces: HashMap<Member, u64> =
+        Member::all().iter().map(|&member| (member, 1)).collect();
 
     let res = node1
         .call(contract.id(), "mutate")
@@ -293,9 +294,14 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         ),]
     );
-    assert_eq!(fetch_nonce(&contract, context_id, alice_cx_id).await?.unwrap(), 1, "sssss");
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        1,
+        "sssss"
+    );
     *nonces.entry(Member::Alice).or_insert(0) += 1;
-
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
