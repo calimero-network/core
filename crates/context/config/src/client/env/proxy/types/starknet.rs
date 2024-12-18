@@ -282,22 +282,24 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 ..
             } => {
                 // Parse the JSON string into a Value first
-                let args_value: serde_json::Value = 
+                let args_value: serde_json::Value =
                     serde_json::from_str(&args).expect("Invalid JSON arguments");
                 // Convert JSON values to Starknet-compatible felt arguments
                 let felt_args = match args_value {
                     serde_json::Value::Object(map) => {
                         // For objects, serialize each value to a felt
                         map.into_iter()
-                            .map(|(_, value)| Felt::from_bytes_be_slice(value.to_string().as_bytes()))
+                            .map(|(_, value)| {
+                                Felt::from_bytes_be_slice(value.to_string().as_bytes())
+                            })
                             .collect()
-                    },
+                    }
                     serde_json::Value::Array(arr) => {
                         // For arrays, convert each element
                         arr.into_iter()
                             .map(|value| Felt::from_bytes_be_slice(value.to_string().as_bytes()))
                             .collect()
-                    },
+                    }
                     // Single value
                     value => vec![Felt::from_bytes_be_slice(value.to_string().as_bytes())],
                 };
