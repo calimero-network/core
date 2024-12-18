@@ -1,5 +1,6 @@
 use starknet::core::codec::{Decode, Encode, Error, FeltWriter};
 use starknet::core::types::{Felt, U256};
+use eyre::anyhow;
 
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{ContextIdentity, ContextStorageEntry, ProposalId, SignerId};
@@ -39,7 +40,7 @@ impl Encode for ContextVariableKey {
 
         // Use exactly 16 bytes per chunk
         let chunk_size = 16;
-        #[allow(clippy::integer_division)]
+        #[allow(clippy::integer_division, reason = "Using integer division for ceiling calculation is intentional here")]
         let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
 
         // Write number of chunks first
@@ -287,17 +288,19 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 // Convert JSON values to Starknet-compatible felt arguments
                 let felt_args = match args_value {
                     serde_json::Value::Object(map) => {
-                        // For objects, serialize each value to a felt
                         map.into_iter()
                             .map(|(_, value)| json_value_to_felt(value))
-                            .collect()
-                    }
+                            .collect::<Result<Vec<_>, _>>()
+                            .expect("Failed to convert arguments to Felt")
+                    },
                     serde_json::Value::Array(arr) => {
-                        // For arrays, convert each element
-                        arr.into_iter().map(json_value_to_felt).collect()
-                    }
-                    // Single value
-                    value => vec![json_value_to_felt(value)],
+                        arr.into_iter()
+                            .map(json_value_to_felt)
+                            .collect::<Result<Vec<_>, _>>()
+                            .expect("Failed to convert arguments to Felt")
+                    },
+                    value => vec![json_value_to_felt(value)
+                        .expect("Failed to convert argument to Felt")],
                 };
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
@@ -528,30 +531,36 @@ impl From<(Vec<Felt>, Vec<Felt>)> for ContextStorageEntry {
 }
 
 // Helper function to convert JSON values to Felts
-fn json_value_to_felt(value: serde_json::Value) -> Felt {
+fn json_value_to_felt(value: serde_json::Value) -> Result<Felt, eyre::Error> {
     match value {
-        // For numbers, convert to hex string
-        serde_json::Value::Number(n) => {
-            if let Some(n) = n.as_u64() {
-                Felt::from(n)
-            } else {
-                // For floating point or large numbers, convert to string first
-                Felt::from_bytes_be_slice(n.to_string().as_bytes())
-            }
-        }
-        // For strings, check if it's already hex
         serde_json::Value::String(s) => {
             if s.starts_with("0x") {
-                Felt::from_hex_unchecked(&s)
+                // Handle hex strings directly
+                Felt::from_hex(&s).map_err(|e| anyhow!("Invalid hex string: {}", e))
             } else {
-                Felt::from_bytes_be_slice(s.as_bytes())
+                Ok(Felt::from_bytes_be_slice(s.as_bytes()))
             }
-        }
-        // For booleans
-        serde_json::Value::Bool(b) => Felt::from(b as u64),
-        // For null
-        serde_json::Value::Null => Felt::ZERO,
-        // For arrays and objects, serialize to JSON string first
-        _ => Felt::from_bytes_be_slice(value.to_string().as_bytes()),
+        },
+        serde_json::Value::Number(n) => {
+            if let Some(n) = n.as_u64() {
+                // Handle integers directly
+                Ok(Felt::from(n))
+            } else {
+                // Fall back to string conversion for other numbers
+                Ok(Felt::from_bytes_be_slice(n.to_string().as_bytes()))
+            }
+        },
+        serde_json::Value::Array(arr) => {
+            let json_str = serde_json::to_string(&arr)
+                .map_err(|e| anyhow!("Failed to serialize array: {}", e))?;
+            Ok(Felt::from_bytes_be_slice(json_str.as_bytes()))
+        },
+        serde_json::Value::Object(obj) => {
+            let json_str = serde_json::to_string(&obj)
+                .map_err(|e| anyhow!("Failed to serialize object: {}", e))?;
+            Ok(Felt::from_bytes_be_slice(json_str.as_bytes()))
+        },
+        serde_json::Value::Bool(b) => Ok(Felt::from(b as u64)),
+        serde_json::Value::Null => Ok(Felt::ZERO),
     }
 }
