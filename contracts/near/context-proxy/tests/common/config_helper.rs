@@ -110,6 +110,7 @@ impl ConfigContractHelper {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: guest_ids.into(),
+                        nonce: 0,
                     },
                 ));
                 Request::new(host_id.rt()?, kind)
