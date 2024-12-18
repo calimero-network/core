@@ -89,7 +89,7 @@ pub enum StarknetProxyMutateRequestKind {
 
 #[derive(Debug, Encode, Decode)]
 pub enum StarknetProposalActionWithArgs {
-    ExternalFunctionCall(Felt, Felt, Vec<Felt>),
+    ExternalFunctionCall(Felt, Felt, StarknetU256, Vec<Felt>),
     Transfer(Felt, StarknetU256),
     SetNumApprovals(Felt),
     SetActiveProposalsLimit(Felt),
@@ -277,23 +277,34 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 receiver_id,
                 method_name,
                 args,
+                deposit,
                 ..
             } => {
-                let args_vec: Vec<String> = serde_json::from_str(&args).unwrap_or_default();
-                let felt_args = args_vec
-                    .iter()
-                    .map(|arg| {
-                        if arg.starts_with("0x") {
-                            Felt::from_hex_unchecked(arg)
-                        } else {
-                            Felt::from_bytes_be_slice(arg.as_bytes())
-                        }
-                    })
-                    .collect();
+                // Parse the JSON string into a Value first
+                let args_value: serde_json::Value = serde_json::from_str(&args)
+                    .expect("Invalid JSON arguments");
+                // Convert JSON values to Starknet-compatible felt arguments
+                let felt_args = match args_value {
+                    serde_json::Value::Object(map) => {
+                        // For objects, serialize each value to a felt
+                        map.into_iter()
+                            .map(|(_, value)| json_value_to_felt(value))
+                            .collect()
+                    },
+                    serde_json::Value::Array(arr) => {
+                        // For arrays, convert each element
+                        arr.into_iter()
+                            .map(json_value_to_felt)
+                            .collect()
+                    },
+                    // Single value
+                    value => vec![json_value_to_felt(value)],
+                };
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
                     Felt::from_bytes_be_slice(method_name.as_bytes()),
+                    StarknetU256::from(deposit),
                     felt_args,
                 )
             }
@@ -328,7 +339,7 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
 impl From<StarknetProposalActionWithArgs> for ProposalAction {
     fn from(action: StarknetProposalActionWithArgs) -> Self {
         match action {
-            StarknetProposalActionWithArgs::ExternalFunctionCall(contract, selector, calldata) => {
+            StarknetProposalActionWithArgs::ExternalFunctionCall(contract, selector, amount, calldata) => {
                 ProposalAction::ExternalFunctionCall {
                     receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
                     method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
@@ -337,7 +348,9 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                         .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
                         .collect::<Vec<_>>()
                         .join(","),
-                    deposit: 0,
+                    deposit: u128::from_be_bytes(amount.0.low.to_bytes_be()[16..32].try_into().unwrap())
+                        + (u128::from_be_bytes(amount.0.high.to_bytes_be()[16..32].try_into().unwrap())
+                            << 64),
                     gas: 0,
                 }
             }
@@ -508,4 +521,33 @@ impl From<(Vec<Felt>, Vec<Felt>)> for ContextStorageEntry {
 
         ContextStorageEntry { key, value }
     }
+}
+
+// Helper function to convert JSON values to Felts
+fn json_value_to_felt(value: serde_json::Value) -> Felt {
+  match value {
+      // For numbers, convert to hex string
+      serde_json::Value::Number(n) => {
+          if let Some(n) = n.as_u64() {
+              Felt::from(n)
+          } else {
+              // For floating point or large numbers, convert to string first
+              Felt::from_bytes_be_slice(n.to_string().as_bytes())
+          }
+      },
+      // For strings, check if it's already hex
+      serde_json::Value::String(s) => {
+          if s.starts_with("0x") {
+              Felt::from_hex_unchecked(&s)
+          } else {
+              Felt::from_bytes_be_slice(s.as_bytes())
+          }
+      },
+      // For booleans
+      serde_json::Value::Bool(b) => Felt::from(b as u64),
+      // For null
+      serde_json::Value::Null => Felt::ZERO,
+      // For arrays and objects, serialize to JSON string first
+      _ => Felt::from_bytes_be_slice(value.to_string().as_bytes()),
+  }
 }
