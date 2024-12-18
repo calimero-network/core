@@ -69,7 +69,6 @@ impl JoinCommand {
         let join_result = join_result
             .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
 
-        println!("Join result {:?}", join_result);
 
         Ok(())
     }
