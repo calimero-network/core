@@ -145,7 +145,6 @@ pub enum ProposalAction {
         method_name: String,
         args: String,
         deposit: NativeToken,
-        gas: Gas,
     },
     Transfer {
         receiver_id: String,

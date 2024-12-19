@@ -299,7 +299,6 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                         .collect::<Vec<_>>()
                         .join(","),
                     deposit: 0,
-                    gas: 0,
                 }
             }
             StarknetProposalActionWithArgs::Transfer(receiver, amount) => {

@@ -130,6 +130,21 @@ impl ProxyContract {
             return PromiseOrValue::Value(true);
         }
 
+        // Calculate gas allocation using Gas type
+        let used_gas = env::used_gas();
+        let prepaid_gas = env::prepaid_gas();
+        let remaining_gas = prepaid_gas.saturating_sub(used_gas);
+        
+        // Reserve 30 TGas for completion callback
+        let gas_for_completion = Gas::from_tgas(30);
+        let available_gas = remaining_gas.saturating_sub(gas_for_completion);
+        
+        // Use at least 5 TGas per call but no more than the available gas
+        let gas_per_call = std::cmp::max(
+            Gas::from_tgas(5),
+            Gas::from_gas(available_gas.as_gas() / promise_actions.len() as u64)
+        );
+
         let mut chained_promise: Option<Promise> = None;
 
         for action in promise_actions {
@@ -139,15 +154,15 @@ impl ProxyContract {
                     method_name,
                     args,
                     deposit,
-                    gas,
                 } => {
                     let account_id: AccountId =
                         AccountId::from_str(receiver_id.as_str()).expect("Invalid account ID");
+                    
                     Promise::new(account_id).function_call(
                         method_name,
                         args.into(),
-                        NearToken::from_near(deposit),
-                        Gas::from_gas(gas),
+                        NearToken::from_yoctonear(deposit),
+                        gas_per_call,
                     )
                 }
                 ProposalAction::Transfer {
