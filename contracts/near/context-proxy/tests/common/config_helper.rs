@@ -104,13 +104,15 @@ impl ConfigContractHelper {
         let host_id: Repr<ContextIdentity> = Repr::new(host.verifying_key().rt()?);
         let context_id: Repr<ContextId> = Repr::new(context.verifying_key().rt()?);
 
+        let nonce = self.get_nonce(caller, &context_id, &host_id).await?;
+
         let signed_request = Signed::new(
             &{
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: guest_ids.into(),
-                        nonce: 0,
+                        nonce,
                     },
                 ));
                 Request::new(host_id.rt()?, kind)
@@ -151,5 +153,25 @@ impl ConfigContractHelper {
             .json()?;
 
         Ok(res)
+    }
+
+    pub async fn get_nonce(
+        &self,
+        caller: &Account,
+        context_id: &Repr<ContextId>,
+        member_id: &Repr<ContextIdentity>,
+    ) -> eyre::Result<u64> {
+        let res: Option<u64> = caller
+            .view(self.config_contract.id(), "fetch_nonce")
+            .args_json(json!({
+                "context_id": context_id,
+                "member_id": member_id
+            }))
+            .await?
+            .json()?;
+        if res.is_none() {
+            return Ok(0);
+        }
+        Ok(res.unwrap())
     }
 }

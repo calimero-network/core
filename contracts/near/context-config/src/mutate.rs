@@ -88,7 +88,7 @@ impl ContextConfigs {
             .expect("context does not exist");
         let context_identity = signer_id.rt().expect("Infallible");
         let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
-        require!(current_nonce < *nonce, "invalid nonce");
+        require!(current_nonce == *nonce, "invalid nonce");
         let _ = context
             .member_nonces
             .insert(context_identity.clone(), *nonce);
