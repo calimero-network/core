@@ -108,10 +108,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         context_id: ContextId,
         member_id: ContextIdentity,
     ) -> Result<u64, ClientError<T>> {
-        let params = fetch_nonce::FetchNonceRequest {
-            context_id: Repr::new(context_id),
-            member: Repr::new(member_id),
-        };
+        let params = fetch_nonce::FetchNonceRequest::new(context_id, member_id);
 
         utils::send(&self.client, Operation::Read(params)).await
     }
