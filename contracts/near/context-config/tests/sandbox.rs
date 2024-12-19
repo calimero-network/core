@@ -264,7 +264,7 @@ async fn main() -> eyre::Result<()> {
     assert_eq!(res, [alice_cx_id]);
 
     let mut nonces: HashMap<Member, u64> =
-        Member::all().iter().map(|&member| (member, 1)).collect();
+        Member::all().iter().map(|&member| (member, 0)).collect();
 
     let res = node1
         .call(contract.id(), "mutate")
@@ -274,7 +274,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![bob_cx_id].into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
+                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
                     },
                 ));
 
@@ -294,12 +294,13 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         ),]
     );
+
     assert_eq!(
         fetch_nonce(&contract, context_id, alice_cx_id)
             .await?
             .unwrap(),
         1,
-        "sssss"
+        "Alice: Nonce should be incremented to 1 after request is sent"
     );
     *nonces.entry(Member::Alice).or_insert(0) += 1;
 
@@ -358,7 +359,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
-                        nonce: *nonces.get(&Member::Bob).unwrap(),
+                        nonce: *nonces.get(&Member::Bob).unwrap() + 1,
                     },
                 ));
 
@@ -380,6 +381,14 @@ async fn main() -> eyre::Result<()> {
             err
         );
     }
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, bob_cx_id)
+            .await?
+            .unwrap(),
+        0,
+        "Nonce should be 0 after request is reverted"
+    );
 
     let res = contract
         .view("application_revision")
@@ -407,7 +416,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::Grant {
                         capabilities: (vec![(bob_cx_id, Capability::ManageMembers)]).into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
+                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
                     },
                 ));
 
@@ -427,6 +436,15 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         )]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        2,
+        "Alice: Nonce should be incremented to 2 after request is sent"
+    );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res = contract
         .view("application_revision")
@@ -454,7 +472,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
-                        nonce: *nonces.get(&Member::Bob).unwrap(),
+                        nonce: *nonces.get(&Member::Bob).unwrap() + 1,
                     },
                 ));
 
@@ -474,6 +492,15 @@ async fn main() -> eyre::Result<()> {
             carol_cx_id, context_id
         ),]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, bob_cx_id)
+            .await?
+            .unwrap(),
+        1,
+        "Bob: Nonce should be incremented to 1 after request is sent"
+    );
+    *nonces.entry(Member::Bob).or_insert(0) += 1;
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
@@ -550,7 +577,7 @@ async fn main() -> eyre::Result<()> {
                             Default::default(),
                             Default::default(),
                         ),
-                        nonce: *nonces.get(&Member::Bob).unwrap(),
+                        nonce: *nonces.get(&Member::Bob).unwrap() + 1,
                     },
                 ));
 
@@ -572,6 +599,14 @@ async fn main() -> eyre::Result<()> {
             err
         );
     }
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, bob_cx_id)
+            .await?
+            .unwrap(),
+        1,
+        "Bob: Nonce should be 1 after request is reverted"
+    );
 
     let res = contract
         .view("application")
@@ -617,7 +652,7 @@ async fn main() -> eyre::Result<()> {
                             Default::default(),
                             Default::default(),
                         ),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
+                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
                     },
                 ));
 
@@ -637,6 +672,15 @@ async fn main() -> eyre::Result<()> {
             context_id, application_id, new_application_id
         )]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        3,
+        "Alice: Nonce should be incremented to 3 after request is sent"
+    );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res = contract
         .view("application")
@@ -676,7 +720,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::RemoveMembers {
                         members: vec![bob_cx_id].into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
+                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
                     },
                 ));
 
@@ -696,6 +740,15 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         )]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        4,
+        "Alice: Nonce should be incremented to 4 after request is sent"
+    );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res: BTreeMap<Repr<SignerId>, Vec<Capability>> = contract
         .view("privileges")
@@ -767,7 +820,7 @@ async fn main() -> eyre::Result<()> {
                 context_id,
                 ContextRequestKind::RemoveMembers {
                     members: vec![carol_cx_id].into(),
-                    nonce: *nonces.get(&Member::Alice).unwrap(),
+                    nonce: *nonces.get(&Member::Alice).unwrap() + 1,
                 },
             ));
 
@@ -775,6 +828,14 @@ async fn main() -> eyre::Result<()> {
         },
         |p| alice_cx_sk.sign(p),
     )?);
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        4,
+        "Alice: Nonce should be 4 after request reverted - expired"
+    );
 
     time::sleep(time::Duration::from_secs(5)).await;
 

@@ -21,7 +21,6 @@ pub(super) struct FetchNonceRequest {
 
 impl FetchNonceRequest {
     pub const fn new(context_id: ContextId, member: ContextIdentity) -> Self {
-      
         Self {
             context_id: Repr::new(context_id),
             member: Repr::new(member),
@@ -39,9 +38,8 @@ impl Method<Near> for FetchNonceRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let nonce: u64 =
-            serde_json::from_slice(&response)?;
-       
+        let nonce: u64 = serde_json::from_slice(&response)?;
+
         Ok(nonce)
     }
 }
@@ -49,7 +47,7 @@ impl Method<Near> for FetchNonceRequest {
 impl Method<Starknet> for FetchNonceRequest {
     type Returns = u64;
 
-    const METHOD: &'static str  = "fetch_nonce";
+    const METHOD: &'static str = "fetch_nonce";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let mut call_data = CallData::default();
@@ -71,13 +69,13 @@ impl Method<Starknet> for FetchNonceRequest {
                 response.len()
             ));
         }
-    
+
         let nonce = u64::from_be_bytes(
             response
                 .try_into()
                 .map_err(|_| eyre::eyre!("Failed to convert response to u64"))?,
         );
-    
+
         Ok(nonce)
     }
 }

@@ -88,7 +88,7 @@ impl ContextConfigs {
             .expect("context does not exist");
         let context_identity = signer_id.rt().expect("Infallible");
         let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
-        require!(current_nonce == *nonce, "invalid nonce");
+        require!(current_nonce < *nonce, "invalid nonce");
         let _ = context
             .member_nonces
             .insert(context_identity.clone(), *nonce);
@@ -212,6 +212,8 @@ impl ContextConfigs {
 
         for member in members {
             env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
+
+            let _ = context.member_nonces.insert(*member, 0);
 
             let _ = ctx_members.insert(*member);
         }

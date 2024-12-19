@@ -8,12 +8,12 @@ use crate::types::{Application, Capability, ContextId, ContextIdentity, Revision
 
 pub mod application;
 pub mod application_revision;
+pub mod fetch_nonce;
 pub mod has_member;
 pub mod members;
 pub mod members_revision;
 pub mod privileges;
 pub mod proxy_contract;
-pub mod fetch_nonce;
 
 #[derive(Debug)]
 pub struct ContextConfigQuery<'a, T> {
