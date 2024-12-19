@@ -5,8 +5,7 @@ on:
     branches:
       - master
 
-  pull_request_target:
-    types: [opened, reopened]
+  pull_request:
     branches:
       - master
 
@@ -39,9 +38,9 @@ jobs:
           curl -s https://raw.githubusercontent.com/calimero-network/core/${{ env.BRANCH_NAME }}/scripts/install-merod.sh | bash
 
       # Validate the binary installation
-      - name: Validate installation
+      - name: Validate merod installation
         run: |
-          which meroctl
+          which merod
           merod --version
 
       # Run the meroctl script
@@ -50,7 +49,7 @@ jobs:
           curl -s https://raw.githubusercontent.com/calimero-network/core/${{ env.BRANCH_NAME }}/scripts/install-meroctl.sh | bash
 
       # Validate the binary installation
-      - name: Validate installation
+      - name: Validate meroctl installation
         run: |
           which meroctl
           meroctl --version
