@@ -350,19 +350,24 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
 impl From<StarknetProposalActionWithArgs> for ProposalAction {
     fn from(action: StarknetProposalActionWithArgs) -> Self {
         match action {
-            StarknetProposalActionWithArgs::ExternalFunctionCall(contract, selector, calldata, _) => {
-                ProposalAction::ExternalFunctionCall {
-                    receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
-                    method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
-                    args: calldata
-                        .0.high.to_bytes_be()
-                        .chunks(32)
-                        .map(|bytes| format!("0x{}", hex::encode(bytes)))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    deposit: 0,
-                }
-            }
+            StarknetProposalActionWithArgs::ExternalFunctionCall(
+                contract,
+                selector,
+                calldata,
+                _,
+            ) => ProposalAction::ExternalFunctionCall {
+                receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
+                method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
+                args: calldata
+                    .0
+                    .high
+                    .to_bytes_be()
+                    .chunks(32)
+                    .map(|bytes| format!("0x{}", hex::encode(bytes)))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                deposit: 0,
+            },
             StarknetProposalActionWithArgs::Transfer(receiver, amount) => {
                 let FeltPair { high, low } = amount.0;
                 ProposalAction::Transfer {
