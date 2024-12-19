@@ -32,13 +32,24 @@ jobs:
             echo "BRANCH_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
           fi
 
-      # Run the installation script
+      # Run the merod script
       - name: Test installation script
         run: |
-          curl -s https://raw.githubusercontent.com/calimero-network/core/${{ env.BRANCH_NAME }}/scripts/install.sh | bash
+          curl -s https://raw.githubusercontent.com/calimero-network/core/${{ env.BRANCH_NAME }}/scripts/install-merod.sh | bash
 
       # Validate the binary installation
-      - name: Validate installation
+      - name: Validate merod installation
+        run: |
+          which merod
+          merod --version
+
+      # Run the meroctl script
+      - name: Test installation script
+        run: |
+          curl -s https://raw.githubusercontent.com/calimero-network/core/${{ env.BRANCH_NAME }}/scripts/install-meroctl.sh | bash
+
+      # Validate the binary installation
+      - name: Validate meroctl installation
         run: |
           which meroctl
           meroctl --version

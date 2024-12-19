@@ -1,7 +1,7 @@
 #!/bin/bash
 
 BINARY_NAME="meroctl"
-VERSION="v0.1.1"
+VERSION="0.2.0"
 REPO="calimero-network/core"
 INSTALL_DIR="$HOME/.local/bin"
 
@@ -29,7 +29,7 @@ fi
 
 # Construct download URL
 TARBALL_NAME="${BINARY_NAME}_${ARCH}-${PLATFORM}.tar.gz"
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$TARBALL_NAME"
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/meroctl-$VERSION/$TARBALL_NAME"
 
 # Ensure installation directory exists
 mkdir -p "$INSTALL_DIR"
