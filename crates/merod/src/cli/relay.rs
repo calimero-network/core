@@ -33,6 +33,7 @@ pub struct RelayCommand {
     pub listen: SocketAddr,
 }
 
+/// Relay incoming requests to specific location
 impl RelayCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(root_args.node_name);

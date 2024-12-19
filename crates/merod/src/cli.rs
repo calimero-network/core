@@ -16,17 +16,22 @@ use relay::RelayCommand;
 use run::RunCommand;
 
 pub const EXAMPLES: &str = r"
-  # Initialize a new node
+  # Initialize node
+  $ merod --node-name node1 init --server-port 2428 --swarm-port 2528
+
+  # Initialize node with a custom home directory data
+  $ mkdir data
   $ merod --home data/ --node-name node1 init
 
   # Configure an existing node
-  $ merod --home data/ --node-name node1 config --server-host 143.34.182.202 --server-port 3000
+  $ merod --node-name node1 config --server-host 143.34.182.202 --server-port 3000
 
-  # Run a node as a peer
-  $ merod --home data/ --node-name node1 run
+  # Run a node
+  $ merod --node-name node1 run
 
-  # Run a node as a coordinator
-  $ merod --home data/ --node-name node1 run --node-type coordinator
+  # Relay incoming requests to specific location
+  $ merod --node-name node2 relay --listen 127.0.0.1:3333
+
 ";
 
 #[derive(Debug, Parser)]
