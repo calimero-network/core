@@ -161,7 +161,16 @@ impl Meroctl {
             .wait_with_output()
             .await?;
 
-        Ok(serde_json::from_slice(&output.stdout)?)
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+
+        if let Some(api_error) = json.get("ApiError") {
+            if let Some(message) = api_error.get("message") {
+                bail!("API Error: {}", message);
+            }
+            bail!("Unknown API Error format: {:?}", api_error);
+        }
+
+        Ok(json)
     }
 
     fn remove_value_from_object(
