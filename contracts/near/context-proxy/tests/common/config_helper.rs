@@ -112,7 +112,7 @@ impl ConfigContractHelper {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: guest_ids.into(),
-                        nonce
+                        nonce,
                     },
                 ));
                 Request::new(host_id.rt()?, kind)
@@ -155,7 +155,12 @@ impl ConfigContractHelper {
         Ok(res)
     }
 
-    pub async fn get_nonce(&self, caller: &Account, context_id: &Repr<ContextId>, member_id: &Repr<ContextIdentity>) -> eyre::Result<u64> {
+    pub async fn get_nonce(
+        &self,
+        caller: &Account,
+        context_id: &Repr<ContextId>,
+        member_id: &Repr<ContextIdentity>,
+    ) -> eyre::Result<u64> {
         let res: Option<u64> = caller
             .view(self.config_contract.id(), "fetch_nonce")
             .args_json(json!({
