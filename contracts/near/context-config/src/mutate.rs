@@ -213,6 +213,8 @@ impl ContextConfigs {
         for member in members {
             env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
 
+            let _ = context.member_nonces.insert(*member, 0);
+
             let _ = ctx_members.insert(*member);
         }
     }
