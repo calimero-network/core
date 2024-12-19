@@ -159,12 +159,10 @@ impl<'a> Method<Icp> for Mutate<'a> {
 }
 
 impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
-    pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ClientError<T>> {
+    pub async fn send(self, signing_key: [u8; 32], nonce: u64) -> Result<(), ClientError<T>> {
         let request = Mutate {
             signing_key,
-            // todo! when nonces are implemented in context
-            // todo! config contract, we fetch it here first
-            nonce: 0,
+            nonce,
             kind: self.kind,
         };
 

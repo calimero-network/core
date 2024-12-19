@@ -13,6 +13,7 @@ pub mod members;
 pub mod members_revision;
 pub mod privileges;
 pub mod proxy_contract;
+pub mod fetch_nonce;
 
 #[derive(Debug)]
 pub struct ContextConfigQuery<'a, T> {
@@ -97,6 +98,19 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     ) -> Result<String, ClientError<T>> {
         let params = proxy_contract::ProxyContractRequest {
             context_id: Repr::new(context_id),
+        };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn fetch_nonce(
+        &self,
+        context_id: ContextId,
+        member_id: ContextIdentity,
+    ) -> Result<u64, ClientError<T>> {
+        let params = fetch_nonce::FetchNonceRequest {
+            context_id: Repr::new(context_id),
+            member: Repr::new(member_id),
         };
 
         utils::send(&self.client, Operation::Read(params)).await
