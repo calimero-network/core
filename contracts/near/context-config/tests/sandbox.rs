@@ -274,7 +274,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![bob_cx_id].into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
@@ -359,7 +359,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
-                        nonce: *nonces.get(&Member::Bob).unwrap() + 1,
+                        nonce: *nonces.get(&Member::Bob).unwrap(),
                     },
                 ));
 
@@ -416,7 +416,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::Grant {
                         capabilities: (vec![(bob_cx_id, Capability::ManageMembers)]).into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
@@ -472,7 +472,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
-                        nonce: *nonces.get(&Member::Bob).unwrap() + 1,
+                        nonce: *nonces.get(&Member::Bob).unwrap(),
                     },
                 ));
 
@@ -577,7 +577,7 @@ async fn main() -> eyre::Result<()> {
                             Default::default(),
                             Default::default(),
                         ),
-                        nonce: *nonces.get(&Member::Bob).unwrap() + 1,
+                        nonce: *nonces.get(&Member::Bob).unwrap(),
                     },
                 ));
 
@@ -652,7 +652,7 @@ async fn main() -> eyre::Result<()> {
                             Default::default(),
                             Default::default(),
                         ),
-                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
@@ -720,7 +720,7 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::RemoveMembers {
                         members: vec![bob_cx_id].into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap() + 1,
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
@@ -820,7 +820,7 @@ async fn main() -> eyre::Result<()> {
                 context_id,
                 ContextRequestKind::RemoveMembers {
                     members: vec![carol_cx_id].into(),
-                    nonce: *nonces.get(&Member::Alice).unwrap() + 1,
+                    nonce: *nonces.get(&Member::Alice).unwrap(),
                 },
             ));
 
