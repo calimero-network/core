@@ -64,9 +64,8 @@ impl JoinCommand {
 
         environment.output.write(&response);
 
-        let join_result = response.data;
-
-        let join_result = join_result
+        let join_result = response
+            .data
             .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
 
         println!("Join result {:?}", join_result);
