@@ -438,7 +438,6 @@ impl ContextManager {
             )
             .fetch_nonce(context_id.rt().expect("infallible conversion"), member_id)
             .await?;
-        let nonce = nonce + 1;
 
         self.config_client
             .mutate::<ContextConfigEnv>(
@@ -970,7 +969,6 @@ impl ContextManager {
                 signer_id.rt().expect("infallible conversion"),
             )
             .await?;
-        let nonce = nonce + 1;
 
         let _ = self
             .config_client
