@@ -128,10 +128,7 @@ impl ContextConfigs {
         member_id: Repr<ContextIdentity>,
         context_id: Repr<ContextId>,
     ) -> Option<&u64> {
-        let context = self
-            .contexts
-            .get(&context_id)
-            .expect("context does not exist");
+        let context = self.contexts.get(&context_id)?;
         context.member_nonces.get(&member_id)
     }
 }
