@@ -350,13 +350,14 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
 impl From<StarknetProposalActionWithArgs> for ProposalAction {
     fn from(action: StarknetProposalActionWithArgs) -> Self {
         match action {
-            StarknetProposalActionWithArgs::ExternalFunctionCall(contract, selector, calldata) => {
+            StarknetProposalActionWithArgs::ExternalFunctionCall(contract, selector, calldata, _) => {
                 ProposalAction::ExternalFunctionCall {
                     receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
                     method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
                     args: calldata
-                        .iter()
-                        .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
+                        .0.high.to_bytes_be()
+                        .chunks(32)
+                        .map(|bytes| format!("0x{}", hex::encode(bytes)))
                         .collect::<Vec<_>>()
                         .join(","),
                     deposit: 0,

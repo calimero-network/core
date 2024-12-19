@@ -1113,7 +1113,6 @@ async fn test_deploy() -> eyre::Result<()> {
         method_name: "increment".to_string(),
         args: "[]".to_string(),
         deposit: 0,
-        gas: 1_000_000_000_000,
     }];
 
     let request = ProxyMutateRequest::Propose {
@@ -1158,14 +1157,12 @@ async fn test_deploy() -> eyre::Result<()> {
         method_name,
         args,
         deposit,
-        gas,
     } = &created_proposal.actions[0]
     {
         assert_eq!(receiver_id, contract.id());
         assert_eq!(method_name, "increment");
         assert_eq!(args, "[]");
         assert_eq!(*deposit, 0);
-        assert_eq!(*gas, 1_000_000_000_000);
     } else {
         panic!("Expected ExternalFunctionCall action");
     }
