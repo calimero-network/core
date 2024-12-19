@@ -165,13 +165,16 @@ impl ConfigContractHelper {
             .view(self.config_contract.id(), "fetch_nonce")
             .args_json(json!({
                 "context_id": context_id,
-                "member_id": member_id
+                "member_id": member_id,
             }))
             .await?
             .json()?;
+
         if res.is_none() {
+            // User doesn't have a nonce yet
             return Ok(0);
         }
+
         Ok(res.unwrap())
     }
 }

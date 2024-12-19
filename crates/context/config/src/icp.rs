@@ -47,7 +47,6 @@ impl TryFrom<ProposalAction> for ICProposalAction {
                 method_name,
                 args,
                 deposit,
-                gas: _,
             } => ICProposalAction::ExternalFunctionCall {
                 receiver_id: receiver_id
                     .parse::<Principal>()
@@ -99,7 +98,6 @@ impl From<ICProposalAction> for ProposalAction {
                 method_name,
                 args,
                 deposit,
-                gas: 0,
             },
             ICProposalAction::Transfer {
                 receiver_id,

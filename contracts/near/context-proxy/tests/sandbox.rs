@@ -381,7 +381,6 @@ async fn test_execute_proposal() -> Result<()> {
         method_name: "increment".to_string(),
         args: serde_json::to_string(&Vec::<u8>::new())?,
         deposit: 0,
-        gas: 1_000_000_000_000,
     }];
 
     create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await?;
@@ -531,7 +530,6 @@ async fn test_combined_proposals() -> Result<()> {
             method_name: "increment".to_string(),
             args: serde_json::to_string(&Vec::<u8>::new())?,
             deposit: 0,
-            gas: 1_000_000_000_000,
         },
         ProposalAction::SetActiveProposalsLimit {
             active_proposals_limit: 5,
@@ -578,7 +576,6 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
             method_name: "non_existent_method".to_string(), // This method does not exist
             args: serde_json::to_string(&Vec::<u8>::new())?,
             deposit: 0,
-            gas: 1_000_000_000_000,
         },
         ProposalAction::SetActiveProposalsLimit {
             active_proposals_limit: 5,
