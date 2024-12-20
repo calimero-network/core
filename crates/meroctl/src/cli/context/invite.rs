@@ -1,4 +1,4 @@
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
 use clap::Parser;
@@ -38,6 +38,12 @@ impl Report for InviteToContextResponse {
 
 impl InviteCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let _ignored = self.invite(environment).await?;
+
+        Ok(())
+    }
+
+    pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
         let response: InviteToContextResponse = do_request(
@@ -55,6 +61,10 @@ impl InviteCommand {
 
         environment.output.write(&response);
 
-        Ok(())
+        let invitation_payload = response
+            .data
+            .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
+
+        Ok(invitation_payload)
     }
 }
