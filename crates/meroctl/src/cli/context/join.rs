@@ -38,7 +38,7 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let _ignored = self.join(environment);
+        let _ignored = self.join(environment).await?;
         Ok(())
     }
 

@@ -61,9 +61,8 @@ impl InviteCommand {
 
         environment.output.write(&response);
 
-        let invitation_payload = response.data;
-
-        let invitation_payload = invitation_payload
+        let invitation_payload = response
+            .data
             .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
 
         Ok(invitation_payload)

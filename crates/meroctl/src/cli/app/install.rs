@@ -37,7 +37,7 @@ impl Report for InstallApplicationResponse {
 
 impl InstallCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let _ignored = self.install_app(environment).await;
+        let _ignored = self.install_app(environment).await?;
 
         Ok(())
     }
