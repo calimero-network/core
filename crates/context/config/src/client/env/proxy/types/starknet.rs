@@ -353,20 +353,21 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
             StarknetProposalActionWithArgs::ExternalFunctionCall(
                 contract,
                 selector,
+                amount,
                 calldata,
-                _,
             ) => ProposalAction::ExternalFunctionCall {
                 receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
                 method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
                 args: calldata
-                    .0
-                    .high
-                    .to_bytes_be()
-                    .chunks(32)
-                    .map(|bytes| format!("0x{}", hex::encode(bytes)))
+                    .iter()
+                    .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
                     .collect::<Vec<_>>()
                     .join(","),
-                deposit: 0,
+                deposit: u128::from_be_bytes(
+                    amount.0.low.to_bytes_be()[16..32].try_into().unwrap(),
+                ) + (u128::from_be_bytes(
+                    amount.0.high.to_bytes_be()[16..32].try_into().unwrap(),
+                ) << 64),
             },
             StarknetProposalActionWithArgs::Transfer(receiver, amount) => {
                 let FeltPair { high, low } = amount.0;
