@@ -32,24 +32,21 @@ pub struct StartBootstrapCommand {
 }
 
 impl StartBootstrapCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(mut self, environment: &Environment) -> EyreResult<()> {
         println!("Starting bootstrap process");
         let nodes_dir: Utf8PathBuf = environment.args.home.clone();
-        let binary = self.merod_path.clone();
         let mut processes: Vec<Child> = vec![];
-
-        let mut app_path = self.app_path.clone();
 
         // TODO app default from releases
 
         let mut demo_app = false;
-        if app_path.is_none() {
+        if self.app_path.is_none() {
             println!("Downloading demo app...");
             demo_app = true;
 
             let wasm_url = "https://github.com/calimero-network/core-app-template/raw/refs/heads/master/logic/res/logic.wasm";
             let output_path: Utf8PathBuf = "output/app.wasm".into();
-            app_path = Some(output_path.clone());
+            self.app_path = Some(output_path.clone());
 
             if let Err(e) = self.download_wasm(wasm_url, output_path).await {
                 bail!("Failed to download the WASM file: {:?}", e);
@@ -70,7 +67,6 @@ impl StartBootstrapCommand {
 
         let node1_process = self
             .initialize_and_start_node(
-                binary.clone(),
                 nodes_dir.to_owned(),
                 node1_log_dir.to_owned(),
                 &node1_name,
@@ -82,11 +78,7 @@ impl StartBootstrapCommand {
 
         println!("Creating context in {:?}", node1_name);
         let (context_id, public_key, application_id) =
-            StartBootstrapCommand::create_context_in_bootstrap(
-                app_path.to_owned(),
-                node1_environment,
-            )
-            .await?;
+            self.create_context_in_bootstrap(node1_environment).await?;
 
         let node2_name = "node2".to_owned();
         let node2_log_dir: Utf8PathBuf = "output/node_2_output".into();
@@ -102,7 +94,6 @@ impl StartBootstrapCommand {
 
         let node2_process = self
             .initialize_and_start_node(
-                binary,
                 nodes_dir.to_owned(),
                 node2_log_dir.to_owned(),
                 &node2_name,
@@ -128,20 +119,21 @@ impl StartBootstrapCommand {
 
         if demo_app {
             println!(
-                "Application is available at https://calimero-network.github.io/core-app-template/"
-            );
-            println!("Open it in a separate window for each node.");
-            println!(
-                "Application id for node {:?} is {:?} and url is http://localhost:{}",
-                node1_environment.args.node_name,
-                application_id.to_string(),
-                node1_server_port
+                "Connect to the node from https://calimero-network.github.io/core-app-template/"
             );
             println!(
-                "Application id for node {:?} is {:?} and url is http://localhost:{}",
-                node1_environment.args.node_name,
-                application_id.to_string(),
-                node2_server_port
+                "Open application in two separate windows to use it with two different nodes."
+            );
+            println!("Application setup screen requires application id and node url.");
+            println!("Application id is {:?} ", application_id.to_string(),);
+
+            println!(
+                "Node {:?} url is http://localhost:{}",
+                node1_environment.args.node_name, node1_server_port
+            );
+            println!(
+                "Node {:?} url is http://localhost:{}",
+                node1_environment.args.node_name, node2_server_port
             );
         }
         println!("************************************************");
@@ -153,7 +145,6 @@ impl StartBootstrapCommand {
 
     async fn initialize_and_start_node(
         &self,
-        binary: Utf8PathBuf,
         nodes_dir: Utf8PathBuf,
         log_dir: Utf8PathBuf,
         node_name: &str,
@@ -163,7 +154,6 @@ impl StartBootstrapCommand {
         println!("Initializing node {:?}", node_name);
 
         self.init(
-            binary.to_owned(),
             nodes_dir.to_owned(),
             log_dir.to_owned(),
             node_name.to_owned(),
@@ -175,7 +165,7 @@ impl StartBootstrapCommand {
         println!("Starting node {:?}.", node_name);
 
         let process = self
-            .run_node(binary, nodes_dir, log_dir, node_name.to_owned())
+            .run_node(nodes_dir, log_dir, node_name.to_owned())
             .await?;
 
         sleep(Duration::from_secs(10)).await;
@@ -196,13 +186,12 @@ impl StartBootstrapCommand {
             invitee_environment.args.node_name, context_id
         );
 
-        let invitation_payload = InviteCommand::invite(
+        let invite_command = InviteCommand {
             context_id,
-            inviter_public_key,
-            invitee_private_key.public_key(),
-            invitor_environment,
-        )
-        .await?;
+            inviter_id: inviter_public_key,
+            invitee_id: invitee_private_key.public_key(),
+        };
+        let invitation_payload = invite_command.invite(invitor_environment).await?;
 
         println!(
             "Node {:?} successfully invited.",
@@ -213,7 +202,12 @@ impl StartBootstrapCommand {
             "Joining node {:?} to context.",
             invitee_environment.args.node_name
         );
-        JoinCommand::join(invitee_private_key, invitation_payload, invitee_environment).await?;
+
+        let join_command = JoinCommand {
+            private_key: invitee_private_key,
+            invitation_payload,
+        };
+        join_command.join(invitee_environment).await?;
         println!(
             "Node {:?} joined successfully.",
             invitee_environment.args.node_name
@@ -224,7 +218,6 @@ impl StartBootstrapCommand {
 
     pub async fn init(
         &self,
-        binary: Utf8PathBuf,
         nodes_dir: Utf8PathBuf,
         log_dir: Utf8PathBuf,
         node_name: String,
@@ -236,7 +229,6 @@ impl StartBootstrapCommand {
 
         let mut child = self
             .run_cmd(
-                binary.clone(),
                 nodes_dir.clone(),
                 log_dir.clone(),
                 node_name.clone(),
@@ -257,14 +249,7 @@ impl StartBootstrapCommand {
         }
 
         let mut child = self
-            .run_cmd(
-                binary,
-                nodes_dir,
-                log_dir,
-                node_name.clone(),
-                &["config"],
-                "config",
-            )
+            .run_cmd(nodes_dir, log_dir, node_name.clone(), &["config"], "config")
             .await?;
         let result = child.wait().await?;
         if !result.success() {
@@ -275,30 +260,31 @@ impl StartBootstrapCommand {
 
     pub async fn run_node(
         &self,
-        binary: Utf8PathBuf,
         nodes_dir: Utf8PathBuf,
         log_dir: Utf8PathBuf,
         node_name: String,
     ) -> EyreResult<Child> {
         Ok(self
-            .run_cmd(binary, nodes_dir, log_dir, node_name, &["run"], "run")
+            .run_cmd(nodes_dir, log_dir, node_name, &["run"], "run")
             .await?)
     }
 
     pub async fn create_context_in_bootstrap(
-        app_path: Option<Utf8PathBuf>,
+        &self,
         environment: &Environment,
     ) -> EyreResult<(ContextId, PublicKey, ApplicationId)> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
-        let app_hash = Some(Hash::new("hash".as_bytes()));
-        let app_metadata = Some("".to_owned());
-        let url = Some("".to_owned());
+        let install_command = InstallCommand {
+            path: self.app_path.clone(),
+            url: Some("".to_owned()),
+            metadata: Some("".to_owned()),
+            hash: Some(Hash::new("hash".as_bytes())),
+        };
 
-        let application_id =
-            InstallCommand::install_app(app_path, app_hash, app_metadata, url, environment).await?;
+        let application_id = install_command.install_app(environment).await?;
 
         let (context_id, public_key) = create_context(
             environment,
@@ -318,7 +304,6 @@ impl StartBootstrapCommand {
 
     async fn run_cmd(
         &self,
-        binary: Utf8PathBuf,
         nodes_dir: Utf8PathBuf,
         log_dir: Utf8PathBuf,
         node_name: String,
@@ -331,7 +316,7 @@ impl StartBootstrapCommand {
         let log_file = log_dir.join(format!("{}.log", log_suffix));
         let mut log_file = File::create(&log_file).await?;
 
-        let mut child = Command::new(&binary)
+        let mut child = Command::new(&self.merod_path)
             .args(root_args)
             .stdout(Stdio::piped())
             .spawn()?;

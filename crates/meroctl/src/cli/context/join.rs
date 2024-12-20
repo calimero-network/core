@@ -16,12 +16,12 @@ pub struct JoinCommand {
         value_name = "PRIVATE_KEY",
         help = "The private key for signing the join context request"
     )]
-    private_key: PrivateKey,
+    pub private_key: PrivateKey,
     #[clap(
         value_name = "INVITE",
         help = "The invitation payload for joining the context"
     )]
-    invitation_payload: ContextInvitationPayload,
+    pub invitation_payload: ContextInvitationPayload,
 }
 
 impl Report for JoinContextResponse {
@@ -38,25 +38,20 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        drop(JoinCommand::join(
-            self.private_key,
-            self.invitation_payload,
-            environment,
-        ));
+        let _ignored = self.join(environment);
         Ok(())
     }
 
-    pub async fn join(
-        private_key: PrivateKey,
-        invitation_payload: ContextInvitationPayload,
-        environment: &Environment,
-    ) -> EyreResult<()> {
+    pub async fn join(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
         let response: JoinContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/join")?,
-            Some(JoinContextRequest::new(private_key, invitation_payload)),
+            Some(JoinContextRequest::new(
+                self.private_key,
+                self.invitation_payload,
+            )),
             &config.identity,
             RequestType::Post,
         )

@@ -37,35 +37,26 @@ impl Report for InstallApplicationResponse {
 
 impl InstallCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        drop(
-            InstallCommand::install_app(self.path, self.hash, self.metadata, self.url, environment)
-                .await,
-        );
+        let _ignored = self.install_app(environment).await;
 
         Ok(())
     }
 
-    pub async fn install_app(
-        path: Option<Utf8PathBuf>,
-        hash: Option<Hash>,
-        metadata: Option<String>,
-        url: Option<String>,
-        environment: &Environment,
-    ) -> Result<ApplicationId> {
+    pub async fn install_app(self, environment: &Environment) -> Result<ApplicationId> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let mut is_dev_installation = false;
-        let metadata = metadata.map(String::into_bytes).unwrap_or_default();
+        let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
 
-        let request = if let Some(app_path) = path {
+        let request = if let Some(app_path) = self.path {
             is_dev_installation = true;
             serde_json::to_value(InstallDevApplicationRequest::new(
                 app_path.canonicalize_utf8()?,
                 metadata,
             ))?
-        } else if let Some(app_url) = url {
+        } else if let Some(app_url) = self.url {
             serde_json::to_value(InstallApplicationRequest::new(
                 Url::parse(&app_url)?,
-                hash,
+                self.hash,
                 metadata,
             ))?
         } else {
