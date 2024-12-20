@@ -54,7 +54,7 @@ impl ConfigContractHelper {
                         ),
                     },
                 ));
-                Request::new(context_signer.rt()?, kind)
+                Request::new(context_signer.rt()?, kind, 0)
             },
             |p| context.sign(p),
         )?;
@@ -80,7 +80,7 @@ impl ConfigContractHelper {
                     ContextRequestKind::UpdateProxyContract,
                 ));
 
-                Request::new(host_id.rt()?, kind)
+                Request::new(host_id.rt()?, kind, 0)
             },
             |p| host.sign(p),
         )?;
@@ -112,10 +112,9 @@ impl ConfigContractHelper {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: guest_ids.into(),
-                        nonce,
                     },
                 ));
-                Request::new(host_id.rt()?, kind)
+                Request::new(host_id.rt()?, kind, nonce)
             },
             |p| host.sign(p),
         )?;

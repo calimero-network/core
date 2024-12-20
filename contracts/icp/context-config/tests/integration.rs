@@ -120,6 +120,7 @@ fn test_proxy_management() {
         }),
         signer_id: context_id.rt().expect("infallible conversion"),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -141,6 +142,7 @@ fn test_proxy_management() {
         }),
         signer_id: bob_pk.rt().expect("infallible conversion"),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&bob_sk, update_request);
@@ -160,6 +162,7 @@ fn test_proxy_management() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, update_request);
@@ -209,6 +212,7 @@ fn test_mutate_success_cases() {
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: current_time,
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, request);
@@ -263,6 +267,7 @@ fn test_member_management() {
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -284,6 +289,7 @@ fn test_member_management() {
         }),
         signer_id: (alice_pk.rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_member_request);
@@ -328,6 +334,7 @@ fn test_member_management() {
         }),
         signer_id: (alice_pk.rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, remove_member_request);
@@ -402,6 +409,7 @@ fn test_capability_management() {
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -423,6 +431,7 @@ fn test_capability_management() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_member_request);
@@ -444,6 +453,7 @@ fn test_capability_management() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, grant_request);
@@ -485,6 +495,7 @@ fn test_capability_management() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, revoke_request);
@@ -560,6 +571,7 @@ fn test_application_update() {
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -617,6 +629,7 @@ fn test_application_update() {
         }),
         signer_id: (bob_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&bob_sk, update_request);
@@ -669,6 +682,7 @@ fn test_application_update() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, update_request);
@@ -738,6 +752,7 @@ fn test_edge_cases() {
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -757,6 +772,7 @@ fn test_edge_cases() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_empty_members);
@@ -779,6 +795,7 @@ fn test_edge_cases() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_duplicate_members);
@@ -840,6 +857,7 @@ fn test_timestamp_scenarios() {
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: current_time,
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -861,6 +879,7 @@ fn test_timestamp_scenarios() {
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
         timestamp_ms: current_time - 6_000_000_000, // 6 seconds ago
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, expired_request);
@@ -903,6 +922,7 @@ fn test_concurrent_operations() {
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -928,6 +948,7 @@ fn test_concurrent_operations() {
             }),
             signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
             timestamp_ms: timestamp,
+            nonce: 0,
         };
         requests.push(create_signed_request(&alice_sk, request));
     }

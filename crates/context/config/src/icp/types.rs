@@ -105,41 +105,33 @@ impl From<ContextRequestKind<'_>> for ICContextRequestKind {
                 author_id: author_id.rt().expect("infallible conversion"),
                 application: application.into(),
             },
-            ContextRequestKind::UpdateApplication { application, nonce } => {
+            ContextRequestKind::UpdateApplication { application } => {
                 ICContextRequestKind::UpdateApplication {
                     application: application.into(),
                 }
             }
-            ContextRequestKind::AddMembers { members, nonce } => ICContextRequestKind::AddMembers {
+            ContextRequestKind::AddMembers { members } => ICContextRequestKind::AddMembers {
                 members: members
                     .into_owned()
                     .into_iter()
                     .map(|m| m.rt().expect("infallible conversion"))
                     .collect(),
             },
-            ContextRequestKind::RemoveMembers { members, nonce } => {
-                ICContextRequestKind::RemoveMembers {
-                    members: members
-                        .into_owned()
-                        .into_iter()
-                        .map(|m| m.rt().expect("infallible conversion"))
-                        .collect(),
-                }
-            }
-            ContextRequestKind::Grant {
-                capabilities,
-                nonce,
-            } => ICContextRequestKind::Grant {
+            ContextRequestKind::RemoveMembers { members } => ICContextRequestKind::RemoveMembers {
+                members: members
+                    .into_owned()
+                    .into_iter()
+                    .map(|m| m.rt().expect("infallible conversion"))
+                    .collect(),
+            },
+            ContextRequestKind::Grant { capabilities } => ICContextRequestKind::Grant {
                 capabilities: capabilities
                     .into_owned()
                     .into_iter()
                     .map(|(id, cap)| (id.rt().expect("infallible conversion"), cap.into()))
                     .collect(),
             },
-            ContextRequestKind::Revoke {
-                capabilities,
-                nonce,
-            } => ICContextRequestKind::Revoke {
+            ContextRequestKind::Revoke { capabilities } => ICContextRequestKind::Revoke {
                 capabilities: capabilities
                     .into_owned()
                     .into_iter()
@@ -169,10 +161,11 @@ pub struct ICRequest {
     pub kind: ICRequestKind,
     pub signer_id: ICRepr<SignerId>,
     pub timestamp_ms: u64,
+    pub nonce: u64,
 }
 
 impl ICRequest {
-    pub fn new(signer_id: SignerId, kind: ICRequestKind) -> Self {
+    pub fn new(signer_id: SignerId, kind: ICRequestKind, nonce: u64) -> Self {
         Self {
             signer_id: ICRepr::new(signer_id),
             kind,
@@ -180,6 +173,7 @@ impl ICRequest {
                 .duration_since(UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_millis() as u64,
+            nonce,
         }
     }
 }

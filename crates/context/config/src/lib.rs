@@ -28,11 +28,12 @@ pub struct Request<'a> {
 
     pub signer_id: Repr<SignerId>,
     pub timestamp_ms: Timestamp,
+    pub nonce: u64,
 }
 
 impl<'a> Request<'a> {
     #[must_use]
-    pub fn new(signer_id: SignerId, kind: RequestKind<'a>) -> Self {
+    pub fn new(signer_id: SignerId, kind: RequestKind<'a>, nonce: u64) -> Self {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "This is never expected to overflow"
@@ -46,6 +47,7 @@ impl<'a> Request<'a> {
             signer_id: Repr::new(signer_id),
             timestamp_ms,
             kind,
+            nonce,
         }
     }
 }
@@ -89,23 +91,18 @@ pub enum ContextRequestKind<'a> {
     UpdateApplication {
         #[serde(borrow)]
         application: Application<'a>,
-        nonce: u64,
     },
     AddMembers {
         members: Cow<'a, [Repr<ContextIdentity>]>,
-        nonce: u64,
     },
     RemoveMembers {
         members: Cow<'a, [Repr<ContextIdentity>]>,
-        nonce: u64,
     },
     Grant {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
-        nonce: u64,
     },
     Revoke {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
-        nonce: u64,
     },
     UpdateProxyContract,
 }

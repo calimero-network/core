@@ -40,30 +40,24 @@ impl ContextConfigs {
                     let _is_sent_on_drop =
                         self.add_context(&request.signer_id, context_id, author_id, application);
                 }
-                ContextRequestKind::UpdateApplication { application, nonce } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::UpdateApplication { application } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.update_application(&request.signer_id, context_id, application);
                 }
-                ContextRequestKind::AddMembers { members, nonce } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::AddMembers { members } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.add_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::RemoveMembers { members, nonce } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::RemoveMembers { members } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.remove_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::Grant {
-                    capabilities,
-                    nonce,
-                } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::Grant { capabilities } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.grant(&request.signer_id, context_id, capabilities.into_owned());
                 }
-                ContextRequestKind::Revoke {
-                    capabilities,
-                    nonce,
-                } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::Revoke { capabilities } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
                 ContextRequestKind::UpdateProxyContract => {

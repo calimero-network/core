@@ -197,6 +197,7 @@ fn create_context_with_proxy(
         }),
         signer_id: context_id.rt().expect("infallible conversion"),
         timestamp_ms: get_time_nanos(pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_context_request(&context_sk, create_request);
@@ -254,6 +255,7 @@ fn add_members_to_context(
         }),
         signer_id: author_pk.rt().expect("infallible conversion"),
         timestamp_ms: get_time_nanos(pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_context_request(author_sk, request);
@@ -345,6 +347,7 @@ fn test_update_proxy_contract() {
         }),
         signer_id: author_pk.rt().expect("infallible conversion"),
         timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_update_request = create_signed_context_request(&author_sk, update_request);
