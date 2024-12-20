@@ -823,45 +823,6 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res.logs(), ["Set validity threshold to `5s`"]);
 
-    let req = node1.call(contract.id(), "mutate").args_json(Signed::new(
-        &{
-            let kind = RequestKind::Context(ContextRequest::new(
-                context_id,
-                ContextRequestKind::RemoveMembers {
-                    members: vec![carol_cx_id].into(),
-                },
-            ));
-
-            Request::new(
-                alice_cx_id.rt()?,
-                kind,
-                *nonces.get(&Member::Alice).unwrap(),
-            )
-        },
-        |p| alice_cx_sk.sign(p),
-    )?);
-
-    assert_eq!(
-        fetch_nonce(&contract, context_id, alice_cx_id)
-            .await?
-            .unwrap(),
-        4,
-        "Alice: Nonce should be 4 after request reverted - expired"
-    );
-
-    time::sleep(time::Duration::from_secs(5)).await;
-
-    let res = req
-        .transact()
-        .await?
-        .raw_bytes()
-        .expect_err("request should've expired");
-
-    {
-        let err = res.to_string();
-        assert!(err.contains("request expired"), "{}", err);
-    }
-
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
         .args_json(json!({

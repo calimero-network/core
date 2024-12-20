@@ -21,16 +21,6 @@ pub async fn mutate(signed_request: ICSigned<ICRequest>) -> Result<(), String> {
         .parse(|r| *r.signer_id)
         .map_err(|e| format!("Failed to verify signature: {}", e))?;
 
-    // Add debug logging
-    let current_time = ic_cdk::api::time() / 1_000_000;
-    let time_diff = current_time.saturating_sub(request.timestamp_ms);
-    if time_diff > 1000 * 5 {
-        return Err(format!(
-            "request expired: diff={}ms, current={}, request={}",
-            time_diff, current_time, request.timestamp_ms
-        ));
-    }
-
     match request.kind {
         ICRequestKind::Context(ICContextRequest { context_id, kind }) => match kind {
             ICContextRequestKind::Add {

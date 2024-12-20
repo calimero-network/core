@@ -23,12 +23,6 @@ impl ContextConfigs {
             .parse(|i| *i.signer_id)
             .expect("failed to parse input");
 
-        require!(
-            env::block_timestamp_ms().saturating_sub(request.timestamp_ms)
-                <= self.config.validity_threshold_ms,
-            "request expired"
-        );
-
         match request.kind {
             RequestKind::Context(ContextRequest {
                 context_id, kind, ..

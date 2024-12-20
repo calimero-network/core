@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::time::UNIX_EPOCH;
 
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{
@@ -35,13 +34,6 @@ fn create_signed_context_request(
     request: ICRequest,
 ) -> ICSigned<ICRequest> {
     ICSigned::new(request, |bytes| signer_key.sign(bytes)).expect("Failed to create signed request")
-}
-
-fn get_time_nanos(pic: &PocketIc) -> u64 {
-    pic.get_time()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_nanos() as u64
 }
 
 // Helper function to create a proposal and verify response
@@ -196,7 +188,6 @@ fn create_context_with_proxy(
             },
         }),
         signer_id: context_id.rt().expect("infallible conversion"),
-        timestamp_ms: get_time_nanos(pic),
         nonce: 0,
     };
 
@@ -254,7 +245,6 @@ fn add_members_to_context(
             kind: ICContextRequestKind::AddMembers { members },
         }),
         signer_id: author_pk.rt().expect("infallible conversion"),
-        timestamp_ms: get_time_nanos(pic),
         nonce: 0,
     };
 
@@ -346,7 +336,6 @@ fn test_update_proxy_contract() {
             kind: ICContextRequestKind::UpdateProxyContract,
         }),
         signer_id: author_pk.rt().expect("infallible conversion"),
-        timestamp_ms: get_time_nanos(&pic),
         nonce: 0,
     };
 
@@ -639,7 +628,6 @@ fn test_approve_own_proposal() {
     let approval = ICProposalApprovalWithSigner {
         signer_id: author_id,
         proposal_id,
-        added_timestamp: get_time_nanos(&pic),
     };
 
     let request = ICProxyMutateRequest::Approve { approval };
@@ -683,7 +671,6 @@ fn test_approve_non_existent_proposal() {
     let approval = ICProposalApprovalWithSigner {
         signer_id,
         proposal_id,
-        added_timestamp: get_time_nanos(&pic),
     };
 
     let request = ICProxyMutateRequest::Approve { approval };
@@ -878,7 +865,6 @@ fn test_proposal_execution_transfer() {
         let approval = ICProposalApprovalWithSigner {
             signer_id,
             proposal_id,
-            added_timestamp: get_time_nanos(&pic),
         };
 
         let request = ICProxyMutateRequest::Approve { approval };
@@ -1023,7 +1009,6 @@ fn test_proposal_execution_external_call() {
         let approval = ICProposalApprovalWithSigner {
             signer_id,
             proposal_id,
-            added_timestamp: get_time_nanos(&pic),
         };
 
         let request = ICProxyMutateRequest::Approve { approval };
@@ -1164,7 +1149,6 @@ fn test_proposal_execution_external_call_with_deposit() {
         let approval = ICProposalApprovalWithSigner {
             signer_id,
             proposal_id,
-            added_timestamp: get_time_nanos(&pic),
         };
 
         let request = ICProxyMutateRequest::Approve { approval };
