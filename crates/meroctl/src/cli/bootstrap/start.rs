@@ -116,6 +116,7 @@ impl StartBootstrapCommand {
 
         println!("************************************************");
         println!("🚀 Bootstrap finished. Nodes are ready to use! 🚀");
+        println!("Context id is {:?} ", context_id.to_string(),);
 
         if demo_app {
             println!(
