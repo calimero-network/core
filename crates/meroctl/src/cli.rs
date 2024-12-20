@@ -51,7 +51,6 @@ pub enum SubCommands {
     App(AppCommand),
     Context(ContextCommand),
     Identity(IdentityCommand),
-    JsonRpc(CallCommand),
     Proxy(ProxyCommand),
     Call(CallCommand),
 }
@@ -91,7 +90,6 @@ impl RootCommand {
             SubCommands::App(application) => application.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Identity(identity) => identity.run(&environment).await,
-            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(&environment).await,
             SubCommands::Proxy(proxy) => proxy.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
         };
