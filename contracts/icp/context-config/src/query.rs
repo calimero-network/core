@@ -136,10 +136,7 @@ fn privileges(
 }
 
 #[ic_cdk::query]
-fn fetch_nonce(
-    context_id: ICRepr<ContextId>,
-    member_id: ICRepr<ContextIdentity>,
-) -> Option<u64> {
+fn fetch_nonce(context_id: ICRepr<ContextId>, member_id: ICRepr<ContextIdentity>) -> Option<u64> {
     with_state(|configs| {
         configs
             .contexts

@@ -929,8 +929,7 @@ fn test_nonce_management() {
         );
 
         let current_nonce = if let Ok(WasmResult::Reply(bytes)) = query_response {
-            candid::decode_one::<Option<u64>>(&bytes)
-                .expect("Failed to decode nonce")
+            candid::decode_one::<Option<u64>>(&bytes).expect("Failed to decode nonce")
         } else {
             panic!("Failed to fetch nonce");
         };

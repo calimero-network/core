@@ -1,5 +1,5 @@
-use std::ops::Deref;
 use std::collections::BTreeMap;
+use std::ops::Deref;
 
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{
@@ -80,7 +80,9 @@ async fn add_context(
         };
 
         // Initialize the author's nonce
-        context.member_nonces.insert(author_id.rt().expect("infallible conversion"), 0);
+        context
+            .member_nonces
+            .insert(author_id.rt().expect("infallible conversion"), 0);
 
         // Store context
         if configs.contexts.insert(context_id, context).is_some() {
@@ -378,11 +380,11 @@ fn check_and_increment_nonce(
 ) -> Result<(), String> {
     let context_identity = signer_id.rt().expect("infallible conversion");
     let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
-    
+
     if current_nonce != nonce {
         return Err("invalid nonce".into());
     }
-    
+
     context.member_nonces.insert(context_identity, nonce + 1);
     Ok(())
 }
