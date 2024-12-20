@@ -38,11 +38,6 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let _ignored = self.join(environment).await?;
-        Ok(())
-    }
-
-    pub async fn join(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
         let response: JoinContextResponse = do_request(

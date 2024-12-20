@@ -184,7 +184,8 @@ impl StartBootstrapCommand {
     ) -> EyreResult<()> {
         println!(
             "Inviting node {:?} to context {:?}",
-            invitee_environment.args.node_name, context_id
+            invitee_environment.args.node_name,
+            context_id.to_string()
         );
 
         let invite_command = InviteCommand {
@@ -208,7 +209,7 @@ impl StartBootstrapCommand {
             private_key: invitee_private_key,
             invitation_payload,
         };
-        join_command.join(invitee_environment).await?;
+        join_command.run(invitee_environment).await?;
         println!(
             "Node {:?} joined successfully.",
             invitee_environment.args.node_name
