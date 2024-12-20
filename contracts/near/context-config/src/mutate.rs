@@ -205,7 +205,7 @@ impl ContextConfigs {
         for member in members {
             env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
 
-            let _ignored = context.member_nonces.insert(*member, 0);
+            let _ignored = context.member_nonces.entry(*member).or_default();
 
             let _ignored = ctx_members.insert(*member);
         }
