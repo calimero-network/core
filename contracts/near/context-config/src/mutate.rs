@@ -140,6 +140,7 @@ impl ContextConfigs {
                 account_id.clone(),
             ),
         };
+
         let _ignored = context.member_nonces.insert(*author_id, 0);
 
         if self.contexts.insert(*context_id, context).is_some() {
@@ -351,7 +352,7 @@ impl ContextConfigs {
         code_mut.take().expect("proxy code not set")
     }
 
-    pub fn init_proxy_contract(
+    fn init_proxy_contract(
         &mut self,
         context_id: Repr<ContextId>,
         account_id: AccountId,
