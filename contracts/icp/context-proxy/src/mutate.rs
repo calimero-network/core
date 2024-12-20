@@ -106,13 +106,24 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                         created_at_time: None,
                     };
 
-                    let _: (Result<u64, TransferError>,) =
+                    // Call transfer and explicitly handle the result
+                    let transfer_result: (Result<u64, TransferError>,) =
                         ic_cdk::call(Principal::from(ledger_id), "transfer", (transfer_args,))
                             .await
-                            .map_err(|e| format!("Transfer failed: {:?}", e))?;
+                            .map_err(|e| format!("Transfer call failed: {:?}", e))?;
+
+                    // Check if the transfer was successful
+                    match transfer_result.0 {
+                        Ok(_block_height) => {
+                            // Transfer succeeded, proceed with cross-contract call
+                        }
+                        Err(transfer_error) => {
+                            return Err(format!("Transfer failed: {:?}", transfer_error));
+                        }
+                    }
                 }
 
-                // Then make the actual cross-contract call
+                // Proceed with cross-contract call only if there was no deposit or transfer succeeded
                 let args_bytes = candid::encode_one(args)
                     .map_err(|e| format!("Failed to encode args: {}", e))?;
 
