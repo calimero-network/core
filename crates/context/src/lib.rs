@@ -954,7 +954,8 @@ impl ContextManager {
                 context_id.rt().expect("infallible conversion"),
                 signer_id.rt().expect("infallible conversion"),
             )
-            .await?.ok_or_eyre("Not a member")?;
+            .await?
+            .ok_or_eyre("Not a member")?;
 
         let _ = self
             .config_client
