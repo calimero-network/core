@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::ops::Deref;
 
 use calimero_context_config::icp::repr::ICRepr;
@@ -70,14 +69,15 @@ async fn add_context(
             application: Guard::new(author_id.rt().expect("infallible conversion"), application),
             members: Guard::new(
                 author_id.rt().expect("infallible conversion"),
-                [(author_id.rt().expect("infallible conversion"), 0)]
-                    .into_iter()
-                    .collect(),
+                [author_id.rt().expect("infallible conversion")].into_iter().collect(),
             ),
             proxy: Guard::new(
                 author_id.rt().expect("infallible conversion"),
                 proxy_canister_id,
             ),
+            member_nonces: [(author_id.rt().expect("infallible conversion"), 0)]
+                .into_iter()
+                .collect(),
         };
 
         // Store context
@@ -175,13 +175,13 @@ fn add_members(
         // Check nonce
         check_and_increment_nonce(context, nonce, signer_id)?;
 
-        // Rest of the function...
         let guard_ref = context.members.get(signer_id).map_err(|e| e.to_string())?;
         let mut ctx_members = guard_ref.get_mut();
 
         for member in members {
-            if !ctx_members.contains_key(&member) {
-                ctx_members.insert(member, 0); // Only insert if member doesn't exist
+            if !ctx_members.contains(&member) {
+                ctx_members.insert(member);
+                let _ignored = context.member_nonces.entry(member).or_default();
             }
         }
 
@@ -204,24 +204,12 @@ fn remove_members(
         // Check nonce
         check_and_increment_nonce(context, nonce, signer_id)?;
 
-        // Get mutable access to the members through the Guard
-        let mut ctx_members = context
-            .members
-            .get(signer_id)
-            .map_err(|e| e.to_string())?
-            .get_mut();
+        let guard_ref = context.members.get(signer_id).map_err(|e| e.to_string())?;
+        let mut ctx_members = guard_ref.get_mut();
 
         for member in members {
             ctx_members.remove(&member);
-
-            // Revoke privileges
-            ctx_members
-                .privileges()
-                .revoke(&member.rt().expect("infallible conversion"));
-            context
-                .application
-                .privileges()
-                .revoke(&member.rt().expect("infallible conversion"));
+            context.member_nonces.remove(&member);
         }
 
         Ok(())
@@ -244,7 +232,7 @@ fn grant(
         check_and_increment_nonce(context, nonce, signer_id)?;
 
         for (identity, capability) in capabilities {
-            let is_member = context.members.deref().contains_key(&identity);
+            let is_member = context.members.deref().contains(&identity);
 
             if !is_member {
                 return Err("unable to grant privileges to non-member".to_string());
@@ -376,15 +364,12 @@ fn check_and_increment_nonce(
     signer_id: &SignerId,
 ) -> Result<(), String> {
     let context_identity = signer_id.rt().expect("infallible conversion");
-    let guard_ref = context.members.get(signer_id).map_err(|e| e.to_string())?;
-    let mut members = guard_ref.get_mut();
-
-    let current_nonce = members.get(&context_identity).copied().unwrap_or(0);
-
+    let current_nonce = context.member_nonces.get(&context_identity).copied().unwrap_or(0);
+    
     if current_nonce != nonce {
         return Err("invalid nonce".into());
     }
-
-    members.insert(context_identity, nonce + 1);
+    
+    context.member_nonces.insert(context_identity, nonce + 1);
     Ok(())
 }
