@@ -239,11 +239,11 @@ pub struct CapabilityAssignment {
 #[derive(Debug, Encode)]
 pub enum ContextRequestKind {
     Add(ContextIdentity, Application),
-    UpdateApplication(Application, u64),
-    AddMembers(Vec<ContextIdentity>, u64),
-    RemoveMembers(Vec<ContextIdentity>, u64),
-    Grant(Vec<CapabilityAssignment>, u64),
-    Revoke(Vec<CapabilityAssignment>, u64),
+    UpdateApplication(Application),
+    AddMembers(Vec<ContextIdentity>),
+    RemoveMembers(Vec<ContextIdentity>),
+    Grant(Vec<CapabilityAssignment>),
+    Revoke(Vec<CapabilityAssignment>),
     UpdateProxyContract,
 }
 
@@ -254,25 +254,18 @@ impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
                 author_id,
                 application,
             } => ContextRequestKind::Add(author_id.into_inner().into(), application.into()),
-            crate::ContextRequestKind::UpdateApplication { application, nonce } => {
-                ContextRequestKind::UpdateApplication(application.into(), nonce)
+            crate::ContextRequestKind::UpdateApplication { application } => {
+                ContextRequestKind::UpdateApplication(application.into())
             }
-            crate::ContextRequestKind::AddMembers { members, nonce } => {
-                ContextRequestKind::AddMembers(
-                    members.into_iter().map(|m| m.into_inner().into()).collect(),
-                    nonce,
-                )
-            }
-            crate::ContextRequestKind::RemoveMembers { members, nonce } => {
+            crate::ContextRequestKind::AddMembers { members } => ContextRequestKind::AddMembers(
+                members.into_iter().map(|m| m.into_inner().into()).collect(),
+            ),
+            crate::ContextRequestKind::RemoveMembers { members } => {
                 ContextRequestKind::RemoveMembers(
                     members.into_iter().map(|m| m.into_inner().into()).collect(),
-                    nonce,
                 )
             }
-            crate::ContextRequestKind::Grant {
-                capabilities,
-                nonce,
-            } => ContextRequestKind::Grant(
+            crate::ContextRequestKind::Grant { capabilities } => ContextRequestKind::Grant(
                 capabilities
                     .into_iter()
                     .map(|(id, cap)| CapabilityAssignment {
@@ -280,12 +273,8 @@ impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
                         capability: cap.into(),
                     })
                     .collect(),
-                nonce,
             ),
-            crate::ContextRequestKind::Revoke {
-                capabilities,
-                nonce,
-            } => ContextRequestKind::Revoke(
+            crate::ContextRequestKind::Revoke { capabilities } => ContextRequestKind::Revoke(
                 capabilities
                     .into_iter()
                     .map(|(id, cap)| CapabilityAssignment {
@@ -293,7 +282,6 @@ impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
                         capability: cap.into(),
                     })
                     .collect(),
-                nonce,
             ),
             crate::ContextRequestKind::UpdateProxyContract => {
                 ContextRequestKind::UpdateProxyContract

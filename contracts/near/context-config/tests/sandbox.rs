@@ -109,7 +109,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 0)
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -155,7 +155,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -186,7 +186,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -274,11 +274,14 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![bob_cx_id].into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -359,11 +362,10 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
-                        nonce: *nonces.get(&Member::Bob).unwrap(),
                     },
                 ));
 
-                Request::new(bob_cx_id.rt()?, kind)
+                Request::new(bob_cx_id.rt()?, kind, *nonces.get(&Member::Bob).unwrap())
             },
             |p| bob_cx_sk.sign(p),
         )?)
@@ -416,11 +418,14 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::Grant {
                         capabilities: (vec![(bob_cx_id, Capability::ManageMembers)]).into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -472,11 +477,10 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
-                        nonce: *nonces.get(&Member::Bob).unwrap(),
                     },
                 ));
 
-                Request::new(bob_cx_id.rt()?, kind)
+                Request::new(bob_cx_id.rt()?, kind, *nonces.get(&Member::Bob).unwrap())
             },
             |p| bob_cx_sk.sign(p),
         )?)
@@ -577,11 +581,10 @@ async fn main() -> eyre::Result<()> {
                             Default::default(),
                             Default::default(),
                         ),
-                        nonce: *nonces.get(&Member::Bob).unwrap(),
                     },
                 ));
 
-                Request::new(bob_cx_id.rt()?, kind)
+                Request::new(bob_cx_id.rt()?, kind, *nonces.get(&Member::Bob).unwrap())
             },
             |p| bob_cx_sk.sign(p),
         )?)
@@ -652,11 +655,14 @@ async fn main() -> eyre::Result<()> {
                             Default::default(),
                             Default::default(),
                         ),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -720,11 +726,14 @@ async fn main() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::RemoveMembers {
                         members: vec![bob_cx_id].into(),
-                        nonce: *nonces.get(&Member::Alice).unwrap(),
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -820,11 +829,14 @@ async fn main() -> eyre::Result<()> {
                 context_id,
                 ContextRequestKind::RemoveMembers {
                     members: vec![carol_cx_id].into(),
-                    nonce: *nonces.get(&Member::Alice).unwrap(),
                 },
             ));
 
-            Request::new(alice_cx_id.rt()?, kind)
+            Request::new(
+                alice_cx_id.rt()?,
+                kind,
+                *nonces.get(&Member::Alice).unwrap(),
+            )
         },
         |p| alice_cx_sk.sign(p),
     )?);
@@ -928,7 +940,7 @@ async fn migration() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -1045,7 +1057,7 @@ async fn test_deploy() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -1087,7 +1099,7 @@ async fn test_deploy() -> eyre::Result<()> {
                     ContextRequestKind::UpdateProxyContract,
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 0)
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -1250,7 +1262,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
                         ),
                     },
                 ));
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -1318,7 +1330,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::UpdateProxyContract,
                 ));
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 0)
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -1398,7 +1410,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::UpdateProxyContract,
                 ));
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 0)
             },
             |p| alice_cx_sk.sign(p),
         )?)

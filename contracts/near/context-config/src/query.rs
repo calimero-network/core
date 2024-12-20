@@ -125,10 +125,12 @@ impl ContextConfigs {
 
     pub fn fetch_nonce(
         &self,
-        member_id: Repr<ContextIdentity>,
         context_id: Repr<ContextId>,
+        member_id: Repr<ContextIdentity>,
     ) -> Option<&u64> {
-        let context = self.contexts.get(&context_id)?;
-        context.member_nonces.get(&member_id)
+        self.contexts
+            .get(&context_id)?
+            .member_nonces
+            .get(&member_id)
     }
 }

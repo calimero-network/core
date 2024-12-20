@@ -44,7 +44,7 @@ impl<'a> Method<Near> for Mutate<'a> {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let signer_sk = SigningKey::from_bytes(&self.signing_key);
 
-        let request = Request::new(signer_sk.verifying_key().rt()?, self.kind);
+        let request = Request::new(signer_sk.verifying_key().rt()?, self.kind, self.nonce);
 
         let signed = Signed::new(&request, |b| signer_sk.sign(b))?;
 
@@ -136,7 +136,11 @@ impl<'a> Method<Icp> for Mutate<'a> {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let signer_sk = SigningKey::from_bytes(&self.signing_key);
 
-        let request = ICRequest::new(signer_sk.verifying_key().rt()?, self.kind.into());
+        let request = ICRequest::new(
+            signer_sk.verifying_key().rt()?,
+            self.kind.into(),
+            self.nonce,
+        );
 
         let signed = ICSigned::new(request, |b| signer_sk.sign(b))?;
 

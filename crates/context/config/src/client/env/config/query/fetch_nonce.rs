@@ -16,14 +16,14 @@ use crate::types::{ContextId, ContextIdentity};
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct FetchNonceRequest {
     pub(super) context_id: Repr<ContextId>,
-    pub(super) member: Repr<ContextIdentity>,
+    pub(super) member_id: Repr<ContextIdentity>,
 }
 
 impl FetchNonceRequest {
-    pub const fn new(context_id: ContextId, member: ContextIdentity) -> Self {
+    pub const fn new(context_id: ContextId, member_id: ContextIdentity) -> Self {
         Self {
             context_id: Repr::new(context_id),
-            member: Repr::new(member),
+            member_id: Repr::new(member_id),
         }
     }
 }
@@ -31,21 +31,19 @@ impl FetchNonceRequest {
 impl Method<Near> for FetchNonceRequest {
     const METHOD: &'static str = "fetch_nonce";
 
-    type Returns = u64;
+    type Returns = Option<u64>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         serde_json::to_vec(&self).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let nonce: u64 = serde_json::from_slice(&response)?;
-
-        Ok(nonce)
+        serde_json::from_slice(&response).map_err(Into::into)
     }
 }
 
 impl Method<Starknet> for FetchNonceRequest {
-    type Returns = u64;
+    type Returns = Option<u64>;
 
     const METHOD: &'static str = "fetch_nonce";
 
@@ -56,8 +54,8 @@ impl Method<Starknet> for FetchNonceRequest {
         let context_id: StarknetContextId = (*self.context_id).into();
         context_id.encode(&mut call_data)?;
 
-        let member: StarknetContextIdentity = (*self.member).into();
-        member.encode(&mut call_data)?;
+        let member_id: StarknetContextIdentity = (*self.member_id).into();
+        member_id.encode(&mut call_data)?;
 
         Ok(call_data.0)
     }
@@ -76,26 +74,26 @@ impl Method<Starknet> for FetchNonceRequest {
                 .map_err(|_| eyre::eyre!("Failed to convert response to u64"))?,
         );
 
-        Ok(nonce)
+        Ok(Some(nonce))
     }
 }
 
 impl Method<Icp> for FetchNonceRequest {
-    type Returns = u64;
+    type Returns = Option<u64>;
 
     const METHOD: &'static str = "fetch_nonce";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id = ICRepr::new(*self.context_id);
-        let member = ICRepr::new(*self.member);
+        let member_id = ICRepr::new(*self.member_id);
 
-        let payload = (context_id, member);
+        let payload = (context_id, member_id);
 
         Encode!(&payload).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded = Decode!(&response, u64)?;
+        let decoded = Decode!(&response, Option<u64>)?;
 
         Ok(decoded)
     }

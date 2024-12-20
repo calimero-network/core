@@ -40,30 +40,24 @@ impl ContextConfigs {
                     let _is_sent_on_drop =
                         self.add_context(&request.signer_id, context_id, author_id, application);
                 }
-                ContextRequestKind::UpdateApplication { application, nonce } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::UpdateApplication { application } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.update_application(&request.signer_id, context_id, application);
                 }
-                ContextRequestKind::AddMembers { members, nonce } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::AddMembers { members } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.add_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::RemoveMembers { members, nonce } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::RemoveMembers { members } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.remove_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::Grant {
-                    capabilities,
-                    nonce,
-                } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::Grant { capabilities } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.grant(&request.signer_id, context_id, capabilities.into_owned());
                 }
-                ContextRequestKind::Revoke {
-                    capabilities,
-                    nonce,
-                } => {
-                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
+                ContextRequestKind::Revoke { capabilities } => {
+                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
                 ContextRequestKind::UpdateProxyContract => {
@@ -89,7 +83,7 @@ impl ContextConfigs {
         let context_identity = signer_id.rt().expect("Infallible");
         let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
         require!(current_nonce == *nonce, "invalid nonce");
-        let _ = context
+        let _ignored = context
             .member_nonces
             .insert(context_identity.clone(), *nonce + 1);
     }
@@ -107,7 +101,7 @@ impl ContextConfigs {
         );
 
         let mut members = IterableSet::new(Prefix::Members(*context_id));
-        let _ = members.insert(*author_id);
+        let _ignored = members.insert(*author_id);
 
         // Create incremental account ID
         let account_id: AccountId = format!("{}.{}", self.next_proxy_id, env::current_account_id())
@@ -116,7 +110,7 @@ impl ContextConfigs {
 
         self.next_proxy_id += 1;
 
-        let context = Context {
+        let mut context = Context {
             application: Guard::new(
                 Prefix::Privileges(PrivilegeScope::Context(
                     *context_id,
@@ -149,6 +143,7 @@ impl ContextConfigs {
                 account_id.clone(),
             ),
         };
+        let _ignored = context.member_nonces.insert(*author_id, 0);
 
         if self.contexts.insert(*context_id, context).is_some() {
             env::panic_str("context already exists");
@@ -213,9 +208,9 @@ impl ContextConfigs {
         for member in members {
             env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
 
-            let _ = context.member_nonces.insert(*member, 0);
+            let _ignored = context.member_nonces.insert(*member, 0);
 
-            let _ = ctx_members.insert(*member);
+            let _ignored = ctx_members.insert(*member);
         }
     }
 
@@ -237,7 +232,7 @@ impl ContextConfigs {
             .get_mut();
 
         for member in members {
-            let _ = ctx_members.remove(&member);
+            let _ignored = ctx_members.remove(&member);
             let member = member.rt().expect("infallible conversion");
 
             env::log_str(&format!(

@@ -217,22 +217,6 @@ impl ContextManager {
                 )
             }
 
-            let nonce: u64 = this
-                .config_client
-                .query::<ContextConfigEnv>(
-                    this.client_config.new.protocol.as_str().into(),
-                    this.client_config.new.network.as_str().into(),
-                    this.client_config.new.contract_id.as_str().into(),
-                )
-                .fetch_nonce(
-                    context.id.rt().expect("infallible conversion"),
-                    identity_secret
-                        .public_key()
-                        .rt()
-                        .expect("infallible conversion"),
-                )
-                .await?;
-
             this.config_client
                 .mutate::<ContextConfigEnv>(
                     this.client_config.new.protocol.as_str().into(),
@@ -253,7 +237,7 @@ impl ContextManager {
                         ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                     ),
                 )
-                .send(*context_secret, nonce)
+                .send(*context_secret, 0)
                 .await?;
 
             let proxy_contract = this
@@ -427,17 +411,19 @@ impl ContextManager {
             return Ok(None);
         };
 
-        let member_id = inviter_id.rt().expect("infallible conversion");
-
-        let nonce: u64 = self
+        let nonce = self
             .config_client
             .query::<ContextConfigEnv>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
             )
-            .fetch_nonce(context_id.rt().expect("infallible conversion"), member_id)
-            .await?;
+            .fetch_nonce(
+                context_id.rt().expect("infallible conversion"),
+                inviter_id.rt().expect("infallible conversion"),
+            )
+            .await?
+            .ok_or_eyre("The inviter doesen't exist")?;
 
         self.config_client
             .mutate::<ContextConfigEnv>(
@@ -957,7 +943,7 @@ impl ContextManager {
             );
         };
 
-        let nonce: u64 = self
+        let nonce = self
             .config_client
             .query::<ContextConfigEnv>(
                 context_config.protocol.as_ref().into(),
@@ -968,7 +954,8 @@ impl ContextManager {
                 context_id.rt().expect("infallible conversion"),
                 signer_id.rt().expect("infallible conversion"),
             )
-            .await?;
+            .await?
+            .ok_or_eyre("Not a member")?;
 
         let _ = self
             .config_client
