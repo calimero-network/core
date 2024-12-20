@@ -23,42 +23,44 @@ impl ContextConfigs {
             .parse(|i| *i.signer_id)
             .expect("failed to parse input");
 
-        match request.kind {
+        let (context_id, kind) = match request.kind {
             RequestKind::Context(ContextRequest {
                 context_id, kind, ..
-            }) => match kind {
-                ContextRequestKind::Add {
-                    author_id,
-                    application,
-                } => {
-                    let _is_sent_on_drop =
-                        self.add_context(&request.signer_id, context_id, author_id, application);
-                }
-                ContextRequestKind::UpdateApplication { application } => {
-                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
-                    self.update_application(&request.signer_id, context_id, application);
-                }
-                ContextRequestKind::AddMembers { members } => {
-                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
-                    self.add_members(&request.signer_id, context_id, members.into_owned());
-                }
-                ContextRequestKind::RemoveMembers { members } => {
-                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
-                    self.remove_members(&request.signer_id, context_id, members.into_owned());
-                }
-                ContextRequestKind::Grant { capabilities } => {
-                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
-                    self.grant(&request.signer_id, context_id, capabilities.into_owned());
-                }
-                ContextRequestKind::Revoke { capabilities } => {
-                    self.check_and_increment_nonce(&request.nonce, &request.signer_id, context_id);
-                    self.revoke(&request.signer_id, context_id, capabilities.into_owned());
-                }
-                ContextRequestKind::UpdateProxyContract => {
-                    let _is_sent_on_drop =
-                        self.update_proxy_contract(&request.signer_id, context_id);
-                }
-            },
+            }) => (context_id, kind),
+        };
+
+        self.check_and_increment_nonce(
+            *context_id,
+            request.signer_id.rt().expect("infallible conversion"),
+            request.nonce,
+        );
+
+        match kind {
+            ContextRequestKind::Add {
+                author_id,
+                application,
+            } => {
+                let _is_sent_on_drop =
+                    self.add_context(&request.signer_id, context_id, author_id, application);
+            }
+            ContextRequestKind::UpdateApplication { application } => {
+                self.update_application(&request.signer_id, context_id, application);
+            }
+            ContextRequestKind::AddMembers { members } => {
+                self.add_members(&request.signer_id, context_id, members.into_owned());
+            }
+            ContextRequestKind::RemoveMembers { members } => {
+                self.remove_members(&request.signer_id, context_id, members.into_owned())
+            }
+            ContextRequestKind::Grant { capabilities } => {
+                self.grant(&request.signer_id, context_id, capabilities.into_owned());
+            }
+            ContextRequestKind::Revoke { capabilities } => {
+                self.revoke(&request.signer_id, context_id, capabilities.into_owned());
+            }
+            ContextRequestKind::UpdateProxyContract => {
+                let _is_sent_on_drop = self.update_proxy_contract(&request.signer_id, context_id);
+            }
         }
     }
 }
@@ -66,20 +68,21 @@ impl ContextConfigs {
 impl ContextConfigs {
     fn check_and_increment_nonce(
         &mut self,
-        nonce: &u64,
-        signer_id: &SignerId,
-        context_id: Repr<ContextId>,
+        context_id: ContextId,
+        member_id: ContextIdentity,
+        nonce: u64,
     ) {
-        let context: &mut Context = self
-            .contexts
-            .get_mut(&context_id)
-            .expect("context does not exist");
-        let context_identity = signer_id.rt().expect("Infallible");
-        let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
-        require!(current_nonce == *nonce, "invalid nonce");
-        let _ignored = context
-            .member_nonces
-            .insert(context_identity.clone(), *nonce + 1);
+        let Some(context) = self.contexts.get_mut(&context_id) else {
+            return;
+        };
+
+        let Some(current_nonce) = context.member_nonces.get_mut(&member_id) else {
+            return;
+        };
+
+        require!(*current_nonce == nonce, "invalid nonce");
+
+        *current_nonce += 1;
     }
 
     fn add_context(
