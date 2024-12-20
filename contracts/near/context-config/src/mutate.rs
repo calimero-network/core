@@ -230,6 +230,9 @@ impl ContextConfigs {
 
         for member in members {
             let _ignored = ctx_members.remove(&member);
+
+            let _ignored = context.member_nonces.remove(&member);
+
             let member = member.rt().expect("infallible conversion");
 
             env::log_str(&format!(
