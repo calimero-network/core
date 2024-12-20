@@ -181,8 +181,7 @@ fn add_members(
         let mut ctx_members = guard_ref.get_mut();
 
         for member in members {
-            if !ctx_members.contains(&member) {
-                ctx_members.insert(member);
+            if ctx_members.insert(member) {  // returns true if the value was newly inserted
                 let _ignored = context.member_nonces.entry(member).or_default();
             }
         }
@@ -376,6 +375,8 @@ fn check_and_increment_nonce(
         return Err("invalid nonce".into());
     }
 
-    context.member_nonces.insert(context_identity, nonce + 1);
+    if let Some(stored_nonce) = context.member_nonces.get_mut(&context_identity) {
+        *stored_nonce += 1;
+    }
     Ok(())
 }
