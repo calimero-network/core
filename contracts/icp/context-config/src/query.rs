@@ -134,3 +134,17 @@ fn privileges(
         privileges
     })
 }
+
+#[ic_cdk::query]
+fn fetch_nonce(
+    context_id: ICRepr<ContextId>,
+    member_id: ICRepr<ContextIdentity>,
+) -> Option<u64> {
+    with_state(|configs| {
+        configs
+            .contexts
+            .get(&context_id)
+            .and_then(|context| context.member_nonces.get(&member_id))
+            .copied()
+    })
+}

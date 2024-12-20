@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::collections::BTreeMap;
 
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{
@@ -28,22 +29,22 @@ pub async fn mutate(signed_request: ICSigned<ICRequest>) -> Result<(), String> {
                 application,
             } => add_context(&request.signer_id, context_id, *author_id, application).await,
             ICContextRequestKind::UpdateApplication { application } => {
-                update_application(&request.signer_id, &context_id, application)
+                update_application(&request.signer_id, &context_id, request.nonce, application)
             }
             ICContextRequestKind::AddMembers { members } => {
-                add_members(&request.signer_id, &context_id, members)
+                add_members(&request.signer_id, &context_id, request.nonce, members)
             }
             ICContextRequestKind::RemoveMembers { members } => {
-                remove_members(&request.signer_id, &context_id, members)
+                remove_members(&request.signer_id, &context_id, request.nonce, members)
             }
             ICContextRequestKind::Grant { capabilities } => {
-                grant(&request.signer_id, &context_id, capabilities)
+                grant(&request.signer_id, &context_id, request.nonce, capabilities)
             }
             ICContextRequestKind::Revoke { capabilities } => {
-                revoke(&request.signer_id, &context_id, capabilities)
+                revoke(&request.signer_id, &context_id, request.nonce, capabilities)
             }
             ICContextRequestKind::UpdateProxyContract => {
-                update_proxy_contract(&request.signer_id, context_id).await
+                update_proxy_contract(&request.signer_id, context_id, request.nonce).await
             }
         },
     }
@@ -65,7 +66,7 @@ async fn add_context(
 
     with_state_mut(|configs| {
         // Create context with guards
-        let context = Context {
+        let mut context = Context {
             application: Guard::new(author_id.rt().expect("infallible conversion"), application),
             members: Guard::new(
                 author_id.rt().expect("infallible conversion"),
@@ -75,7 +76,11 @@ async fn add_context(
                 author_id.rt().expect("infallible conversion"),
                 proxy_canister_id,
             ),
+            member_nonces: BTreeMap::new(),
         };
+
+        // Initialize the author's nonce
+        context.member_nonces.insert(author_id.rt().expect("infallible conversion"), 0);
 
         // Store context
         if configs.contexts.insert(context_id, context).is_some() {
@@ -133,23 +138,24 @@ async fn deploy_proxy_contract(context_id: ICRepr<ContextId>) -> Result<Principa
 fn update_application(
     signer_id: &SignerId,
     context_id: &ContextId,
+    nonce: u64,
     application: ICApplication,
 ) -> Result<(), String> {
     with_state_mut(|configs| {
-        // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
             .get_mut(context_id)
             .ok_or_else(|| "context does not exist".to_string())?;
 
-        // Get mutable access to the application through the Guard
+        // Add nonce check
+        check_and_increment_nonce(context, nonce, signer_id)?;
+
+        // Original implementation continues unchanged
         let guard_ref = context
             .application
             .get(signer_id)
             .map_err(|e| e.to_string())?;
         let mut app_ref = guard_ref.get_mut();
-
-        // Replace the application with the new one
         *app_ref = application;
 
         Ok(())
@@ -159,22 +165,25 @@ fn update_application(
 fn add_members(
     signer_id: &SignerId,
     context_id: &ContextId,
+    nonce: u64,
     members: Vec<ICRepr<ContextIdentity>>,
 ) -> Result<(), String> {
     with_state_mut(|configs| {
-        // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
             .get_mut(context_id)
             .ok_or_else(|| "context does not exist".to_string())?;
 
-        // Get mutable access to the members through the Guard
+        // Check nonce
+        check_and_increment_nonce(context, nonce, signer_id)?;
+
+        // Rest of the function...
         let guard_ref = context.members.get(signer_id).map_err(|e| e.to_string())?;
         let mut ctx_members = guard_ref.get_mut();
 
-        // Add each member
         for member in members {
             ctx_members.insert(member);
+            context.member_nonces.insert(member, 0);
         }
 
         Ok(())
@@ -184,14 +193,17 @@ fn add_members(
 fn remove_members(
     signer_id: &SignerId,
     context_id: &ContextId,
+    nonce: u64,
     members: Vec<ICRepr<ContextIdentity>>,
 ) -> Result<(), String> {
     with_state_mut(|configs| {
-        // Get the context or return error if it doesn't exist
         let context = configs
             .contexts
             .get_mut(context_id)
             .ok_or_else(|| "context does not exist".to_string())?;
+
+        // Check nonce
+        check_and_increment_nonce(context, nonce, signer_id)?;
 
         // Get mutable access to the members through the Guard
         let mut ctx_members = context
@@ -220,6 +232,7 @@ fn remove_members(
 fn grant(
     signer_id: &SignerId,
     context_id: &ContextId,
+    nonce: u64,
     capabilities: Vec<(ICRepr<ContextIdentity>, ICCapability)>,
 ) -> Result<(), String> {
     with_state_mut(|configs| {
@@ -227,6 +240,9 @@ fn grant(
             .contexts
             .get_mut(context_id)
             .ok_or_else(|| "context does not exist".to_string())?;
+
+        // Check nonce
+        check_and_increment_nonce(context, nonce, signer_id)?;
 
         for (identity, capability) in capabilities {
             let is_member = context.members.deref().contains(&identity);
@@ -270,6 +286,7 @@ fn grant(
 fn revoke(
     signer_id: &SignerId,
     context_id: &ContextId,
+    nonce: u64,
     capabilities: Vec<(ICRepr<ContextIdentity>, ICCapability)>,
 ) -> Result<(), String> {
     with_state_mut(|configs| {
@@ -277,6 +294,9 @@ fn revoke(
             .contexts
             .get_mut(context_id)
             .ok_or_else(|| "context does not exist".to_string())?;
+
+        // Check nonce
+        check_and_increment_nonce(context, nonce, signer_id)?;
 
         for (identity, capability) in capabilities {
             match capability {
@@ -314,12 +334,16 @@ fn revoke(
 async fn update_proxy_contract(
     signer_id: &SignerId,
     context_id: ICRepr<ContextId>,
+    nonce: u64,
 ) -> Result<(), String> {
     let (proxy_canister_id, proxy_code) = with_state_mut(|configs| {
         let context = configs
             .contexts
             .get_mut(&context_id)
             .ok_or_else(|| "context does not exist".to_string())?;
+
+        // Check nonce
+        check_and_increment_nonce(context, nonce, signer_id)?;
 
         let proxy_cannister = *context
             .proxy
@@ -344,5 +368,21 @@ async fn update_proxy_contract(
         .await
         .map_err(|e| format!("Failed to update proxy contract: {:?}", e))?;
 
+    Ok(())
+}
+
+fn check_and_increment_nonce(
+    context: &mut Context,
+    nonce: u64,
+    signer_id: &SignerId,
+) -> Result<(), String> {
+    let context_identity = signer_id.rt().expect("infallible conversion");
+    let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
+    
+    if current_nonce != nonce {
+        return Err("invalid nonce".into());
+    }
+    
+    context.member_nonces.insert(context_identity, nonce + 1);
     Ok(())
 }

@@ -23,6 +23,7 @@ pub struct Context {
     pub application: Guard<ICApplication>,
     pub members: Guard<BTreeSet<ICRepr<ContextIdentity>>>,
     pub proxy: Guard<Principal>,
+    pub member_nonces: BTreeMap<ICRepr<ContextIdentity>, u64>,
 }
 
 #[derive(CandidType, Deserialize, Debug)]
