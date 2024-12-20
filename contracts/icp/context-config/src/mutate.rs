@@ -69,7 +69,9 @@ async fn add_context(
             application: Guard::new(author_id.rt().expect("infallible conversion"), application),
             members: Guard::new(
                 author_id.rt().expect("infallible conversion"),
-                [author_id.rt().expect("infallible conversion")].into_iter().collect(),
+                [author_id.rt().expect("infallible conversion")]
+                    .into_iter()
+                    .collect(),
             ),
             proxy: Guard::new(
                 author_id.rt().expect("infallible conversion"),
@@ -364,12 +366,16 @@ fn check_and_increment_nonce(
     signer_id: &SignerId,
 ) -> Result<(), String> {
     let context_identity = signer_id.rt().expect("infallible conversion");
-    let current_nonce = context.member_nonces.get(&context_identity).copied().unwrap_or(0);
-    
+    let current_nonce = context
+        .member_nonces
+        .get(&context_identity)
+        .copied()
+        .unwrap_or(0);
+
     if current_nonce != nonce {
         return Err("invalid nonce".into());
     }
-    
+
     context.member_nonces.insert(context_identity, nonce + 1);
     Ok(())
 }

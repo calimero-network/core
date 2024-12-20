@@ -1,6 +1,5 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{ICApplication, ICCapability, ICRequest, ICSigned};
