@@ -161,7 +161,6 @@ impl From<ICProposalWithApprovals> for ProposalWithApprovals {
 pub struct ICProposalApprovalWithSigner {
     pub proposal_id: ICRepr<ProposalId>,
     pub signer_id: ICRepr<SignerId>,
-    pub added_timestamp: u64,
 }
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -194,7 +193,6 @@ impl TryFrom<ProxyMutateRequest> for ICProxyMutateRequest {
                 approval: ICProposalApprovalWithSigner {
                     proposal_id: approval.proposal_id.rt().map_err(|e| e.to_string())?,
                     signer_id: approval.signer_id.rt().map_err(|e| e.to_string())?,
-                    added_timestamp: approval.added_timestamp,
                 },
             },
         };
