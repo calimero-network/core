@@ -70,7 +70,9 @@ async fn add_context(
             application: Guard::new(author_id.rt().expect("infallible conversion"), application),
             members: Guard::new(
                 author_id.rt().expect("infallible conversion"),
-                [(author_id.rt().expect("infallible conversion"), 0)].into_iter().collect(),
+                [(author_id.rt().expect("infallible conversion"), 0)]
+                    .into_iter()
+                    .collect(),
             ),
             proxy: Guard::new(
                 author_id.rt().expect("infallible conversion"),
@@ -179,7 +181,7 @@ fn add_members(
 
         for member in members {
             if !ctx_members.contains_key(&member) {
-                ctx_members.insert(member, 0);  // Only insert if member doesn't exist
+                ctx_members.insert(member, 0); // Only insert if member doesn't exist
             }
         }
 
@@ -376,13 +378,13 @@ fn check_and_increment_nonce(
     let context_identity = signer_id.rt().expect("infallible conversion");
     let guard_ref = context.members.get(signer_id).map_err(|e| e.to_string())?;
     let mut members = guard_ref.get_mut();
-    
+
     let current_nonce = members.get(&context_identity).copied().unwrap_or(0);
-    
+
     if current_nonce != nonce {
         return Err("invalid nonce".into());
     }
-    
+
     members.insert(context_identity, nonce + 1);
     Ok(())
 }
