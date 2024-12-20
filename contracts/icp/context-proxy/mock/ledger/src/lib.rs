@@ -11,11 +11,11 @@ type TransferResult = Result<BlockIndex, TransferError>;
 
 #[ic_cdk::update]
 fn transfer(args: TransferArgs) -> TransferResult {
-    ic_cdk::println!(
-        "Mock ledger received transfer: to={:?}, amount={}",
-        args.to,
-        args.amount
-    );
+    // ic_cdk::println!(
+    //     "Mock ledger received transfer: to={:?}, amount={}",
+    //     args.to,
+    //     args.amount
+    // );
 
     // Verify fee
     if args.fee.e8s() != 10_000 {
@@ -40,7 +40,7 @@ fn transfer(args: TransferArgs) -> TransferResult {
         *bal = bal.saturating_sub(amount_e8s);
         *bal = bal.saturating_sub(args.fee.e8s());
 
-        ic_cdk::println!("New balance: {}", *bal);
+        // ic_cdk::println!("New balance: {}", *bal);
 
         // Return mock block index
         Ok(1)

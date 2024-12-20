@@ -163,6 +163,9 @@ fn create_context_with_proxy(
 ) -> Result<(Principal, ICRepr<ContextId>), String> {
     let mut rng = rand::thread_rng();
 
+    // Get initial cycle balance
+    let initial_cycle_balance = pic.cycle_balance(context_canister);
+
     // Generate context ID
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
@@ -218,7 +221,7 @@ fn create_context_with_proxy(
         candid::encode_one(context_id).unwrap(),
     );
 
-    match query_response {
+    let result = match query_response {
         Ok(WasmResult::Reply(bytes)) => {
             let proxy_canister: Principal = candid::decode_one(&bytes)
                 .map_err(|e| format!("Failed to decode proxy canister ID: {}", e))?;
@@ -226,7 +229,14 @@ fn create_context_with_proxy(
         }
         Ok(WasmResult::Reject(msg)) => Err(format!("Query rejected: {}", msg)),
         Err(e) => Err(format!("Query failed: {}", e)),
-    }
+    };
+
+    // Get final cycle balance and calculate usage
+    let final_cycle_balance = pic.cycle_balance(context_canister);
+    let cycles_used = initial_cycle_balance - final_cycle_balance;
+    println!("Cycles used in create_context_with_proxy: {}", cycles_used);
+
+    result
 }
 
 // Helper function to add members to context
@@ -392,6 +402,9 @@ fn test_create_proposal_transfer() {
         ..
     } = setup();
 
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
+
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
     let proposal_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
@@ -407,6 +420,11 @@ fn test_create_proposal_transfer() {
 
     create_and_verify_proposal(&pic, proxy_canister, &author_sk, proposal)
         .expect("Transfer proposal creation should succeed");
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -419,6 +437,9 @@ fn test_create_proposal_external_call() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -437,6 +458,11 @@ fn test_create_proposal_external_call() {
 
     create_and_verify_proposal(&pic, proxy_canister, &author_sk, proposal)
         .expect("External call proposal creation should succeed");
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -449,6 +475,9 @@ fn test_create_proposal_set_context() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -465,6 +494,11 @@ fn test_create_proposal_set_context() {
 
     create_and_verify_proposal(&pic, proxy_canister, &author_sk, proposal)
         .expect("Setting context value should succeed");
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -477,6 +511,9 @@ fn test_create_proposal_multiple_actions() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -495,6 +532,11 @@ fn test_create_proposal_multiple_actions() {
 
     create_and_verify_proposal(&pic, proxy_canister, &author_sk, proposal)
         .expect("Multiple actions proposal creation should succeed");
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -507,6 +549,9 @@ fn test_create_proposal_invalid_transfer_amount() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -547,6 +592,11 @@ fn test_create_proposal_invalid_transfer_amount() {
             panic!("Failed to call canister: {}", err);
         }
     }
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -559,6 +609,9 @@ fn test_create_proposal_invalid_method_name() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -598,6 +651,11 @@ fn test_create_proposal_invalid_method_name() {
             panic!("Failed to call canister: {}", err);
         }
     }
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -610,6 +668,9 @@ fn test_approve_own_proposal() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -651,6 +712,11 @@ fn test_approve_own_proposal() {
         }
         _ => panic!("Unexpected response type"),
     }
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -663,6 +729,9 @@ fn test_approve_non_existent_proposal() {
         author_sk: signer_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let signer_pk = signer_sk.verifying_key();
     let signer_id = signer_pk.rt().expect("infallible conversion");
@@ -694,6 +763,11 @@ fn test_approve_non_existent_proposal() {
         }
         _ => panic!("Unexpected response type"),
     }
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -706,6 +780,9 @@ fn test_create_proposal_empty_actions() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -739,6 +816,11 @@ fn test_create_proposal_empty_actions() {
         }
         _ => panic!("Unexpected response type"),
     }
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -751,6 +833,9 @@ fn test_create_proposal_exceeds_limit() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -798,6 +883,11 @@ fn test_create_proposal_exceeds_limit() {
         }
         _ => panic!("Unexpected response type"),
     }
+
+    // Get new cycle balance and calculate usage
+    let new_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_balance - new_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -815,7 +905,9 @@ fn test_proposal_execution_transfer() {
         ..
     } = setup();
 
-    let initial_balance = MOCK_LEDGER_BALANCE.with(|b| *b.borrow());
+    // Get initial cycle balance
+    let initial_cycle_balance = pic.cycle_balance(proxy_canister);
+    let initial_ledger_balance = MOCK_LEDGER_BALANCE.with(|b| *b.borrow());
 
     // Setup signers
     let author_pk = author_sk.verifying_key();
@@ -833,7 +925,6 @@ fn test_proposal_execution_transfer() {
 
     let proposal_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
 
-    // let receiver_id = Principal::from_text("bnz7o-iuaaa-aaaaa-qaaaa-cai").unwrap();
     // Create transfer proposal
     let proposal = ICProposal {
         id: proposal_id,
@@ -938,7 +1029,7 @@ fn test_proposal_execution_transfer() {
             // Verify the transfer was executed
             assert_eq!(
                 final_balance,
-                initial_balance
+                initial_ledger_balance
                     .saturating_sub(transfer_amount as u64)
                     .saturating_sub(10_000), // Subtract both transfer amount and fee
                 "Transfer amount should be deducted from ledger balance"
@@ -946,6 +1037,11 @@ fn test_proposal_execution_transfer() {
         }
         _ => panic!("Unexpected response type"),
     }
+
+    // Get final cycle balance and calculate usage
+    let final_cycle_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_cycle_balance - final_cycle_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -961,6 +1057,9 @@ fn test_proposal_execution_external_call() {
         context_id,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_cycle_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -1084,6 +1183,11 @@ fn test_proposal_execution_external_call() {
         }
         _ => panic!("Unexpected response type"),
     }
+
+    // Get final cycle balance and calculate usage
+    let final_cycle_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_cycle_balance - final_cycle_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -1100,6 +1204,9 @@ fn test_proposal_execution_external_call_with_deposit() {
         mock_ledger,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_cycle_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -1245,6 +1352,11 @@ fn test_proposal_execution_external_call_with_deposit() {
         }
         _ => panic!("Unexpected response type"),
     }
+
+    // Get final cycle balance and calculate usage
+    let final_cycle_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_cycle_balance - final_cycle_balance;
+    println!("Cycles used: {}", cycles_used);
 }
 
 #[test]
@@ -1257,6 +1369,9 @@ fn test_delete_proposal() {
         author_sk,
         ..
     } = setup();
+
+    // Get initial cycle balance
+    let initial_cycle_balance = pic.cycle_balance(proxy_canister);
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -1318,4 +1433,9 @@ fn test_delete_proposal() {
         }
         WasmResult::Reject(msg) => panic!("Query rejected: {}", msg),
     }
+
+    // Get final cycle balance and calculate usage
+    let final_cycle_balance = pic.cycle_balance(proxy_canister);
+    let cycles_used = initial_cycle_balance - final_cycle_balance;
+    println!("Cycles used: {}", cycles_used);
 }

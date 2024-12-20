@@ -106,7 +106,7 @@ async fn deploy_proxy_contract(context_id: ICRepr<ContextId>) -> Result<Principa
         }),
     };
 
-    let (canister_record,) = create_canister(create_args, 500_000_000_000_000u128)
+    let (canister_record,) = create_canister(create_args, 850_000_000_000u128)
         .await
         .map_err(|e| format!("Failed to create canister: {:?}", e))?;
 
