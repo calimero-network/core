@@ -67,6 +67,10 @@ async fn add_context(
         return Err("context addition must be signed by the context itself".into());
     }
 
+    if with_state(|configs| configs.contexts.contains_key(&context_id)) {
+        return Err("context already exists".to_owned());
+    }
+
     let proxy_canister_id = deploy_proxy_contract(context_id)
         .await
         .unwrap_or_else(|e| panic!("Failed to deploy proxy contract: {}", e));
