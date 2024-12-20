@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ops::Deref;
 
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{ICApplication, ICCapability};
@@ -56,8 +57,8 @@ fn members(
             .get(&context_id)
             .expect("context does not exist");
 
-        let members = &*context.members;
-        members.iter().skip(offset).take(length).cloned().collect()
+        let members = context.members.deref();
+        members.keys().skip(offset).take(length).cloned().collect()
     })
 }
 
@@ -69,7 +70,7 @@ fn has_member(context_id: ICRepr<ContextId>, identity: ICRepr<ContextIdentity>) 
             .get(&context_id)
             .expect("context does not exist");
 
-        context.members.contains(&identity)
+        context.members.deref().contains_key(&identity)
     })
 }
 
@@ -141,7 +142,7 @@ fn fetch_nonce(context_id: ICRepr<ContextId>, member_id: ICRepr<ContextIdentity>
         configs
             .contexts
             .get(&context_id)
-            .and_then(|context| context.member_nonces.get(&member_id))
+            .and_then(|context| context.members.deref().get(&member_id))
             .copied()
     })
 }

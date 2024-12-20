@@ -66,23 +66,17 @@ async fn add_context(
 
     with_state_mut(|configs| {
         // Create context with guards
-        let mut context = Context {
+        let context = Context {
             application: Guard::new(author_id.rt().expect("infallible conversion"), application),
             members: Guard::new(
                 author_id.rt().expect("infallible conversion"),
-                [author_id.rt().expect("infallible conversion")].into(),
+                [(author_id.rt().expect("infallible conversion"), 0)].into_iter().collect(),
             ),
             proxy: Guard::new(
                 author_id.rt().expect("infallible conversion"),
                 proxy_canister_id,
             ),
-            member_nonces: BTreeMap::new(),
         };
-
-        // Initialize the author's nonce
-        context
-            .member_nonces
-            .insert(author_id.rt().expect("infallible conversion"), 0);
 
         // Store context
         if configs.contexts.insert(context_id, context).is_some() {
@@ -113,7 +107,7 @@ async fn deploy_proxy_contract(context_id: ICRepr<ContextId>) -> Result<Principa
         }),
     };
 
-    let (canister_record,) = create_canister(create_args, 850_000_000_000u128)
+    let (canister_record,) = create_canister(create_args, 1_500_000_000_000u128)
         .await
         .map_err(|e| format!("Failed to create canister: {:?}", e))?;
 
@@ -184,8 +178,9 @@ fn add_members(
         let mut ctx_members = guard_ref.get_mut();
 
         for member in members {
-            ctx_members.insert(member);
-            context.member_nonces.insert(member, 0);
+            if !ctx_members.contains_key(&member) {
+                ctx_members.insert(member, 0);  // Only insert if member doesn't exist
+            }
         }
 
         Ok(())
@@ -247,7 +242,7 @@ fn grant(
         check_and_increment_nonce(context, nonce, signer_id)?;
 
         for (identity, capability) in capabilities {
-            let is_member = context.members.deref().contains(&identity);
+            let is_member = context.members.deref().contains_key(&identity);
 
             if !is_member {
                 return Err("unable to grant privileges to non-member".to_string());
@@ -379,12 +374,15 @@ fn check_and_increment_nonce(
     signer_id: &SignerId,
 ) -> Result<(), String> {
     let context_identity = signer_id.rt().expect("infallible conversion");
-    let current_nonce = *context.member_nonces.get(&context_identity).unwrap_or(&0);
-
+    let guard_ref = context.members.get(signer_id).map_err(|e| e.to_string())?;
+    let mut members = guard_ref.get_mut();
+    
+    let current_nonce = members.get(&context_identity).copied().unwrap_or(0);
+    
     if current_nonce != nonce {
         return Err("invalid nonce".into());
     }
-
-    context.member_nonces.insert(context_identity, nonce + 1);
+    
+    members.insert(context_identity, nonce + 1);
     Ok(())
 }

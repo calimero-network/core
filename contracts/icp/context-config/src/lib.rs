@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{ICApplication, ICCapability, ICRequest, ICSigned};
@@ -21,9 +21,8 @@ thread_local! {
 #[derive(CandidType, Deserialize, Debug)]
 pub struct Context {
     pub application: Guard<ICApplication>,
-    pub members: Guard<BTreeSet<ICRepr<ContextIdentity>>>,
+    pub members: Guard<BTreeMap<ICRepr<ContextIdentity>, u64>>,
     pub proxy: Guard<Principal>,
-    pub member_nonces: BTreeMap<ICRepr<ContextIdentity>, u64>,
 }
 
 #[derive(CandidType, Deserialize, Debug)]
