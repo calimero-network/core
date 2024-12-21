@@ -157,7 +157,8 @@ impl InitCommand {
                 }
             }
             if !self.force {
-                bail!("Node is already initialized in {:?}", path);
+                warn!("Node is already initialized in {:?}", path);
+                return Ok(());
             }
         }
 
@@ -222,7 +223,11 @@ impl InitCommand {
             ContextConfig {
                 client: ClientConfig {
                     signer: ClientSigner {
-                        selected: ClientSelectedSigner::Relayer,
+                        selected: match self.protocol {
+                            ConfigProtocol::Near => ClientSelectedSigner::Relayer,
+                            ConfigProtocol::Starknet => ClientSelectedSigner::Relayer,
+                            ConfigProtocol::Icp => ClientSelectedSigner::Local,
+                        },
                         relayer: ClientRelayerSigner { url: relayer },
                         local: LocalConfig {
                             near: [
@@ -286,7 +291,7 @@ impl InitCommand {
                         network: match self.protocol {
                             ConfigProtocol::Near => "testnet".into(),
                             ConfigProtocol::Starknet => "sepolia".into(),
-                            ConfigProtocol::Icp => "ic".into(),
+                            ConfigProtocol::Icp => "local".into(),
                         },
                         protocol: self.protocol.as_str().to_owned(),
                         contract_id: match self.protocol {

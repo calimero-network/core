@@ -10,7 +10,7 @@ use crate::cli::Environment;
 use crate::output::Report;
 
 mod get;
-mod install;
+pub mod install;
 mod list;
 
 pub const EXAMPLES: &str = r"
