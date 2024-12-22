@@ -44,7 +44,7 @@ impl StartBootstrapCommand {
             println!("Downloading demo app...");
             demo_app = true;
 
-            let wasm_url = "https://github.com/calimero-network/core-app-template/raw/refs/heads/master/logic/res/logic.wasm";
+            let wasm_url = "https://github.com/calimero-network/core-app-template/raw/refs/heads/master/logic/res/increment.wasm";
             let output_path: Utf8PathBuf = "output/app.wasm".into();
             self.app_path = Some(output_path.clone());
 
