@@ -37,15 +37,16 @@ dfx identity use default
 
 # Stop dfx and clean up all state
 dfx stop
-sleep 2
 rm -rf .dfx
 rm -rf ~/.config/dfx/replica-configuration/
 rm -rf ~/.cache/dfinity/
-rm canister_ids.json
+# Remove canister_ids.json if it exists
+if [ -f "canister_ids.json" ]; then
+    rm canister_ids.json
+fi
 
 # Start dfx with clean state
 dfx start --clean --background
-sleep 5
 
 # Define canister IDs
 CONTEXT_ID="br5f7-7uaaa-aaaaa-qaaca-cai"
