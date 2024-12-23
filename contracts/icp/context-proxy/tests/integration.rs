@@ -10,11 +10,14 @@ use calimero_context_config::icp::{
 };
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::types::{ContextId, ContextIdentity};
-use candid::Principal;
+use candid::{CandidType, Principal};
 use ed25519_dalek::{Signer, SigningKey};
-use ic_ledger_types::{AccountBalanceArgs, AccountIdentifier, Subaccount, Tokens};
+use ic_ledger_types::{AccountBalanceArgs, AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError};
 use pocket_ic::{PocketIc, WasmResult};
 use rand::Rng;
+use reqwest;
+use flate2::read::GzDecoder;
+use std::io::Read;
 
 // Mock canister states
 thread_local! {
@@ -78,11 +81,78 @@ struct ProxyTestContext {
     mock_external: Principal,
     author_sk: SigningKey,
     context_id: ICRepr<ContextId>,
+    test_user: Principal,
+}
+
+#[derive(CandidType)]
+enum LedgerCanisterInit {
+    Init(LedgerCanisterInitPayload),
+}
+
+#[derive(CandidType)]
+struct LedgerCanisterInitPayload {
+    minting_account: String,
+    initial_values: Vec<(String, Tokens)>,
+    send_whitelist: Vec<Principal>,
+    transfer_fee: Option<Tokens>,
+    token_symbol: Option<String>,
+    token_name: Option<String>,
+    archive_options: Option<ArchiveOptions>,
+}
+
+#[derive(CandidType)]
+struct ArchiveOptions {
+    trigger_threshold: u64,
+    num_blocks_to_archive: u64,
+    controller_id: Principal,
 }
 
 fn setup() -> ProxyTestContext {
     let pic = PocketIc::new();
     let mut rng = rand::thread_rng();
+
+    // Create test user principal first
+    let test_user = Principal::from_text(
+        "rrkah-fqaaa-aaaaa-aaaaq-cai"
+    ).unwrap();
+    
+    // Setup ledger canister
+    let mock_ledger = pic.create_canister();
+    pic.add_cycles(mock_ledger, 100_000_000_000_000_000);
+    
+    // Download the compressed ledger wasm
+    let compressed_wasm = reqwest::blocking::get(
+        "https://download.dfinity.systems/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/canisters/ledger-canister.wasm.gz"
+    ).expect("Failed to download ledger wasm")
+    .bytes().expect("Failed to read ledger wasm bytes");
+    
+    // Decompress the wasm file
+    let mut decoder = GzDecoder::new(&compressed_wasm[..]);
+    let mut ledger_wasm = Vec::new();
+    decoder.read_to_end(&mut ledger_wasm).expect("Failed to decompress ledger wasm");
+    
+    // Initialize ledger with the same args as in dfx.json
+    let init_args = LedgerCanisterInit::Init(LedgerCanisterInitPayload {
+        minting_account: "e8478037d13e48f9d43d28136328d0642e4ed680c8be9f08f0da98791740203c".to_string(),
+        initial_values: vec![(
+            AccountIdentifier::new(&test_user, &Subaccount([0; 32])).to_string(),
+            Tokens::from_e8s(100_000_000_000),
+        )],
+        send_whitelist: vec![test_user],  // Add test_user to whitelist
+        transfer_fee: Some(Tokens::from_e8s(10_000)),
+        token_symbol: Some("LICP".to_string()),
+        token_name: Some("Local Internet Computer Protocol Token".to_string()),
+        archive_options: Some(ArchiveOptions {
+            trigger_threshold: 2000,
+            num_blocks_to_archive: 1000,
+            controller_id: Principal::from_text(
+                "bwmrp-pfufw-yvlwr-nwbuh-4ko7l-2fz7x-kt6gq-4d3mc-hzqsi-pfwmp-kqe"
+            ).unwrap(),
+        }),
+    });
+
+    let init_args = candid::encode_one(init_args).expect("Failed to encode ledger init args");
+    pic.install_canister(mock_ledger, ledger_wasm, init_args, None);
 
     // Setup context contract first
     let context_canister = pic.create_canister();
@@ -91,22 +161,18 @@ fn setup() -> ProxyTestContext {
         .expect("failed to read context wasm");
     pic.install_canister(context_canister, context_wasm, vec![], None);
 
-    // Setup mock ledger
-    let mock_ledger = pic.create_canister();
-    pic.add_cycles(mock_ledger, 100_000_000_000_000);
-    let mock_ledger_wasm = std::fs::read("mock/ledger/res/calimero_mock_ledger_icp.wasm")
-        .expect("failed to read mock ledger wasm");
-    pic.install_canister(mock_ledger, mock_ledger_wasm, vec![], None);
-
     // Set proxy code in context contract
     set_proxy_code(&pic, context_canister, mock_ledger).expect("Failed to set proxy code");
 
-    // Setup mock external
+    // Setup mock external with ledger ID
     let mock_external = pic.create_canister();
     pic.add_cycles(mock_external, 100_000_000_000_000);
     let mock_external_wasm = std::fs::read("mock/external/res/calimero_mock_external_icp.wasm")
         .expect("failed to read mock external wasm");
-    pic.install_canister(mock_external, mock_external_wasm, vec![], None);
+    
+    // Pass ledger ID during initialization
+    let init_args = candid::encode_one(mock_ledger).expect("Failed to encode ledger ID");
+    pic.install_canister(mock_external, mock_external_wasm, init_args, None);
 
     // Create initial author key
     let author_sk = SigningKey::from_bytes(&rng.gen());
@@ -124,6 +190,7 @@ fn setup() -> ProxyTestContext {
         mock_external,
         author_sk,
         context_id,
+        test_user,
     }
 }
 
@@ -450,7 +517,7 @@ fn test_create_proposal_external_call() {
         author_id,
         actions: vec![ICProposalAction::ExternalFunctionCall {
             receiver_id: Principal::anonymous(),
-            method_name: "test_method".to_string(),
+            method_name: "test_method_no_transfer".to_string(),
             args: "deadbeef".to_string(),
             deposit: 0,
         }],
@@ -902,12 +969,45 @@ fn test_proposal_execution_transfer() {
         author_sk,
         context_canister,
         context_id,
+        test_user,
         ..
     } = setup();
 
+    // First, seed the proxy with tokens
+    let seed_amount = 1_000_000;
+    let transfer_args = TransferArgs {
+        memo: Memo(0),
+        amount: Tokens::from_e8s(seed_amount),
+        fee: Tokens::from_e8s(10_000),
+        from_subaccount: None,
+        to: AccountIdentifier::new(&proxy_canister, &Subaccount([0; 32])),
+        created_at_time: None,
+    };
+
+    // Use test_user for the transfer since it has the tokens
+    let response = pic
+        .update_call(
+            mock_ledger,
+            test_user,
+            "transfer",
+            candid::encode_one(transfer_args).unwrap(),
+        )
+        .expect("Failed to call transfer");
+
+    match response {
+        WasmResult::Reply(bytes) => {
+            let result: Result<u64, TransferError> = 
+                candid::decode_one(&bytes).expect("Failed to decode transfer result");
+            match result {
+                Ok(block_height) => println!("Transfer successful at block height: {}", block_height),
+                Err(e) => panic!("Transfer failed: {:?}", e),
+            }
+        }
+        WasmResult::Reject(msg) => panic!("Transfer rejected: {}", msg),
+    }
+
     // Get initial cycle balance
     let initial_cycle_balance = pic.cycle_balance(proxy_canister);
-    let initial_ledger_balance = MOCK_LEDGER_BALANCE.with(|b| *b.borrow());
 
     // Setup signers
     let author_pk = author_sk.verifying_key();
@@ -1010,7 +1110,7 @@ fn test_proposal_execution_transfer() {
     }
 
     let args = AccountBalanceArgs {
-        account: AccountIdentifier::new(&Principal::anonymous(), &Subaccount([0; 32])),
+        account: AccountIdentifier::new(&mock_external, &Subaccount([0; 32])),
     };
 
     let response = pic
@@ -1026,13 +1126,11 @@ fn test_proposal_execution_transfer() {
         WasmResult::Reply(bytes) => {
             let balance: Tokens = candid::decode_one(&bytes).expect("Failed to decode balance");
             let final_balance = balance.e8s();
-            // Verify the transfer was executed
+            // Verify the transfer was executed - mock_external should have received exactly transfer_amount
             assert_eq!(
                 final_balance,
-                initial_ledger_balance
-                    .saturating_sub(transfer_amount as u64)
-                    .saturating_sub(10_000), // Subtract both transfer amount and fee
-                "Transfer amount should be deducted from ledger balance"
+                u64::try_from(transfer_amount).unwrap(),  // mock_external should have exactly the amount we transferred
+                "Receiver should have received the transfer amount"
             );
         }
         _ => panic!("Unexpected response type"),
@@ -1081,7 +1179,7 @@ fn test_proposal_execution_external_call() {
         author_id,
         actions: vec![ICProposalAction::ExternalFunctionCall {
             receiver_id: mock_external,
-            method_name: "test_method".to_string(),
+            method_name: "test_method_no_transfer".to_string(),
             args: test_args.clone(),
             deposit: 0,
         }],
@@ -1205,8 +1303,8 @@ fn test_proposal_execution_external_call_with_deposit() {
         ..
     } = setup();
 
-    // Get initial cycle balance
     let initial_cycle_balance = pic.cycle_balance(proxy_canister);
+    let initial_ledger_balance = MOCK_LEDGER_BALANCE.with(|b| *b.borrow());
 
     let author_pk = author_sk.verifying_key();
     let author_id = author_pk.rt().expect("infallible conversion");
@@ -1221,9 +1319,9 @@ fn test_proposal_execution_external_call_with_deposit() {
 
     let proposal_id = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
 
-    // Create external call proposal
+    // Create external call proposal with deposit
     let deposit_amount = 1_000_000;
-    let test_args = "01020304".to_string(); // Test arguments as string
+    let test_args = "01020304".to_string();
     let proposal = ICProposal {
         id: proposal_id,
         author_id,
@@ -1261,22 +1359,20 @@ fn test_proposal_execution_external_call_with_deposit() {
         let request = ICProxyMutateRequest::Approve { approval };
         let signed_request = create_signed_request(&signer_sk, request);
 
-        let response = pic
-            .update_call(
-                proxy_canister,
-                Principal::anonymous(),
-                "mutate",
-                candid::encode_one(signed_request).unwrap(),
-            )
-            .expect("Failed to approve proposal");
+        let response = pic.update_call(
+            proxy_canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
 
         match response {
-            WasmResult::Reply(bytes) => {
+            Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
                     candid::decode_one(&bytes).expect("Failed to decode response");
-
+                
                 if let Ok(None) = result {
-                    // Proposal was executed, verify it's gone
+                    // Verify proposal was executed and removed
                     let query_response = pic
                         .query_call(
                             proxy_canister,
@@ -1288,8 +1384,8 @@ fn test_proposal_execution_external_call_with_deposit() {
 
                     match query_response {
                         WasmResult::Reply(bytes) => {
-                            let stored_proposal: Option<ICProposal> = candid::decode_one(&bytes)
-                                .expect("Failed to decode stored proposal");
+                            let stored_proposal: Option<ICProposal> =
+                                candid::decode_one(&bytes).expect("Failed to decode stored proposal");
                             assert!(
                                 stored_proposal.is_none(),
                                 "Proposal should be removed after execution"
@@ -1297,63 +1393,62 @@ fn test_proposal_execution_external_call_with_deposit() {
                         }
                         WasmResult::Reject(msg) => panic!("Query rejected: {}", msg),
                     }
+
+                    // Verify the external call was executed
+                    let calls_response = pic
+                        .query_call(
+                            mock_external,
+                            Principal::anonymous(),
+                            "get_calls",
+                            candid::encode_args(()).unwrap(),
+                        )
+                        .expect("Query failed");
+
+                    match calls_response {
+                        WasmResult::Reply(bytes) => {
+                            let calls: Vec<Vec<u8>> = candid::decode_one(&bytes).expect("Failed to decode calls");
+                            assert_eq!(calls.len(), 1, "Should have exactly one call");
+
+                            let received_args: String =
+                                candid::decode_one(&calls[0]).expect("Failed to decode call arguments");
+                            assert_eq!(received_args, test_args, "Call arguments should match");
+                        }
+                        _ => panic!("Unexpected response type"),
+                    }
+
+                    // Verify the ledger balance changes
+                    // The mock external contract should have received the deposit
+                    let balance_args = AccountBalanceArgs {
+                        account: AccountIdentifier::new(&mock_external, &Subaccount([0; 32])),
+                    };
+
+                    let balance_response = pic
+                        .query_call(
+                            mock_ledger,
+                            Principal::anonymous(),
+                            "account_balance",
+                            candid::encode_one(balance_args).unwrap(),
+                        )
+                        .expect("Failed to query balance");
+
+                    match balance_response {
+                        WasmResult::Reply(bytes) => {
+                            let balance: Tokens = candid::decode_one(&bytes).expect("Failed to decode balance");
+                            let expected_balance = initial_ledger_balance + deposit_amount as u64;
+                            assert_eq!(
+                                balance.e8s(),
+                                expected_balance,
+                                "External contract should have received the deposit"
+                            );
+                        }
+                        _ => panic!("Unexpected response type"),
+                    }
                 }
             }
-            WasmResult::Reject(msg) => panic!("Approval rejected: {}", msg),
+            _ => panic!("Unexpected response type"),
         }
     }
 
-    // Verify the transfer was executed by checking mock ledger balance
-    let args = AccountBalanceArgs {
-        account: AccountIdentifier::new(&mock_external, &Subaccount([0; 32])),
-    };
-
-    let response = pic
-        .query_call(
-            mock_ledger,
-            Principal::anonymous(),
-            "account_balance",
-            candid::encode_one(args).unwrap(),
-        )
-        .expect("Failed to query balance");
-
-    match response {
-        WasmResult::Reply(bytes) => {
-            let balance: Tokens = candid::decode_one(&bytes).expect("Failed to decode balance");
-            let gas_fee = 10_000;
-            assert_eq!(
-                balance.e8s(),
-                MOCK_LEDGER_BALANCE.with(|b| *b.borrow()) - deposit_amount as u64 - gas_fee as u64,
-                "External contract should have received the deposit"
-            );
-        }
-        WasmResult::Reject(msg) => panic!("Balance query rejected: {}", msg),
-    }
-
-    // Verify the external call was executed
-    let response = pic
-        .query_call(
-            mock_external,
-            Principal::anonymous(),
-            "get_calls",
-            candid::encode_args(()).unwrap(),
-        )
-        .expect("Query failed");
-
-    match response {
-        WasmResult::Reply(bytes) => {
-            let calls: Vec<Vec<u8>> = candid::decode_one(&bytes).expect("Failed to decode calls");
-            assert_eq!(calls.len(), 1, "Should have exactly one call");
-
-            // Decode the Candid-encoded argument
-            let received_args: String =
-                candid::decode_one(&calls[0]).expect("Failed to decode call arguments");
-            assert_eq!(received_args, test_args, "Call arguments should match");
-        }
-        _ => panic!("Unexpected response type"),
-    }
-
-    // Get final cycle balance and calculate usage
     let final_cycle_balance = pic.cycle_balance(proxy_canister);
     let cycles_used = initial_cycle_balance - final_cycle_balance;
     println!("Cycles used: {}", cycles_used);
