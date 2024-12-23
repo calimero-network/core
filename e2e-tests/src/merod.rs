@@ -92,12 +92,13 @@ impl Merod {
 
         root_args.extend(args);
 
-        let log_file = self.log_dir.join(format!("{}.log", log_suffix));
-        let mut log_file = File::create(&log_file).await?;
+        let args_str = root_args.join(" ");
 
         self.output_writer
-            .write_string(format!("Command: '{:}' {:?}", &self.binary, root_args));
+            .write_string(format!("Command: '{:} {:}'", &self.binary, args_str));
 
+        let log_file = self.log_dir.join(format!("{}.log", log_suffix));
+        let mut log_file = File::create(&log_file).await?;
         let mut child = Command::new(&self.binary)
             .args(root_args)
             .stdout(Stdio::piped())

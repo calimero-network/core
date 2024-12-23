@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 
 use crate::driver::{Test, TestContext};
 
@@ -56,6 +59,9 @@ impl Test for InviteJoinContextStep {
                 ctx.invitees_public_keys
                     .insert(invitee.clone(), invitee_public_key),
             );
+
+            // Sync period is 30s, wait a bit longer to make sure the node is synced
+            sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
                 .write_string(format!("Report: Node '{}' joined the context", invitee));

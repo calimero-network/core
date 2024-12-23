@@ -23,6 +23,14 @@
     },
     {
       "contextInviteJoin": null
+    },
+    {
+      "jsonRpcCall": {
+        "methodName": "get",
+        "argsJson": { "key": "foo" },
+        "expectedResultJson": "bar",
+        "target": "allMembers"
+      }
     }
   ]
 }
