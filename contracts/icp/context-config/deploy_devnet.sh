@@ -1,7 +1,62 @@
 #!/bin/bash
 set -e
 
-# Build both contracts
+# Function to generate a new identity and return its principal
+generate_identity() {
+    local name=$1
+    dfx identity new "$name" --storage-mode=plaintext || true
+    dfx identity use "$name"
+    dfx identity get-principal
+}
+
+# Function to get account ID from principal
+get_account_id() {
+    local principal=$1
+    dfx ledger account-id --of-principal "$principal"
+}
+
+# Generate minting account
+dfx identity new minting --storage-mode=plaintext || true
+dfx identity use minting
+MINTING_PRINCIPAL=$(dfx identity get-principal)
+MINTING_ACCOUNT=$(get_account_id "$MINTING_PRINCIPAL")
+
+# Generate initial account
+dfx identity new initial --storage-mode=plaintext || true
+dfx identity use initial
+INITIAL_PRINCIPAL=$(dfx identity get-principal)
+INITIAL_ACCOUNT=$(get_account_id "$INITIAL_PRINCIPAL")
+
+# Generate archive controller account
+dfx identity new archive --storage-mode=plaintext || true
+dfx identity use archive
+ARCHIVE_PRINCIPAL=$(dfx identity get-principal)
+
+# Switch back to default identity
+dfx identity use default
+
+# Stop dfx and clean up all state
+dfx stop
+sleep 2
+rm -rf .dfx
+rm -rf ~/.config/dfx/replica-configuration/
+rm -rf ~/.cache/dfinity/
+rm canister_ids.json
+
+# Start dfx with clean state
+dfx start --clean --background
+sleep 5
+
+# Define canister IDs
+CONTEXT_ID="br5f7-7uaaa-aaaaa-qaaca-cai"
+LEDGER_ID="be2us-64aaa-aaaaa-qaabq-cai"
+
+# Create canisters
+echo "Creating canisters..."
+dfx canister create context_contract --specified-id "$CONTEXT_ID"
+dfx canister create ledger --specified-id "$LEDGER_ID"
+
+# Build contracts
 echo "Building contracts..."
 cd "$(dirname $0)"
 ./build.sh
@@ -9,30 +64,40 @@ cd ../context-proxy
 ./build.sh
 cd ../context-config
 
-# Stop and start dfx
-echo "Restarting dfx..."
-dfx stop
-dfx start --background --clean
+# Prepare ledger initialization argument
+LEDGER_INIT_ARG="(variant { Init = record { 
+    minting_account = \"${MINTING_ACCOUNT}\"; 
+    initial_values = vec { 
+        record { \"${INITIAL_ACCOUNT}\"; record { e8s = 100_000_000_000 } } 
+    }; 
+    send_whitelist = vec {}; 
+    transfer_fee = opt record { e8s = 10_000 }; 
+    token_symbol = opt \"LICP\"; 
+    token_name = opt \"Local Internet Computer Protocol Token\"; 
+    archive_options = opt record { 
+        trigger_threshold = 2000; 
+        num_blocks_to_archive = 1000; 
+        controller_id = principal \"${ARCHIVE_PRINCIPAL}\" 
+    }; 
+} })"
 
-# Force remove existing canisters if they exist
-echo "Cleaning up old canisters..."
-dfx canister delete context_contract || true
-dfx canister delete ledger || true
-
-# Create and deploy canisters
-echo "Deploying contracts..."
-dfx canister create --all --force
-dfx deploy
-
-# Get the proxy wasm
-echo "Reading proxy WASM..."
-PROXY_WASM=$(xxd -p ../context-proxy/res/calimero_context_proxy_icp.wasm | tr -d '\n')
+# Build and install canisters
+dfx build
+dfx canister install context_contract --mode=install
+dfx canister install ledger --mode=install --argument "$LEDGER_INIT_ARG"
 
 # Set proxy code in context config
-echo "Setting proxy code in context config..."
 dfx canister call context_contract set_proxy_code "(
-  vec {$(echo $PROXY_WASM | sed 's/\([0-9a-f]\{2\}\)/0x\1;/g')},
+  blob \"../context-proxy/res/calimero_context_proxy_icp.wasm\",
   principal \"$LEDGER_ID\"
 )"
 
-echo "Deployment complete!"
+# Print all relevant information at the end
+echo -e "\n=== Deployment Summary ==="
+echo "Context Contract ID: ${CONTEXT_ID}"
+echo "Ledger Contract ID: ${LEDGER_ID}"
+echo -e "\nAccount Information:"
+echo "Minting Account: ${MINTING_ACCOUNT}"
+echo "Initial Account: ${INITIAL_ACCOUNT}"
+echo "Archive Principal: ${ARCHIVE_PRINCIPAL}"
+echo -e "\nDeployment completed successfully!"
