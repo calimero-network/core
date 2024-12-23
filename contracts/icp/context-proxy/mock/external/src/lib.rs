@@ -1,6 +1,7 @@
 use std::cell::RefCell;
+
 use candid::Principal;
-use ic_ledger_types::{AccountIdentifier, Subaccount, Tokens, TransferArgs, Memo, TransferError};
+use ic_ledger_types::{AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError};
 
 thread_local! {
     static CALLS: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
@@ -18,10 +19,8 @@ fn init(ledger_id: Principal) {
 async fn test_method(args: Vec<u8>) -> Vec<u8> {
     let self_id = ic_cdk::id();
     let caller = ic_cdk::caller();
-    
-    let ledger_id = LEDGER_ID.with(|id| {
-        id.borrow().expect("Ledger ID not initialized")
-    });
+
+    let ledger_id = LEDGER_ID.with(|id| id.borrow().expect("Ledger ID not initialized"));
 
     // Prepare transfer args to move the approved tokens
     let transfer_args = TransferArgs {
@@ -34,7 +33,7 @@ async fn test_method(args: Vec<u8>) -> Vec<u8> {
     };
 
     // Execute the transfer with proper type annotations
-    let transfer_result: Result<(Result<u64, TransferError>,), _> = 
+    let transfer_result: Result<(Result<u64, TransferError>,), _> =
         ic_cdk::call(ledger_id, "transfer", (transfer_args,)).await;
 
     match transfer_result {
@@ -44,10 +43,10 @@ async fn test_method(args: Vec<u8>) -> Vec<u8> {
                 calls.borrow_mut().push(args.clone());
             });
             args // Return the same args back
-        },
+        }
         Ok((Err(transfer_error),)) => {
             ic_cdk::trap(&format!("Transfer failed: {:?}", transfer_error));
-        },
+        }
         Err(e) => {
             ic_cdk::trap(&format!("Call to ledger failed: {:?}", e));
         }

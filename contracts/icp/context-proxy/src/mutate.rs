@@ -9,7 +9,9 @@ use calimero_context_config::icp::{
 use calimero_context_config::types::{ProposalId, SignerId};
 use candid::{Nat, Principal};
 use ic_cdk::api::call::CallResult;
-use ic_ledger_types::{AccountIdentifier, Memo, Subaccount, Timestamp, Tokens, TransferArgs, TransferError};
+use ic_ledger_types::{
+    AccountIdentifier, Memo, Subaccount, Timestamp, Tokens, TransferArgs, TransferError,
+};
 
 use crate::{with_state, with_state_mut, ICProxyContract};
 
@@ -94,38 +96,38 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
 
                     // 1. First approve 0
                     let approve_args = (
-                        None::<Subaccount>, // from_subaccount
-                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),            // spender
-                        0_u128,            // amount (0)
-                        None::<Timestamp>,  // expected_allowance
-                        None::<Timestamp>,  // expires_at
-                        None::<Memo>,       // memo
-                        None::<Timestamp>,  // created_at_time
+                        None::<Subaccount>,                                         // from_subaccount
+                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])), // spender
+                        0_u128,                                                     // amount (0)
+                        None::<Timestamp>, // expected_allowance
+                        None::<Timestamp>, // expires_at
+                        None::<Memo>,      // memo
+                        None::<Timestamp>, // created_at_time
                     );
 
-                    let (approve_result,): (Result<Nat, String>,) = 
+                    let (approve_result,): (Result<Nat, String>,) =
                         ic_cdk::call(Principal::from(ledger_id), "icrc2_approve", approve_args)
                             .await
                             .map_err(|e| format!("Initial approve(0) failed: {:?}", e))?;
-                    
+
                     approve_result.map_err(|e| format!("Initial approve(0) rejected: {}", e))?;
 
                     // 2. Approve the deposit amount
                     let approve_args = (
-                        None::<Subaccount>,  // from_subaccount
-                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),            // spender
-                        deposit as u128,     // amount
-                        None::<Timestamp>,   // expected_allowance
-                        None::<Timestamp>,   // expires_at
-                        None::<Memo>,        // memo
-                        None::<Timestamp>,   // created_at_time
+                        None::<Subaccount>,                                         // from_subaccount
+                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])), // spender
+                        deposit as u128,                                            // amount
+                        None::<Timestamp>, // expected_allowance
+                        None::<Timestamp>, // expires_at
+                        None::<Memo>,      // memo
+                        None::<Timestamp>, // created_at_time
                     );
 
-                    let (approve_result,): (Result<Nat, String>,) = 
+                    let (approve_result,): (Result<Nat, String>,) =
                         ic_cdk::call(Principal::from(ledger_id), "icrc2_approve", approve_args)
                             .await
                             .map_err(|e| format!("Approve deposit failed: {:?}", e))?;
-                    
+
                     approve_result.map_err(|e| format!("Approve deposit rejected: {}", e))?;
                 }
 
@@ -141,20 +143,20 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                 if deposit > 0 {
                     let ledger_id = with_state(|contract| contract.ledger_id.clone());
                     let approve_args = (
-                        None::<Subaccount>,  // from_subaccount
-                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),            // spender
-                        0_u128,             // amount (0)
-                        None::<Timestamp>,   // expected_allowance
-                        None::<Timestamp>,   // expires_at
-                        None::<Memo>,        // memo
-                        None::<Timestamp>,   // created_at_time
+                        None::<Subaccount>,                                         // from_subaccount
+                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])), // spender
+                        0_u128,                                                     // amount (0)
+                        None::<Timestamp>, // expected_allowance
+                        None::<Timestamp>, // expires_at
+                        None::<Memo>,      // memo
+                        None::<Timestamp>, // created_at_time
                     );
 
-                    let (approve_result,): (Result<Nat, String>,) = 
+                    let (approve_result,): (Result<Nat, String>,) =
                         ic_cdk::call(Principal::from(ledger_id), "icrc2_approve", approve_args)
                             .await
                             .map_err(|e| format!("Approve deposit failed: {:?}", e))?;
-                    
+
                     approve_result.map_err(|e| format!("Approve deposit rejected: {}", e))?;
                 }
             }

@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::io::Read;
 
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{
@@ -12,12 +13,13 @@ use calimero_context_config::repr::ReprTransmute;
 use calimero_context_config::types::{ContextId, ContextIdentity};
 use candid::{CandidType, Principal};
 use ed25519_dalek::{Signer, SigningKey};
-use ic_ledger_types::{AccountBalanceArgs, AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError};
+use flate2::read::GzDecoder;
+use ic_ledger_types::{
+    AccountBalanceArgs, AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError,
+};
 use pocket_ic::{PocketIc, WasmResult};
 use rand::Rng;
 use reqwest;
-use flate2::read::GzDecoder;
-use std::io::Read;
 
 // Mock canister states
 thread_local! {
@@ -112,33 +114,34 @@ fn setup() -> ProxyTestContext {
     let mut rng = rand::thread_rng();
 
     // Create test user principal first
-    let test_user = Principal::from_text(
-        "rrkah-fqaaa-aaaaa-aaaaq-cai"
-    ).unwrap();
-    
+    let test_user = Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").unwrap();
+
     // Setup ledger canister
     let mock_ledger = pic.create_canister();
     pic.add_cycles(mock_ledger, 100_000_000_000_000_000);
-    
+
     // Download the compressed ledger wasm
     let compressed_wasm = reqwest::blocking::get(
         "https://download.dfinity.systems/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/canisters/ledger-canister.wasm.gz"
     ).expect("Failed to download ledger wasm")
     .bytes().expect("Failed to read ledger wasm bytes");
-    
+
     // Decompress the wasm file
     let mut decoder = GzDecoder::new(&compressed_wasm[..]);
     let mut ledger_wasm = Vec::new();
-    decoder.read_to_end(&mut ledger_wasm).expect("Failed to decompress ledger wasm");
-    
+    decoder
+        .read_to_end(&mut ledger_wasm)
+        .expect("Failed to decompress ledger wasm");
+
     // Initialize ledger with the same args as in dfx.json
     let init_args = LedgerCanisterInit::Init(LedgerCanisterInitPayload {
-        minting_account: "e8478037d13e48f9d43d28136328d0642e4ed680c8be9f08f0da98791740203c".to_string(),
+        minting_account: "e8478037d13e48f9d43d28136328d0642e4ed680c8be9f08f0da98791740203c"
+            .to_string(),
         initial_values: vec![(
             AccountIdentifier::new(&test_user, &Subaccount([0; 32])).to_string(),
             Tokens::from_e8s(100_000_000_000),
         )],
-        send_whitelist: vec![test_user],  // Add test_user to whitelist
+        send_whitelist: vec![test_user], // Add test_user to whitelist
         transfer_fee: Some(Tokens::from_e8s(10_000)),
         token_symbol: Some("LICP".to_string()),
         token_name: Some("Local Internet Computer Protocol Token".to_string()),
@@ -146,8 +149,9 @@ fn setup() -> ProxyTestContext {
             trigger_threshold: 2000,
             num_blocks_to_archive: 1000,
             controller_id: Principal::from_text(
-                "bwmrp-pfufw-yvlwr-nwbuh-4ko7l-2fz7x-kt6gq-4d3mc-hzqsi-pfwmp-kqe"
-            ).unwrap(),
+                "bwmrp-pfufw-yvlwr-nwbuh-4ko7l-2fz7x-kt6gq-4d3mc-hzqsi-pfwmp-kqe",
+            )
+            .unwrap(),
         }),
     });
 
@@ -169,7 +173,7 @@ fn setup() -> ProxyTestContext {
     pic.add_cycles(mock_external, 100_000_000_000_000);
     let mock_external_wasm = std::fs::read("mock/external/res/calimero_mock_external_icp.wasm")
         .expect("failed to read mock external wasm");
-    
+
     // Pass ledger ID during initialization
     let init_args = candid::encode_one(mock_ledger).expect("Failed to encode ledger ID");
     pic.install_canister(mock_external, mock_external_wasm, init_args, None);
@@ -996,10 +1000,12 @@ fn test_proposal_execution_transfer() {
 
     match response {
         WasmResult::Reply(bytes) => {
-            let result: Result<u64, TransferError> = 
+            let result: Result<u64, TransferError> =
                 candid::decode_one(&bytes).expect("Failed to decode transfer result");
             match result {
-                Ok(block_height) => println!("Transfer successful at block height: {}", block_height),
+                Ok(block_height) => {
+                    println!("Transfer successful at block height: {}", block_height)
+                }
                 Err(e) => panic!("Transfer failed: {:?}", e),
             }
         }
@@ -1129,7 +1135,7 @@ fn test_proposal_execution_transfer() {
             // Verify the transfer was executed - mock_external should have received exactly transfer_amount
             assert_eq!(
                 final_balance,
-                u64::try_from(transfer_amount).unwrap(),  // mock_external should have exactly the amount we transferred
+                u64::try_from(transfer_amount).unwrap(), // mock_external should have exactly the amount we transferred
                 "Receiver should have received the transfer amount"
             );
         }
@@ -1370,7 +1376,7 @@ fn test_proposal_execution_external_call_with_deposit() {
             Ok(WasmResult::Reply(bytes)) => {
                 let result: Result<Option<ICProposalWithApprovals>, String> =
                     candid::decode_one(&bytes).expect("Failed to decode response");
-                
+
                 if let Ok(None) = result {
                     // Verify proposal was executed and removed
                     let query_response = pic
@@ -1384,8 +1390,8 @@ fn test_proposal_execution_external_call_with_deposit() {
 
                     match query_response {
                         WasmResult::Reply(bytes) => {
-                            let stored_proposal: Option<ICProposal> =
-                                candid::decode_one(&bytes).expect("Failed to decode stored proposal");
+                            let stored_proposal: Option<ICProposal> = candid::decode_one(&bytes)
+                                .expect("Failed to decode stored proposal");
                             assert!(
                                 stored_proposal.is_none(),
                                 "Proposal should be removed after execution"
@@ -1406,11 +1412,12 @@ fn test_proposal_execution_external_call_with_deposit() {
 
                     match calls_response {
                         WasmResult::Reply(bytes) => {
-                            let calls: Vec<Vec<u8>> = candid::decode_one(&bytes).expect("Failed to decode calls");
+                            let calls: Vec<Vec<u8>> =
+                                candid::decode_one(&bytes).expect("Failed to decode calls");
                             assert_eq!(calls.len(), 1, "Should have exactly one call");
 
-                            let received_args: String =
-                                candid::decode_one(&calls[0]).expect("Failed to decode call arguments");
+                            let received_args: String = candid::decode_one(&calls[0])
+                                .expect("Failed to decode call arguments");
                             assert_eq!(received_args, test_args, "Call arguments should match");
                         }
                         _ => panic!("Unexpected response type"),
@@ -1433,7 +1440,8 @@ fn test_proposal_execution_external_call_with_deposit() {
 
                     match balance_response {
                         WasmResult::Reply(bytes) => {
-                            let balance: Tokens = candid::decode_one(&bytes).expect("Failed to decode balance");
+                            let balance: Tokens =
+                                candid::decode_one(&bytes).expect("Failed to decode balance");
                             let expected_balance = initial_ledger_balance + deposit_amount as u64;
                             assert_eq!(
                                 balance.e8s(),
