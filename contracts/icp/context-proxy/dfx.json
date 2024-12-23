@@ -20,11 +20,8 @@
   },
   "networks": {
     "local": {
-      "bind": "127.0.0.1:8080",
-      "type": "persistent",
-      "replica": {
-        "subnet_type": "system"
-      }
+      "bind": "127.0.0.1:4943",
+      "type": "persistent"
     }
   },
   "output_env_file": ".env",

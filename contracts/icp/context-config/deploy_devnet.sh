@@ -87,11 +87,32 @@ dfx build
 dfx canister install context_contract --mode=install
 dfx canister install ledger --mode=install --argument "$LEDGER_INIT_ARG"
 
-# Set proxy code in context config
-dfx canister call context_contract set_proxy_code "(
-  blob \"../context-proxy/res/calimero_context_proxy_icp.wasm\",
-  principal \"$LEDGER_ID\"
-)"
+# Get the directory where the script is located
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Build path relative to the script location
+WASM_FILE="${SCRIPT_DIR}/../context-proxy/res/calimero_context_proxy_icp.wasm"
+
+# Verify file exists
+if [ ! -f "$WASM_FILE" ]; then
+    echo "Error: WASM file not found at: $WASM_FILE"
+    exit 1
+fi
+
+# Then modify the script to use a consistent reading method
+WASM_CONTENTS=$(xxd -p "$WASM_FILE" | tr -d '\n' | sed 's/\(..\)/\\\1/g')
+
+TEMP_CMD=$(mktemp)
+echo "(
+  blob \"${WASM_CONTENTS}\",
+  principal \"${LEDGER_ID}\"
+)" > "$TEMP_CMD"
+
+# Execute the command using the temporary file
+dfx canister call context_contract set_proxy_code --argument-file "$TEMP_CMD"
+
+# Clean up
+rm "$TEMP_CMD"
 
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="
