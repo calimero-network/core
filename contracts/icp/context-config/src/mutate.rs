@@ -185,8 +185,10 @@ fn add_members(
         let mut ctx_members = guard_ref.get_mut();
 
         for member in members {
-            ctx_members.insert(member);
-            let _ignored = context.member_nonces.entry(member).or_default();
+            if ctx_members.insert(member) {
+                // returns true if the value was newly inserted
+                let _ignored = context.member_nonces.entry(member).or_default();
+            }
         }
 
         Ok(())

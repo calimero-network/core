@@ -4,6 +4,18 @@
       "package": "calimero-context-config-icp",
       "candid": "./res/calimero_context_config_icp.did",
       "type": "rust"
+    },
+    "ledger": {
+      "type": "custom",
+      "wasm": "https://download.dfinity.systems/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/canisters/ledger-canister.wasm.gz",
+      "candid": "https://raw.githubusercontent.com/dfinity/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/rs/ledger_suite/icp/ledger.did",
+      "remote": {
+        "candid": "https://raw.githubusercontent.com/dfinity/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/rs/ledger_suite/icp/ledger.did",
+        "id": {
+          "ic": "ryjl3-tyaaa-aaaaa-aaaba-cai"
+        }
+      },
+      "init_arg": "(variant { Init = record { minting_account = \"62c39e7c2484a1a9aa0864f9fb402558537111c3e6db3c37f793ab460f137ae4\"; initial_values = vec {}; send_whitelist = vec {}; token_name = opt \"Internet Computer\"; token_symbol = opt \"ICP\"; transfer_fee = opt record { e8s = 10_000 }; archive_options = opt record { trigger_threshold = 2_000_000; num_blocks_to_archive = 1_000_000; controller_id = principal \"aaaaa-aa\"; cycles_for_archive_creation = opt (0 : nat64); node_max_memory_size_bytes = null; max_message_size_bytes = null }}})"
     }
   },
   "defaults": {
@@ -12,6 +24,11 @@
       "packtool": ""
     }
   },
-  "output_env_file": ".env",
+  "networks": {
+    "local": {
+      "bind": "127.0.0.1:8080",
+      "type": "persistent"
+    }
+  },
   "version": 1
 }

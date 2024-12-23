@@ -24,6 +24,15 @@
       "packtool": ""
     }
   },
+  "networks": {
+    "local": {
+      "bind": "127.0.0.1:8080",
+      "type": "persistent",
+      "replica": {
+        "subnet_type": "system"
+      }
+    }
+  },
   "output_env_file": ".env",
   "version": 1
 }
