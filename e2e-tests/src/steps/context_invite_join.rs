@@ -60,8 +60,8 @@ impl Test for InviteJoinContextStep {
                     .insert(invitee.clone(), invitee_public_key),
             );
 
-            // Sync period is 10s, wait a bit longer to make sure the node is synced
-            sleep(Duration::from_secs(12)).await;
+            // Sync period is 30s, wait a bit longer to make sure the node is synced
+            sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
                 .write_string(format!("Report: Node '{}' joined the context", invitee));
