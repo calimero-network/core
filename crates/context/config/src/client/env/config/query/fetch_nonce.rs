@@ -87,9 +87,8 @@ impl Method<Icp> for FetchNonceRequest {
         let context_id = ICRepr::new(*self.context_id);
         let member_id = ICRepr::new(*self.member_id);
 
-        let payload = (context_id, member_id);
-
-        Encode!(&payload).map_err(Into::into)
+        // Encode arguments separately
+        Encode!(&context_id, &member_id).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
