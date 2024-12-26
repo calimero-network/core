@@ -22,7 +22,8 @@ use super::handlers::did::delete_did_handler;
 use super::handlers::proposals::{
     get_context_storage_entries_handler, get_context_value_handler,
     get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler,
-    get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler, get_proxy_contract_handler,
+    get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
+    get_proxy_contract_handler,
 };
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::add_client_key::{
