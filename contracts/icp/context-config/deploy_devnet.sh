@@ -53,6 +53,11 @@ dfx identity new archive --storage-mode=plaintext || true
 dfx identity use archive
 ARCHIVE_PRINCIPAL=$(dfx identity get-principal)
 
+# Generate test recipient account
+dfx identity new recipient --storage-mode=plaintext || true
+dfx identity use recipient
+RECIPIENT_PRINCIPAL=$(dfx identity get-principal)
+
 # Switch back to default identity
 dfx identity use default
 
@@ -71,11 +76,8 @@ dfx canister create ledger
 
 # Get the context ID
 CONTEXT_ID=$(dfx canister id context_contract)
-echo "Context ID: $CONTEXT_ID"
-
 # Get the wallet ID and seed it
 WALLET_ID=$(dfx identity get-wallet)
-echo "Wallet ID: $WALLET_ID"
 
 # abricate cycles for the wallet
 dfx ledger fabricate-cycles --canister $WALLET_ID --amount 200000
@@ -146,16 +148,6 @@ dfx canister call context_contract set_proxy_code --argument-file "$TEMP_CMD"
 # Clean up
 rm "$TEMP_CMD"
 
-# # First top up the wallet with extra buffer
-# dfx canister deposit-cycles 3000000000000000 $(dfx identity get-wallet)  # 3000T cycles
-
-# # Then top up the context contract with enough for 100+ proxies
-# dfx canister deposit-cycles 200000000000000 context_contract  # 200T cycles
-
-# # Get the canister ID first
-# CONTEXT_ID=$(dfx canister id context_contract)
-# dfx canister deposit-cycles 1000000000000000 $CONTEXT_ID # 100T cycles
-
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="
 echo "Context Contract ID: ${CONTEXT_ID}"
@@ -164,4 +156,5 @@ echo -e "\nAccount Information:"
 echo "Minting Account: ${MINTING_ACCOUNT}"
 echo "Initial Account: ${INITIAL_ACCOUNT}"
 echo "Archive Principal: ${ARCHIVE_PRINCIPAL}"
+echo "Recipient Principal: ${RECIPIENT_PRINCIPAL}"
 echo -e "\nDeployment completed successfully!"
