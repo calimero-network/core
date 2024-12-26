@@ -3,14 +3,12 @@
     "context_contract": {
       "package": "calimero-context-config-icp",
       "candid": "./res/calimero_context_config_icp.did",
-      "type": "rust",
-      "id": "br5f7-7uaaa-aaaaa-qaaca-cai"
+      "type": "rust"
     },
     "ledger": {
       "type": "custom",
       "wasm": "https://download.dfinity.systems/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/canisters/ledger-canister.wasm.gz",
-      "candid": "https://raw.githubusercontent.com/dfinity/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/rs/ledger_suite/icp/ledger.did",
-      "id": "be2us-64aaa-aaaaa-qaabq-cai"
+      "candid": "https://raw.githubusercontent.com/dfinity/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/rs/ledger_suite/icp/ledger.did"
     }
   },
   "defaults": {
@@ -24,6 +22,10 @@
       "bind": "127.0.0.1:4943",
       "type": "persistent"
     }
+  },
+  "routing_table": {
+    "start_canister_id": "aaaaa-aa",
+    "end_canister_id": "zzzzz-zz"
   },
   "version": 1
 }

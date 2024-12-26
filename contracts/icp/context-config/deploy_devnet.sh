@@ -15,6 +15,27 @@ get_account_id() {
     dfx ledger account-id --of-principal "$principal"
 }
 
+echo "Checking dependencies..."
+command -v dfx >/dev/null 2>&1 || { echo "dfx is required but not installed. Aborting." >&2; exit 1; }
+command -v cargo >/dev/null 2>&1 || { echo "cargo is required but not installed. Aborting." >&2; exit 1; }
+
+dfxvm default 0.24.3
+
+# Stop dfx and clean up all state
+dfx stop
+rm -rf .dfx
+rm -rf ~/.config/dfx/replica-configuration/
+rm -rf ~/.config/dfx/identity/minting
+rm -rf ~/.config/dfx/identity/initial
+rm -rf ~/.config/dfx/identity/archive
+rm -rf ~/.cache/dfinity/
+rm -rf ~/.config/dfx/
+dfxvm default 0.24.3
+# Remove canister_ids.json if it exists
+if [ -f "canister_ids.json" ]; then
+    rm canister_ids.json
+fi
+
 # Generate minting account
 dfx identity new minting --storage-mode=plaintext || true
 dfx identity use minting
@@ -35,27 +56,38 @@ ARCHIVE_PRINCIPAL=$(dfx identity get-principal)
 # Switch back to default identity
 dfx identity use default
 
-# Stop dfx and clean up all state
-dfx stop
-rm -rf .dfx
-rm -rf ~/.config/dfx/replica-configuration/
-rm -rf ~/.cache/dfinity/
-# Remove canister_ids.json if it exists
-if [ -f "canister_ids.json" ]; then
-    rm canister_ids.json
-fi
-
 # Start dfx with clean state
 dfx start --clean --background
 
-# Define canister IDs
-CONTEXT_ID="br5f7-7uaaa-aaaaa-qaaca-cai"
-LEDGER_ID="be2us-64aaa-aaaaa-qaabq-cai"
+dfx identity use default
 
-# Create canisters
-echo "Creating canisters..."
-dfx canister create context_contract --specified-id "$CONTEXT_ID"
-dfx canister create ledger --specified-id "$LEDGER_ID"
+# Create initial identity if needed
+dfx identity new --storage-mode=plaintext minting || true
+# dfx identity use minting
+
+echo "Creating and deploying canister..."
+dfx canister create context_contract
+dfx canister create ledger
+
+# Get the context ID
+CONTEXT_ID=$(dfx canister id context_contract)
+echo "Context ID: $CONTEXT_ID"
+
+# Get the wallet ID and seed it
+WALLET_ID=$(dfx identity get-wallet)
+echo "Wallet ID: $WALLET_ID"
+
+# abricate cycles for the wallet
+dfx ledger fabricate-cycles --canister $WALLET_ID --amount 200000
+
+# Transfer cycles from wallet to context contract
+dfx canister deposit-cycles 1000000000000000000 $CONTEXT_ID
+
+echo "Done! Cycles transferred to context contract: $CONTEXT_ID"
+
+# Get the IDs
+CONTEXT_ID=$(dfx canister id context_contract)
+LEDGER_ID=$(dfx canister id ledger)
 
 # Build contracts
 echo "Building contracts..."
@@ -113,6 +145,16 @@ dfx canister call context_contract set_proxy_code --argument-file "$TEMP_CMD"
 
 # Clean up
 rm "$TEMP_CMD"
+
+# # First top up the wallet with extra buffer
+# dfx canister deposit-cycles 3000000000000000 $(dfx identity get-wallet)  # 3000T cycles
+
+# # Then top up the context contract with enough for 100+ proxies
+# dfx canister deposit-cycles 200000000000000 context_contract  # 200T cycles
+
+# # Get the canister ID first
+# CONTEXT_ID=$(dfx canister id context_contract)
+# dfx canister deposit-cycles 1000000000000000 $CONTEXT_ID # 100T cycles
 
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="
