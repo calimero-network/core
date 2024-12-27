@@ -8,9 +8,9 @@ use crate::driver::{Test, TestContext};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InviteJoinContextStep;
+pub struct ContextInviteJoinStep;
 
-impl Test for InviteJoinContextStep {
+impl Test for ContextInviteJoinStep {
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let Some(ref context_id) = ctx.context_id else {
             bail!("Context ID is required for InviteJoinContextStep");

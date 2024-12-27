@@ -22,6 +22,7 @@ pub struct TestContext<'a> {
     pub inviter: String,
     pub invitees: Vec<String>,
     pub meroctl: &'a Meroctl,
+    pub application_id: Option<String>,
     pub context_id: Option<String>,
     pub inviter_public_key: Option<String>,
     pub invitees_public_keys: HashMap<String, String>,
@@ -43,6 +44,7 @@ impl<'a> TestContext<'a> {
             inviter,
             invitees,
             meroctl,
+            application_id: None,
             context_id: None,
             inviter_public_key: None,
             invitees_public_keys: HashMap::new(),
@@ -268,6 +270,7 @@ impl Driver {
             self.environment.output_writer.write_json(&step)?;
 
             match step {
+                TestStep::ApplicationInstall(step) => step.run_assert(&mut ctx).await?,
                 TestStep::ContextCreate(step) => step.run_assert(&mut ctx).await?,
                 TestStep::ContextInviteJoin(step) => step.run_assert(&mut ctx).await?,
                 TestStep::JsonRpcCall(step) => step.run_assert(&mut ctx).await?,

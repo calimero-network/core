@@ -1,9 +1,13 @@
 {
   "steps": [
     {
-      "contextCreate": {
-        "application": { "localFile": "./apps/kv-store/res/kv_store.wasm" }
+      "applicationInstall": {
+        "application": { "localFile": "./apps/kv-store/res/kv_store.wasm" },
+        "target": "allMembers"
       }
+    },
+    {
+      "contextCreate": null
     },
     {
       "jsonRpcCall": {
