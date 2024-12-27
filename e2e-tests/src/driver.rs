@@ -143,8 +143,8 @@ impl Driver {
                         "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
                         self.environment.test_id
                     ),
-                    // format!("sync.interval_ms={}", 10_000),
-                    // format!("sync.timeout_ms={}", 10_000),
+                    format!("sync.interval_ms={}", 10_000),
+                    format!("sync.timeout_ms={}", 10_000),
                 ];
 
                 if let Some(ref near) = self.near {

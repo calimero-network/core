@@ -45,8 +45,7 @@ jobs:
       - name: Run e2e tests
         env:
           NO_COLOR: '1'
-          # RUST_LOG: info
-          RUST_LOG: calimero_node=debug,calimero_network=debug
+          # RUST_LOG: calimero_node=debug,calimero_network=debug
         run: |
           SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}')
           export $SWARM_PORT
