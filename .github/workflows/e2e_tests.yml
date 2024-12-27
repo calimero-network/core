@@ -43,8 +43,11 @@ jobs:
           cargo build -p meroctl -p merod -p e2e-tests
 
       - name: Run e2e tests
+        env:
+          NO_COLOR: '1'
+          # RUST_LOG: info
+          RUST_LOG: calimero_node=debug,calimero_network=debug
         run: |
-          export NO_COLOR=1
           echo "Running e2e tests, check job summary for details"
           echo "# E2E tests 🏗️" >> $GITHUB_STEP_SUMMARY
           ./target/debug/e2e-tests \
