@@ -31,7 +31,13 @@ impl Merod {
         }
     }
 
-    pub async fn init(&self, swarm_port: u32, server_port: u32, args: &[&str]) -> EyreResult<()> {
+    pub async fn init(
+        &self,
+        swarm_host: &str,
+        swarm_port: u32,
+        server_port: u32,
+        args: &[&str],
+    ) -> EyreResult<()> {
         create_dir_all(&self.nodes_dir.join(&self.name)).await?;
         create_dir_all(&self.log_dir).await?;
 
@@ -39,6 +45,8 @@ impl Merod {
             .run_cmd(
                 &[
                     "init",
+                    "--swarm-host",
+                    swarm_host,
                     "--swarm-port",
                     swarm_port.to_string().as_str(),
                     "--server-port",

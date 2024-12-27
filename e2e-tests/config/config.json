@@ -1,6 +1,7 @@
 {
   "network": {
     "nodeCount": 2,
+    "swarmHostEnv": "SWARM_HOST",
     "startSwarmPort": 2427,
     "startServerPort": 2527
   },

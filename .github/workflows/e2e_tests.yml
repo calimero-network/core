@@ -48,6 +48,9 @@ jobs:
           # RUST_LOG: info
           RUST_LOG: calimero_node=debug,calimero_network=debug
         run: |
+          SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}')
+          export $SWARM_PORT
+
           echo "Running e2e tests, check job summary for details"
           echo "# E2E tests 🏗️" >> $GITHUB_STEP_SUMMARY
           ./target/debug/e2e-tests \

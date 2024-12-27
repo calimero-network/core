@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -186,8 +187,14 @@ impl Driver {
 
                 let merod = Merod::new(node_name.clone(), &self.environment);
 
+                let swarm_host = match env::var(&self.config.network.swarm_host_env) {
+                    Ok(host) => host,
+                    Err(_) => "0.0.0.0".to_string(),
+                };
+
                 merod
                     .init(
+                        &swarm_host,
                         self.config.network.start_swarm_port + i,
                         self.config.network.start_server_port + i,
                         &config_args,
