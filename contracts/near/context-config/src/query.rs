@@ -122,4 +122,15 @@ impl ContextConfigs {
 
         privileges
     }
+
+    pub fn fetch_nonce(
+        &self,
+        context_id: Repr<ContextId>,
+        member_id: Repr<ContextIdentity>,
+    ) -> Option<&u64> {
+        self.contexts
+            .get(&context_id)?
+            .member_nonces
+            .get(&member_id)
+    }
 }

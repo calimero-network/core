@@ -28,11 +28,12 @@ pub struct Request<'a> {
 
     pub signer_id: Repr<SignerId>,
     pub timestamp_ms: Timestamp,
+    pub nonce: u64,
 }
 
 impl<'a> Request<'a> {
     #[must_use]
-    pub fn new(signer_id: SignerId, kind: RequestKind<'a>) -> Self {
+    pub fn new(signer_id: SignerId, kind: RequestKind<'a>, nonce: u64) -> Self {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "This is never expected to overflow"
@@ -46,6 +47,7 @@ impl<'a> Request<'a> {
             signer_id: Repr::new(signer_id),
             timestamp_ms,
             kind,
+            nonce,
         }
     }
 }
@@ -140,7 +142,6 @@ pub enum ProposalAction {
         method_name: String,
         args: String,
         deposit: NativeToken,
-        gas: Gas,
     },
     Transfer {
         receiver_id: String,

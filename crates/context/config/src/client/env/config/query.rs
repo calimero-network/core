@@ -8,6 +8,7 @@ use crate::types::{Application, Capability, ContextId, ContextIdentity, Revision
 
 pub mod application;
 pub mod application_revision;
+pub mod fetch_nonce;
 pub mod has_member;
 pub mod members;
 pub mod members_revision;
@@ -98,6 +99,16 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         let params = proxy_contract::ProxyContractRequest {
             context_id: Repr::new(context_id),
         };
+
+        utils::send(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn fetch_nonce(
+        &self,
+        context_id: ContextId,
+        member_id: ContextIdentity,
+    ) -> Result<Option<u64>, ClientError<T>> {
+        let params = fetch_nonce::FetchNonceRequest::new(context_id, member_id);
 
         utils::send(&self.client, Operation::Read(params)).await
     }
