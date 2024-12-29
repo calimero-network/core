@@ -157,7 +157,8 @@ impl InitCommand {
                 }
             }
             if !self.force {
-                bail!("Node is already initialized in {:?}", path);
+                warn!("Node is already initialized in {:?}", path);
+                return Ok(());
             }
         }
 

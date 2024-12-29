@@ -14,11 +14,11 @@ use crate::cli::context::watch::WatchCommand;
 use crate::cli::Environment;
 use crate::output::Report;
 
-mod create;
+pub mod create;
 mod delete;
 mod get;
-mod invite;
-mod join;
+pub mod invite;
+pub mod join;
 mod list;
 mod update;
 mod watch;
