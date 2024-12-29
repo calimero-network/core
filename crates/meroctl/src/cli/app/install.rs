@@ -1,3 +1,4 @@
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
@@ -36,6 +37,12 @@ impl Report for InstallApplicationResponse {
 
 impl InstallCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
+        let _ignored = self.install_app(environment).await?;
+
+        Ok(())
+    }
+
+    pub async fn install_app(self, environment: &Environment) -> Result<ApplicationId> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let mut is_dev_installation = false;
         let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
@@ -76,6 +83,6 @@ impl InstallCommand {
 
         environment.output.write(&response);
 
-        Ok(())
+        Ok(response.data.application_id)
     }
 }

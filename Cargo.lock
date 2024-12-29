@@ -4845,6 +4845,7 @@ dependencies = [
  "futures-util",
  "libp2p",
  "notify",
+ "rand 0.8.5",
  "reqwest 0.12.9",
  "serde",
  "serde_json",
@@ -4856,7 +4857,7 @@ dependencies = [
 
 [[package]]
 name = "merod"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "calimero-blobstore",

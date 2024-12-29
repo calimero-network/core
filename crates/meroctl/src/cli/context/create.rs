@@ -149,7 +149,7 @@ impl CreateCommand {
     }
 }
 
-async fn create_context(
+pub async fn create_context(
     environment: &Environment,
     client: &Client,
     base_multiaddr: &Multiaddr,
