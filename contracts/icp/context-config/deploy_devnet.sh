@@ -16,8 +16,26 @@ get_account_id() {
 }
 
 echo "Checking dependencies..."
-command -v dfx >/dev/null 2>&1 || { echo "dfx is required but not installed. Aborting." >&2; exit 1; }
-command -v cargo >/dev/null 2>&1 || { echo "cargo is required but not installed. Aborting." >&2; exit 1; }
+# Check for required commands
+REQUIRED_COMMANDS="dfx cargo candid-extractor"
+
+for cmd in $REQUIRED_COMMANDS; do
+    if ! command -v $cmd >/dev/null 2>&1; then
+        case $cmd in
+            "dfx")
+                echo "dfx is required but not installed. Please install dfx: https://internetcomputer.org/docs/current/developer-docs/setup/install/" >&2
+                ;;
+            "cargo")
+                echo "cargo is required but not installed. Please install Rust: https://rustup.rs/" >&2
+                ;;
+            "candid-extractor")
+                echo "candid-extractor is required but not installed. Please install: cargo install candid-extractor" >&2
+                ;;
+        esac
+        exit 1
+    fi
+done
+
 
 dfxvm default 0.24.3
 
