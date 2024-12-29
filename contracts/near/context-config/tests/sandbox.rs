@@ -1371,7 +1371,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::UpdateProxyContract,
                 ));
-                Request::new(alice_cx_id.rt()?, kind, 0)
+                Request::new(alice_cx_id.rt()?, kind, 1)
             },
             |p| alice_cx_sk.sign(p),
         )?)

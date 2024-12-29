@@ -1421,4 +1421,15 @@ impl ContextManager {
             .map_err(|err| eyre::eyre!("Failed to fetch context storage entries: {}", err))?;
         Ok(response)
     }
+
+    pub async fn get_proxy_id(&self, context_id: ContextId) -> EyreResult<String> {
+        let handle = self.store.handle();
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let proxy_contract = context_config.proxy_contract.as_ref().into();
+
+        Ok(proxy_contract)
+    }
 }

@@ -28,3 +28,4 @@ dist/
 pocket-ic
 
 !**/res/*.did
+**/canister_ids.json

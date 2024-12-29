@@ -294,7 +294,7 @@ fn test_member_management() {
             },
         }),
         signer_id: (alice_pk.rt().expect("infallible conversion")),
-        nonce: 0,
+        nonce: 1,
     };
 
     let signed_request = create_signed_request(&alice_sk, remove_member_request);
@@ -403,7 +403,7 @@ fn test_capability_management() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        nonce: 0,
+        nonce: 1,
     };
 
     let signed_request = create_signed_request(&alice_sk, grant_request);
@@ -444,7 +444,7 @@ fn test_capability_management() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        nonce: 0,
+        nonce: 2,
     };
 
     let signed_request = create_signed_request(&alice_sk, revoke_request);
@@ -731,7 +731,7 @@ fn test_edge_cases() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        nonce: 0,
+        nonce: 1,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_duplicate_members);
@@ -804,7 +804,7 @@ fn test_concurrent_operations() {
 
     // Create multiple member additions with same timestamp
     let mut requests = Vec::new();
-    for _ in 0..3 {
+    for i in 0..3 {
         let new_member = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
         let request = ICRequest {
             kind: ICRequestKind::Context(ICContextRequest {
@@ -814,7 +814,7 @@ fn test_concurrent_operations() {
                 },
             }),
             signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-            nonce: 0,
+            nonce: i as u64,
         };
         requests.push(create_signed_request(&alice_sk, request));
     }
@@ -854,4 +854,111 @@ fn test_concurrent_operations() {
             "Should have all members (Alice + 3 new members)"
         );
     }
+}
+
+#[test]
+fn test_nonce_management() {
+    let (pic, canister) = setup();
+    let mut rng = rand::thread_rng();
+
+    // Create test identities
+    let context_sk = SigningKey::from_bytes(&rng.gen());
+    let context_pk = context_sk.verifying_key();
+    let context_id = context_pk.rt().expect("infallible conversion");
+
+    let alice_sk = SigningKey::from_bytes(&rng.gen());
+    let alice_pk = alice_sk.verifying_key();
+    let alice_id = alice_pk.rt().expect("infallible conversion");
+
+    // Create initial context
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
+                application: ICApplication {
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    size: 0,
+                    source: String::new(),
+                    metadata: vec![],
+                },
+            },
+        }),
+        signer_id: context_id.rt().expect("infallible conversion"),
+        nonce: 0,
+    };
+
+    let signed_request = create_signed_request(&context_sk, create_request);
+    let response = pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "mutate",
+        candid::encode_one(signed_request).unwrap(),
+    );
+    handle_response(response, true, "Context creation");
+
+    // Test sequential nonce increment
+    for i in 0..3 {
+        let request = ICRequest {
+            kind: ICRequestKind::Context(ICContextRequest {
+                context_id,
+                kind: ICContextRequestKind::AddMembers {
+                    members: vec![rng.gen::<[_; 32]>().rt().expect("infallible conversion")],
+                },
+            }),
+            signer_id: alice_id.rt().expect("infallible conversion"),
+            nonce: i as u64,
+        };
+
+        let signed_request = create_signed_request(&alice_sk, request);
+        let response = pic.update_call(
+            canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
+        handle_response(response, true, &format!("Member addition {}", i));
+
+        // Verify nonce was incremented
+        let query_response = pic.query_call(
+            canister,
+            Principal::anonymous(),
+            "fetch_nonce",
+            candid::encode_args((context_id, alice_id)).unwrap(),
+        );
+
+        let current_nonce = if let Ok(WasmResult::Reply(bytes)) = query_response {
+            candid::decode_one::<Option<u64>>(&bytes).expect("Failed to decode nonce")
+        } else {
+            panic!("Failed to fetch nonce");
+        };
+
+        assert_eq!(
+            current_nonce.unwrap(),
+            i + 1,
+            "Nonce should be incremented after operation"
+        );
+    }
+
+    // Test invalid nonce rejection
+    let invalid_nonce_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::AddMembers {
+                members: vec![rng.gen::<[_; 32]>().rt().expect("infallible conversion")],
+            },
+        }),
+        signer_id: alice_id.rt().expect("infallible conversion"),
+        nonce: 0, // Using old nonce
+    };
+
+    let signed_request = create_signed_request(&alice_sk, invalid_nonce_request);
+    let response = pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "mutate",
+        candid::encode_one(signed_request).unwrap(),
+    );
+    handle_response(response, false, "Invalid nonce rejection");
 }

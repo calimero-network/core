@@ -41,7 +41,6 @@ members = [
 
     "./contracts/icp/context-config",
     "./contracts/icp/context-proxy",
-    "./contracts/icp/context-proxy/mock/ledger",
     "./contracts/icp/context-proxy/mock/external",
 
     "./e2e-tests",
