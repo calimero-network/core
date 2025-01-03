@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use candid::CandidType;
 use ed25519_dalek::{Verifier, VerifyingKey};
@@ -160,18 +159,15 @@ impl<'a> From<RequestKind<'a>> for ICRequestKind {
 pub struct ICRequest {
     pub kind: ICRequestKind,
     pub signer_id: ICRepr<SignerId>,
-    pub timestamp_ms: u64,
+    pub nonce: u64,
 }
 
 impl ICRequest {
-    pub fn new(signer_id: SignerId, kind: ICRequestKind) -> Self {
+    pub fn new(signer_id: SignerId, kind: ICRequestKind, nonce: u64) -> Self {
         Self {
             signer_id: ICRepr::new(signer_id),
             kind,
-            timestamp_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_millis() as u64,
+            nonce,
         }
     }
 }
