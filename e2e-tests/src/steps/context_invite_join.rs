@@ -60,9 +60,8 @@ impl Test for ContextInviteJoinStep {
                     .insert(invitee.clone(), invitee_public_key),
             );
 
-            // Sync period is 10s, but in GHA we have some timeout issues
-            // so we need to wait a bit longer for couple of intervals
-            sleep(Duration::from_secs(35)).await;
+            // Sync period is 30s, but in GHA we have some timeout issues
+            sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
                 .write_string(format!("Report: Node '{}' joined the context", invitee));

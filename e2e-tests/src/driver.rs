@@ -138,13 +138,10 @@ impl Driver {
         for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
             if !self.merods.contains_key(&node_name) {
-                let mut args = vec![
-                    format!(
-                        "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
-                        self.environment.test_id
-                    ),
-                    format!("sync.interval_ms={}", 10_000),
-                ];
+                let mut args = vec![format!(
+                    "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
+                    self.environment.test_id
+                )];
 
                 if let Some(ref near) = self.near {
                     let near_account = near
