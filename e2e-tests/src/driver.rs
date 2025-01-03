@@ -144,7 +144,6 @@ impl Driver {
                         self.environment.test_id
                     ),
                     format!("sync.interval_ms={}", 10_000),
-                    format!("sync.timeout_ms={}", 10_000),
                 ];
 
                 if let Some(ref near) = self.near {
@@ -189,7 +188,7 @@ impl Driver {
 
                 let swarm_host = match env::var(&self.config.network.swarm_host_env) {
                     Ok(host) => host,
-                    Err(_) => "0.0.0.0".to_string(),
+                    Err(_) => "0.0.0.0".to_owned(),
                 };
 
                 merod
