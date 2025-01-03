@@ -1,8 +1,10 @@
-use context_create::CreateContextStep;
-use context_invite_join::InviteJoinContextStep;
+use application_install::ApplicationInstallStep;
+use context_create::ContextCreateStep;
+use context_invite_join::ContextInviteJoinStep;
 use jsonrpc_call::JsonRpcCallStep;
 use serde::{Deserialize, Serialize};
 
+mod application_install;
 mod context_create;
 mod context_invite_join;
 mod jsonrpc_call;
@@ -16,7 +18,8 @@ pub struct TestScenario {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TestStep {
-    ContextCreate(CreateContextStep),
-    ContextInviteJoin(InviteJoinContextStep),
+    ApplicationInstall(ApplicationInstallStep),
+    ContextCreate(ContextCreateStep),
+    ContextInviteJoin(ContextInviteJoinStep),
     JsonRpcCall(JsonRpcCallStep),
 }

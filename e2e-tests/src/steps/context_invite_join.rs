@@ -1,13 +1,16 @@
+use std::time::Duration;
+
 use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 
 use crate::driver::{Test, TestContext};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InviteJoinContextStep;
+pub struct ContextInviteJoinStep;
 
-impl Test for InviteJoinContextStep {
+impl Test for ContextInviteJoinStep {
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let Some(ref context_id) = ctx.context_id else {
             bail!("Context ID is required for InviteJoinContextStep");
@@ -56,6 +59,9 @@ impl Test for InviteJoinContextStep {
                 ctx.invitees_public_keys
                     .insert(invitee.clone(), invitee_public_key),
             );
+
+            // Sync period is 30s, but in GHA we have some timeout issues
+            sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
                 .write_string(format!("Report: Node '{}' joined the context", invitee));
