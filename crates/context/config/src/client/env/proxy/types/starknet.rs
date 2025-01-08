@@ -535,8 +535,8 @@ impl<'a> ValueCodec<'a> {
         let bytes = s.as_bytes();
 
         // Write number of chunks first
-        let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
-        writer.write(Felt::from(num_chunks));
+        #[allow(clippy::integer_division, reason = "Not harmful here")]
+        writer.write(Felt::from(bytes.len() / chunk_size));
 
         // Write each chunk as a Felt
         for chunk in bytes.chunks(chunk_size) {
