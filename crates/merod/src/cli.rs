@@ -29,9 +29,6 @@ pub const EXAMPLES: &str = r"
   # Run a node
   $ merod --node-name node1 run
 
-  # Relay incoming requests to specific location
-  $ merod --node-name node2 relay --listen 127.0.0.1:3333
-
 ";
 
 #[derive(Debug, Parser)]
