@@ -1428,7 +1428,7 @@ impl ContextManager {
             bail!("Context not found");
         };
 
-        let proxy_contract = context_config.proxy_contract.as_ref().into();
+        let proxy_contract = context_config.proxy_contract.into();
 
         Ok(proxy_contract)
     }
