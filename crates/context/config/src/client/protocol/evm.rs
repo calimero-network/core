@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::vec;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
@@ -21,7 +21,7 @@ impl Protocol for Evm {
 impl AssociatedTransport for EvmTransport<'_> {
     type Protocol = Evm;
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
     pub account_id: String,

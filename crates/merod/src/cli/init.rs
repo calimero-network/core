@@ -9,10 +9,10 @@ use calimero_config::{
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientLocalSigner, ClientNew, ClientRelayerSigner, ClientSelectedSigner,
-    ClientSigner, Credentials, EvmCredentials, LocalConfig,
+    ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
-    icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
+    evm as evm_protocol, icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
 };
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
@@ -231,6 +231,7 @@ impl InitCommand {
                             ConfigProtocol::Near => ClientSelectedSigner::Relayer,
                             ConfigProtocol::Starknet => ClientSelectedSigner::Relayer,
                             ConfigProtocol::Icp => ClientSelectedSigner::Local,
+                            ConfigProtocol::Evm => ClientSelectedSigner::Relayer,
                         },
                         relayer: ClientRelayerSigner { url: relayer },
                         local: LocalConfig {
@@ -414,7 +415,7 @@ fn generate_local_signer(
 
             Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Evm(EvmCredentials {
+                credentials: Credentials::Evm(evm_protocol::Credentials {
                     account_id: address,
                     public_key: public_key_hex,
                     secret_key: secret_key_hex,

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::client::protocol::evm::Credentials as EvmCredentials;
 use crate::client::protocol::icp::Credentials as IcpCredentials;
 use crate::client::protocol::near::Credentials as NearCredentials;
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
@@ -57,13 +58,6 @@ pub struct ClientLocalSigner {
     pub rpc_url: Url,
     #[serde(flatten)]
     pub credentials: Credentials,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EvmCredentials {
-    pub account_id: String,
-    pub public_key: String,
-    pub secret_key: String,
 }
 
 #[non_exhaustive]

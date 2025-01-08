@@ -14,12 +14,15 @@ pub mod transport;
 pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials, LocalConfig};
-use protocol::{icp, near, starknet, Protocol};
+use protocol::{evm, icp, near, starknet, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 pub type LocalTransports = Both<
     near::NearTransport<'static>,
-    Both<starknet::StarknetTransport<'static>, icp::IcpTransport<'static>>,
+    Both<
+        starknet::StarknetTransport<'static>,
+        Both<icp::IcpTransport<'static>, evm::EvmTransport<'static>>,
+    >,
 >;
 
 pub type AnyTransport = Either<relayer::RelayerTransport, LocalTransports>;
@@ -139,11 +142,40 @@ impl Client<AnyTransport> {
                 .collect::<eyre::Result<_>>()?,
         });
 
+        let evm_transport = evm::EvmTransport::new(&evm::EvmConfig {
+            networks: config
+                .icp
+                .iter()
+                .map(|(network, config)| {
+                    let (account_id, secret_key) = match &config.credentials {
+                        Credentials::Evm(credentials) => (
+                            credentials.account_id.clone(),
+                            credentials.secret_key.clone(),
+                        ),
+                        Credentials::Near(_) | Credentials::Starknet(_) | Credentials::Icp(_) => {
+                            eyre::bail!("Expected EVM credentials but got {:?}", config.credentials)
+                        }
+                    };
+                    Ok((
+                        network.clone().into(),
+                        evm::NetworkConfig {
+                            rpc_url: config.rpc_url.clone(),
+                            account_id,
+                            access_key: secret_key,
+                        },
+                    ))
+                })
+                .collect::<eyre::Result<_>>()?,
+        });
+
         let all_transports = Both {
             left: near_transport,
             right: Both {
                 left: starknet_transport,
-                right: icp_transport,
+                right: Both {
+                    left: icp_transport,
+                    right: evm_transport,
+                },
             },
         };
 
