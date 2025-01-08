@@ -535,7 +535,8 @@ impl<'a> ValueCodec<'a> {
         let bytes = s.as_bytes();
 
         // Write number of chunks first
-        writer.write(Felt::from(bytes.len() / chunk_size));
+        let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
+        writer.write(Felt::from(num_chunks));
 
         // Write each chunk as a Felt
         for chunk in bytes.chunks(chunk_size) {
