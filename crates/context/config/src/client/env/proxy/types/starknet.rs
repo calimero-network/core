@@ -565,10 +565,10 @@ impl<'a> Encode for ValueCodec<'a> {
             serde_json::Value::Number(n) => {
                 if let Some(n) = n.as_u64() {
                     writer.write(Felt::from(n));
+                } else if let Some(n) = n.as_i64() {
+                    writer.write(Felt::from(n));
                 } else {
-                    // For other numbers, convert to string and encode as string
-                    let s = n.to_string();
-                    ValueCodec(&serde_json::Value::String(s)).encode(writer)?;
+                    return Err(Error::custom(&"Unsupported number type"));
                 }
                 Ok(())
             }
