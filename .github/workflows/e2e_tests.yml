@@ -31,6 +31,9 @@ jobs:
 
       - name: Build apps
         run: |
+          export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
+          echo "$SWARM_HOST"
+
           ./apps/kv-store/build.sh
 
       - name: Build contracts
@@ -43,8 +46,12 @@ jobs:
           cargo build -p meroctl -p merod -p e2e-tests
 
       - name: Run e2e tests
+        env:
+          NO_COLOR: '1'
+          # RUST_LOG: calimero_node=debug,calimero_network=debug
         run: |
-          export NO_COLOR=1
+          export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
+
           echo "Running e2e tests, check job summary for details"
           echo "# E2E tests 🏗️" >> $GITHUB_STEP_SUMMARY
           ./target/debug/e2e-tests \

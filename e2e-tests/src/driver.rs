@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ pub struct TestContext<'a> {
     pub inviter: String,
     pub invitees: Vec<String>,
     pub meroctl: &'a Meroctl,
+    pub application_id: Option<String>,
     pub context_id: Option<String>,
     pub inviter_public_key: Option<String>,
     pub invitees_public_keys: HashMap<String, String>,
@@ -43,6 +45,7 @@ impl<'a> TestContext<'a> {
             inviter,
             invitees,
             meroctl,
+            application_id: None,
             context_id: None,
             inviter_public_key: None,
             invitees_public_keys: HashMap::new(),
@@ -180,8 +183,14 @@ impl Driver {
 
                 let merod = Merod::new(node_name.clone(), &self.environment);
 
+                let swarm_host = match env::var(&self.config.network.swarm_host_env) {
+                    Ok(host) => host,
+                    Err(_) => "0.0.0.0".to_owned(),
+                };
+
                 merod
                     .init(
+                        &swarm_host,
                         self.config.network.start_swarm_port + i,
                         self.config.network.start_server_port + i,
                         &config_args,
@@ -268,6 +277,7 @@ impl Driver {
             self.environment.output_writer.write_json(&step)?;
 
             match step {
+                TestStep::ApplicationInstall(step) => step.run_assert(&mut ctx).await?,
                 TestStep::ContextCreate(step) => step.run_assert(&mut ctx).await?,
                 TestStep::ContextInviteJoin(step) => step.run_assert(&mut ctx).await?,
                 TestStep::JsonRpcCall(step) => step.run_assert(&mut ctx).await?,

@@ -1,8 +1,8 @@
-use starknet::core::codec::{Decode, Encode, FeltWriter};
+use starknet::core::codec::{Decode, Encode, Error, FeltWriter};
 use starknet::core::types::{Felt, U256};
 
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
-use crate::types::{ContextIdentity, ProposalId, SignerId};
+use crate::types::{ContextIdentity, ContextStorageEntry, ProposalId, SignerId};
 use crate::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalWithApprovals, ProxyMutateRequest,
 };
@@ -21,6 +21,49 @@ pub struct StarknetProposalId(pub FeltPair);
 
 #[derive(Clone, Copy, Debug, Encode, Decode)]
 pub struct StarknetU256(pub FeltPair);
+
+#[derive(Debug, Clone, Decode)]
+pub struct ContextVariableKey(pub Vec<u8>);
+
+// Implement From for the conversion
+impl From<Vec<u8>> for ContextVariableKey {
+    fn from(key: Vec<u8>) -> Self {
+        ContextVariableKey(key)
+    }
+}
+
+// Implement Encode for ContextVariableKey
+impl Encode for ContextVariableKey {
+    fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
+        let bytes = &self.0;
+
+        // Use exactly 16 bytes per chunk
+        let chunk_size = 16;
+        #[allow(
+            clippy::integer_division,
+            reason = "Using integer division for ceiling division calculation"
+        )]
+        let num_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
+
+        // Write number of chunks first
+        writer.write(Felt::from(num_chunks));
+
+        // Process each chunk
+        for i in 0..num_chunks {
+            let start = i * chunk_size;
+            let end = std::cmp::min((i + 1) * chunk_size, bytes.len());
+            let chunk = &bytes[start..end];
+
+            let chunk_hex = hex::encode(chunk);
+            let chunk_felt = Felt::from_hex(&format!("0x{}", chunk_hex))
+                .map_err(|e| Error::custom(&format!("Invalid chunk hex: {}", e)))?;
+
+            writer.write(chunk_felt);
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Debug, Encode, Decode)]
 pub struct StarknetProposal {
@@ -50,7 +93,7 @@ pub enum StarknetProxyMutateRequestKind {
 
 #[derive(Debug, Encode, Decode)]
 pub enum StarknetProposalActionWithArgs {
-    ExternalFunctionCall(Felt, Felt, Vec<Felt>),
+    ExternalFunctionCall(Felt, Felt, StarknetU256, Vec<Felt>),
     Transfer(Felt, StarknetU256),
     SetNumApprovals(Felt),
     SetActiveProposalsLimit(Felt),
@@ -238,23 +281,22 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 receiver_id,
                 method_name,
                 args,
+                deposit,
                 ..
             } => {
-                let args_vec: Vec<String> = serde_json::from_str(&args).unwrap_or_default();
-                let felt_args = args_vec
-                    .iter()
-                    .map(|arg| {
-                        if arg.starts_with("0x") {
-                            Felt::from_hex_unchecked(arg)
-                        } else {
-                            Felt::from_bytes_be_slice(arg.as_bytes())
-                        }
-                    })
-                    .collect();
+                // Parse the JSON string into a Value first
+                let args_value: serde_json::Value =
+                    serde_json::from_str(&args).expect("Invalid JSON arguments");
+
+                let mut felt_args = Vec::new();
+                ValueCodec(&args_value)
+                    .encode(&mut felt_args)
+                    .expect("Failed to encode arguments");
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
                     Felt::from_bytes_be_slice(method_name.as_bytes()),
+                    StarknetU256::from(deposit),
                     felt_args,
                 )
             }
@@ -289,19 +331,25 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
 impl From<StarknetProposalActionWithArgs> for ProposalAction {
     fn from(action: StarknetProposalActionWithArgs) -> Self {
         match action {
-            StarknetProposalActionWithArgs::ExternalFunctionCall(contract, selector, calldata) => {
-                ProposalAction::ExternalFunctionCall {
-                    receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
-                    method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
-                    args: calldata
-                        .iter()
-                        .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    deposit: 0,
-                    gas: 0,
-                }
-            }
+            StarknetProposalActionWithArgs::ExternalFunctionCall(
+                contract,
+                selector,
+                amount,
+                calldata,
+            ) => ProposalAction::ExternalFunctionCall {
+                receiver_id: contract.to_string(),
+                method_name: selector.to_string(),
+                args: calldata
+                    .iter()
+                    .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                deposit: u128::from_be_bytes(
+                    amount.0.low.to_bytes_be()[16..32].try_into().unwrap(),
+                ) + (u128::from_be_bytes(
+                    amount.0.high.to_bytes_be()[16..32].try_into().unwrap(),
+                ) << 64),
+            },
             StarknetProposalActionWithArgs::Transfer(receiver, amount) => {
                 let FeltPair { high, low } = amount.0;
                 ProposalAction::Transfer {
@@ -395,5 +443,149 @@ impl From<FeltPair> for ProposalId {
 impl From<StarknetProposalId> for ProposalId {
     fn from(value: StarknetProposalId) -> Self {
         value.0.into()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Encode)]
+pub struct StarknetContextStorageEntriesRequest {
+    pub offset: Felt,
+    pub length: Felt,
+}
+
+// First, create a type to represent the response structure
+#[derive(Debug)]
+pub struct ContextStorageEntriesResponse {
+    pub entries: Vec<(Vec<Felt>, Vec<Felt>)>,
+}
+
+impl<'a> Decode<'a> for ContextStorageEntriesResponse {
+    fn decode_iter<T>(iter: &mut T) -> Result<Self, Error>
+    where
+        T: Iterator<Item = &'a Felt>,
+    {
+        // First felt is number of entries
+        let num_entries = match iter.next() {
+            Some(felt) => felt.to_bytes_be()[31] as usize,
+            None => return Ok(Self { entries: vec![] }),
+        };
+
+        let mut entries = Vec::new();
+
+        // Read exactly num_entries pairs
+        for _ in 0..num_entries {
+            // Get key array length and contents
+            if let Some(key_len) = iter.next() {
+                let key_len = key_len.to_bytes_be()[31] as usize;
+                let mut key = Vec::new();
+                for _ in 0..key_len {
+                    if let Some(felt) = iter.next() {
+                        key.push(*felt);
+                    }
+                }
+
+                // Get value array length and contents
+                if let Some(value_len) = iter.next() {
+                    let value_len = value_len.to_bytes_be()[31] as usize;
+                    let mut value = Vec::new();
+                    for _ in 0..value_len {
+                        if let Some(felt) = iter.next() {
+                            value.push(*felt);
+                        }
+                    }
+                    entries.push((key, value));
+                }
+            }
+        }
+
+        Ok(Self { entries })
+    }
+}
+
+impl From<(Vec<Felt>, Vec<Felt>)> for ContextStorageEntry {
+    fn from((key_felts, value_felts): (Vec<Felt>, Vec<Felt>)) -> Self {
+        let key = key_felts
+            .iter()
+            .flat_map(|f| f.to_bytes_be())
+            .filter(|&b| b != 0)
+            .collect();
+
+        let value = value_felts
+            .iter()
+            .flat_map(|f| f.to_bytes_be())
+            .filter(|&b| b != 0)
+            .collect();
+
+        ContextStorageEntry { key, value }
+    }
+}
+
+struct ValueCodec<'a>(&'a serde_json::Value);
+
+impl<'a> ValueCodec<'a> {
+    fn encode_string<W: FeltWriter>(s: &str, writer: &mut W) -> Result<(), Error> {
+        if s.starts_with("0x") {
+            // Attempt to handle hex string directly as a single Felt
+            if let Ok(felt) = Felt::from_hex(s) {
+                writer.write(felt);
+                return Ok(());
+            }
+        }
+        // Regular string - split into chunks
+        let chunk_size = 31;
+        let bytes = s.as_bytes();
+
+        // Write number of chunks first
+        #[allow(clippy::integer_division, reason = "Not harmful here")]
+        writer.write(Felt::from(bytes.len() / chunk_size));
+
+        // Write each chunk as a Felt
+        for chunk in bytes.chunks(chunk_size) {
+            writer.write(Felt::from_bytes_be_slice(chunk));
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Encode for ValueCodec<'a> {
+    fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
+        match self.0 {
+            serde_json::Value::String(s) => Self::encode_string(s, writer),
+            serde_json::Value::Object(obj) => {
+                writer.write(Felt::from(obj.len()));
+                for (key, value) in obj {
+                    Self::encode_string(key, writer)?;
+                    ValueCodec(value).encode(writer)?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Bool(b) => {
+                writer.write(Felt::from(*b as u64));
+                Ok(())
+            }
+            serde_json::Value::Number(n) => {
+                if let Some(n) = n.as_u64() {
+                    writer.write(Felt::from(n));
+                } else if let Some(n) = n.as_i64() {
+                    writer.write(Felt::from(n));
+                } else {
+                    return Err(Error::custom(&"Unsupported number type"));
+                }
+                Ok(())
+            }
+            serde_json::Value::Array(arr) => {
+                // Write array length first
+                writer.write(Felt::from(arr.len()));
+
+                // Encode each array element
+                for item in arr {
+                    ValueCodec(item).encode(writer)?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Null => {
+                writer.write(Felt::ZERO);
+                Ok(())
+            }
+        }
     }
 }

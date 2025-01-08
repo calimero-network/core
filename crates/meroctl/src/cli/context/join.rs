@@ -16,12 +16,12 @@ pub struct JoinCommand {
         value_name = "PRIVATE_KEY",
         help = "The private key for signing the join context request"
     )]
-    private_key: PrivateKey,
+    pub private_key: PrivateKey,
     #[clap(
         value_name = "INVITE",
         help = "The invitation payload for joining the context"
     )]
-    invitation_payload: ContextInvitationPayload,
+    pub invitation_payload: ContextInvitationPayload,
 }
 
 impl Report for JoinContextResponse {

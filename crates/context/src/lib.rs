@@ -13,7 +13,7 @@ use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig, ContextIdentity, ProposalId,
+    ApplicationSource as ApplicationSourceConfig, ContextIdentity, ContextStorageEntry, ProposalId,
 };
 use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use calimero_network::client::NetworkClient;
@@ -237,7 +237,7 @@ impl ContextManager {
                         ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                     ),
                 )
-                .send(*context_secret)
+                .send(*context_secret, 0)
                 .await?;
 
             let proxy_contract = this
@@ -411,6 +411,20 @@ impl ContextManager {
             return Ok(None);
         };
 
+        let nonce = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .fetch_nonce(
+                context_id.rt().expect("infallible conversion"),
+                inviter_id.rt().expect("infallible conversion"),
+            )
+            .await?
+            .ok_or_eyre("The inviter doesen't exist")?;
+
         self.config_client
             .mutate::<ContextConfigEnv>(
                 context_config.protocol.as_ref().into(),
@@ -421,7 +435,7 @@ impl ContextManager {
                 context_id.rt().expect("infallible conversion"),
                 &[invitee_id.rt().expect("infallible conversion")],
             )
-            .send(requester_secret)
+            .send(requester_secret, nonce)
             .await?;
 
         let invitation_payload = ContextInvitationPayload::new(
@@ -928,6 +942,21 @@ impl ContextManager {
                 context_id
             );
         };
+
+        let nonce = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .fetch_nonce(
+                context_id.rt().expect("infallible conversion"),
+                signer_id.rt().expect("infallible conversion"),
+            )
+            .await?
+            .ok_or_eyre("Not a member")?;
+
         let _ = self
             .config_client
             .mutate::<ContextConfigEnv>(
@@ -945,7 +974,7 @@ impl ContextManager {
                     ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                 ),
             )
-            .send(requester_secret)
+            .send(requester_secret, nonce)
             .await?;
 
         context_meta.application = ApplicationMetaKey::new(application_id);
@@ -1342,5 +1371,65 @@ impl ContextManager {
             .get_proposal_approvers(proposal_id)
             .await
             .map_err(|err| eyre::eyre!("Failed to fetch proposal approvers: {}", err))
+    }
+
+    pub async fn get_context_value(
+        &self,
+        context_id: ContextId,
+        key: Vec<u8>,
+    ) -> EyreResult<Vec<u8>> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .get_context_value(key)
+            .await
+            .map_err(|err| eyre::eyre!("Failed to fetch context value: {}", err))?;
+        Ok(response)
+    }
+
+    pub async fn get_context_storage_entries(
+        &self,
+        context_id: ContextId,
+        offset: usize,
+        limit: usize,
+    ) -> EyreResult<Vec<ContextStorageEntry>> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let response = self
+            .config_client
+            .query::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .get_context_storage_entries(offset, limit)
+            .await
+            .map_err(|err| eyre::eyre!("Failed to fetch context storage entries: {}", err))?;
+        Ok(response)
+    }
+
+    pub async fn get_proxy_id(&self, context_id: ContextId) -> EyreResult<String> {
+        let handle = self.store.handle();
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let proxy_contract = context_config.proxy_contract.into();
+
+        Ok(proxy_contract)
     }
 }

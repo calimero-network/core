@@ -161,7 +161,8 @@ impl InitCommand {
                 }
             }
             if !self.force {
-                bail!("Node is already initialized in {:?}", path);
+                warn!("Node is already initialized in {:?}", path);
+                return Ok(());
             }
         }
 
@@ -226,7 +227,11 @@ impl InitCommand {
             ContextConfig {
                 client: ClientConfig {
                     signer: ClientSigner {
-                        selected: ClientSelectedSigner::Relayer,
+                        selected: match self.protocol {
+                            ConfigProtocol::Near => ClientSelectedSigner::Relayer,
+                            ConfigProtocol::Starknet => ClientSelectedSigner::Relayer,
+                            ConfigProtocol::Icp => ClientSelectedSigner::Local,
+                        },
                         relayer: ClientRelayerSigner { url: relayer },
                         local: LocalConfig {
                             near: [
@@ -308,7 +313,7 @@ impl InitCommand {
                         network: match self.protocol {
                             ConfigProtocol::Near => "testnet".into(),
                             ConfigProtocol::Starknet => "sepolia".into(),
-                            ConfigProtocol::Icp => "ic".into(),
+                            ConfigProtocol::Icp => "local".into(),
                             ConfigProtocol::Evm => "sepolia".into(),
                         },
                         protocol: self.protocol.as_str().to_owned(),
@@ -318,7 +323,7 @@ impl InitCommand {
                                 "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                                     .parse()?
                             }
-                            ConfigProtocol::Icp => "br5f7-7uaaa-aaaaa-qaaca-cai".parse()?,
+                            ConfigProtocol::Icp => "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
                             ConfigProtocol::Evm => {
                                 "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                                     .parse()?
