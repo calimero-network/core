@@ -31,7 +31,13 @@ impl Merod {
         }
     }
 
-    pub async fn init(&self, swarm_port: u32, server_port: u32, args: &[&str]) -> EyreResult<()> {
+    pub async fn init(
+        &self,
+        swarm_host: &str,
+        swarm_port: u32,
+        server_port: u32,
+        args: &[&str],
+    ) -> EyreResult<()> {
         create_dir_all(&self.nodes_dir.join(&self.name)).await?;
         create_dir_all(&self.log_dir).await?;
 
@@ -39,6 +45,8 @@ impl Merod {
             .run_cmd(
                 &[
                     "init",
+                    "--swarm-host",
+                    swarm_host,
                     "--swarm-port",
                     swarm_port.to_string().as_str(),
                     "--server-port",
@@ -92,12 +100,13 @@ impl Merod {
 
         root_args.extend(args);
 
-        let log_file = self.log_dir.join(format!("{}.log", log_suffix));
-        let mut log_file = File::create(&log_file).await?;
+        let args_str = root_args.join(" ");
 
         self.output_writer
-            .write_string(format!("Command: '{:}' {:?}", &self.binary, root_args));
+            .write_string(format!("Command: '{:} {:}'", &self.binary, args_str));
 
+        let log_file = self.log_dir.join(format!("{}.log", log_suffix));
+        let mut log_file = File::create(&log_file).await?;
         let mut child = Command::new(&self.binary)
             .args(root_args)
             .stdout(Stdio::piped())

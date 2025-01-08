@@ -5,12 +5,6 @@
       "candid": "./res/calimero_context_proxy_icp.did",
       "type": "rust"
     },
-    "mock_ledger": {
-      "type": "rust",
-      "package": "calimero-mock-ledger-icp",
-      "candid": "./mock/ledger/res/calimero_mock_ledger_icp.did",
-      "path": "mock/ledger"
-    },
     "mock_external": {
       "type": "rust",
       "package": "calimero-mock-external-icp",
@@ -22,6 +16,12 @@
     "build": {
       "args": "",
       "packtool": ""
+    }
+  },
+  "networks": {
+    "local": {
+      "bind": "127.0.0.1:4943",
+      "type": "persistent"
     }
   },
   "output_env_file": ".env",

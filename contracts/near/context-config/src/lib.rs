@@ -37,6 +37,7 @@ struct Config {
 struct Context {
     pub application: Guard<Application<'static>>,
     pub members: Guard<IterableSet<ContextIdentity>>,
+    pub member_nonces: IterableMap<ContextIdentity, u64>,
     pub proxy: Guard<AccountId>,
 }
 

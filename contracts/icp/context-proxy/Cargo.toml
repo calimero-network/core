@@ -21,3 +21,5 @@ thiserror.workspace = true
 [dev-dependencies]
 pocket-ic = "6.0.0"
 rand = "0.8"
+reqwest = { version = "0.10.10", features = ["blocking"] }
+flate2 = "1.0.35"

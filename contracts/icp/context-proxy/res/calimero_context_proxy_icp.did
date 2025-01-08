@@ -17,7 +17,6 @@ type ICProposalAction = variant {
   };
 };
 type ICProposalApprovalWithSigner = record {
-  added_timestamp : nat64;
   signer_id : blob;
   proposal_id : blob;
 };

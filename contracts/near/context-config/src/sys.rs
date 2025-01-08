@@ -33,9 +33,10 @@ impl ContextConfigs {
 
         env::log_str("Erasing contract");
 
-        for (_, context) in self.contexts.drain() {
+        for (_, mut context) in self.contexts.drain() {
             let _ignored = context.application.into_inner();
             context.members.into_inner().clear();
+            context.member_nonces.clear();
             let proxy = context.proxy.into_inner();
 
             let _is_sent_on_drop = Promise::new(proxy).function_call(

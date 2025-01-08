@@ -110,6 +110,12 @@ pub struct GetProposalResponse {
     pub data: ProposalConfig,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProxyContractResponse {
+    pub data: String,
+}
+
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsRequest {
@@ -174,6 +180,21 @@ pub async fn get_proposal_handler(
         Ok(context_proposal) => ApiResponse {
             payload: GetProposalResponse {
                 data: context_proposal,
+            },
+        }
+        .into_response(),
+        Err(err) => parse_api_error(err).into_response(),
+    }
+}
+
+pub async fn get_proxy_contract_handler(
+    Path(context_id): Path<ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    match state.ctx_manager.get_proxy_id(context_id).await {
+        Ok(proxy_contract) => ApiResponse {
+            payload: GetProxyContractResponse {
+                data: proxy_contract,
             },
         }
         .into_response(),

@@ -349,7 +349,6 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                 ) + (u128::from_be_bytes(
                     amount.0.high.to_bytes_be()[16..32].try_into().unwrap(),
                 ) << 64),
-                gas: 0,
             },
             StarknetProposalActionWithArgs::Transfer(receiver, amount) => {
                 let FeltPair { high, low } = amount.0;

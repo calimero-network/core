@@ -7,9 +7,11 @@ use calimero_context_config::icp::{
     ICProxyMutateRequest,
 };
 use calimero_context_config::types::{ProposalId, SignerId};
-use candid::Principal;
+use candid::{Nat, Principal};
 use ic_cdk::api::call::CallResult;
-use ic_ledger_types::{AccountIdentifier, Memo, Subaccount, Tokens, TransferArgs, TransferError};
+use ic_ledger_types::{
+    AccountIdentifier, Memo, Subaccount, Timestamp, Tokens, TransferArgs, TransferError,
+};
 
 use crate::{with_state, with_state_mut, ICProxyContract};
 
@@ -89,36 +91,74 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                 args,
                 deposit,
             } => {
-                // If there's a deposit, transfer it first
                 if deposit > 0 {
                     let ledger_id = with_state(|contract| contract.ledger_id.clone());
 
-                    let transfer_args = TransferArgs {
-                        memo: Memo(0),
-                        amount: Tokens::from_e8s(
-                            deposit
-                                .try_into()
-                                .map_err(|e| format!("Amount conversion error: {}", e))?,
-                        ),
-                        fee: Tokens::from_e8s(10_000), // Standard fee is 0.0001 ICP
-                        from_subaccount: None,
-                        to: AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])),
-                        created_at_time: None,
-                    };
+                    // 1. First approve 0
+                    let approve_args = (
+                        None::<Subaccount>,                                         // from_subaccount
+                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])), // spender
+                        0_u128,                                                     // amount (0)
+                        None::<Timestamp>, // expected_allowance
+                        None::<Timestamp>, // expires_at
+                        None::<Memo>,      // memo
+                        None::<Timestamp>, // created_at_time
+                    );
 
-                    let _: (Result<u64, TransferError>,) =
-                        ic_cdk::call(Principal::from(ledger_id), "transfer", (transfer_args,))
+                    let (approve_result,): (Result<Nat, String>,) =
+                        ic_cdk::call(Principal::from(ledger_id), "icrc2_approve", approve_args)
                             .await
-                            .map_err(|e| format!("Transfer failed: {:?}", e))?;
+                            .map_err(|e| format!("Initial approve(0) failed: {:?}", e))?;
+
+                    approve_result.map_err(|e| format!("Initial approve(0) rejected: {}", e))?;
+
+                    // 2. Approve the deposit amount
+                    let approve_args = (
+                        None::<Subaccount>,                                         // from_subaccount
+                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])), // spender
+                        deposit as u128,                                            // amount
+                        None::<Timestamp>, // expected_allowance
+                        None::<Timestamp>, // expires_at
+                        None::<Memo>,      // memo
+                        None::<Timestamp>, // created_at_time
+                    );
+
+                    let (approve_result,): (Result<Nat, String>,) =
+                        ic_cdk::call(Principal::from(ledger_id), "icrc2_approve", approve_args)
+                            .await
+                            .map_err(|e| format!("Approve deposit failed: {:?}", e))?;
+
+                    approve_result.map_err(|e| format!("Approve deposit rejected: {}", e))?;
                 }
 
-                // Then make the actual cross-contract call
+                // 3. Make the cross-contract call
                 let args_bytes = candid::encode_one(args)
                     .map_err(|e| format!("Failed to encode args: {}", e))?;
 
                 let _: () = ic_cdk::call(receiver_id, method_name.as_str(), (args_bytes,))
                     .await
                     .map_err(|e| format!("Inter-canister call failed: {:?}", e))?;
+
+                // 4. Final approve(0) only if we did initial approvals
+                if deposit > 0 {
+                    let ledger_id = with_state(|contract| contract.ledger_id.clone());
+                    let approve_args = (
+                        None::<Subaccount>,                                         // from_subaccount
+                        AccountIdentifier::new(&receiver_id, &Subaccount([0; 32])), // spender
+                        0_u128,                                                     // amount (0)
+                        None::<Timestamp>, // expected_allowance
+                        None::<Timestamp>, // expires_at
+                        None::<Memo>,      // memo
+                        None::<Timestamp>, // created_at_time
+                    );
+
+                    let (approve_result,): (Result<Nat, String>,) =
+                        ic_cdk::call(Principal::from(ledger_id), "icrc2_approve", approve_args)
+                            .await
+                            .map_err(|e| format!("Approve deposit failed: {:?}", e))?;
+
+                    approve_result.map_err(|e| format!("Approve deposit rejected: {}", e))?;
+                }
             }
             ICProposalAction::Transfer {
                 receiver_id,

@@ -72,7 +72,6 @@ pub fn get_proposal_approvals_with_signer(
                 .map(|signer_id| ICProposalApprovalWithSigner {
                     proposal_id: proposal_id.clone(),
                     signer_id: signer_id.clone(),
-                    added_timestamp: 0, // TODO: We need to store approval timestamps
                 })
                 .collect()
         } else {

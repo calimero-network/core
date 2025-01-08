@@ -300,7 +300,7 @@ impl InitCommand {
                                 "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                                     .parse()?
                             }
-                            ConfigProtocol::Icp => "br5f7-7uaaa-aaaaa-qaaca-cai".parse()?,
+                            ConfigProtocol::Icp => "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
                         },
                     },
                 },
