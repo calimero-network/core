@@ -120,10 +120,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
         }
     }
 
-    pub fn update_proxy_contract(
-        self, 
-        context_id: ContextId
-    ) -> ContextConfigMutateRequest<'a, T> {
+    pub fn update_proxy_contract(self, context_id: ContextId) -> ContextConfigMutateRequest<'a, T> {
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::Context(ContextRequest {

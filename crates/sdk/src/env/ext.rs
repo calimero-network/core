@@ -29,7 +29,6 @@ pub enum ProposalAction {
 
         /// The amount of tokens to attach to the call.
         deposit: u128,
-
     },
 
     /// Transfer tokens to an account.

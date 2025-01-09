@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::ICSigned;
 use calimero_context_config::icp::{
@@ -150,7 +148,7 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                         0_u128,                                                     // amount (0)
                         None::<Timestamp>, // expected_allowance
                         None::<Timestamp>, // expires_at
-                        None::<Tokens>,   // fee
+                        None::<Tokens>,    // fee
                         None::<Memo>,      // memo
                         None::<Timestamp>, // created_at_time
                     );
@@ -270,7 +268,8 @@ async fn internal_create_proposal(
     internal_approve_proposal(ICProposalApprovalWithSigner {
         proposal_id,
         signer_id: author_id,
-    }).await
+    })
+    .await
 }
 
 fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {

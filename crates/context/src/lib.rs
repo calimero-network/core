@@ -957,8 +957,7 @@ impl ContextManager {
             .await?
             .ok_or_eyre("Not a member")?;
 
-        self
-            .config_client
+        self.config_client
             .mutate::<ContextConfigEnv>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
