@@ -58,6 +58,11 @@ enum Commands {
         /// The context ID to delete
         context_id: ContextId,
     },
+
+    UpdateProxy {
+        context_id: ContextId,
+        public_key: PublicKey,
+    }
 }
 
 impl ContextCommand {
@@ -169,6 +174,10 @@ impl ContextCommand {
             Commands::Delete { context_id } => {
                 let _ = node.ctx_manager.delete_context(&context_id).await?;
                 println!("{ind} Deleted context {context_id}");
+            }
+            Commands::UpdateProxy { context_id, public_key } => {
+                node.ctx_manager.update_context_proxy(context_id, public_key).await?;
+                println!("{ind} Updated proxy for context {context_id}");
             }
         }
         Ok(())

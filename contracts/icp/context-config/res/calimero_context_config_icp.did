@@ -20,5 +20,5 @@ service : () -> {
       vec record { blob; vec ICCapability },
     ) query;
   proxy_contract : (blob) -> (principal) query;
-  set_proxy_code : (blob, principal) -> (Result);
+  set_proxy_code : (blob) -> (Result);
 }

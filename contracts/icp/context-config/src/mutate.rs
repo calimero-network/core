@@ -51,7 +51,7 @@ pub async fn mutate(signed_request: ICSigned<ICRequest>) -> Result<(), String> {
         ICContextRequestKind::Revoke { capabilities } => {
             revoke(&request.signer_id, &context_id, capabilities)
         }
-        ICContextRequestKind::UpdateProxyContract => {
+        ICContextRequestKind::UpdateProxyContract {} => {
             update_proxy_contract(&request.signer_id, context_id).await
         }
     }

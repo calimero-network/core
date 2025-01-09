@@ -51,13 +51,12 @@ fn post_upgrade() {
 }
 
 #[ic_cdk::update]
-pub fn set_proxy_code(proxy_code: Vec<u8>, ledger_id: Principal) -> Result<(), String> {
+pub fn set_proxy_code(proxy_code: Vec<u8>) -> Result<(), String> {
     with_state_mut(|configs| {
         if ic_cdk::api::caller() != configs.owner {
             return Err("Unauthorized: only owner can set proxy code".to_string());
         }
 
-        configs.ledger_id = ledger_id;
         configs.proxy_code = Some(proxy_code);
 
         Ok(())

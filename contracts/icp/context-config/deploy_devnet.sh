@@ -86,7 +86,7 @@ dfx identity use default
 
 # Create initial identity if needed
 dfx identity new --storage-mode=plaintext minting || true
-# dfx identity use minting
+#dfx identity use minting
 
 echo "Creating and deploying canister..."
 dfx canister create context_contract

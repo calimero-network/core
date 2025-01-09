@@ -91,7 +91,7 @@ pub enum ICContextRequestKind {
     Revoke {
         capabilities: Vec<(ICRepr<ContextIdentity>, ICCapability)>,
     },
-    UpdateProxyContract,
+    UpdateProxyContract {},
 }
 
 impl From<ContextRequestKind<'_>> for ICContextRequestKind {
@@ -137,7 +137,7 @@ impl From<ContextRequestKind<'_>> for ICContextRequestKind {
                     .map(|(id, cap)| (id.rt().expect("infallible conversion"), cap.into()))
                     .collect(),
             },
-            ContextRequestKind::UpdateProxyContract => ICContextRequestKind::UpdateProxyContract,
+            ContextRequestKind::UpdateProxyContract => ICContextRequestKind::UpdateProxyContract {},
         }
     }
 }

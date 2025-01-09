@@ -1,5 +1,8 @@
+use std::ffi::OsStr;
+
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
+use eyre::eyre;
 use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -136,8 +139,20 @@ impl Method<Icp> for Mutate {
         let signed = ICSigned::new(payload, |b| signer_sk.sign(b))?;
 
         let encoded = candid::encode_one(&signed)?;
+        {
+            use std::fs;
+            let file = fs::read("/Users/frandomovic/Desktop/job/core/contracts/icp/context-proxy/res/calimero_context_proxy_icp.wasm")?;
+            let encoded = candid::encode_one(&file)?;
+            let encodhex = hex::encode(&encoded);
+            fs::write("/Users/frandomovic/Desktop/job/core/contracts/icp/context-proxy/res/calimero_context_proxy_icp.candid", &encodhex)?;
+        }
 
-        Ok(encoded)
+        println!("encoded: {:?}", hex::encode(&encoded));
+        //println!("encoded: {:?}", unsafe { OsStr::from_encoded_bytes_unchecked(&encoded) });
+        //println!("encoded: {:?}", String::from_utf8_lossy(&encoded));
+        eyre::bail!("Error");
+
+        //Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
