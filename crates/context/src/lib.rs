@@ -984,6 +984,38 @@ impl ContextManager {
         Ok(())
     }
 
+    pub async fn update_context_proxy(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<()> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("context not found");
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(signing_key),
+            ..
+        }) = handle.get(&ContextIdentityKey::new(context_id, public_key))?
+        else {
+            bail!("no private key found for signer");
+        };
+
+        self.config_client
+            .mutate::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .update_proxy_contract(context_id.rt().expect("infallible conversion"))
+            .send(signing_key, 0)
+            .await?;
+
+        Ok(())
+    }
+
     // vv~ these would be more appropriate in an ApplicationManager
 
     #[expect(clippy::similar_names, reason = "Different enough")]
@@ -1182,42 +1214,6 @@ impl ContextManager {
 
     pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
         self.blob_manager.has(blob_id)
-    }
-
-
-    pub async fn update_context_proxy(
-        &self, 
-        context_id: ContextId,
-        public_key: PublicKey
-    ) -> EyreResult<()> {
-        let handle = self.store.handle();
-
-        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
-            bail!("Context not found");
-        };
-
-        let Some(ContextIdentityValue {
-            private_key: Some(signing_key),
-            ..
-        }) = handle.get(&ContextIdentityKey::new(context_id, public_key))?
-        else {
-            bail!("No private key found for signer");
-        };
-
-        self
-            .config_client
-            .mutate::<ContextConfigEnv>(
-                context_config.protocol.as_ref().into(),
-                context_config.network.as_ref().into(),
-                context_config.proxy_contract.as_ref().into(),
-            )
-            .update_proxy_contract(
-                context_id.rt().expect("infallible conversion"),
-            )
-            .send(signing_key, 0)
-            .await?;
-
-        Ok(())
     }
 
     pub async fn propose(
