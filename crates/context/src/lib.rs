@@ -1002,6 +1002,20 @@ impl ContextManager {
             bail!("no private key found for signer");
         };
 
+        let nonce = self
+        .config_client
+        .query::<ContextConfigEnv>(
+            context_config.protocol.as_ref().into(),
+            context_config.network.as_ref().into(),
+            context_config.contract.as_ref().into(),
+        )
+        .fetch_nonce(
+            context_id.rt().expect("infallible conversion"),
+            public_key.rt().expect("infallible conversion"),
+        )
+        .await?
+        .ok_or_eyre("The inviter doesen't exist")?;
+
         self.config_client
             .mutate::<ContextConfigEnv>(
                 context_config.protocol.as_ref().into(),
@@ -1009,7 +1023,7 @@ impl ContextManager {
                 context_config.contract.as_ref().into(),
             )
             .update_proxy_contract(context_id.rt().expect("infallible conversion"))
-            .send(signing_key, 0)
+            .send(signing_key, nonce)
             .await?;
 
         Ok(())
