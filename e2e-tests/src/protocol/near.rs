@@ -1,10 +1,17 @@
+use camino::Utf8PathBuf;
 use eyre::Result as EyreResult;
 use near_workspaces::network::Sandbox;
 use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract, Worker};
+use serde::{Deserialize, Serialize};
 use tokio::fs::read;
 
-use crate::config::NearProtocolConfig;
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NearProtocolConfig {
+    pub context_config_contract: Utf8PathBuf,
+    pub proxy_lib_contract: Utf8PathBuf,
+}
 
 pub struct NearSandboxEnvironment {
     pub worker: Worker<Sandbox>,

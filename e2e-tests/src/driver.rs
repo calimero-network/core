@@ -3,10 +3,11 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use camino::Utf8PathBuf;
 use eyre::{bail, OptionExt, Result as EyreResult};
 use rand::seq::SliceRandom;
 use serde_json::from_slice;
-use tokio::fs::{read, read_dir};
+use tokio::fs::{read, read_dir, write};
 use tokio::time::sleep;
 
 use crate::config::{Config, ProtocolSandboxConfig};
@@ -92,9 +93,15 @@ impl Driver {
 
         let mut report = TestRunReport::new();
         for sandbox in sandbox_environments.iter() {
+            self.environment
+                .output_writer
+                .write_header(&format!("Running protocol {}", sandbox.name()), 1);
             self.boot_merods(sandbox).await?;
             report = self.run_scenarios(report, sandbox.name()).await?;
             self.stop_merods().await;
+            self.environment
+                .output_writer
+                .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
         }
 
         if let Err(e) = report.result() {
@@ -104,7 +111,14 @@ impl Driver {
             self.environment.output_writer.write_string(e.to_string());
         }
 
-        println!("{}", report.to_markdown());
+        let report_file = report
+            .store_to_file(self.environment.output_dir.clone())
+            .await?;
+
+        self.environment
+            .output_writer
+            .write_string(format!("Report file: {:?}", report_file));
+
         report.result()
     }
 
@@ -301,6 +315,13 @@ impl TestRunReport {
         }
     }
 
+    async fn store_to_file(&self, folder: Utf8PathBuf) -> EyreResult<Utf8PathBuf> {
+        let markdown = self.to_markdown();
+        let report_file = folder.join("report.md");
+        write(&report_file, markdown).await?;
+        Ok(report_file)
+    }
+
     fn to_markdown(&self) -> String {
         let mut markdown = String::new();
 
@@ -336,11 +357,11 @@ impl TestRunReport {
                         .steps
                         .iter()
                         .find(|step| &step.step_name == step_name)
-                        .map_or("N/A", |step| {
+                        .map_or(":interrobang:", |step| {
                             if step.result.is_ok() {
-                                "Success"
+                                ":white_check_mark:"
                             } else {
-                                "Failure"
+                                ":x:"
                             }
                         });
                     markdown.push_str(&format!(" {} |", result));

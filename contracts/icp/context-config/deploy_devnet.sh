@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 # Function to generate a new identity and return its principal
 generate_identity() {
@@ -82,8 +82,6 @@ dfx identity use default
 # Start dfx with clean state
 dfx start --clean --background
 
-dfx identity use default
-
 # Create initial identity if needed
 dfx identity new --storage-mode=plaintext minting || true
 # dfx identity use minting
@@ -118,20 +116,20 @@ cd ../context-proxy
 cd ../context-config
 
 # Prepare ledger initialization argument
-LEDGER_INIT_ARG="(variant { Init = record { 
-    minting_account = \"${MINTING_ACCOUNT}\"; 
-    initial_values = vec { 
-        record { \"${INITIAL_ACCOUNT}\"; record { e8s = 100_000_000_000 } } 
-    }; 
-    send_whitelist = vec {}; 
-    transfer_fee = opt record { e8s = 10_000 }; 
-    token_symbol = opt \"LICP\"; 
-    token_name = opt \"Local Internet Computer Protocol Token\"; 
-    archive_options = opt record { 
-        trigger_threshold = 2000; 
-        num_blocks_to_archive = 1000; 
-        controller_id = principal \"${ARCHIVE_PRINCIPAL}\" 
-    }; 
+LEDGER_INIT_ARG="(variant { Init = record {
+    minting_account = \"${MINTING_ACCOUNT}\";
+    initial_values = vec {
+        record { \"${INITIAL_ACCOUNT}\"; record { e8s = 100_000_000_000 } }
+    };
+    send_whitelist = vec {};
+    transfer_fee = opt record { e8s = 10_000 };
+    token_symbol = opt \"LICP\";
+    token_name = opt \"Local Internet Computer Protocol Token\";
+    archive_options = opt record {
+        trigger_threshold = 2000;
+        num_blocks_to_archive = 1000;
+        controller_id = principal \"${ARCHIVE_PRINCIPAL}\"
+    };
 } })"
 
 # Build and install canisters

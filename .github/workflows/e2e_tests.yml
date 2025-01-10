@@ -29,11 +29,11 @@ jobs:
         with:
           cache-on-failure: true
 
+      - name: Install dfx
+        uses: dfinity/setup-dfx@main
+
       - name: Build apps
         run: |
-          export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
-          echo "$SWARM_HOST"
-
           ./apps/kv-store/build.sh
 
       - name: Build contracts
@@ -44,6 +44,11 @@ jobs:
       - name: Build binaries
         run: |
           cargo build -p meroctl -p merod -p e2e-tests
+
+      - name: Deploy ICP local devnet
+        run: |
+          cargo install candid-extractor
+          ./contracts/icp/context-config/deploy_devnet.sh
 
       - name: Run e2e tests
         env:
@@ -58,10 +63,15 @@ jobs:
             --input-dir ./e2e-tests/config \
             --output-dir ./e2e-tests/corpus \
             --merod-binary ./target/debug/merod \
-            --meroctl-binary ./target/debug/meroctl \
-            --output-format markdown >> $GITHUB_STEP_SUMMARY
+            --meroctl-binary ./target/debug/meroctl
 
-      - name: Run e2e tests
+      - name: PR comment with test report
+        if: success() || failure()
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: ./e2e-tests/corpus/report.md
+
+      - name: Show node logs
         if: success() || failure()
         run: |
           LOGS_DIR=./e2e-tests/corpus/logs

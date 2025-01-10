@@ -27,10 +27,7 @@ impl OutputWriter {
     }
 
     pub fn write_string(&self, line: String) {
-        match self.format {
-            OutputFormat::Markdown => println!("{}  ", line),
-            OutputFormat::PlainText => println!("{}", line),
-        }
+        self.write_str(&line);
     }
 
     pub fn write_header(&self, header: &str, level: usize) {

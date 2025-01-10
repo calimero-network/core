@@ -1,5 +1,7 @@
-use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
+
+use crate::protocol::icp::IcpProtocolConfig;
+use crate::protocol::near::NearProtocolConfig;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,21 +31,4 @@ pub struct MerodConfig {
 pub enum ProtocolSandboxConfig {
     Near(NearProtocolConfig),
     Icp(IcpProtocolConfig),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NearProtocolConfig {
-    pub context_config_contract: Utf8PathBuf,
-    pub proxy_lib_contract: Utf8PathBuf,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IcpProtocolConfig {
-    pub context_config_contract_id: String,
-    pub rpc_url: String,
-    pub account_id: String,
-    pub public_key: String,
-    pub secret_key: String,
 }

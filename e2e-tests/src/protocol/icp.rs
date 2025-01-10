@@ -1,9 +1,19 @@
-use std::{net::TcpStream, time::Duration};
+use std::net::TcpStream;
+use std::time::Duration;
 
 use eyre::{bail, OptionExt, Result as EyreResult};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::config::IcpProtocolConfig;
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IcpProtocolConfig {
+    pub context_config_contract_id: String,
+    pub rpc_url: String,
+    pub account_id: String,
+    pub public_key: String,
+    pub secret_key: String,
+}
 
 pub struct IcpSandboxEnvironment {
     config: IcpProtocolConfig,
