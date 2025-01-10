@@ -48,7 +48,9 @@ jobs:
       - name: Deploy ICP local devnet
         run: |
           cargo install candid-extractor
-          ./contracts/icp/context-config/deploy_devnet.sh
+          cd ./contracts/icp/context-config
+          ./deploy_devnet.sh
+          cd ../../..
 
       - name: Run e2e tests
         env:
@@ -65,7 +67,7 @@ jobs:
             --merod-binary ./target/debug/merod \
             --meroctl-binary ./target/debug/meroctl
 
-      - name: PR comment with test report
+      - name: Update pull request comment
         if: success() || failure()
         uses: thollander/actions-comment-pull-request@v3
         with:
