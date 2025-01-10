@@ -35,13 +35,13 @@ pub struct ContextConfigs {
 }
 
 #[ic_cdk::init]
-fn init() {
+fn init(ledger_id: Principal) {
     CONTEXT_CONFIGS.with(|state| {
         *state.borrow_mut() = Some(ContextConfigs {
             contexts: BTreeMap::new(),
             proxy_code: None,
             owner: ic_cdk::api::caller(),
-            ledger_id: Principal::anonymous(),
+            ledger_id,
         });
     });
 }

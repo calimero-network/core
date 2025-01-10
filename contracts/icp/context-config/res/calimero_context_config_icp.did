@@ -8,7 +8,7 @@ type ICApplication = record {
 type ICCapability = variant { Proxy; ManageMembers; ManageApplication };
 type ICSigned = record { signature : blob; _phantom : null; payload : blob };
 type Result = variant { Ok; Err : text };
-service : () -> {
+service : (principal) -> {
   application : (blob) -> (ICApplication) query;
   application_revision : (blob) -> (nat64) query;
   fetch_nonce : (blob, blob) -> (opt nat64) query;
