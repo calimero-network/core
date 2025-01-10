@@ -13,6 +13,7 @@ mod driver;
 mod meroctl;
 mod merod;
 mod output;
+mod protocol;
 mod steps;
 
 pub const EXAMPLES: &str = r"
@@ -69,6 +70,7 @@ pub struct TestEnvironment {
     pub output_dir: Utf8PathBuf,
     pub nodes_dir: Utf8PathBuf,
     pub logs_dir: Utf8PathBuf,
+    pub icp_dir: Utf8PathBuf,
     pub output_writer: OutputWriter,
 }
 
@@ -84,6 +86,7 @@ impl Into<TestEnvironment> for Args {
             output_dir: self.output_dir.clone(),
             nodes_dir: self.output_dir.join("nodes"),
             logs_dir: self.output_dir.join("logs"),
+            icp_dir: self.output_dir.join("icp"),
             output_writer: OutputWriter::new(self.output_format),
         }
     }

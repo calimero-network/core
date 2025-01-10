@@ -22,6 +22,10 @@ pub enum JsonRpcCallTarget {
 }
 
 impl Test for JsonRpcCallStep {
+    fn display_name(&self) -> String {
+        "JsonRpcCall".to_string()
+    }
+
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let Some(ref context_id) = ctx.context_id else {
             bail!("Context ID is required for JsonRpcExecuteStep");

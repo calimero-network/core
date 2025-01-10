@@ -26,6 +26,10 @@ pub enum ApplicationInstallTarget {
 }
 
 impl Test for ApplicationInstallStep {
+    fn display_name(&self) -> String {
+        "ApplicationInstall".to_string()
+    }
+
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         if let ApplicationInstallTarget::AllMembers = self.target {
             for invitee in ctx.invitees.iter() {

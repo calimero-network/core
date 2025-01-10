@@ -3,20 +3,20 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use eyre::{bail, Result as EyreResult};
-use near_workspaces::network::Sandbox;
-use near_workspaces::types::NearToken;
-use near_workspaces::{Account, Contract, Worker};
+use eyre::{bail, OptionExt, Result as EyreResult};
 use rand::seq::SliceRandom;
 use serde_json::from_slice;
 use tokio::fs::{read, read_dir};
 use tokio::time::sleep;
 
-use crate::config::Config;
+use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
 use crate::merod::Merod;
 use crate::output::OutputWriter;
-use crate::steps::{TestScenario, TestStep};
+use crate::protocol::icp::IcpSandboxEnvironment;
+use crate::protocol::near::NearSandboxEnvironment;
+use crate::protocol::ProtocolSandboxEnvironment;
+use crate::steps::TestScenario;
 use crate::TestEnvironment;
 
 pub struct TestContext<'a> {
@@ -32,6 +32,7 @@ pub struct TestContext<'a> {
 
 pub trait Test {
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()>;
+    fn display_name(&self) -> String;
 }
 
 impl<'a> TestContext<'a> {
@@ -59,13 +60,6 @@ pub struct Driver {
     config: Config,
     meroctl: Meroctl,
     merods: HashMap<String, Merod>,
-    near: Option<NearSandboxEnvironment>,
-}
-
-pub struct NearSandboxEnvironment {
-    pub worker: Worker<Sandbox>,
-    pub root_account: Account,
-    pub contract: Contract,
 }
 
 impl Driver {
@@ -76,61 +70,45 @@ impl Driver {
             config,
             meroctl,
             merods: HashMap::new(),
-            near: None,
         }
     }
 
     pub async fn run(&mut self) -> EyreResult<()> {
         self.environment.init().await?;
 
-        self.init_near_environment().await?;
+        let mut sandbox_environments: Vec<ProtocolSandboxEnvironment> = Default::default();
+        for protocol_sandbox in self.config.protocol_sandboxes.iter() {
+            match protocol_sandbox {
+                ProtocolSandboxConfig::Near(config) => {
+                    let near = NearSandboxEnvironment::init(config.clone()).await?;
+                    sandbox_environments.push(ProtocolSandboxEnvironment::Near(near));
+                }
+                ProtocolSandboxConfig::Icp(config) => {
+                    let icp = IcpSandboxEnvironment::init(config.clone()).await?;
+                    sandbox_environments.push(ProtocolSandboxEnvironment::Icp(icp));
+                }
+            }
+        }
 
-        let result = {
-            self.boot_merods().await?;
-            self.run_scenarios().await
-        };
+        let mut report = TestRunReport::new();
+        for sandbox in sandbox_environments.iter() {
+            self.boot_merods(sandbox).await?;
+            report = self.run_scenarios(report, sandbox.name()).await?;
+            self.stop_merods().await;
+        }
 
-        self.stop_merods().await;
-
-        if let Err(e) = &result {
+        if let Err(e) = report.result() {
             self.environment
                 .output_writer
                 .write_str("Error occurred during test run:");
             self.environment.output_writer.write_string(e.to_string());
         }
 
-        result
+        println!("{}", report.to_markdown());
+        report.result()
     }
 
-    async fn init_near_environment(&mut self) -> EyreResult<()> {
-        let worker = near_workspaces::sandbox().await?;
-
-        let wasm = read(&self.config.near.context_config_contract).await?;
-        let context_config_contract = worker.dev_deploy(&wasm).await?;
-
-        let proxy_lib_contract = read(&self.config.near.proxy_lib_contract).await?;
-        drop(
-            context_config_contract
-                .call("set_proxy_code")
-                .args(proxy_lib_contract)
-                .max_gas()
-                .transact()
-                .await?
-                .into_result()?,
-        );
-
-        let root_account = worker.root_account()?;
-
-        self.near = Some(NearSandboxEnvironment {
-            worker,
-            root_account,
-            contract: context_config_contract,
-        });
-
-        Ok(())
-    }
-
-    async fn boot_merods(&mut self) -> EyreResult<()> {
+    async fn boot_merods(&mut self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<()> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
@@ -143,40 +121,7 @@ impl Driver {
                     self.environment.test_id
                 )];
 
-                if let Some(ref near) = self.near {
-                    let near_account = near
-                        .root_account
-                        .create_subaccount(&node_name)
-                        .initial_balance(NearToken::from_near(30))
-                        .transact()
-                        .await?
-                        .into_result()?;
-                    let near_secret_key = near_account.secret_key();
-
-                    args.extend(vec![
-                        format!(
-                            "context.config.new.contract_id=\"{}\"",
-                            near.contract.as_account().id()
-                        ),
-                        format!("context.config.signer.use=\"{}\"", "self"),
-                        format!(
-                            "context.config.signer.self.near.testnet.rpc_url=\"{}\"",
-                            near.worker.rpc_addr()
-                        ),
-                        format!(
-                            "context.config.signer.self.near.testnet.account_id=\"{}\"",
-                            near_account.id()
-                        ),
-                        format!(
-                            "context.config.signer.self.near.testnet.public_key=\"{}\"",
-                            near_secret_key.public_key()
-                        ),
-                        format!(
-                            "context.config.signer.self.near.testnet.secret_key=\"{}\"",
-                            near_secret_key
-                        ),
-                    ]);
-                }
+                args.extend(sandbox.node_args(&node_name).await?);
 
                 let mut config_args = vec![];
                 config_args.extend(args.iter().map(|arg| &**arg));
@@ -219,7 +164,11 @@ impl Driver {
         self.merods.clear();
     }
 
-    async fn run_scenarios(&self) -> EyreResult<()> {
+    async fn run_scenarios(
+        &self,
+        mut report: TestRunReport,
+        protocol_name: String,
+    ) -> EyreResult<TestRunReport> {
         let scenarios_dir = self.environment.input_dir.join("scenarios");
         let mut entries = read_dir(scenarios_dir).await?;
 
@@ -228,15 +177,35 @@ impl Driver {
             if path.is_dir() {
                 let test_file_path = path.join("test.json");
                 if test_file_path.exists() {
-                    self.run_scenario(test_file_path).await?;
+                    let scenario_report = self
+                        .run_scenario(
+                            path.file_name()
+                                .ok_or_eyre("failed")?
+                                .to_str()
+                                .ok_or_eyre("failed")?,
+                            test_file_path,
+                        )
+                        .await?;
+
+                    drop(
+                        report
+                            .scenario_matrix
+                            .entry(scenario_report.scenario_name.clone())
+                            .or_insert_with(HashMap::new)
+                            .insert(protocol_name.clone(), scenario_report),
+                    );
                 }
             }
         }
 
-        Ok(())
+        Ok(report)
     }
 
-    async fn run_scenario(&self, file_path: PathBuf) -> EyreResult<()> {
+    async fn run_scenario(
+        &self,
+        scenarion_name: &str,
+        file_path: PathBuf,
+    ) -> EyreResult<TestScenarioReport> {
         self.environment
             .output_writer
             .write_header("Running scenario", 2);
@@ -269,6 +238,8 @@ impl Driver {
             self.environment.output_writer,
         );
 
+        let mut report = TestScenarioReport::new(scenarion_name.to_owned());
+
         for step in scenario.steps.iter() {
             self.environment
                 .output_writer
@@ -276,15 +247,14 @@ impl Driver {
             self.environment.output_writer.write_str("Step spec:");
             self.environment.output_writer.write_json(&step)?;
 
-            match step {
-                TestStep::ApplicationInstall(step) => step.run_assert(&mut ctx).await?,
-                TestStep::ContextCreate(step) => step.run_assert(&mut ctx).await?,
-                TestStep::ContextInviteJoin(step) => step.run_assert(&mut ctx).await?,
-                TestStep::JsonRpcCall(step) => step.run_assert(&mut ctx).await?,
-            };
+            let result = step.run_assert(&mut ctx).await;
+            report.steps.push(TestStepReport {
+                step_name: step.display_name(),
+                result,
+            });
         }
 
-        Ok(())
+        Ok(report)
     }
 
     fn pick_inviter_node(&self) -> Option<(String, Vec<String>)> {
@@ -298,4 +268,106 @@ impl Driver {
             Some((picked_node, node_names))
         }
     }
+}
+
+struct TestRunReport {
+    scenario_matrix: HashMap<String, HashMap<String, TestScenarioReport>>,
+}
+
+impl TestRunReport {
+    fn new() -> Self {
+        Self {
+            scenario_matrix: Default::default(),
+        }
+    }
+
+    fn result(&self) -> EyreResult<()> {
+        let mut errors = vec![];
+
+        for (_, scenarios) in &self.scenario_matrix {
+            for (_, scenario) in scenarios {
+                for step in &scenario.steps {
+                    if let Err(e) = &step.result {
+                        errors.push(e.to_string());
+                    }
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            bail!("Errors occurred during test run: {:?}", errors)
+        }
+    }
+
+    fn to_markdown(&self) -> String {
+        let mut markdown = String::new();
+
+        for (scenario, protocols) in &self.scenario_matrix {
+            markdown.push_str(&format!("## Scenario: {}\n", scenario));
+            markdown.push_str("| Protocol/Step |");
+
+            // Collecting all step names
+            let mut step_names = vec![];
+            for report in protocols.values() {
+                for step in &report.steps {
+                    if !step_names.contains(&step.step_name) {
+                        step_names.push(step.step_name.clone());
+                    }
+                }
+            }
+
+            // Adding step names to the first row of the table
+            for step_name in &step_names {
+                markdown.push_str(&format!(" {} |", step_name));
+            }
+            markdown.push_str("\n| :--- |");
+            for _ in &step_names {
+                markdown.push_str(" :---: |");
+            }
+            markdown.push_str("\n");
+
+            // Adding protocol rows
+            for (protocol, report) in protocols {
+                markdown.push_str(&format!("| {} |", protocol));
+                for step_name in &step_names {
+                    let result = report
+                        .steps
+                        .iter()
+                        .find(|step| &step.step_name == step_name)
+                        .map_or("N/A", |step| {
+                            if step.result.is_ok() {
+                                "Success"
+                            } else {
+                                "Failure"
+                            }
+                        });
+                    markdown.push_str(&format!(" {} |", result));
+                }
+                markdown.push_str("\n");
+            }
+            markdown.push_str("\n");
+        }
+        markdown
+    }
+}
+
+struct TestScenarioReport {
+    scenario_name: String,
+    steps: Vec<TestStepReport>,
+}
+
+impl TestScenarioReport {
+    fn new(scenario_name: String) -> Self {
+        Self {
+            scenario_name,
+            steps: Default::default(),
+        }
+    }
+}
+
+struct TestStepReport {
+    step_name: String,
+    result: EyreResult<()>,
 }

@@ -11,6 +11,10 @@ use crate::driver::{Test, TestContext};
 pub struct ContextInviteJoinStep;
 
 impl Test for ContextInviteJoinStep {
+    fn display_name(&self) -> String {
+        "ContextInviteJoin".to_string()
+    }
+
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let Some(ref context_id) = ctx.context_id else {
             bail!("Context ID is required for InviteJoinContextStep");

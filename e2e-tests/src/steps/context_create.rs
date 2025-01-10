@@ -8,6 +8,10 @@ use crate::driver::{Test, TestContext};
 pub struct ContextCreateStep;
 
 impl Test for ContextCreateStep {
+    fn display_name(&self) -> String {
+        "ContextCreate".to_string()
+    }
+
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let Some(ref application_id) = ctx.application_id else {
             bail!("Application ID is required for ContextCreateStep");
