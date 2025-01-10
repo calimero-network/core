@@ -1,7 +1,9 @@
+use core::fmt::Write;
+use core::time::Duration;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use eyre::{bail, OptionExt, Result as EyreResult};
@@ -59,46 +61,48 @@ impl<'a> TestContext<'a> {
 pub struct Driver {
     environment: TestEnvironment,
     config: Config,
-    meroctl: Meroctl,
-    merods: HashMap<String, Merod>,
+}
+
+pub struct Mero {
+    ctl: Meroctl,
+    ds: HashMap<String, Merod>,
 }
 
 impl Driver {
-    pub fn new(environment: TestEnvironment, config: Config) -> Self {
-        let meroctl = Meroctl::new(&environment);
+    pub const fn new(environment: TestEnvironment, config: Config) -> Self {
         Self {
             environment,
             config,
-            meroctl,
-            merods: HashMap::new(),
         }
     }
 
-    pub async fn run(&mut self) -> EyreResult<()> {
+    pub async fn run(&self) -> EyreResult<()> {
         self.environment.init().await?;
 
-        let mut sandbox_environments: Vec<ProtocolSandboxEnvironment> = Default::default();
-        for protocol_sandbox in self.config.protocol_sandboxes.iter() {
+        let mut sandbox_environments: Vec<ProtocolSandboxEnvironment> = Vec::default();
+        for protocol_sandbox in &self.config.protocol_sandboxes {
             match protocol_sandbox {
                 ProtocolSandboxConfig::Near(config) => {
                     let near = NearSandboxEnvironment::init(config.clone()).await?;
                     sandbox_environments.push(ProtocolSandboxEnvironment::Near(near));
                 }
                 ProtocolSandboxConfig::Icp(config) => {
-                    let icp = IcpSandboxEnvironment::init(config.clone()).await?;
+                    let icp = IcpSandboxEnvironment::init(config.clone())?;
                     sandbox_environments.push(ProtocolSandboxEnvironment::Icp(icp));
                 }
             }
         }
 
         let mut report = TestRunReport::new();
-        for sandbox in sandbox_environments.iter() {
+        for sandbox in &sandbox_environments {
             self.environment
                 .output_writer
                 .write_header(&format!("Running protocol {}", sandbox.name()), 1);
-            self.boot_merods(sandbox).await?;
-            report = self.run_scenarios(report, sandbox.name()).await?;
-            self.stop_merods().await;
+
+            let mero = self.setup_mero(sandbox).await?;
+            report = self.run_scenarios(&mero, report, sandbox.name()).await?;
+            self.stop_merods(&mero.ds).await;
+
             self.environment
                 .output_writer
                 .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
@@ -117,19 +121,21 @@ impl Driver {
 
         self.environment
             .output_writer
-            .write_string(format!("Report file: {:?}", report_file));
+            .write_string(format!("Report file: {report_file:?}"));
 
         report.result()
     }
 
-    async fn boot_merods(&mut self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<()> {
+    async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
 
+        let mut merods = HashMap::new();
+
         for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
-            if !self.merods.contains_key(&node_name) {
+            if let Entry::Vacant(e) = merods.entry(node_name.clone()) {
                 let mut args = vec![format!(
                     "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
                     self.environment.test_id
@@ -140,12 +146,16 @@ impl Driver {
                 let mut config_args = vec![];
                 config_args.extend(args.iter().map(|arg| &**arg));
 
-                let merod = Merod::new(node_name.clone(), &self.environment);
+                let merod = Merod::new(
+                    node_name.clone(),
+                    self.environment.nodes_dir.join(sandbox.name()),
+                    &self.environment.logs_dir.join(sandbox.name()),
+                    self.environment.merod_binary.clone(),
+                    self.environment.output_writer,
+                );
 
-                let swarm_host = match env::var(&self.config.network.swarm_host_env) {
-                    Ok(host) => host,
-                    Err(_) => "0.0.0.0".to_owned(),
-                };
+                let swarm_host = env::var(&self.config.network.swarm_host_env)
+                    .unwrap_or_else(|_| "0.0.0.0".to_owned());
 
                 merod
                     .init(
@@ -158,28 +168,34 @@ impl Driver {
 
                 merod.run().await?;
 
-                drop(self.merods.insert(node_name, merod));
+                let _ = e.insert(merod);
             }
         }
 
         // TODO: Implement health check?
         sleep(Duration::from_secs(10)).await;
 
-        Ok(())
+        Ok(Mero {
+            ctl: Meroctl::new(
+                self.environment.nodes_dir.join(sandbox.name()),
+                self.environment.meroctl_binary.clone(),
+                self.environment.output_writer,
+            ),
+            ds: merods,
+        })
     }
 
-    async fn stop_merods(&mut self) {
-        for (_, merod) in self.merods.iter() {
+    async fn stop_merods(&self, merods: &HashMap<String, Merod>) {
+        for (_, merod) in merods {
             if let Err(err) = merod.stop().await {
-                eprintln!("Error stopping merod: {:?}", err);
+                eprintln!("Error stopping merod: {err:?}");
             }
         }
-
-        self.merods.clear();
     }
 
     async fn run_scenarios(
         &self,
+        mero: &Mero,
         mut report: TestRunReport,
         protocol_name: String,
     ) -> EyreResult<TestRunReport> {
@@ -193,10 +209,11 @@ impl Driver {
                 if test_file_path.exists() {
                     let scenario_report = self
                         .run_scenario(
+                            mero,
                             path.file_name()
-                                .ok_or_eyre("failed")?
+                                .ok_or_eyre("failed to get scenario file name")?
                                 .to_str()
-                                .ok_or_eyre("failed")?,
+                                .ok_or_eyre("failed to convert scenario file name")?,
                             test_file_path,
                         )
                         .await?;
@@ -205,7 +222,7 @@ impl Driver {
                         report
                             .scenario_matrix
                             .entry(scenario_report.scenario_name.clone())
-                            .or_insert_with(HashMap::new)
+                            .or_default()
                             .insert(protocol_name.clone(), scenario_report),
                     );
                 }
@@ -217,6 +234,7 @@ impl Driver {
 
     async fn run_scenario(
         &self,
+        mero: &Mero,
         scenarion_name: &str,
         file_path: PathBuf,
     ) -> EyreResult<TestScenarioReport> {
@@ -228,33 +246,37 @@ impl Driver {
 
         self.environment
             .output_writer
-            .write_string(format!("Source file: {:?}", file_path));
+            .write_string(format!("Source file: {file_path:?}"));
         self.environment
             .output_writer
             .write_string(format!("Steps count: {}", scenario.steps.len()));
 
-        let (inviter, invitees) = match self.pick_inviter_node() {
-            Some((inviter, invitees)) => (inviter, invitees),
-            None => bail!("Not enough nodes to run the test"),
+        let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
+            bail!("Not enough nodes to run the test")
         };
 
         self.environment
             .output_writer
-            .write_string(format!("Picked inviter: {}", inviter));
+            .write_string(format!("Picked inviter: {inviter}"));
         self.environment
             .output_writer
-            .write_string(format!("Picked invitees: {:?}", invitees));
+            .write_string(format!("Picked invitees: {invitees:?}"));
 
-        let mut ctx = TestContext::new(
-            inviter,
-            invitees,
-            &self.meroctl,
-            self.environment.output_writer,
-        );
+        let mut ctx =
+            TestContext::new(inviter, invitees, &mero.ctl, self.environment.output_writer);
 
         let mut report = TestScenarioReport::new(scenarion_name.to_owned());
 
-        for step in scenario.steps.iter() {
+        let mut scenario_failed = false;
+        for (i, step) in scenario.steps.iter().enumerate() {
+            if scenario_failed {
+                report.steps.push(TestStepReport {
+                    step_name: format!("{}. {}", i, step.display_name()),
+                    result: None,
+                });
+                continue;
+            }
+
             self.environment
                 .output_writer
                 .write_header("Running test step", 3);
@@ -262,18 +284,26 @@ impl Driver {
             self.environment.output_writer.write_json(&step)?;
 
             let result = step.run_assert(&mut ctx).await;
+
+            if result.is_err() {
+                scenario_failed = true;
+                self.environment
+                    .output_writer
+                    .write_string(format!("Error: {result:?}"));
+            }
+
             report.steps.push(TestStepReport {
-                step_name: step.display_name(),
-                result,
+                step_name: format!("{}. {}", i, step.display_name()),
+                result: Some(result),
             });
         }
 
         Ok(report)
     }
 
-    fn pick_inviter_node(&self) -> Option<(String, Vec<String>)> {
-        let mut node_names: Vec<String> = self.merods.keys().cloned().collect();
-        if node_names.len() < 1 {
+    fn pick_inviter_node(&self, merods: &HashMap<String, Merod>) -> Option<(String, Vec<String>)> {
+        let mut node_names: Vec<String> = merods.keys().cloned().collect();
+        if node_names.is_empty() {
             None
         } else {
             let mut rng = rand::thread_rng();
@@ -291,7 +321,7 @@ struct TestRunReport {
 impl TestRunReport {
     fn new() -> Self {
         Self {
-            scenario_matrix: Default::default(),
+            scenario_matrix: HashMap::default(),
         }
     }
 
@@ -301,7 +331,7 @@ impl TestRunReport {
         for (_, scenarios) in &self.scenario_matrix {
             for (_, scenario) in scenarios {
                 for step in &scenario.steps {
-                    if let Err(e) = &step.result {
+                    if let Some(Err(e)) = &step.result {
                         errors.push(e.to_string());
                     }
                 }
@@ -316,18 +346,19 @@ impl TestRunReport {
     }
 
     async fn store_to_file(&self, folder: Utf8PathBuf) -> EyreResult<Utf8PathBuf> {
-        let markdown = self.to_markdown();
+        let markdown = self.to_markdown()?;
         let report_file = folder.join("report.md");
         write(&report_file, markdown).await?;
         Ok(report_file)
     }
 
-    fn to_markdown(&self) -> String {
+    fn to_markdown(&self) -> EyreResult<String> {
         let mut markdown = String::new();
 
+        writeln!(&mut markdown, "## E2E tests report")?;
+
         for (scenario, protocols) in &self.scenario_matrix {
-            markdown.push_str(&format!("## Scenario: {}\n", scenario));
-            markdown.push_str("| Protocol/Step |");
+            writeln!(&mut markdown, "### Scenario: {scenario}")?;
 
             // Collecting all step names
             let mut step_names = vec![];
@@ -339,38 +370,44 @@ impl TestRunReport {
                 }
             }
 
-            // Adding step names to the first row of the table
+            // Write table header
+            write!(&mut markdown, "| Protocol/Step |")?;
             for step_name in &step_names {
-                markdown.push_str(&format!(" {} |", step_name));
+                write!(&mut markdown, " {step_name} |")?;
             }
-            markdown.push_str("\n| :--- |");
-            for _ in &step_names {
-                markdown.push_str(" :---: |");
-            }
-            markdown.push_str("\n");
+            writeln!(&mut markdown)?;
 
-            // Adding protocol rows
+            // Write table header separator
+            write!(&mut markdown, "| :--- |")?;
+            for _ in &step_names {
+                write!(&mut markdown, " :---: |")?;
+            }
+            writeln!(&mut markdown)?;
+
+            // Write table rows
             for (protocol, report) in protocols {
-                markdown.push_str(&format!("| {} |", protocol));
+                write!(&mut markdown, "| {protocol} |")?;
                 for step_name in &step_names {
                     let result = report
                         .steps
                         .iter()
                         .find(|step| &step.step_name == step_name)
-                        .map_or(":interrobang:", |step| {
-                            if step.result.is_ok() {
-                                ":white_check_mark:"
-                            } else {
-                                ":x:"
-                            }
+                        .map_or(":bug:", |step| {
+                            step.result
+                                .as_ref()
+                                .map_or(":fast_forward:", |result| match result {
+                                    Ok(()) => ":white_check_mark:",
+                                    Err(_) => ":x:",
+                                })
                         });
-                    markdown.push_str(&format!(" {} |", result));
+                    write!(&mut markdown, " {result} |")?;
                 }
-                markdown.push_str("\n");
+                writeln!(&mut markdown)?;
             }
-            markdown.push_str("\n");
+            writeln!(&mut markdown)?;
         }
-        markdown
+
+        Ok(markdown)
     }
 }
 
@@ -383,12 +420,12 @@ impl TestScenarioReport {
     fn new(scenario_name: String) -> Self {
         Self {
             scenario_name,
-            steps: Default::default(),
+            steps: Vec::default(),
         }
     }
 }
 
 struct TestStepReport {
     step_name: String,
-    result: EyreResult<()>,
+    result: Option<EyreResult<()>>,
 }

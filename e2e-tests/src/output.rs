@@ -15,22 +15,22 @@ pub enum OutputFormat {
 }
 
 impl OutputWriter {
-    pub fn new(format: OutputFormat) -> Self {
+    pub const fn new(format: OutputFormat) -> Self {
         Self { format }
     }
 
-    pub fn write_str(&self, line: &str) {
+    pub fn write_str(self, line: &str) {
         match self.format {
-            OutputFormat::Markdown => println!("{}  ", line),
-            OutputFormat::PlainText => println!("{}", line),
+            OutputFormat::Markdown => println!("{line}  "),
+            OutputFormat::PlainText => println!("{line}"),
         }
     }
 
-    pub fn write_string(&self, line: String) {
+    pub fn write_string(self, line: String) {
         self.write_str(&line);
     }
 
-    pub fn write_header(&self, header: &str, level: usize) {
+    pub fn write_header(self, header: &str, level: usize) {
         match self.format {
             OutputFormat::Markdown => println!("{} {}  ", "#".repeat(level), header),
             OutputFormat::PlainText => {
@@ -39,12 +39,12 @@ impl OutputWriter {
                     "-".repeat(level * 5),
                     header,
                     "-".repeat(level * 5),
-                )
+                );
             }
         }
     }
 
-    pub fn write_json<T>(&self, json: &T) -> EyreResult<()>
+    pub fn write_json<T>(self, json: &T) -> EyreResult<()>
     where
         T: ?Sized + Serialize,
     {

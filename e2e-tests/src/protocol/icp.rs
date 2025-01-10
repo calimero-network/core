@@ -1,5 +1,5 @@
+use core::time::Duration;
 use std::net::TcpStream;
-use std::time::Duration;
 
 use eyre::{bail, OptionExt, Result as EyreResult};
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ pub struct IcpSandboxEnvironment {
 }
 
 impl IcpSandboxEnvironment {
-    pub async fn init(config: IcpProtocolConfig) -> EyreResult<Self> {
+    pub fn init(config: IcpProtocolConfig) -> EyreResult<Self> {
         let rpc_url = Url::parse(&config.rpc_url)?;
         let rpc_host = rpc_url
             .host_str()
@@ -30,7 +30,7 @@ impl IcpSandboxEnvironment {
             .ok_or_eyre("failed to get icp rpc port from config")?;
 
         if let Err(err) = TcpStream::connect_timeout(
-            &format!("{}:{}", rpc_host, rpc_port).parse()?,
+            &format!("{rpc_host}:{rpc_port}").parse()?,
             Duration::from_secs(3),
         ) {
             bail!(
@@ -40,11 +40,11 @@ impl IcpSandboxEnvironment {
             );
         }
 
-        return Ok(Self { config });
+        Ok(Self { config })
     }
 
-    pub fn node_args(&self) -> EyreResult<Vec<String>> {
-        return Ok(vec![
+    pub fn node_args(&self) -> Vec<String> {
+        vec![
             format!("context.config.new.protocol=\"{}\"", "icp"),
             format!("context.config.new.network=\"{}\"", "local"),
             format!(
@@ -68,6 +68,6 @@ impl IcpSandboxEnvironment {
                 "context.config.signer.self.icp.local.secret_key=\"{}\"",
                 self.config.secret_key
             ),
-        ]);
+        ]
     }
 }

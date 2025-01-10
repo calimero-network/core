@@ -74,20 +74,20 @@ pub struct TestEnvironment {
     pub output_writer: OutputWriter,
 }
 
-impl Into<TestEnvironment> for Args {
-    fn into(self) -> TestEnvironment {
+impl From<Args> for TestEnvironment {
+    fn from(val: Args) -> Self {
         let mut rng = rand::thread_rng();
 
-        TestEnvironment {
+        Self {
             test_id: rng.gen::<u32>(),
-            merod_binary: self.merod_binary,
-            meroctl_binary: self.meroctl_binary,
-            input_dir: self.input_dir.clone(),
-            output_dir: self.output_dir.clone(),
-            nodes_dir: self.output_dir.join("nodes"),
-            logs_dir: self.output_dir.join("logs"),
-            icp_dir: self.output_dir.join("icp"),
-            output_writer: OutputWriter::new(self.output_format),
+            merod_binary: val.merod_binary,
+            meroctl_binary: val.meroctl_binary,
+            input_dir: val.input_dir.clone(),
+            output_dir: val.output_dir.clone(),
+            nodes_dir: val.output_dir.join("nodes"),
+            logs_dir: val.output_dir.join("logs"),
+            icp_dir: val.output_dir.join("icp"),
+            output_writer: OutputWriter::new(val.output_format),
         }
     }
 }
@@ -118,7 +118,7 @@ async fn main() -> EyreResult<()> {
     let config_content = read_to_string(config_path).await?;
     let config: Config = serde_json::from_str(&config_content)?;
 
-    let mut driver = Driver::new(args.into(), config);
+    let driver = Driver::new(args.into(), config);
 
     driver.run().await
 }

@@ -2,7 +2,7 @@ use application_install::ApplicationInstallStep;
 use context_create::ContextCreateStep;
 use context_invite_join::ContextInviteJoinStep;
 use eyre::Result as EyreResult;
-use jsonrpc_call::JsonRpcCallStep;
+use jsonrpc_call::CallStep;
 use serde::{Deserialize, Serialize};
 
 use crate::driver::{Test, TestContext};
@@ -24,25 +24,25 @@ pub enum TestStep {
     ApplicationInstall(ApplicationInstallStep),
     ContextCreate(ContextCreateStep),
     ContextInviteJoin(ContextInviteJoinStep),
-    JsonRpcCall(JsonRpcCallStep),
+    Call(CallStep),
 }
 
 impl Test for TestStep {
     fn display_name(&self) -> String {
         match self {
-            TestStep::ApplicationInstall(step) => step.display_name(),
-            TestStep::ContextCreate(step) => step.display_name(),
-            TestStep::ContextInviteJoin(step) => step.display_name(),
-            TestStep::JsonRpcCall(step) => step.display_name(),
+            Self::ApplicationInstall(step) => step.display_name(),
+            Self::ContextCreate(step) => step.display_name(),
+            Self::ContextInviteJoin(step) => step.display_name(),
+            Self::Call(step) => step.display_name(),
         }
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         match self {
-            TestStep::ApplicationInstall(step) => step.run_assert(ctx).await,
-            TestStep::ContextCreate(step) => step.run_assert(ctx).await,
-            TestStep::ContextInviteJoin(step) => step.run_assert(ctx).await,
-            TestStep::JsonRpcCall(step) => step.run_assert(ctx).await,
+            Self::ApplicationInstall(step) => step.run_assert(ctx).await,
+            Self::ContextCreate(step) => step.run_assert(ctx).await,
+            Self::ContextInviteJoin(step) => step.run_assert(ctx).await,
+            Self::Call(step) => step.run_assert(ctx).await,
         }
     }
 }

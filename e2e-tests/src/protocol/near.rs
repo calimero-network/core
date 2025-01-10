@@ -56,7 +56,7 @@ impl NearSandboxEnvironment {
             .into_result()?;
         let near_secret_key = near_account.secret_key();
 
-        return Ok(vec![
+        Ok(vec![
             format!(
                 "context.config.new.contract_id=\"{}\"",
                 self.contract.as_account().id()
@@ -78,6 +78,6 @@ impl NearSandboxEnvironment {
                 "context.config.signer.self.near.testnet.secret_key=\"{}\"",
                 near_secret_key
             ),
-        ]);
+        ])
     }
 }

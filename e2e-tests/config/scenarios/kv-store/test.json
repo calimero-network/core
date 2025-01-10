@@ -10,7 +10,7 @@
       "contextCreate": null
     },
     {
-      "jsonRpcCall": {
+      "call": {
         "methodName": "set",
         "argsJson": { "key": "foo", "value": "bar" },
         "expectedResultJson": null,
@@ -18,7 +18,7 @@
       }
     },
     {
-      "jsonRpcCall": {
+      "call": {
         "methodName": "get",
         "argsJson": { "key": "foo" },
         "expectedResultJson": "bar",
@@ -29,7 +29,7 @@
       "contextInviteJoin": null
     },
     {
-      "jsonRpcCall": {
+      "call": {
         "methodName": "get",
         "argsJson": { "key": "foo" },
         "expectedResultJson": "bar",

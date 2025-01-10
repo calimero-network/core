@@ -1,4 +1,4 @@
-use std::time::Duration;
+use core::time::Duration;
 
 use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ pub struct ContextInviteJoinStep;
 
 impl Test for ContextInviteJoinStep {
     fn display_name(&self) -> String {
-        "ContextInviteJoin".to_string()
+        "ctx invite-join".to_owned()
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
@@ -24,7 +24,7 @@ impl Test for ContextInviteJoinStep {
             bail!("Inviter public key is required for InviteJoinContextStep");
         };
 
-        for invitee in ctx.invitees.iter() {
+        for invitee in &ctx.invitees {
             let (invitee_public_key, invitee_private_key) =
                 ctx.meroctl.identity_generate(invitee).await?;
 
@@ -68,7 +68,7 @@ impl Test for ContextInviteJoinStep {
             sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
-                .write_string(format!("Report: Node '{}' joined the context", invitee));
+                .write_string(format!("Report: Node '{invitee}' joined the context"));
         }
 
         Ok(())

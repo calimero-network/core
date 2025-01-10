@@ -9,7 +9,7 @@ pub struct ContextCreateStep;
 
 impl Test for ContextCreateStep {
     fn display_name(&self) -> String {
-        "ContextCreate".to_string()
+        "ctx create".to_owned()
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
@@ -19,7 +19,7 @@ impl Test for ContextCreateStep {
 
         let (context_id, member_public_key) = ctx
             .meroctl
-            .context_create(&ctx.inviter, &application_id)
+            .context_create(&ctx.inviter, application_id)
             .await?;
 
         ctx.context_id = Some(context_id);

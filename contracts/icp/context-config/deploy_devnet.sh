@@ -80,7 +80,7 @@ RECIPIENT_PRINCIPAL=$(dfx identity get-principal)
 dfx identity use default
 
 # Start dfx with clean state
-dfx start --clean --background
+dfx start --clean --background --host 127.0.0.1:"${ICP_PORT:-4943}"
 
 # Create initial identity if needed
 dfx identity new --storage-mode=plaintext minting || true

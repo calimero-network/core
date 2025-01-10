@@ -5,20 +5,23 @@ use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use tokio::process::Command;
 
 use crate::output::OutputWriter;
-use crate::TestEnvironment;
 
 pub struct Meroctl {
-    nodes_dir: Utf8PathBuf,
+    home_dir: Utf8PathBuf,
     binary: Utf8PathBuf,
     output_writer: OutputWriter,
 }
 
 impl Meroctl {
-    pub fn new(environment: &TestEnvironment) -> Self {
+    pub const fn new(
+        home_dir: Utf8PathBuf,
+        binary: Utf8PathBuf,
+        output_writer: OutputWriter,
+    ) -> Self {
         Self {
-            nodes_dir: environment.nodes_dir.clone(),
-            binary: environment.meroctl_binary.clone(),
-            output_writer: environment.output_writer,
+            home_dir,
+            binary,
+            output_writer,
         }
     }
 
@@ -142,7 +145,7 @@ impl Meroctl {
     async fn run_cmd(&self, node_name: &str, args: &[&str]) -> EyreResult<serde_json::Value> {
         let mut root_args = vec![
             "--home",
-            self.nodes_dir.as_str(),
+            self.home_dir.as_str(),
             "--node-name",
             node_name,
             "--output-format",
@@ -171,9 +174,8 @@ impl Meroctl {
         mut json: serde_json::Value,
         key: &str,
     ) -> EyreResult<serde_json::Value> {
-        let json = match json.as_object_mut() {
-            Some(json) => json,
-            None => bail!("'{}' is not a JSON object", json),
+        let Some(json) = json.as_object_mut() else {
+            bail!("'{}' is not a JSON object", json)
         };
 
         json.remove(key)
@@ -181,9 +183,8 @@ impl Meroctl {
     }
 
     fn get_string_from_object(&self, json: &serde_json::Value, key: &str) -> EyreResult<String> {
-        let json = match json.as_object() {
-            Some(json) => json,
-            None => bail!("'{}' is not a JSON object", json),
+        let Some(json) = json.as_object() else {
+            bail!("'{}' is not a JSON object", json)
         };
 
         let json = json

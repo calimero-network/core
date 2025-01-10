@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use core::cell::RefCell;
 use std::process::Stdio;
 
 use camino::Utf8PathBuf;
@@ -8,26 +8,31 @@ use tokio::io::copy;
 use tokio::process::{Child, Command};
 
 use crate::output::OutputWriter;
-use crate::TestEnvironment;
 
 pub struct Merod {
     pub name: String,
     process: RefCell<Option<Child>>,
-    nodes_dir: Utf8PathBuf,
+    home_dir: Utf8PathBuf,
     log_dir: Utf8PathBuf,
     binary: Utf8PathBuf,
     output_writer: OutputWriter,
 }
 
 impl Merod {
-    pub fn new(name: String, environment: &TestEnvironment) -> Self {
+    pub fn new(
+        name: String,
+        home_dir: Utf8PathBuf,
+        logs_dir: &Utf8PathBuf,
+        binary: Utf8PathBuf,
+        output_writer: OutputWriter,
+    ) -> Self {
         Self {
             process: RefCell::new(None),
-            nodes_dir: environment.nodes_dir.clone(),
-            log_dir: environment.logs_dir.join(&name),
-            binary: environment.merod_binary.clone(),
+            home_dir,
+            log_dir: logs_dir.join(&name),
+            binary,
             name,
-            output_writer: environment.output_writer,
+            output_writer,
         }
     }
 
@@ -38,7 +43,7 @@ impl Merod {
         server_port: u32,
         args: &[&str],
     ) -> EyreResult<()> {
-        create_dir_all(&self.nodes_dir.join(&self.name)).await?;
+        create_dir_all(&self.home_dir.join(&self.name)).await?;
         create_dir_all(&self.log_dir).await?;
 
         let mut child = self
@@ -96,7 +101,7 @@ impl Merod {
     }
 
     async fn run_cmd(&self, args: &[&str], log_suffix: &str) -> EyreResult<Child> {
-        let mut root_args = vec!["--home", self.nodes_dir.as_str(), "--node-name", &self.name];
+        let mut root_args = vec!["--home", self.home_dir.as_str(), "--node-name", &self.name];
 
         root_args.extend(args);
 
@@ -105,7 +110,7 @@ impl Merod {
         self.output_writer
             .write_string(format!("Command: '{:} {:}'", &self.binary, args_str));
 
-        let log_file = self.log_dir.join(format!("{}.log", log_suffix));
+        let log_file = self.log_dir.join(format!("{log_suffix}.log"));
         let mut log_file = File::create(&log_file).await?;
         let mut child = Command::new(&self.binary)
             .args(root_args)
@@ -115,7 +120,7 @@ impl Merod {
         if let Some(mut stdout) = child.stdout.take() {
             drop(tokio::spawn(async move {
                 if let Err(err) = copy(&mut stdout, &mut log_file).await {
-                    eprintln!("Error copying stdout: {:?}", err);
+                    eprintln!("Error copying stdout: {err:?}");
                 }
             }));
         }
