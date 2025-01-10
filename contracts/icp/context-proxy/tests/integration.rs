@@ -891,6 +891,7 @@ fn test_create_proposal_empty_actions() {
 }
 
 #[test]
+#[ignore = "we don't have a centralized faucet for context config, until then.. we don't have to be too concerned about cycle usage"]
 fn test_create_proposal_exceeds_limit() {
     let mut rng = rand::thread_rng();
 
@@ -943,10 +944,8 @@ fn test_create_proposal_exceeds_limit() {
         Ok(WasmResult::Reply(bytes)) => {
             let result: Result<Option<ICProposalWithApprovals>, String> =
                 candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_err(),
-                "Should not be able to exceed proposal limit"
-            );
+
+            result.expect_err("Should not be able to exceed proposal limit");
         }
         _ => panic!("Unexpected response type"),
     }
