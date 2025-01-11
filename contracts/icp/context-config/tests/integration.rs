@@ -15,22 +15,30 @@ fn setup() -> (PocketIc, Principal) {
     let wasm = std::fs::read("res/calimero_context_config_icp.wasm").expect("failed to read wasm");
     let canister = pic.create_canister();
     pic.add_cycles(canister, 1_000_000_000_000_000);
+    
+    // Create ledger principal first
+    let ledger_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap();
+    
+    // Properly encode the init argument
+    let init_arg = candid::encode_one(ledger_id).unwrap();
+    
+    // Install with proper init argument
     pic.install_canister(
         canister,
         wasm,
-        vec![],
-        None, // No controller
+        init_arg,  // Pass the encoded argument
+        None,
     );
 
     // Set the proxy code
     let proxy_code = std::fs::read("../context-proxy/res/calimero_context_proxy_icp.wasm")
         .expect("failed to read proxy wasm");
-    let ledger_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap();
+    
     pic.update_call(
         canister,
         Principal::anonymous(),
         "set_proxy_code",
-        candid::encode_args((proxy_code, ledger_id)).unwrap(),
+        candid::encode_one(proxy_code).unwrap(),
     )
     .expect("Failed to set proxy code");
 
