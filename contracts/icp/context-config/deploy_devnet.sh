@@ -151,20 +151,12 @@ if [ ! -f "$WASM_FILE" ]; then
     exit 1
 fi
 
-# Then modify the script to use a consistent reading method
-WASM_CONTENTS=$(xxd -p "$WASM_FILE" | tr -d '\n' | sed 's/\(..\)/\\\1/g')
-
-TEMP_CMD=$(mktemp)
-echo "(
-  blob \"${WASM_CONTENTS}\",
-  principal \"${LEDGER_ID}\"
-)" > "$TEMP_CMD"
-
-# Execute the command using the temporary file
-dfx canister call context_contract set_proxy_code --argument-file "$TEMP_CMD"
-
-# Clean up
-rm "$TEMP_CMD"
+dfx canister call context_contract set_proxy_code --type raw --argument-file <(
+    (
+        xxd -r -p <<<'4449 444c 016d 7b01 00d2 d234' # raw blob header
+        < $WASM_FILE
+    ) | xxd -c0 -p | head -c-1
+)
 
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="

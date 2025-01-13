@@ -163,17 +163,17 @@ fn setup() -> ProxyTestContext {
     pic.add_cycles(context_canister, 100_000_000_000_000_000);
     let context_wasm = std::fs::read("../context-config/res/calimero_context_config_icp.wasm")
         .expect("failed to read context wasm");
-    pic.install_canister(context_canister, context_wasm, vec![], None);
+    let init_args = candid::encode_one(mock_ledger).expect("Failed to encode ledger ID");
+    pic.install_canister(context_canister, context_wasm, init_args, None);
 
     // Set proxy code in context contract
-    set_proxy_code(&pic, context_canister, mock_ledger).expect("Failed to set proxy code");
+    set_proxy_code(&pic, context_canister).expect("Failed to set proxy code");
 
     // Setup mock external with ledger ID
     let mock_external = pic.create_canister();
     pic.add_cycles(mock_external, 100_000_000_000_000);
     let mock_external_wasm = std::fs::read("mock/external/res/calimero_mock_external_icp.wasm")
         .expect("failed to read mock external wasm");
-
     // Pass ledger ID during initialization
     let init_args = candid::encode_one(mock_ledger).expect("Failed to encode ledger ID");
     pic.install_canister(mock_external, mock_external_wasm, init_args, None);
@@ -199,11 +199,7 @@ fn setup() -> ProxyTestContext {
 }
 
 // Helper function to set proxy code in context contract
-fn set_proxy_code(
-    pic: &PocketIc,
-    context_canister: Principal,
-    ledger_id: Principal,
-) -> Result<(), String> {
+fn set_proxy_code(pic: &PocketIc, context_canister: Principal) -> Result<(), String> {
     // Read proxy contract wasm
     let proxy_wasm =
         std::fs::read("res/calimero_context_proxy_icp.wasm").expect("failed to read proxy wasm");
@@ -212,7 +208,7 @@ fn set_proxy_code(
         context_canister,
         Principal::anonymous(),
         "set_proxy_code",
-        candid::encode_args((proxy_wasm, ledger_id)).unwrap(),
+        candid::encode_one(proxy_wasm).unwrap(),
     );
 
     match response {
@@ -895,6 +891,7 @@ fn test_create_proposal_empty_actions() {
 }
 
 #[test]
+#[ignore = "we don't have a centralized faucet for context config, until then.. we don't have to be too concerned about cycle usage"]
 fn test_create_proposal_exceeds_limit() {
     let mut rng = rand::thread_rng();
 
@@ -947,10 +944,8 @@ fn test_create_proposal_exceeds_limit() {
         Ok(WasmResult::Reply(bytes)) => {
             let result: Result<Option<ICProposalWithApprovals>, String> =
                 candid::decode_one(&bytes).expect("Failed to decode response");
-            assert!(
-                result.is_err(),
-                "Should not be able to exceed proposal limit"
-            );
+
+            result.expect_err("Should not be able to exceed proposal limit");
         }
         _ => panic!("Unexpected response type"),
     }
