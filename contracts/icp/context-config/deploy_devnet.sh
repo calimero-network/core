@@ -159,16 +159,12 @@ fi
 # Then modify the script to use a consistent reading method
 WASM_CONTENTS=$(xxd -p "$WASM_FILE" | tr -d '\n' | sed 's/\(..\)/\\\1/g')
 
-TEMP_CMD=$(mktemp)
-echo "(
-  blob \"${WASM_CONTENTS}\"
-)" > "$TEMP_CMD"
-
 # Execute the command using the temporary file
-dfx canister call context_contract set_proxy_code --argument-file "$TEMP_CMD"
-
-# Clean up
-rm "$TEMP_CMD"
+dfx canister call context_contract set_proxy_code --argument-file <(
+  echo "(
+    blob \"${WASM_CONTENTS}\"
+  )"
+)
 
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="
