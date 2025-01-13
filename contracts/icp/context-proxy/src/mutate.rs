@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::ICSigned;
 use calimero_context_config::icp::{
@@ -101,6 +99,7 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                         0_u128,                                                     // amount (0)
                         None::<Timestamp>, // expected_allowance
                         None::<Timestamp>, // expires_at
+                        None::<Tokens>,    // fee
                         None::<Memo>,      // memo
                         None::<Timestamp>, // created_at_time
                     );
@@ -119,6 +118,7 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                         deposit as u128,                                            // amount
                         None::<Timestamp>, // expected_allowance
                         None::<Timestamp>, // expires_at
+                        None::<Tokens>,    // fee
                         None::<Memo>,      // memo
                         None::<Timestamp>, // created_at_time
                     );
@@ -148,6 +148,7 @@ async fn execute_proposal(proposal_id: &ProposalId) -> Result<(), String> {
                         0_u128,                                                     // amount (0)
                         None::<Timestamp>, // expected_allowance
                         None::<Timestamp>, // expires_at
+                        None::<Tokens>,    // fee
                         None::<Memo>,      // memo
                         None::<Timestamp>, // created_at_time
                     );
@@ -237,7 +238,7 @@ async fn internal_create_proposal(
         }
     }
 
-    with_state_mut(|contract| {
+    let (proposal_id, author_id) = with_state_mut(|contract| {
         let num_proposals = contract
             .num_proposals_pk
             .get(&proposal.author_id)
@@ -261,15 +262,14 @@ async fn internal_create_proposal(
         let author_id = proposal.author_id;
         contract.proposals.insert(proposal_id, proposal);
 
-        // Initialize approvals set with author's approval
-        let approvals = BTreeSet::from([author_id]);
-        contract.approvals.insert(proposal_id, approvals);
+        Ok((proposal_id, author_id))
+    })?;
 
-        // Update proposal count
-        *contract.num_proposals_pk.entry(author_id).or_insert(0) += 1;
-
-        build_proposal_response(&*contract, proposal_id)
+    internal_approve_proposal(ICProposalApprovalWithSigner {
+        proposal_id,
+        signer_id: author_id,
     })
+    .await
 }
 
 fn validate_proposal_action(action: &ICProposalAction) -> Result<(), String> {

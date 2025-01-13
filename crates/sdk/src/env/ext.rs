@@ -29,9 +29,6 @@ pub enum ProposalAction {
 
         /// The amount of tokens to attach to the call.
         deposit: u128,
-
-        /// The maximum amount of gas to use for the call.
-        gas: u64,
     },
 
     /// Transfer tokens to an account.
@@ -116,14 +113,12 @@ impl DraftProposal {
         method_name: String,
         args: String,
         deposit: u128,
-        gas: u64,
     ) -> Self {
         self.actions.push(ProposalAction::ExternalFunctionCall {
             receiver_id: AccountId(receiver_id),
             method_name,
             args,
             deposit,
-            gas,
         });
         self
     }
