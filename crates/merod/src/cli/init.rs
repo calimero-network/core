@@ -281,8 +281,9 @@ impl InitCommand {
                     starknet: ClientNew {
                         network: "sepolia".into(),
                         protocol: "starknet".into(),
-                        contract_id: "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
-                            .parse()?,
+                        contract_id:
+                            "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
+                                .parse()?,
                         signer: "relayer".into(),
                     },
                     icp: ClientNew {
