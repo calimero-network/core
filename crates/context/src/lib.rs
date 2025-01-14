@@ -152,6 +152,7 @@ impl ContextManager {
         identity_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
+        protocol: String,
     ) -> EyreResult<()> {
         let (context_secret, identity_secret) = {
             let mut rng = rand::thread_rng();
@@ -183,13 +184,21 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
+        // Determine which protocol config to use based on the provided protocol
+        let config = match protocol.as_str() {
+            "near" => self.client_config.near.clone(),
+            "starknet" => self.client_config.starknet.clone(),
+            "icp" => self.client_config.icp.clone(),
+            p => bail!("Unsupported protocol: {}", p),
+        };
+
         self.add_context(
             &context,
             identity_secret,
             Some(ContextConfigParams {
-                protocol: self.client_config.new.protocol.as_str().into(),
-                network_id: self.client_config.new.network.as_str().into(),
-                contract_id: self.client_config.new.contract_id.as_str().into(),
+                protocol: config.protocol.as_str().into(),
+                network_id: config.network.as_str().into(),
+                contract_id: config.contract_id.as_str().into(),
                 proxy_contract: "".into(),
                 application_revision: 0,
                 members_revision: 0,
@@ -219,9 +228,9 @@ impl ContextManager {
 
             this.config_client
                 .mutate::<ContextConfigEnv>(
-                    this.client_config.new.protocol.as_str().into(),
-                    this.client_config.new.network.as_str().into(),
-                    this.client_config.new.contract_id.as_str().into(),
+                    config.protocol.as_str().into(),
+                    config.network.as_str().into(),
+                    config.contract_id.as_str().into(),
                 )
                 .add_context(
                     context.id.rt().expect("infallible conversion"),
@@ -243,9 +252,9 @@ impl ContextManager {
             let proxy_contract = this
                 .config_client
                 .query::<ContextConfigEnv>(
-                    this.client_config.new.protocol.as_str().into(),
-                    this.client_config.new.network.as_str().into(),
-                    this.client_config.new.contract_id.as_str().into(),
+                    config.protocol.as_str().into(),
+                    config.network.as_str().into(),
+                    config.contract_id.as_str().into(),
                 )
                 .get_proxy_contract(context.id.rt().expect("infallible conversion"))
                 .await?;

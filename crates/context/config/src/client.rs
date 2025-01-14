@@ -22,7 +22,7 @@ pub type LocalTransports = Both<
     Both<starknet::StarknetTransport<'static>, icp::IcpTransport<'static>>,
 >;
 
-pub type AnyTransport = Either<relayer::RelayerTransport, LocalTransports>;
+pub type AnyTransport = Both<LocalTransports, relayer::RelayerTransport>;
 
 #[derive(Clone, Debug)]
 pub struct Client<T> {
@@ -38,18 +38,20 @@ impl<T: Transport> Client<T> {
 impl Client<AnyTransport> {
     #[must_use]
     pub fn from_config(config: &ClientConfig) -> Self {
-        let transport = match config.signer.selected {
-            ClientSelectedSigner::Relayer => {
-                Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
-                    url: config.signer.relayer.url.clone(),
-                }))
-            }
-            ClientSelectedSigner::Local => {
-                let local_client =
-                    Self::from_local_config(&config.signer.local).expect("validation error");
+        // Initialize relayer transport
+        let relayer = relayer::RelayerTransport::new(&relayer::RelayerConfig {
+            url: config.signer.relayer.url.clone(),
+        });
 
-                Either::Right(local_client.transport)
-            }
+        // Initialize local transport
+        let local = Self::from_local_config(&config.signer.local)
+            .expect("validation error")
+            .transport;
+
+        // Create Both structure containing both transports
+        let transport = Both {
+            left: local,
+            right: relayer,
         };
 
         Self::new(transport)

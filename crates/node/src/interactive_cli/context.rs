@@ -31,6 +31,9 @@ enum Commands {
         /// The seed for the context (to derive a deterministic context ID)
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
+        /// The protocol to use for the context
+        #[clap(long = "protocol")]
+        protocol: String,
     },
     /// Invite a user to a context
     Invite {
@@ -129,6 +132,7 @@ impl ContextCommand {
                 application_id,
                 params,
                 context_seed,
+                protocol,
             } => {
                 let (tx, rx) = oneshot::channel();
 
@@ -142,6 +146,7 @@ impl ContextCommand {
                         .transpose()?
                         .unwrap_or_default(),
                     tx,
+                    protocol,
                 )?;
 
                 let _ignored = tokio::spawn(async move {

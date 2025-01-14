@@ -46,16 +46,6 @@ pub enum ConfigProtocol {
     Icp,
 }
 
-impl ConfigProtocol {
-    pub fn as_str(&self) -> &str {
-        match self {
-            ConfigProtocol::Near => "near",
-            ConfigProtocol::Starknet => "starknet",
-            ConfigProtocol::Icp => "icp",
-        }
-    }
-}
-
 /// Initialize node configuration
 #[derive(Debug, Parser)]
 pub struct InitCommand {
@@ -223,11 +213,6 @@ impl InitCommand {
             ContextConfig {
                 client: ClientConfig {
                     signer: ClientSigner {
-                        selected: match self.protocol {
-                            ConfigProtocol::Near => ClientSelectedSigner::Relayer,
-                            ConfigProtocol::Starknet => ClientSelectedSigner::Relayer,
-                            ConfigProtocol::Icp => ClientSelectedSigner::Local,
-                        },
                         relayer: ClientRelayerSigner { url: relayer },
                         local: LocalConfig {
                             near: [
@@ -287,21 +272,24 @@ impl InitCommand {
                             .collect(),
                         },
                     },
-                    new: ClientNew {
-                        network: match self.protocol {
-                            ConfigProtocol::Near => "testnet".into(),
-                            ConfigProtocol::Starknet => "sepolia".into(),
-                            ConfigProtocol::Icp => "local".into(),
-                        },
-                        protocol: self.protocol.as_str().to_owned(),
-                        contract_id: match self.protocol {
-                            ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
-                            ConfigProtocol::Starknet => {
-                                "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
-                                    .parse()?
-                            }
-                            ConfigProtocol::Icp => "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
-                        },
+                    near: ClientNew {
+                        network: "testnet".into(),
+                        protocol: "near".into(),
+                        contract_id: "calimero-context-config.testnet".parse()?,
+                        signer: "relayer".into(),
+                    },
+                    starknet: ClientNew {
+                        network: "sepolia".into(),
+                        protocol: "starknet".into(),
+                        contract_id: "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
+                            .parse()?,
+                        signer: "relayer".into(),
+                    },
+                    icp: ClientNew {
+                        network: "local".into(),
+                        protocol: "icp".into(),
+                        contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
+                        signer: "self".into(),
                     },
                 },
             },

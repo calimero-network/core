@@ -167,6 +167,7 @@ pub async fn create_context(
         application_id,
         context_seed,
         params.map(String::into_bytes).unwrap_or_default(),
+        environment.args.protocol.clone(),
     );
 
     let response: CreateContextResponse =

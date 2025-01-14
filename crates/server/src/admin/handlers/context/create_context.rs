@@ -22,6 +22,7 @@ pub async fn handler(
             None,
             req.initialization_params,
             tx,
+            req.protocol,
         )
         .map_err(parse_api_error);
 

@@ -10,7 +10,9 @@ use crate::client::protocol::starknet::Credentials as StarknetCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
-    pub new: ClientNew,
+    pub near: ClientNew,
+    pub starknet: ClientNew,
+    pub icp: ClientNew,
     pub signer: ClientSigner,
 }
 
@@ -19,6 +21,7 @@ pub struct ClientNew {
     pub protocol: String,
     pub network: String,
     pub contract_id: String,
+    pub signer: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -30,8 +33,6 @@ pub struct LocalConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientSigner {
-    #[serde(rename = "use")]
-    pub selected: ClientSelectedSigner,
     pub relayer: ClientRelayerSigner,
     #[serde(rename = "self")]
     pub local: LocalConfig,

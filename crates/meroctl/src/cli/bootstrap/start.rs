@@ -61,6 +61,7 @@ impl StartBootstrapCommand {
                 nodes_dir.clone(),
                 node1_name.to_owned(),
                 crate::output::Format::Json,
+                environment.args.protocol.clone(),
             ),
             Output::new(crate::output::Format::Json),
         );
@@ -88,6 +89,7 @@ impl StartBootstrapCommand {
                 nodes_dir.clone(),
                 node2_name.to_owned(),
                 crate::output::Format::Json,
+                environment.args.protocol.clone(),
             ),
             Output::new(crate::output::Format::Json),
         );

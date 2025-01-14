@@ -152,6 +152,7 @@ pub struct CreateContextRequest {
     pub application_id: ApplicationId,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
+    pub protocol: String,
 }
 
 impl CreateContextRequest {
@@ -159,11 +160,13 @@ impl CreateContextRequest {
         application_id: ApplicationId,
         context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
+        protocol: String,
     ) -> Self {
         Self {
             application_id,
             context_seed,
             initialization_params,
+            protocol,
         }
     }
 }
