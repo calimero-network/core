@@ -103,7 +103,7 @@ impl ContextManager {
         for key in iter.keys() {
             let key = key?;
 
-            let _ = self
+            let _ignored = self
                 .state
                 .write()
                 .await
@@ -383,7 +383,7 @@ impl ContextManager {
         self.add_context(&context, identity_secret, config)?;
         self.subscribe(&context.id).await?;
 
-        let _ = self.state.write().await.pending_catchup.insert(context_id);
+        let _ignored = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
 
@@ -957,8 +957,7 @@ impl ContextManager {
             .await?
             .ok_or_eyre("Not a member")?;
 
-        let _ = self
-            .config_client
+        self.config_client
             .mutate::<ContextConfigEnv>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
@@ -980,6 +979,52 @@ impl ContextManager {
         context_meta.application = ApplicationMetaKey::new(application_id);
 
         handle.put(&key, &context_meta)?;
+
+        Ok(())
+    }
+
+    pub async fn update_context_proxy(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<()> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("context not found");
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(signing_key),
+            ..
+        }) = handle.get(&ContextIdentityKey::new(context_id, public_key))?
+        else {
+            bail!("no private key found for signer");
+        };
+
+        let nonce = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .fetch_nonce(
+                context_id.rt().expect("infallible conversion"),
+                public_key.rt().expect("infallible conversion"),
+            )
+            .await?
+            .ok_or_eyre("The inviter doesen't exist")?;
+
+        self.config_client
+            .mutate::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .update_proxy_contract(context_id.rt().expect("infallible conversion"))
+            .send(signing_key, nonce)
+            .await?;
 
         Ok(())
     }
@@ -1207,7 +1252,7 @@ impl ContextManager {
             bail!("No private key found for signer");
         };
 
-        let _ = self
+        let _ignored = self
             .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
@@ -1245,7 +1290,7 @@ impl ContextManager {
             bail!("No private key found for signer");
         };
 
-        let _ = self
+        let _ignored = self
             .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
@@ -1428,7 +1473,7 @@ impl ContextManager {
             bail!("Context not found");
         };
 
-        let proxy_contract = context_config.proxy_contract.as_ref().into();
+        let proxy_contract = context_config.proxy_contract.into();
 
         Ok(proxy_contract)
     }

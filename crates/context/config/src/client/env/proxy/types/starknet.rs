@@ -287,30 +287,11 @@ impl From<Vec<ProposalAction>> for StarknetProposalActionWithArgs {
                 // Parse the JSON string into a Value first
                 let args_value: serde_json::Value =
                     serde_json::from_str(&args).expect("Invalid JSON arguments");
-                // Convert JSON values to Starknet-compatible felt arguments
-                let felt_args = match args_value {
-                    serde_json::Value::Object(map) => {
-                        // For objects, serialize each value to a felt
-                        map.into_iter()
-                            .map(|(_, value)| {
-                                Felt::from_bytes_be_slice(value.to_string().as_bytes())
-                            })
-                            .collect()
-                    }
-                    serde_json::Value::Array(arr) => {
-                        // For arrays, convert each element
-                        arr.into_iter()
-                            .map(|value| Felt::from_bytes_be_slice(value.to_string().as_bytes()))
-                            .collect()
-                    }
-                    // Explicitly match all other variants
-                    value @ (serde_json::Value::Null
-                    | serde_json::Value::Bool(_)
-                    | serde_json::Value::Number(_)
-                    | serde_json::Value::String(_)) => {
-                        vec![Felt::from_bytes_be_slice(value.to_string().as_bytes())]
-                    }
-                };
+
+                let mut felt_args = Vec::new();
+                ValueCodec(&args_value)
+                    .encode(&mut felt_args)
+                    .expect("Failed to encode arguments");
 
                 StarknetProposalActionWithArgs::ExternalFunctionCall(
                     Felt::from_bytes_be_slice(receiver_id.as_bytes()),
@@ -356,8 +337,8 @@ impl From<StarknetProposalActionWithArgs> for ProposalAction {
                 amount,
                 calldata,
             ) => ProposalAction::ExternalFunctionCall {
-                receiver_id: format!("0x{}", hex::encode(contract.to_bytes_be())),
-                method_name: format!("0x{}", hex::encode(selector.to_bytes_be())),
+                receiver_id: contract.to_string(),
+                method_name: selector.to_string(),
                 args: calldata
                     .iter()
                     .map(|felt| format!("0x{}", hex::encode(felt.to_bytes_be())))
@@ -535,5 +516,76 @@ impl From<(Vec<Felt>, Vec<Felt>)> for ContextStorageEntry {
             .collect();
 
         ContextStorageEntry { key, value }
+    }
+}
+
+struct ValueCodec<'a>(&'a serde_json::Value);
+
+impl<'a> ValueCodec<'a> {
+    fn encode_string<W: FeltWriter>(s: &str, writer: &mut W) -> Result<(), Error> {
+        if s.starts_with("0x") {
+            // Attempt to handle hex string directly as a single Felt
+            if let Ok(felt) = Felt::from_hex(s) {
+                writer.write(felt);
+                return Ok(());
+            }
+        }
+        // Regular string - split into chunks
+        let chunk_size = 31;
+        let bytes = s.as_bytes();
+
+        // Write number of chunks first
+        #[allow(clippy::integer_division, reason = "Not harmful here")]
+        writer.write(Felt::from(bytes.len() / chunk_size));
+
+        // Write each chunk as a Felt
+        for chunk in bytes.chunks(chunk_size) {
+            writer.write(Felt::from_bytes_be_slice(chunk));
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Encode for ValueCodec<'a> {
+    fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
+        match self.0 {
+            serde_json::Value::String(s) => Self::encode_string(s, writer),
+            serde_json::Value::Object(obj) => {
+                writer.write(Felt::from(obj.len()));
+                for (key, value) in obj {
+                    Self::encode_string(key, writer)?;
+                    ValueCodec(value).encode(writer)?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Bool(b) => {
+                writer.write(Felt::from(*b as u64));
+                Ok(())
+            }
+            serde_json::Value::Number(n) => {
+                if let Some(n) = n.as_u64() {
+                    writer.write(Felt::from(n));
+                } else if let Some(n) = n.as_i64() {
+                    writer.write(Felt::from(n));
+                } else {
+                    return Err(Error::custom(&"Unsupported number type"));
+                }
+                Ok(())
+            }
+            serde_json::Value::Array(arr) => {
+                // Write array length first
+                writer.write(Felt::from(arr.len()));
+
+                // Encode each array element
+                for item in arr {
+                    ValueCodec(item).encode(writer)?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Null => {
+                writer.write(Felt::ZERO);
+                Ok(())
+            }
+        }
     }
 }
