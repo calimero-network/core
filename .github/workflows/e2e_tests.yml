@@ -125,7 +125,6 @@ jobs:
           file-path: ./e2e-tests/corpus/report.md
           pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
           comment-tag: e2e-tests-report
-          mode: recreate
 
       - name: Upload artifacts
         if: success() || failure()
