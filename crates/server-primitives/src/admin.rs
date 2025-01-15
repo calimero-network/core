@@ -149,24 +149,24 @@ impl GetApplicationResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
+    pub protocol: String,
     pub application_id: ApplicationId,
     pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
-    pub protocol: String,
 }
 
 impl CreateContextRequest {
     pub const fn new(
+        protocol: String,
         application_id: ApplicationId,
         context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
-        protocol: String,
     ) -> Self {
         Self {
+            protocol,
             application_id,
             context_seed,
             initialization_params,
-            protocol,
         }
     }
 }

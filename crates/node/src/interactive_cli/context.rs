@@ -32,7 +32,7 @@ enum Commands {
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
         /// The protocol to use for the context
-        #[clap(long = "protocol")]
+        #[clap(long)]
         protocol: String,
     },
     /// Invite a user to a context

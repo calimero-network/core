@@ -71,9 +71,6 @@ pub struct RootArgs {
 
     #[arg(long, value_name = "FORMAT", default_value_t, value_enum)]
     pub output_format: Format,
-
-    #[arg(long, value_name = "PROTOCOL")]
-    pub protocol: String,
 }
 
 impl RootArgs {
@@ -81,13 +78,11 @@ impl RootArgs {
         home: Utf8PathBuf,
         node_name: String,
         output_format: Format,
-        protocol: String,
     ) -> Self {
         Self {
             home,
             node_name,
             output_format,
-            protocol,
         }
     }
 }

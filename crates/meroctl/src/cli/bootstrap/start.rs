@@ -29,6 +29,8 @@ pub struct StartBootstrapCommand {
     pub merod_path: Utf8PathBuf,
     #[clap(long, help = "Path to the app wasm file")]
     pub app_path: Option<Utf8PathBuf>,
+    #[clap(long, help = "Protocol to use for the bootstrap")]
+    pub protocol: String,
 }
 
 impl StartBootstrapCommand {
@@ -53,6 +55,10 @@ impl StartBootstrapCommand {
             }
         }
 
+        if self.protocol.is_empty() {
+            bail!("Protocol is required for this operation");
+        }
+
         let node1_log_dir: Utf8PathBuf = "output/node_1_output".into();
         let node1_name = "node1".to_owned();
         let node1_server_port: u32 = 2428;
@@ -61,9 +67,9 @@ impl StartBootstrapCommand {
                 nodes_dir.clone(),
                 node1_name.to_owned(),
                 crate::output::Format::Json,
-                environment.args.protocol.clone(),
             ),
             Output::new(crate::output::Format::Json),
+
         );
 
         let node1_process = self
@@ -79,7 +85,7 @@ impl StartBootstrapCommand {
 
         println!("Creating context in {:?}", node1_name);
         let (context_id, public_key, application_id) =
-            self.create_context_in_bootstrap(node1_environment).await?;
+            self.create_context_in_bootstrap(node1_environment, self.protocol.clone()).await?;
 
         let node2_name = "node2".to_owned();
         let node2_log_dir: Utf8PathBuf = "output/node_2_output".into();
@@ -89,7 +95,6 @@ impl StartBootstrapCommand {
                 nodes_dir.clone(),
                 node2_name.to_owned(),
                 crate::output::Format::Json,
-                environment.args.protocol.clone(),
             ),
             Output::new(crate::output::Format::Json),
         );
@@ -276,6 +281,7 @@ impl StartBootstrapCommand {
     pub async fn create_context_in_bootstrap(
         &self,
         environment: &Environment,
+        protocol: String,
     ) -> EyreResult<(ContextId, PublicKey, ApplicationId)> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let multiaddr = fetch_multiaddr(&config)?;
@@ -298,6 +304,7 @@ impl StartBootstrapCommand {
             application_id,
             None,
             &config.identity,
+            protocol,
         )
         .await?;
 
