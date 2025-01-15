@@ -355,7 +355,6 @@ export function useIcp(): useIcpReturn {
       // Wait for the II response and update the local state
       const responsePromise = new Promise<MessageEvent>((resolve, reject) => {
         const responseHandler = (e: MessageEvent) => {
-          console.log('responseHandler', e);
           if (e.origin === iiUrl.origin) {
             window.removeEventListener('message', responseHandler);
             win.close();
