@@ -2,7 +2,6 @@ use core::fmt::Write;
 use core::time::Duration;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::env;
 use std::path::PathBuf;
 
 use camino::Utf8PathBuf;
@@ -152,12 +151,9 @@ impl Driver {
                     self.environment.output_writer,
                 );
 
-                let swarm_host = env::var(&self.config.network.swarm_host_env)
-                    .unwrap_or_else(|_| "0.0.0.0".to_owned());
-
                 merod
                     .init(
-                        &swarm_host,
+                        &self.config.network.swarm_host,
                         self.config.network.start_swarm_port + i,
                         self.config.network.start_server_port + i,
                         &config_args,

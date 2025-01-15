@@ -15,7 +15,7 @@ pub struct Config {
 #[serde(rename_all = "camelCase")]
 pub struct Network {
     pub node_count: u32,
-    pub swarm_host_env: String,
+    pub swarm_host: String,
     pub start_swarm_port: u32,
     pub start_server_port: u32,
 }
