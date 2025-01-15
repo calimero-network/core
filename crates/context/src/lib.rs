@@ -148,14 +148,14 @@ impl ContextManager {
 
     pub fn create_context(
         &self,
+        protocol: &str,
         seed: Option<[u8; 32]>,
         application_id: ApplicationId,
         identity_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
-        protocol: String,
     ) -> EyreResult<()> {
-        let Some(config) = self.client_config.params.get(&protocol) else {
+        let Some(config) = self.client_config.params.get(protocol).cloned() else {
             eyre::bail!(
                 "unsupported protocol: {}, expected one of {}",
                 protocol,

@@ -137,6 +137,7 @@ impl ContextCommand {
                 let (tx, rx) = oneshot::channel();
 
                 node.ctx_manager.create_context(
+                    &protocol,
                     context_seed.map(Into::into),
                     application_id,
                     None,
@@ -146,7 +147,6 @@ impl ContextCommand {
                         .transpose()?
                         .unwrap_or_default(),
                     tx,
-                    protocol,
                 )?;
 
                 let _ignored = tokio::spawn(async move {

@@ -17,12 +17,12 @@ pub async fn handler(
     let result = state
         .ctx_manager
         .create_context(
+            &req.protocol,
             req.context_seed.map(Into::into),
             req.application_id,
             None,
             req.initialization_params,
             tx,
-            req.protocol,
         )
         .map_err(parse_api_error);
 
