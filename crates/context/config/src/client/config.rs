@@ -10,9 +10,9 @@ use crate::client::protocol::starknet::Credentials as StarknetCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
-    pub signer: ClientSigner,
     #[serde(flatten)]
     pub params: BTreeMap<String, ClientConfigParams>,
+    pub signer: ClientSigner,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

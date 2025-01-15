@@ -157,7 +157,7 @@ impl ContextManager {
     ) -> EyreResult<()> {
         let Some(config) = self.client_config.params.get(protocol).cloned() else {
             eyre::bail!(
-                "unsupported protocol: {}, expected one of {}",
+                "unsupported protocol: {}, expected one of `{}`",
                 protocol,
                 humanize_iter(self.client_config.params.keys())
             );
