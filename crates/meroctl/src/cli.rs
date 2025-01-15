@@ -74,11 +74,7 @@ pub struct RootArgs {
 }
 
 impl RootArgs {
-    pub const fn new(
-        home: Utf8PathBuf,
-        node_name: String,
-        output_format: Format,
-    ) -> Self {
+    pub const fn new(home: Utf8PathBuf, node_name: String, output_format: Format) -> Self {
         Self {
             home,
             node_name,

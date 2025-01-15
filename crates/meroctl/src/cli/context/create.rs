@@ -92,7 +92,8 @@ impl CreateCommand {
                 params,
                 protocol,
             } => {
-                let protocol = protocol.ok_or_else(|| eyre::eyre!("Protocol is required for this operation"))?;
+                let protocol = protocol
+                    .ok_or_else(|| eyre::eyre!("Protocol is required for this operation"))?;
                 let _ = create_context(
                     environment,
                     &client,
@@ -115,7 +116,8 @@ impl CreateCommand {
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
-                let protocol = protocol.ok_or_else(|| eyre::eyre!("Protocol is required for this operation"))?;
+                let protocol = protocol
+                    .ok_or_else(|| eyre::eyre!("Protocol is required for this operation"))?;
                 let application_id = install_app(
                     environment,
                     &client,

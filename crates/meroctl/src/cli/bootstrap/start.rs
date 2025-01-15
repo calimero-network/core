@@ -69,7 +69,6 @@ impl StartBootstrapCommand {
                 crate::output::Format::Json,
             ),
             Output::new(crate::output::Format::Json),
-
         );
 
         let node1_process = self
@@ -84,8 +83,9 @@ impl StartBootstrapCommand {
         processes.push(node1_process);
 
         println!("Creating context in {:?}", node1_name);
-        let (context_id, public_key, application_id) =
-            self.create_context_in_bootstrap(node1_environment, self.protocol.clone()).await?;
+        let (context_id, public_key, application_id) = self
+            .create_context_in_bootstrap(node1_environment, self.protocol.clone())
+            .await?;
 
         let node2_name = "node2".to_owned();
         let node2_log_dir: Utf8PathBuf = "output/node_2_output".into();
