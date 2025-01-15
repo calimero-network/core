@@ -108,7 +108,7 @@ impl Merod {
         let args_str = root_args.join(" ");
 
         self.output_writer
-            .write_string(format!("Command: '{:} {:}'", &self.binary, args_str));
+            .write_str(&format!("Command: '{:} {:}'", &self.binary, args_str));
 
         let log_file = self.log_dir.join(format!("{log_suffix}.log"));
         let mut log_file = File::create(&log_file).await?;

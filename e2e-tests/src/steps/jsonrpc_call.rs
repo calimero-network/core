@@ -80,7 +80,7 @@ impl Test for CallStep {
             }
 
             ctx.output_writer
-                .write_string(format!("Report: Call on '{node}' node passed assertion"));
+                .write_str(&format!("Report: Call on '{node}' node passed assertion"));
         }
 
         Ok(())

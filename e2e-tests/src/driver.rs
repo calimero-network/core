@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use camino::Utf8PathBuf;
 use eyre::{bail, OptionExt, Result as EyreResult};
-use rand::seq::SliceRandom;
+use rand::seq::IteratorRandom;
 use serde_json::from_slice;
 use tokio::fs::{read, read_dir, write};
 use tokio::time::sleep;
@@ -112,16 +112,14 @@ impl Driver {
             self.environment
                 .output_writer
                 .write_str("Error occurred during test run:");
-            self.environment.output_writer.write_string(e.to_string());
+            self.environment.output_writer.write_str(&e.to_string());
         }
 
-        let report_file = report
-            .store_to_file(self.environment.output_dir.clone())
-            .await?;
+        let report_file = report.store_to_file(&self.environment.output_dir).await?;
 
         self.environment
             .output_writer
-            .write_string(format!("Report file: {report_file:?}"));
+            .write_str(&format!("Report file: {:?}", report_file));
 
         report.result()
     }
@@ -147,7 +145,7 @@ impl Driver {
                 config_args.extend(args.iter().map(|arg| &**arg));
 
                 let merod = Merod::new(
-                    node_name.clone(),
+                    node_name,
                     self.environment.nodes_dir.join(sandbox.name()),
                     &self.environment.logs_dir.join(sandbox.name()),
                     self.environment.merod_binary.clone(),
@@ -246,10 +244,10 @@ impl Driver {
 
         self.environment
             .output_writer
-            .write_string(format!("Source file: {file_path:?}"));
+            .write_str(&format!("Source file: {file_path:?}"));
         self.environment
             .output_writer
-            .write_string(format!("Steps count: {}", scenario.steps.len()));
+            .write_str(&format!("Steps count: {}", scenario.steps.len()));
 
         let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
             bail!("Not enough nodes to run the test")
@@ -257,10 +255,10 @@ impl Driver {
 
         self.environment
             .output_writer
-            .write_string(format!("Picked inviter: {inviter}"));
+            .write_str(&format!("Picked inviter: {inviter}"));
         self.environment
             .output_writer
-            .write_string(format!("Picked invitees: {invitees:?}"));
+            .write_str(&format!("Picked invitees: {invitees:?}"));
 
         let mut ctx =
             TestContext::new(inviter, invitees, &mero.ctl, self.environment.output_writer);
@@ -289,7 +287,7 @@ impl Driver {
                 scenario_failed = true;
                 self.environment
                     .output_writer
-                    .write_string(format!("Error: {result:?}"));
+                    .write_str(&format!("Error: {result:?}"));
             }
 
             report.steps.push(TestStepReport {
@@ -302,12 +300,12 @@ impl Driver {
     }
 
     fn pick_inviter_node(&self, merods: &HashMap<String, Merod>) -> Option<(String, Vec<String>)> {
+        let mut rng = rand::thread_rng();
         let mut node_names: Vec<String> = merods.keys().cloned().collect();
-        if node_names.is_empty() {
+        let picked_node = node_names.iter().choose(&mut rng);
+        if picked_node.is_none() {
             None
         } else {
-            let mut rng = rand::thread_rng();
-            node_names.shuffle(&mut rng);
             let picked_node = node_names.remove(0);
             Some((picked_node, node_names))
         }
@@ -345,7 +343,7 @@ impl TestRunReport {
         }
     }
 
-    async fn store_to_file(&self, folder: Utf8PathBuf) -> EyreResult<Utf8PathBuf> {
+    async fn store_to_file(&self, folder: &Utf8PathBuf) -> EyreResult<Utf8PathBuf> {
         let markdown = self.to_markdown()?;
         let report_file = folder.join("report.md");
         write(&report_file, markdown).await?;

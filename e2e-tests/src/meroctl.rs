@@ -157,7 +157,7 @@ impl Meroctl {
         let args_str = root_args.join(" ");
 
         self.output_writer
-            .write_string(format!("Command: '{:} {:}'", &self.binary, args_str));
+            .write_str(&format!("Command: '{:} {:}'", &self.binary, args_str));
 
         let output = Command::new(&self.binary)
             .args(root_args)

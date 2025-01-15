@@ -68,7 +68,7 @@ impl Test for ContextInviteJoinStep {
             sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
-                .write_string(format!("Report: Node '{invitee}' joined the context"));
+                .write_str(&format!("Report: Node '{invitee}' joined the context"));
         }
 
         Ok(())

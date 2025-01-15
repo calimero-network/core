@@ -63,7 +63,7 @@ impl Test for ApplicationInstallStep {
         }
         ctx.application_id = Some(application_id);
 
-        ctx.output_writer.write_string(format!(
+        ctx.output_writer.write_str(&format!(
             "Report: Installed application on '{}' node",
             &ctx.inviter
         ));
