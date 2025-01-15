@@ -9,6 +9,7 @@ use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ClientConfig;
 use calimero_context_config::client::env::config::ContextConfig as ContextConfigEnv;
 use calimero_context_config::client::env::proxy::ContextProxy;
+use calimero_context_config::client::utils::humanize_iter;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
@@ -154,6 +155,14 @@ impl ContextManager {
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
         protocol: String,
     ) -> EyreResult<()> {
+        let Some(config) = self.client_config.params.get(&protocol) else {
+            eyre::bail!(
+                "unsupported protocol: {}, expected one of {}",
+                protocol,
+                humanize_iter(self.client_config.params.keys())
+            );
+        };
+
         let (context_secret, identity_secret) = {
             let mut rng = rand::thread_rng();
 
@@ -182,14 +191,6 @@ impl ContextManager {
 
         let Some(application) = self.get_application(&context.application_id)? else {
             bail!("Application is not installed on node.")
-        };
-
-        // Determine which protocol config to use based on the provided protocol
-        let config = match protocol.as_str() {
-            "near" => self.client_config.near.clone(),
-            "starknet" => self.client_config.starknet.clone(),
-            "icp" => self.client_config.icp.clone(),
-            p => bail!("Unsupported protocol: {}", p),
         };
 
         self.add_context(

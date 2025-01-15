@@ -8,7 +8,7 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ClientConfig, ClientLocalSigner, ClientNew, ClientRelayerSigner, ClientSelectedSigner,
+    ClientConfig, ClientConfigParams, ClientLocalSigner, ClientRelayerSigner, ClientSelectedSigner,
     ClientSigner, Credentials, LocalConfig,
 };
 use calimero_context_config::client::protocol::{
@@ -272,13 +272,13 @@ impl InitCommand {
                             .collect(),
                         },
                     },
-                    near: ClientNew {
+                    near: ClientConfigParams {
                         network: "testnet".into(),
                         protocol: "near".into(),
                         contract_id: "calimero-context-config.testnet".parse()?,
                         signer: "relayer".into(),
                     },
-                    starknet: ClientNew {
+                    starknet: ClientConfigParams {
                         network: "sepolia".into(),
                         protocol: "starknet".into(),
                         contract_id:
@@ -286,7 +286,7 @@ impl InitCommand {
                                 .parse()?,
                         signer: "relayer".into(),
                     },
-                    icp: ClientNew {
+                    icp: ClientConfigParams {
                         network: "local".into(),
                         protocol: "icp".into(),
                         contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
