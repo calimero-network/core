@@ -16,7 +16,7 @@ use near_workspaces::types::NearToken;
 use near_workspaces::Contract;
 use rand::Rng;
 use serde_json::json;
-use tokio::{fs, time};
+use tokio::fs;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
 enum Member {

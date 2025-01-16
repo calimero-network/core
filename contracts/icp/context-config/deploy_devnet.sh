@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 # Function to generate a new identity and return its principal
 generate_identity() {
@@ -80,9 +80,7 @@ RECIPIENT_PRINCIPAL=$(dfx identity get-principal)
 dfx identity use default
 
 # Start dfx with clean state
-dfx start --clean --background
-
-dfx identity use default
+dfx start --clean --background --host 127.0.0.1:"${ICP_PORT:-4943}"
 
 # Create initial identity if needed
 dfx identity new --storage-mode=plaintext minting || true
@@ -118,26 +116,31 @@ cd ../context-proxy
 cd ../context-config
 
 # Prepare ledger initialization argument
-LEDGER_INIT_ARG="(variant { Init = record { 
-    minting_account = \"${MINTING_ACCOUNT}\"; 
-    initial_values = vec { 
-        record { \"${INITIAL_ACCOUNT}\"; record { e8s = 100_000_000_000 } } 
-    }; 
-    send_whitelist = vec {}; 
-    transfer_fee = opt record { e8s = 10_000 }; 
-    token_symbol = opt \"LICP\"; 
-    token_name = opt \"Local Internet Computer Protocol Token\"; 
-    archive_options = opt record { 
-        trigger_threshold = 2000; 
-        num_blocks_to_archive = 1000; 
-        controller_id = principal \"${ARCHIVE_PRINCIPAL}\" 
-    }; 
+LEDGER_INIT_ARG="(variant { Init = record {
+    minting_account = \"${MINTING_ACCOUNT}\";
+    initial_values = vec {
+        record { \"${INITIAL_ACCOUNT}\"; record { e8s = 100_000_000_000 } }
+    };
+    send_whitelist = vec {};
+    transfer_fee = opt record { e8s = 10_000 };
+    token_symbol = opt \"LICP\";
+    token_name = opt \"Local Internet Computer Protocol Token\";
+    archive_options = opt record {
+        trigger_threshold = 2000;
+        num_blocks_to_archive = 1000;
+        controller_id = principal \"${ARCHIVE_PRINCIPAL}\"
+    };
 } })"
 
 # Build and install canisters
 dfx build
-dfx canister install context_contract --mode=install
+
+# First install the ledger canister
 dfx canister install ledger --mode=install --argument "$LEDGER_INIT_ARG"
+
+# Get the ledger ID and install context contract with it
+LEDGER_ID=$(dfx canister id ledger)
+dfx canister install context_contract --mode=install --argument "(principal \"${LEDGER_ID}\")"
 
 # Get the directory where the script is located
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -154,17 +157,12 @@ fi
 # Then modify the script to use a consistent reading method
 WASM_CONTENTS=$(xxd -p "$WASM_FILE" | tr -d '\n' | sed 's/\(..\)/\\\1/g')
 
-TEMP_CMD=$(mktemp)
-echo "(
-  blob \"${WASM_CONTENTS}\",
-  principal \"${LEDGER_ID}\"
-)" > "$TEMP_CMD"
-
 # Execute the command using the temporary file
-dfx canister call context_contract set_proxy_code --argument-file "$TEMP_CMD"
-
-# Clean up
-rm "$TEMP_CMD"
+dfx canister call context_contract set_proxy_code --argument-file <(
+  echo "(
+    blob \"${WASM_CONTENTS}\"
+  )"
+)
 
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="

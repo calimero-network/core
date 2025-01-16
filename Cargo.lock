@@ -2123,6 +2123,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio 1.41.1",
+ "url",
 ]
 
 [[package]]

@@ -7,21 +7,25 @@ use crate::driver::{Test, TestContext};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JsonRpcCallStep {
+pub struct CallStep {
     pub method_name: String,
     pub args_json: serde_json::Value,
     pub expected_result_json: Option<serde_json::Value>,
-    pub target: JsonRpcCallTarget,
+    pub target: CallTarget,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub enum JsonRpcCallTarget {
+pub enum CallTarget {
     Inviter,
     AllMembers,
 }
 
-impl Test for JsonRpcCallStep {
+impl Test for CallStep {
+    fn display_name(&self) -> String {
+        format!("call ({}, {:?})", self.method_name, self.target)
+    }
+
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let Some(ref context_id) = ctx.context_id else {
             bail!("Context ID is required for JsonRpcExecuteStep");
@@ -34,7 +38,7 @@ impl Test for JsonRpcCallStep {
             bail!("Inviter public key is required for JsonRpcExecuteStep");
         }
 
-        if let JsonRpcCallTarget::AllMembers = self.target {
+        if matches!(self.target, CallTarget::AllMembers) {
             for invitee in &ctx.invitees {
                 if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
                     drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
@@ -47,7 +51,7 @@ impl Test for JsonRpcCallStep {
             }
         }
 
-        for (node, public_key) in public_keys.iter() {
+        for (node, public_key) in &public_keys {
             let response = ctx
                 .meroctl
                 .json_rpc_execute(
@@ -76,7 +80,7 @@ impl Test for JsonRpcCallStep {
             }
 
             ctx.output_writer
-                .write_string(format!("Report: Call on '{}' node passed assertion", node));
+                .write_str(&format!("Report: Call on '{node}' node passed assertion"));
         }
 
         Ok(())
