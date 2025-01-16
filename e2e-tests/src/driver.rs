@@ -220,7 +220,7 @@ impl Driver {
                             .scenario_matrix
                             .entry(scenario_report.scenario_name.clone())
                             .or_default()
-                            .insert(protocol_name.to_string(), scenario_report),
+                            .insert(protocol_name.to_owned(), scenario_report),
                     );
                 }
             }
