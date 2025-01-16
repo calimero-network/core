@@ -43,7 +43,17 @@ impl Meroctl {
         protocol_name: &str,
     ) -> EyreResult<(String, String)> {
         let json = self
-            .run_cmd(node_name, ["context", "create", "-a", app_id, "--protocol", protocol_name])
+            .run_cmd(
+                node_name,
+                [
+                    "context",
+                    "create",
+                    "-a",
+                    app_id,
+                    "--protocol",
+                    protocol_name,
+                ],
+            )
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
