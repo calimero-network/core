@@ -1,4 +1,4 @@
-use std::time::Duration;
+use core::time::Duration;
 
 use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,10 @@ use crate::driver::{Test, TestContext};
 pub struct ContextInviteJoinStep;
 
 impl Test for ContextInviteJoinStep {
+    fn display_name(&self) -> String {
+        "ctx invite-join".to_owned()
+    }
+
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let Some(ref context_id) = ctx.context_id else {
             bail!("Context ID is required for InviteJoinContextStep");
@@ -20,7 +24,7 @@ impl Test for ContextInviteJoinStep {
             bail!("Inviter public key is required for InviteJoinContextStep");
         };
 
-        for invitee in ctx.invitees.iter() {
+        for invitee in &ctx.invitees {
             let (invitee_public_key, invitee_private_key) =
                 ctx.meroctl.identity_generate(invitee).await?;
 
@@ -64,7 +68,7 @@ impl Test for ContextInviteJoinStep {
             sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
-                .write_string(format!("Report: Node '{}' joined the context", invitee));
+                .write_str(&format!("Report: Node '{invitee}' joined the context"));
         }
 
         Ok(())
