@@ -118,7 +118,7 @@ impl Driver {
 
         self.environment
             .output_writer
-            .write_str(&format!("Report file: {:?}", report_file));
+            .write_str(&format!("Report file: {report_file:?}"));
 
         report.result()
     }
@@ -155,7 +155,7 @@ impl Driver {
                         &self.config.network.swarm_host,
                         self.config.network.start_swarm_port + i,
                         self.config.network.start_server_port + i,
-                        config_args.map(|s| s.as_str()),
+                        config_args.map(String::as_str),
                     )
                     .await?;
 

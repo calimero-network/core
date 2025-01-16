@@ -160,11 +160,11 @@ impl Meroctl {
         for arg in root_args.into_iter().chain(args) {
             let _ignored = command.arg(arg);
             command_line.reserve(arg.len() + 1);
-            command_line.push_str(" ");
+            command_line.push(' ');
             command_line.push_str(arg);
         }
 
-        command_line.push_str("\'");
+        command_line.push('\'');
 
         self.output_writer.write_str(&command_line);
 
