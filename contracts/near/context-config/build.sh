@@ -7,7 +7,12 @@ TARGET="${CARGO_TARGET_DIR:-../../../target}"
 
 rustup target add wasm32-unknown-unknown
 
-cargo build --target wasm32-unknown-unknown --profile app-release
+if [ "$1" = "--migration" ]; then
+  selected_migration=$2
+  extra_args="--features migrations,$selected_migration"
+fi
+
+cargo build --target wasm32-unknown-unknown --profile app-release $extra_args
 
 mkdir -p res
 
