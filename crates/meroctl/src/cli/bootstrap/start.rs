@@ -234,7 +234,7 @@ impl StartBootstrapCommand {
                 nodes_dir.clone(),
                 log_dir.clone(),
                 node_name.clone(),
-                &[
+                [
                     "init",
                     "--swarm-port",
                     &swarm_port.to_string().as_str(),
@@ -251,7 +251,7 @@ impl StartBootstrapCommand {
         }
 
         let mut child = self
-            .run_cmd(nodes_dir, log_dir, node_name.clone(), &["config"], "config")
+            .run_cmd(nodes_dir, log_dir, node_name.clone(), ["config"], "config")
             .await?;
         let result = child.wait().await?;
         if !result.success() {
@@ -267,7 +267,7 @@ impl StartBootstrapCommand {
         node_name: String,
     ) -> EyreResult<Child> {
         Ok(self
-            .run_cmd(nodes_dir, log_dir, node_name, &["run"], "run")
+            .run_cmd(nodes_dir, log_dir, node_name, ["run"], "run")
             .await?)
     }
 
@@ -309,17 +309,17 @@ impl StartBootstrapCommand {
         nodes_dir: Utf8PathBuf,
         log_dir: Utf8PathBuf,
         node_name: String,
-        args: &[&str],
+        args: impl IntoIterator<Item = &str>,
         log_suffix: &str,
     ) -> EyreResult<Child> {
-        let mut root_args = vec!["--home", &nodes_dir.as_str(), "--node-name", &node_name];
-        root_args.extend(args);
+        let root_args = ["--home", &nodes_dir.as_str(), "--node-name", &node_name];
 
         let log_file = log_dir.join(format!("{}.log", log_suffix));
         let mut log_file = File::create(&log_file).await?;
 
         let mut child = Command::new(&self.merod_path)
             .args(root_args)
+            .args(args)
             .stdout(Stdio::piped())
             .spawn()?;
 

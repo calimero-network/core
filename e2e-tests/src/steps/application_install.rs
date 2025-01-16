@@ -26,9 +26,13 @@ pub enum ApplicationInstallTarget {
 }
 
 impl Test for ApplicationInstallStep {
+    fn display_name(&self) -> String {
+        format!("app install ({:?})", self.target)
+    }
+
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
-        if let ApplicationInstallTarget::AllMembers = self.target {
-            for invitee in ctx.invitees.iter() {
+        if matches!(self.target, ApplicationInstallTarget::AllMembers) {
+            for invitee in &ctx.invitees {
                 let application_id = self.application.install(ctx.meroctl, invitee).await?;
                 if let Some(existing_app_id) = &ctx.application_id {
                     if existing_app_id != &application_id {
@@ -41,9 +45,8 @@ impl Test for ApplicationInstallStep {
                 }
                 ctx.application_id = Some(application_id);
 
-                ctx.output_writer.write_string(format!(
-                    "Report: Installed application on '{}' node",
-                    invitee
+                ctx.output_writer.write_str(&format!(
+                    "Report: Installed application on '{invitee}' node"
                 ));
             }
         }
@@ -60,7 +63,7 @@ impl Test for ApplicationInstallStep {
         }
         ctx.application_id = Some(application_id);
 
-        ctx.output_writer.write_string(format!(
+        ctx.output_writer.write_str(&format!(
             "Report: Installed application on '{}' node",
             &ctx.inviter
         ));
@@ -72,9 +75,7 @@ impl Test for ApplicationInstallStep {
 impl ApplicationSource {
     async fn install(&self, meroctl: &Meroctl, node_name: &str) -> EyreResult<String> {
         match self {
-            ApplicationSource::LocalFile(path) => {
-                meroctl.application_install(node_name, path).await
-            }
+            Self::LocalFile(path) => meroctl.application_install(node_name, path).await,
         }
     }
 }
