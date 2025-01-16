@@ -10,7 +10,6 @@ use calimero_context_config::{
     ProxyMutateRequest, Request, RequestKind, SystemRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
-use eyre::Ok;
 use near_sdk::AccountId;
 use near_workspaces::types::NearToken;
 use near_workspaces::Contract;
@@ -55,6 +54,17 @@ async fn main() -> eyre::Result<()> {
     let mut rng = rand::thread_rng();
 
     let contract = worker.dev_deploy(&wasm).await?;
+
+    let context_proxy_blob =
+        fs::read("../context-proxy/res/calimero_context_proxy_near.wasm").await?;
+
+    let _ignored = contract
+        .call("set_proxy_code")
+        .args(context_proxy_blob)
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
 
     let root_account = worker.root_account()?;
 
@@ -127,15 +137,6 @@ async fn main() -> eyre::Result<()> {
             err
         );
     }
-
-    let new_proxy_wasm = fs::read("../context-proxy/res/calimero_context_proxy_near.wasm").await?;
-    let _test = contract
-        .call("set_proxy_code")
-        .args(new_proxy_wasm)
-        .max_gas()
-        .transact()
-        .await?
-        .into_result()?;
 
     let res = node1
         .call(contract.id(), "mutate")
@@ -210,6 +211,7 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res.id, application_id);
     assert_eq!(res.blob, blob_id);
+    assert_eq!(res.size, 0);
     assert_eq!(res.source, Default::default());
     assert_eq!(res.metadata, Default::default());
 
@@ -620,24 +622,23 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res.id, application_id);
     assert_eq!(res.blob, blob_id);
+    assert_eq!(res.size, 0);
     assert_eq!(res.source, Default::default());
     assert_eq!(res.metadata, Default::default());
 
-    let res = contract
+    let res: Revision = contract
         .view("application_revision")
         .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Revision = serde_json::from_slice(&res.result)?;
+        .await?
+        .json()?;
 
     assert_eq!(res, 0);
 
-    let res = contract
+    let res: Revision = contract
         .view("members_revision")
         .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Revision = serde_json::from_slice(&res.result)?;
+        .await?
+        .json()?;
 
     assert_eq!(res, 2);
 
@@ -697,24 +698,23 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res.id, new_application_id);
     assert_eq!(res.blob, new_blob_id);
+    assert_eq!(res.size, 0);
     assert_eq!(res.source, Default::default());
     assert_eq!(res.metadata, Default::default());
 
-    let res = contract
+    let res: Revision = contract
         .view("application_revision")
         .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Revision = serde_json::from_slice(&res.result)?;
+        .await?
+        .json()?;
 
     assert_eq!(res, 1);
 
-    let res = contract
+    let res: Revision = contract
         .view("members_revision")
         .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Revision = serde_json::from_slice(&res.result)?;
+        .await?
+        .json()?;
 
     assert_eq!(res, 2);
 
@@ -793,21 +793,19 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id, carol_cx_id]);
 
-    let res = contract
+    let res: Revision = contract
         .view("application_revision")
         .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Revision = serde_json::from_slice(&res.result)?;
+        .await?
+        .json()?;
 
     assert_eq!(res, 1);
 
-    let res = contract
+    let res: Revision = contract
         .view("members_revision")
         .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Revision = serde_json::from_slice(&res.result)?;
+        .await?
+        .json()?;
 
     assert_eq!(res, 3);
 
@@ -852,117 +850,6 @@ async fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-#[ignore]
-#[tokio::test]
-async fn migration() -> eyre::Result<()> {
-    let worker = near_workspaces::sandbox().await?;
-
-    let wasm_v0 = fs::read("res/calimero_context_config_near_v0.wasm").await?;
-    let wasm_v1 = fs::read("res/calimero_context_config_near_v1.wasm").await?;
-
-    let mut rng = rand::thread_rng();
-
-    let contract_v0 = worker.dev_deploy(&wasm_v0).await?;
-
-    let root_account = worker.root_account()?;
-
-    let node1 = root_account
-        .create_subaccount("node1")
-        .transact()
-        .await?
-        .into_result()?;
-
-    let alice_cx_sk = SigningKey::from_bytes(&rng.gen());
-    let alice_cx_pk = alice_cx_sk.verifying_key();
-    let alice_cx_id = alice_cx_pk.to_bytes().rt()?;
-
-    let context_secret = SigningKey::from_bytes(&rng.gen());
-    let context_public = context_secret.verifying_key();
-    let context_id = context_public.to_bytes().rt()?;
-
-    let application_id = rng.gen::<[_; 32]>().rt()?;
-    let blob_id = rng.gen::<[_; 32]>().rt()?;
-
-    let res = node1
-        .call(contract_v0.id(), "mutate")
-        .args_json(Signed::new(
-            &{
-                let kind = RequestKind::Context(ContextRequest::new(
-                    context_id,
-                    ContextRequestKind::Add {
-                        author_id: alice_cx_id,
-                        application: Application::new(
-                            application_id,
-                            blob_id,
-                            0,
-                            Default::default(),
-                            Default::default(),
-                        ),
-                    },
-                ));
-
-                Request::new(context_id.rt()?, kind, 0)
-            },
-            |p| context_secret.sign(p),
-        )?)
-        .transact()
-        .await?
-        .into_result()?;
-
-    assert_eq!(res.logs(), [format!("Context `{}` added", context_id)]);
-
-    let res = contract_v0
-        .view("application")
-        .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Application<'_> = serde_json::from_slice(&res.result)?;
-
-    assert_eq!(res.id, application_id);
-    assert_eq!(res.blob, blob_id);
-    assert_eq!(res.source, Default::default());
-    assert_eq!(res.metadata, Default::default());
-
-    let contract_v1 = contract_v0
-        .as_account()
-        .deploy(&wasm_v1)
-        .await?
-        .into_result()?;
-
-    let res = contract_v1
-        .view("application")
-        .args_json(json!({ "context_id": context_id }))
-        .await
-        .expect_err("should've failed");
-
-    {
-        let err = format!("{:?}", res);
-        assert!(err.contains("Cannot deserialize element"), "{}", err);
-    }
-
-    let migration = contract_v1
-        .call("migrate")
-        .transact()
-        .await?
-        .into_result()?;
-
-    dbg!(migration.logs());
-
-    let res = contract_v1
-        .view("application")
-        .args_json(json!({ "context_id": context_id }))
-        .await?;
-
-    let res: Application<'_> = serde_json::from_slice(&res.result)?;
-
-    assert_eq!(res.id, application_id);
-    assert_eq!(res.blob, blob_id);
-    assert_eq!(res.source, Default::default());
-    assert_eq!(res.metadata, Default::default());
-
-    Ok(())
-}
-
 #[tokio::test]
 async fn test_deploy() -> eyre::Result<()> {
     let worker = near_workspaces::sandbox().await?;
@@ -970,7 +857,20 @@ async fn test_deploy() -> eyre::Result<()> {
     let mut rng = rand::thread_rng();
 
     let contract = worker.dev_deploy(&wasm).await?;
+
+    let context_proxy_blob =
+        fs::read("../context-proxy/res/calimero_context_proxy_near.wasm").await?;
+
+    let _ignored = contract
+        .call("set_proxy_code")
+        .args(context_proxy_blob)
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
     let root_account = worker.root_account()?;
+
     let node1 = root_account
         .create_subaccount("node1")
         .initial_balance(NearToken::from_near(50))
@@ -985,16 +885,6 @@ async fn test_deploy() -> eyre::Result<()> {
     let context_secret = SigningKey::from_bytes(&rng.gen());
     let context_public = context_secret.verifying_key();
     let context_id = context_public.to_bytes().rt()?;
-
-    // Set proxy code
-    let new_proxy_wasm = fs::read("../context-proxy/res/calimero_context_proxy_near.wasm").await?;
-    let _test = contract
-        .call("set_proxy_code")
-        .args(new_proxy_wasm)
-        .max_gas()
-        .transact()
-        .await?
-        .into_result()?;
 
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;

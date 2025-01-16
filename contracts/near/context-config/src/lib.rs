@@ -6,8 +6,10 @@
 
 use calimero_context_config::types::{Application, ContextId, ContextIdentity};
 use calimero_context_config::Timestamp;
+use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::store::{IterableMap, IterableSet, LazyOption};
 use near_sdk::{near, AccountId, BorshStorageKey};
+
 mod guard;
 mod mutate;
 mod query;
@@ -41,13 +43,15 @@ struct Context {
     pub proxy: Guard<AccountId>,
 }
 
-#[derive(Copy, Clone, Debug, BorshStorageKey)]
-#[near(serializers = [borsh])]
+#[derive(Copy, Clone, Debug, BorshSerialize, BorshDeserialize, BorshStorageKey)]
+#[borsh(crate = "::near_sdk::borsh", use_discriminant = true)]
+#[repr(u8)]
 enum Prefix {
-    Contexts,
-    Members(ContextId),
-    Privileges(PrivilegeScope),
-    ProxyCode,
+    Contexts = 1,
+    Members(ContextId) = 2,
+    Privileges(PrivilegeScope) = 3,
+    ProxyCode = 4,
+    MemberNonces(ContextId) = 5,
 }
 
 #[derive(Copy, Clone, Debug)]
