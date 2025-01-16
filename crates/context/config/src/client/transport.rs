@@ -130,6 +130,24 @@ where
     }
 }
 
+impl<T: AssociatedTransport> Transport for Option<T> {
+    type Error = T::Error;
+
+    async fn try_send<'a>(
+        &self,
+        args: TransportArguments<'a>,
+    ) -> Result<Result<Vec<u8>, Self::Error>, UnsupportedProtocol<'a>> {
+        let Some(inner) = self else {
+            return Err(UnsupportedProtocol {
+                args,
+                expected: Cow::Borrowed(&[]),
+            });
+        };
+
+        inner.try_send(args).await
+    }
+}
+
 pub trait AssociatedTransport: ProtocolTransport {
     type Protocol: Protocol;
 

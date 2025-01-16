@@ -322,7 +322,7 @@ export function useIcp(): useIcpReturn {
       });
 
       // Wait for II to say it's ready
-      const readyPromise = new Promise<MessageEvent>((resolve, reject) => {
+      const readyPromise = new Promise<MessageEvent>((resolve) => {
         const readyHandler = (e: MessageEvent) => {
           // Only process messages from II
           if (e.origin !== iiUrl.origin) {

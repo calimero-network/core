@@ -36,6 +36,7 @@ export interface NodeApi {
   createContexts(
     applicationId: string,
     initArguments: string,
+    protocol: string,
   ): ApiResponse<CreateContextResponse>;
   getDidList(): ApiResponse<DidResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;

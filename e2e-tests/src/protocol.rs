@@ -18,10 +18,10 @@ impl ProtocolSandboxEnvironment {
         }
     }
 
-    pub fn name(&self) -> String {
+    pub fn name(&self) -> &str {
         match self {
-            Self::Near(_) => "near".to_owned(),
-            Self::Icp(_) => "icp".to_owned(),
+            Self::Near(_) => "near",
+            Self::Icp(_) => "icp",
         }
     }
 }

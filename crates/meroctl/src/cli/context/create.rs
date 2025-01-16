@@ -59,6 +59,9 @@ pub struct CreateCommand {
         help = "The seed for the random generation of the context id"
     )]
     context_seed: Option<Hash>,
+
+    #[clap(long, value_name = "PROTOCOL")]
+    protocol: String,
 }
 
 impl Report for CreateContextResponse {
@@ -87,6 +90,7 @@ impl CreateCommand {
                 context_seed,
                 metadata: None,
                 params,
+                protocol,
             } => {
                 let _ = create_context(
                     environment,
@@ -96,6 +100,7 @@ impl CreateCommand {
                     app_id,
                     params,
                     &config.identity,
+                    protocol,
                 )
                 .await?;
             }
@@ -105,10 +110,10 @@ impl CreateCommand {
                 context_seed,
                 metadata,
                 params,
+                protocol,
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
-
                 let application_id = install_app(
                     environment,
                     &client,
@@ -127,6 +132,7 @@ impl CreateCommand {
                     application_id,
                     params,
                     &config.identity,
+                    protocol,
                 )
                 .await?;
 
@@ -157,6 +163,7 @@ pub async fn create_context(
     application_id: ApplicationId,
     params: Option<String>,
     keypair: &Keypair,
+    protocol: String,
 ) -> EyreResult<(ContextId, PublicKey)> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
@@ -164,6 +171,7 @@ pub async fn create_context(
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
     let request = CreateContextRequest::new(
+        protocol,
         application_id,
         context_seed,
         params.map(String::into_bytes).unwrap_or_default(),

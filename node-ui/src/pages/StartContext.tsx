@@ -33,6 +33,7 @@ export default function StartContextPage() {
   const [showBrowseApplication, setShowBrowseApplication] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [protocol, setProtocol] = useState('');
   const [startContextStatus, setStartContextStatus] = useState({
     title: '',
     message: '',
@@ -49,7 +50,7 @@ export default function StartContextPage() {
     }
     const startContextResponse = await apiClient(showServerDownPopup)
       .node()
-      .createContexts(appId, argumentsJson);
+      .createContexts(appId, argumentsJson, protocol);
     if (startContextResponse.error) {
       setStartContextStatus({
         title: t.startContextErrorTitle,
@@ -125,6 +126,7 @@ export default function StartContextPage() {
             setIsArgsChecked={setIsArgsChecked}
             argumentsJson={argumentsJson}
             setArgumentsJson={setArgumentsJson}
+            setProtocol={setProtocol}
             startContext={startContext}
             showBrowseApplication={showBrowseApplication}
             setShowBrowseApplication={setShowBrowseApplication}

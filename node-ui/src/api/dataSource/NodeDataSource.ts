@@ -473,6 +473,7 @@ export class NodeDataSource implements NodeApi {
   async createContexts(
     applicationId: string,
     initArguments: string,
+    protocol: string,
   ): ApiResponse<CreateContextResponse> {
     try {
       const headers: Header | null = await createAuthHeader(
@@ -491,6 +492,7 @@ export class NodeDataSource implements NodeApi {
         {
           applicationId,
           initializationParams: initializationParams,
+          protocol,
         },
         headers ?? {},
       );

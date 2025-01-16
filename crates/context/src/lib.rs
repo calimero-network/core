@@ -9,6 +9,7 @@ use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ClientConfig;
 use calimero_context_config::client::env::config::ContextConfig as ContextConfigEnv;
 use calimero_context_config::client::env::proxy::ContextProxy;
+use calimero_context_config::client::utils::humanize_iter;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
@@ -147,12 +148,21 @@ impl ContextManager {
 
     pub fn create_context(
         &self,
+        protocol: &str,
         seed: Option<[u8; 32]>,
         application_id: ApplicationId,
         identity_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
     ) -> EyreResult<()> {
+        let Some(config) = self.client_config.params.get(protocol).cloned() else {
+            eyre::bail!(
+                "unsupported protocol: {}, expected one of `{}`",
+                protocol,
+                humanize_iter(self.client_config.params.keys())
+            );
+        };
+
         let (context_secret, identity_secret) = {
             let mut rng = rand::thread_rng();
 
@@ -187,9 +197,9 @@ impl ContextManager {
             &context,
             identity_secret,
             Some(ContextConfigParams {
-                protocol: self.client_config.new.protocol.as_str().into(),
-                network_id: self.client_config.new.network.as_str().into(),
-                contract_id: self.client_config.new.contract_id.as_str().into(),
+                protocol: config.protocol.as_str().into(),
+                network_id: config.network.as_str().into(),
+                contract_id: config.contract_id.as_str().into(),
                 proxy_contract: "".into(),
                 application_revision: 0,
                 members_revision: 0,
@@ -219,9 +229,9 @@ impl ContextManager {
 
             this.config_client
                 .mutate::<ContextConfigEnv>(
-                    this.client_config.new.protocol.as_str().into(),
-                    this.client_config.new.network.as_str().into(),
-                    this.client_config.new.contract_id.as_str().into(),
+                    config.protocol.as_str().into(),
+                    config.network.as_str().into(),
+                    config.contract_id.as_str().into(),
                 )
                 .add_context(
                     context.id.rt().expect("infallible conversion"),
@@ -243,9 +253,9 @@ impl ContextManager {
             let proxy_contract = this
                 .config_client
                 .query::<ContextConfigEnv>(
-                    this.client_config.new.protocol.as_str().into(),
-                    this.client_config.new.network.as_str().into(),
-                    this.client_config.new.contract_id.as_str().into(),
+                    config.protocol.as_str().into(),
+                    config.network.as_str().into(),
+                    config.contract_id.as_str().into(),
                 )
                 .get_proxy_contract(context.id.rt().expect("infallible conversion"))
                 .await?;

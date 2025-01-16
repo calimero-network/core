@@ -2,7 +2,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key::ContextMeta as ContextMetaKey;
+use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use owo_colors::OwoColorize;
@@ -31,6 +31,9 @@ enum Commands {
         /// The seed for the context (to derive a deterministic context ID)
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
+        /// The protocol to use for the context - possible values: near|starknet|icp
+        #[clap(long)]
+        protocol: String,
     },
     /// Invite a user to a context
     Invite {
@@ -76,22 +79,30 @@ impl ContextCommand {
         match self.command {
             Commands::Ls => {
                 println!(
-                    "{ind} {c1:44} | {c2:44} | Root Hash",
+                    "{ind} {c1:44} | {c2:44} | {c3:44} | Protocol",
                     c1 = "Context ID",
                     c2 = "Application ID",
+                    c3 = "Root Hash"
                 );
 
                 let handle = node.store.handle();
 
                 for (k, v) in handle.iter::<ContextMetaKey>()?.entries() {
                     let (k, v) = (k?, v?);
-                    let (cx, app_id, last_tx) =
-                        (k.context_id(), v.application.application_id(), v.root_hash);
+                    let context_id = k.context_id();
+
+                    // Get the config for this context
+                    let protocol = handle
+                        .get(&ContextConfigKey::new(context_id))?
+                        .expect("Context config must exist with protocol")
+                        .protocol;
+
                     let entry = format!(
-                        "{c1:44} | {c2:44} | {c3}",
-                        c1 = cx,
-                        c2 = app_id,
-                        c3 = Hash::from(last_tx)
+                        "{c1:44} | {c2:44} | {c3:44} | {c4}",
+                        c1 = context_id,
+                        c2 = v.application.application_id(),
+                        c3 = Hash::from(v.root_hash),
+                        c4 = protocol
                     );
                     for line in entry.lines() {
                         println!("{ind} {}", line.cyan());
@@ -129,10 +140,12 @@ impl ContextCommand {
                 application_id,
                 params,
                 context_seed,
+                protocol,
             } => {
                 let (tx, rx) = oneshot::channel();
 
                 node.ctx_manager.create_context(
+                    &protocol,
                     context_seed.map(Into::into),
                     application_id,
                     None,

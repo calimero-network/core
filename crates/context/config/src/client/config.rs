@@ -10,31 +10,17 @@ use crate::client::protocol::starknet::Credentials as StarknetCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
-    pub new: ClientNew,
+    #[serde(flatten)]
+    pub params: BTreeMap<String, ClientConfigParams>,
     pub signer: ClientSigner,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ClientNew {
+pub struct ClientConfigParams {
+    pub signer: ClientSelectedSigner,
     pub protocol: String,
     pub network: String,
     pub contract_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct LocalConfig {
-    pub near: BTreeMap<String, ClientLocalSigner>,
-    pub starknet: BTreeMap<String, ClientLocalSigner>,
-    pub icp: BTreeMap<String, ClientLocalSigner>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ClientSigner {
-    #[serde(rename = "use")]
-    pub selected: ClientSelectedSigner,
-    pub relayer: ClientRelayerSigner,
-    #[serde(rename = "self")]
-    pub local: LocalConfig,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
@@ -44,6 +30,25 @@ pub enum ClientSelectedSigner {
     Relayer,
     #[serde(rename = "self")]
     Local,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ClientSigner {
+    pub relayer: ClientRelayerSigner,
+    #[serde(rename = "self")]
+    pub local: LocalConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LocalConfig {
+    #[serde(flatten)]
+    pub protocols: BTreeMap<String, ClientLocalConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ClientLocalConfig {
+    #[serde(flatten)]
+    pub signers: BTreeMap<String, ClientLocalSigner>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

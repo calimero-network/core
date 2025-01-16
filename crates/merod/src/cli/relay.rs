@@ -46,7 +46,7 @@ impl RelayCommand {
 
         let (tx, mut rx) = mpsc::channel::<RequestPayload>(32);
 
-        let transports = Client::from_local_config(&config.context.client.signer.local)?;
+        let transports = Client::from_local_config(&config.context.client)?;
 
         let handle = async move {
             while let Some((request, res_tx)) = rx.recv().await {

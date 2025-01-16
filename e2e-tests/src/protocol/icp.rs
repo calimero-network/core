@@ -45,13 +45,13 @@ impl IcpSandboxEnvironment {
 
     pub fn node_args(&self) -> Vec<String> {
         vec![
-            format!("context.config.new.protocol=\"{}\"", "icp"),
-            format!("context.config.new.network=\"{}\"", "local"),
+            format!("context.config.icp.protocol=\"{}\"", "icp"),
+            format!("context.config.icp.network=\"{}\"", "local"),
             format!(
-                "context.config.new.contract_id=\"{}\"",
+                "context.config.icp.contract_id=\"{}\"",
                 self.config.context_config_contract_id
             ),
-            format!("context.config.signer.use=\"{}\"", "self"),
+            format!("context.config.icp.signer=\"{}\"", "self"),
             format!(
                 "context.config.signer.self.icp.local.rpc_url=\"{}\"",
                 self.config.rpc_url

@@ -48,6 +48,7 @@ export default function StartContextStep({
   const [startFinished, setStartFinished] = useState(false);
   const [isArgsChecked, setIsArgsChecked] = useState(false);
   const [argumentsJson, setArgumentsJson] = useState('');
+  const [protocol, setProtocol] = useState('');
   const { showServerDownPopup } = useServerDown();
   const [application, setApplication] = useState<DisplayApplication | null>(
     null,
@@ -67,7 +68,7 @@ export default function StartContextStep({
     }
     const startContextResponse = await apiClient(showServerDownPopup)
       .node()
-      .createContexts(applicationId, argumentsJson);
+      .createContexts(applicationId, argumentsJson, protocol);
     if (startContextResponse.error) {
       setStartContextStatus({
         title: t.startContextErrorTitle,
@@ -108,6 +109,7 @@ export default function StartContextStep({
         setIsArgsChecked={setIsArgsChecked}
         argumentsJson={argumentsJson}
         setArgumentsJson={setArgumentsJson}
+        setProtocol={setProtocol}
         startContext={startContext}
         isLoading={isLoading}
         showStatusModal={startFinished}

@@ -302,6 +302,7 @@
     "backButtonText": "back to context select",
     "selectApplicationTitle": "Select app from the marketplace or publish new application",
     "selectedApplicationTitle": "Selected Application",
+    "protocolLabelText": "Protocol",
     "initSectionTitle": "Initialize application state",
     "argsTitleText": "Arguments",
     "methodLabelText": "method name",

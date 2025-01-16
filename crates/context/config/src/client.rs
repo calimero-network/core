@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::ops::Deref;
 
-use either::Either;
 use env::Method;
 use thiserror::Error;
 
@@ -13,16 +12,17 @@ pub mod relayer;
 pub mod transport;
 pub mod utils;
 
-use config::{ClientConfig, ClientSelectedSigner, Credentials, LocalConfig};
+use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use protocol::{icp, near, starknet, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
-pub type LocalTransports = Both<
-    near::NearTransport<'static>,
-    Both<starknet::StarknetTransport<'static>, icp::IcpTransport<'static>>,
->;
+type MaybeNear = Option<near::NearTransport<'static>>;
+type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
+type MaybeIcp = Option<icp::IcpTransport<'static>>;
 
-pub type AnyTransport = Either<relayer::RelayerTransport, LocalTransports>;
+pub type LocalTransports = Both<MaybeNear, Both<MaybeStarknet, MaybeIcp>>;
+
+pub type AnyTransport = Both<LocalTransports, relayer::RelayerTransport>;
 
 #[derive(Clone, Debug)]
 pub struct Client<T> {
@@ -38,106 +38,128 @@ impl<T: Transport> Client<T> {
 impl Client<AnyTransport> {
     #[must_use]
     pub fn from_config(config: &ClientConfig) -> Self {
-        let transport = match config.signer.selected {
-            ClientSelectedSigner::Relayer => {
-                Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
-                    url: config.signer.relayer.url.clone(),
-                }))
-            }
-            ClientSelectedSigner::Local => {
-                let local_client =
-                    Self::from_local_config(&config.signer.local).expect("validation error");
+        let relayer = relayer::RelayerTransport::new(&relayer::RelayerConfig {
+            url: config.signer.relayer.url.clone(),
+        });
 
-                Either::Right(local_client.transport)
-            }
+        let local = Self::from_local_config(&config).expect("validation error");
+
+        let transport = Both {
+            left: local.transport,
+            right: relayer,
         };
 
         Self::new(transport)
     }
 
-    pub fn from_local_config(config: &LocalConfig) -> eyre::Result<Client<LocalTransports>> {
-        let near_transport = near::NearTransport::new(&near::NearConfig {
-            networks: config
-                .near
-                .iter()
-                .map(|(network, config)| {
-                    let (account_id, secret_key) = match &config.credentials {
-                        Credentials::Near(credentials) => (
-                            credentials.account_id.clone(),
-                            credentials.secret_key.clone(),
-                        ),
-                        Credentials::Starknet(_) | Credentials::Icp(_) => {
-                            eyre::bail!(
-                                "Expected Near credentials but got {:?}",
-                                config.credentials
-                            )
-                        }
+    pub fn from_local_config(config: &ClientConfig) -> eyre::Result<Client<LocalTransports>> {
+        let mut near_transport = None;
+
+        'skipped: {
+            if let Some(near_config) = config.signer.local.protocols.get("near") {
+                let Some(e) = config.params.get("near") else {
+                    eyre::bail!("missing config specification for `{}` signer", "near");
+                };
+
+                if !matches!(e.signer, ClientSelectedSigner::Local) {
+                    break 'skipped;
+                }
+
+                let mut config = near::NearConfig {
+                    networks: Default::default(),
+                };
+
+                for (network, signer) in &near_config.signers {
+                    let Credentials::Near(credentials) = &signer.credentials else {
+                        eyre::bail!("expected Near credentials but got {:?}", signer.credentials)
                     };
-                    Ok((
+
+                    let _ignored = config.networks.insert(
                         network.clone().into(),
                         near::NetworkConfig {
-                            rpc_url: config.rpc_url.clone(),
-                            account_id,
-                            access_key: secret_key,
+                            rpc_url: signer.rpc_url.clone(),
+                            account_id: credentials.account_id.clone(),
+                            access_key: credentials.secret_key.clone(),
                         },
-                    ))
-                })
-                .collect::<eyre::Result<_>>()?,
-        });
+                    );
+                }
 
-        let starknet_transport = starknet::StarknetTransport::new(&starknet::StarknetConfig {
-            networks: config
-                .starknet
-                .iter()
-                .map(|(network, config)| {
-                    let (account_id, secret_key) = match &config.credentials {
-                        Credentials::Starknet(credentials) => {
-                            (credentials.account_id, credentials.secret_key)
-                        }
-                        Credentials::Near(_) | Credentials::Icp(_) => {
-                            eyre::bail!(
-                                "Expected Starknet credentials but got {:?}",
-                                config.credentials
-                            )
-                        }
+                near_transport = Some(near::NearTransport::new(&config));
+            }
+        }
+
+        let mut starknet_transport = None;
+
+        'skipped: {
+            if let Some(starknet_config) = config.signer.local.protocols.get("starknet") {
+                let Some(e) = config.params.get("starknet") else {
+                    eyre::bail!("missing config specification for `{}` signer", "starknet");
+                };
+
+                if !matches!(e.signer, ClientSelectedSigner::Local) {
+                    break 'skipped;
+                }
+
+                let mut config = starknet::StarknetConfig {
+                    networks: Default::default(),
+                };
+
+                for (network, signer) in &starknet_config.signers {
+                    let Credentials::Starknet(credentials) = &signer.credentials else {
+                        eyre::bail!(
+                            "expected Starknet credentials but got {:?}",
+                            signer.credentials
+                        )
                     };
-                    Ok((
+
+                    let _ignored = config.networks.insert(
                         network.clone().into(),
                         starknet::NetworkConfig {
-                            rpc_url: config.rpc_url.clone(),
-                            account_id,
-                            access_key: secret_key,
+                            rpc_url: signer.rpc_url.clone(),
+                            account_id: credentials.account_id.clone(),
+                            access_key: credentials.secret_key.clone(),
                         },
-                    ))
-                })
-                .collect::<eyre::Result<_>>()?,
-        });
+                    );
+                }
 
-        let icp_transport = icp::IcpTransport::new(&icp::IcpConfig {
-            networks: config
-                .icp
-                .iter()
-                .map(|(network, config)| {
-                    let (account_id, secret_key) = match &config.credentials {
-                        Credentials::Icp(credentials) => (
-                            credentials.account_id.clone(),
-                            credentials.secret_key.clone(),
-                        ),
-                        Credentials::Near(_) | Credentials::Starknet(_) => {
-                            eyre::bail!("Expected ICP credentials but got {:?}", config.credentials)
-                        }
+                starknet_transport = Some(starknet::StarknetTransport::new(&config));
+            }
+        }
+
+        let mut icp_transport = None;
+
+        'skipped: {
+            if let Some(icp_config) = config.signer.local.protocols.get("icp") {
+                let Some(e) = config.params.get("icp") else {
+                    eyre::bail!("missing config specification for `{}` signer", "icp");
+                };
+
+                if !matches!(e.signer, ClientSelectedSigner::Local) {
+                    break 'skipped;
+                }
+
+                let mut config = icp::IcpConfig {
+                    networks: Default::default(),
+                };
+
+                for (network, signer) in &icp_config.signers {
+                    let Credentials::Icp(credentials) = &signer.credentials else {
+                        eyre::bail!("expected ICP credentials but got {:?}", signer.credentials)
                     };
-                    Ok((
+
+                    let _ignored = config.networks.insert(
                         network.clone().into(),
                         icp::NetworkConfig {
-                            rpc_url: config.rpc_url.clone(),
-                            account_id,
-                            secret_key,
+                            rpc_url: signer.rpc_url.clone(),
+                            account_id: credentials.account_id.clone(),
+                            secret_key: credentials.secret_key.clone(),
                         },
-                    ))
-                })
-                .collect::<eyre::Result<_>>()?,
-        });
+                    );
+                }
+
+                icp_transport = Some(icp::IcpTransport::new(&config));
+            }
+        }
 
         let all_transports = Both {
             left: near_transport,

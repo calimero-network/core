@@ -136,6 +136,32 @@ const Wrapper = styled.div`
       }
     }
   }
+
+  .protocol-input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 14px;
+    background-color: white;
+  }
+
+  .protocol-input:focus {
+    outline: none;
+    border-color: #007bff;
+  }
+
+  /* Optional: Style the dropdown arrow */
+  .protocol-input {
+    appearance: none;
+    background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23007CB2%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E');
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 12px;
+    padding-right: 30px;
+    background-color: transparent;
+    margin-top: 5px;
+  }
 `;
 
 interface StartContextCardProps {
@@ -146,6 +172,7 @@ interface StartContextCardProps {
   argumentsJson: string;
   setArgumentsJson: (args: string) => void;
   startContext: () => void;
+  setProtocol: (protocol: string) => void;
   showBrowseApplication: boolean;
   setShowBrowseApplication: (show: boolean) => void;
   onUploadClick: () => void;
@@ -164,6 +191,7 @@ export default function StartContextCard({
   setArgumentsJson,
   startContext,
   showBrowseApplication,
+  setProtocol,
   setShowBrowseApplication,
   onUploadClick,
   isLoading,
@@ -281,6 +309,22 @@ export default function StartContextCard({
             </div>
           </div>
         )}
+        <div className="protocol-section">
+          <div className="protocol-title">{t.protocolLabelText}</div>
+          <select
+            className="protocol-input"
+            onChange={(e) => setProtocol(e.target.value)}
+            defaultValue=""
+            required
+          >
+            <option value="" disabled>
+              Select a protocol
+            </option>
+            <option value="near">NEAR</option>
+            <option value="starknet">Starknet</option>
+            <option value="icp">ICP</option>
+          </select>
+        </div>
         <Button
           text="Start"
           width={'144px'}
