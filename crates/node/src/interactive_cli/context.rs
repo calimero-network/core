@@ -98,7 +98,7 @@ impl ContextCommand {
                         .protocol;
 
                     let entry = format!(
-                        "{c1:44} | {c2:44} | {c3:20} | {c4}",
+                        "{c1:44} | {c2:44} | {c3:44} | {c4}",
                         c1 = context_id,
                         c2 = v.application.application_id(),
                         c3 = Hash::from(v.root_hash),
