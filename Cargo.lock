@@ -953,6 +953,7 @@ name = "calimero-context-config-near"
 version = "0.1.0"
 dependencies = [
  "calimero-context-config",
+ "cfg-if 1.0.0",
  "ed25519-dalek",
  "eyre",
  "near-crypto",

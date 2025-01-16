@@ -100,6 +100,9 @@ impl ContextConfigs {
         let mut members = IterableSet::new(Prefix::Members(*context_id));
         let _ignored = members.insert(*author_id);
 
+        let mut member_nonces = IterableMap::new(Prefix::MemberNonces(*context_id));
+        let _ignored = member_nonces.insert(*author_id, 0);
+
         // Create incremental account ID
         let account_id: AccountId = format!("{}.{}", self.next_proxy_id, env::current_account_id())
             .parse()
@@ -130,7 +133,7 @@ impl ContextConfigs {
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
-            member_nonces: IterableMap::new(b"n"),
+            member_nonces,
             proxy: Guard::new(
                 Prefix::Privileges(PrivilegeScope::Context(
                     *context_id,

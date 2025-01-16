@@ -10,6 +10,7 @@ license.workspace = true
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+cfg-if.workspace = true
 near-sdk = { workspace = true, features = ["unstable"] }
 calimero-context-config.workspace = true
 
@@ -24,3 +25,12 @@ tokio.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = []
+
+migrations = []
+## migrations (mutually exclusive) ##
+01_guard_revisions = []
+02_nonces = []
+## migrations (mutually exclusive) ##
