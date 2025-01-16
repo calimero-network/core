@@ -27,7 +27,7 @@ impl Meroctl {
 
     pub async fn application_install(&self, node_name: &str, app_path: &str) -> EyreResult<String> {
         let json = self
-            .run_cmd(node_name, &["app", "install", "--path", app_path])
+            .run_cmd(node_name, ["app", "install", "--path", app_path])
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
@@ -42,7 +42,7 @@ impl Meroctl {
         app_id: &str,
     ) -> EyreResult<(String, String)> {
         let json = self
-            .run_cmd(node_name, &["context", "create", "-a", app_id])
+            .run_cmd(node_name, ["context", "create", "-a", app_id])
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
@@ -62,7 +62,7 @@ impl Meroctl {
         let json = self
             .run_cmd(
                 node_name,
-                &[
+                [
                     "context",
                     "invite",
                     context_id,
@@ -88,10 +88,7 @@ impl Meroctl {
         invitation_data: &str,
     ) -> EyreResult<(String, String)> {
         let json = self
-            .run_cmd(
-                node_name,
-                &["context", "join", private_key, invitation_data],
-            )
+            .run_cmd(node_name, ["context", "join", private_key, invitation_data])
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
@@ -102,7 +99,7 @@ impl Meroctl {
     }
 
     pub async fn identity_generate(&self, node_name: &str) -> EyreResult<(String, String)> {
-        let json = self.run_cmd(node_name, &["identity", "generate"]).await?;
+        let json = self.run_cmd(node_name, ["identity", "generate"]).await?;
 
         let data = self.remove_value_from_object(json, "data")?;
         let public_key = self.get_string_from_object(&data, "publicKey")?;
@@ -123,7 +120,7 @@ impl Meroctl {
         let json = self
             .run_cmd(
                 node_name,
-                &[
+                [
                     "call",
                     context_id,
                     method_name,
@@ -142,8 +139,16 @@ impl Meroctl {
         Ok(json)
     }
 
-    async fn run_cmd(&self, node_name: &str, args: &[&str]) -> EyreResult<serde_json::Value> {
-        let mut root_args = vec![
+    async fn run_cmd<'a>(
+        &'a self,
+        node_name: &'a str,
+        args: impl IntoIterator<Item = &'a str>,
+    ) -> EyreResult<serde_json::Value> {
+        let mut command = Command::new(&self.binary);
+
+        let mut command_line = format!("Command: '{}", &self.binary);
+
+        let root_args = [
             "--home",
             self.home_dir.as_str(),
             "--node-name",
@@ -152,15 +157,18 @@ impl Meroctl {
             "json",
         ];
 
-        root_args.extend(args);
+        for arg in root_args.into_iter().chain(args) {
+            let _ignored = command.arg(arg);
+            command_line.reserve(arg.len() + 1);
+            command_line.push_str(" ");
+            command_line.push_str(arg);
+        }
 
-        let args_str = root_args.join(" ");
+        command_line.push_str("\'");
 
-        self.output_writer
-            .write_str(&format!("Command: '{:} {:}'", &self.binary, args_str));
+        self.output_writer.write_str(&command_line);
 
-        let output = Command::new(&self.binary)
-            .args(root_args)
+        let output = command
             .stdout(Stdio::piped())
             .spawn()?
             .wait_with_output()
