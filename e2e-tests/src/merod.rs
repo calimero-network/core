@@ -36,19 +36,19 @@ impl Merod {
         }
     }
 
-    pub async fn init(
-        &self,
+    pub async fn init<'a>(
+        &'a self,
         swarm_host: &str,
         swarm_port: u32,
         server_port: u32,
-        args: &[&str],
+        args: impl IntoIterator<Item = &'a str>,
     ) -> EyreResult<()> {
         create_dir_all(&self.home_dir.join(&self.name)).await?;
         create_dir_all(&self.log_dir).await?;
 
         let mut child = self
             .run_cmd(
-                &[
+                [
                     "init",
                     "--swarm-host",
                     swarm_host,
@@ -65,10 +65,9 @@ impl Merod {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        let mut config_args = vec!["config"];
-        config_args.extend(args);
+        let config_args = ["config"].into_iter().chain(args);
 
-        let mut child = self.run_cmd(&config_args, "config").await?;
+        let mut child = self.run_cmd(config_args, "config").await?;
         let result = child.wait().await?;
         if !result.success() {
             bail!("Failed to configure node '{}'", self.name);
@@ -78,7 +77,7 @@ impl Merod {
     }
 
     pub async fn run(&self) -> EyreResult<()> {
-        let child = self.run_cmd(&["run"], "run").await?;
+        let child = self.run_cmd(["run"], "run").await?;
 
         *self.process.borrow_mut() = Some(child);
 
@@ -100,22 +99,32 @@ impl Merod {
         Ok(())
     }
 
-    async fn run_cmd(&self, args: &[&str], log_suffix: &str) -> EyreResult<Child> {
-        let mut root_args = vec!["--home", self.home_dir.as_str(), "--node-name", &self.name];
+    async fn run_cmd<'a>(
+        &'a self,
+        args: impl IntoIterator<Item = &'a str>,
+        log_suffix: &str,
+    ) -> EyreResult<Child> {
+        let mut command = Command::new(&self.binary);
 
-        root_args.extend(args);
+        let mut command_line = format!("Command: '{}", &self.binary);
 
-        let args_str = root_args.join(" ");
+        let root_args = ["--home", self.home_dir.as_str(), "--node-name", &self.name];
 
-        self.output_writer
-            .write_str(&format!("Command: '{:} {:}'", &self.binary, args_str));
+        for arg in root_args.into_iter().chain(args) {
+            let _ignored = command.arg(arg);
+            command_line.reserve(arg.len() + 1);
+            command_line.push_str(" ");
+            command_line.push_str(arg);
+        }
+
+        command_line.push_str("\'");
+
+        self.output_writer.write_str(&command_line);
 
         let log_file = self.log_dir.join(format!("{log_suffix}.log"));
         let mut log_file = File::create(&log_file).await?;
-        let mut child = Command::new(&self.binary)
-            .args(root_args)
-            .stdout(Stdio::piped())
-            .spawn()?;
+
+        let mut child = command.stdout(Stdio::piped()).spawn()?;
 
         if let Some(mut stdout) = child.stdout.take() {
             drop(tokio::spawn(async move {

@@ -133,15 +133,14 @@ impl Driver {
         for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
             if let Entry::Vacant(e) = merods.entry(node_name.clone()) {
-                let mut args = vec![format!(
+                let config_args = [format!(
                     "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
                     self.environment.test_id
                 )];
 
-                args.extend(sandbox.node_args(&node_name).await?);
+                let node_args = sandbox.node_args(&node_name).await?;
 
-                let mut config_args = vec![];
-                config_args.extend(args.iter().map(|arg| &**arg));
+                let config_args = config_args.iter().chain(node_args.iter());
 
                 let merod = Merod::new(
                     node_name,
@@ -156,7 +155,7 @@ impl Driver {
                         &self.config.network.swarm_host,
                         self.config.network.start_swarm_port + i,
                         self.config.network.start_server_port + i,
-                        &config_args,
+                        config_args.map(|s| s.as_str()),
                     )
                     .await?;
 
