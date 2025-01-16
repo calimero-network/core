@@ -28,7 +28,6 @@ pub const EXAMPLES: &str = r"
 
   # Run a node
   $ merod --node-name node1 run
-
 ";
 
 #[derive(Debug, Parser)]

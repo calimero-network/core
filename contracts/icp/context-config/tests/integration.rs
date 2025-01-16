@@ -1,5 +1,3 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use calimero_context_config::icp::repr::ICRepr;
 use calimero_context_config::icp::types::{
     ICApplication, ICCapability, ICContextRequest, ICContextRequestKind, ICRequest, ICRequestKind,
@@ -17,22 +15,28 @@ fn setup() -> (PocketIc, Principal) {
     let wasm = std::fs::read("res/calimero_context_config_icp.wasm").expect("failed to read wasm");
     let canister = pic.create_canister();
     pic.add_cycles(canister, 1_000_000_000_000_000);
+
+    // Create ledger principal first
+    let ledger_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap();
+
+    // Properly encode the init argument
+    let init_arg = candid::encode_one(ledger_id).unwrap();
+
+    // Install with proper init argument
     pic.install_canister(
-        canister,
-        wasm,
-        vec![],
-        None, // No controller
+        canister, wasm, init_arg, // Pass the encoded argument
+        None,
     );
 
     // Set the proxy code
     let proxy_code = std::fs::read("../context-proxy/res/calimero_context_proxy_icp.wasm")
         .expect("failed to read proxy wasm");
-    let ledger_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai").unwrap();
+
     pic.update_call(
         canister,
         Principal::anonymous(),
         "set_proxy_code",
-        candid::encode_args((proxy_code, ledger_id)).unwrap(),
+        candid::encode_one(proxy_code).unwrap(),
     )
     .expect("Failed to set proxy code");
 
@@ -41,13 +45,6 @@ fn setup() -> (PocketIc, Principal) {
 
 fn create_signed_request(signer_key: &SigningKey, request: ICRequest) -> ICSigned<ICRequest> {
     ICSigned::new(request, |bytes| signer_key.sign(bytes)).expect("Failed to create signed request")
-}
-
-fn get_time_nanos(pic: &PocketIc) -> u64 {
-    pic.get_time()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_nanos() as u64
 }
 
 fn handle_response(
@@ -87,13 +84,6 @@ fn test_proxy_management() {
     let (pic, canister) = setup();
     let mut rng = rand::thread_rng();
 
-    // Advance IC time
-    let current_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    pic.advance_time(Duration::from_nanos(current_nanos));
-
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
@@ -119,7 +109,7 @@ fn test_proxy_management() {
             },
         }),
         signer_id: context_id.rt().expect("infallible conversion"),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -140,7 +130,7 @@ fn test_proxy_management() {
             kind: ICContextRequestKind::UpdateProxyContract,
         }),
         signer_id: bob_pk.rt().expect("infallible conversion"),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&bob_sk, update_request);
@@ -159,7 +149,7 @@ fn test_proxy_management() {
             kind: ICContextRequestKind::UpdateProxyContract,
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, update_request);
@@ -177,22 +167,12 @@ fn test_mutate_success_cases() {
     let (pic, canister) = setup();
     let mut rng = rand::thread_rng();
 
-    // Advance IC time to current time
-    let current_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    pic.advance_time(Duration::from_nanos(current_nanos));
-
     // Create context keys and ID
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
     let context_id = context_pk.rt().expect("infallible conversion");
 
-    // Get current IC time in nanoseconds
-    let current_time = get_time_nanos(&pic);
-
-    // Create the request with IC time in nanoseconds
+    // Create the request
     let request = ICRequest {
         kind: ICRequestKind::Context(ICContextRequest {
             context_id,
@@ -208,7 +188,7 @@ fn test_mutate_success_cases() {
             },
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: current_time,
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, request);
@@ -225,13 +205,6 @@ fn test_mutate_success_cases() {
 fn test_member_management() {
     let (pic, canister) = setup();
     let mut rng = rand::thread_rng();
-
-    // Advance IC time
-    let current_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    pic.advance_time(Duration::from_nanos(current_nanos));
 
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
@@ -262,7 +235,7 @@ fn test_member_management() {
             },
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -283,7 +256,7 @@ fn test_member_management() {
             },
         }),
         signer_id: (alice_pk.rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_member_request);
@@ -327,7 +300,7 @@ fn test_member_management() {
             },
         }),
         signer_id: (alice_pk.rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 1,
     };
 
     let signed_request = create_signed_request(&alice_sk, remove_member_request);
@@ -365,13 +338,6 @@ fn test_capability_management() {
     let (pic, canister) = setup();
     let mut rng = rand::thread_rng();
 
-    // Advance IC time
-    let current_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    pic.advance_time(Duration::from_nanos(current_nanos));
-
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
@@ -401,7 +367,7 @@ fn test_capability_management() {
             },
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -422,7 +388,7 @@ fn test_capability_management() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_member_request);
@@ -443,7 +409,7 @@ fn test_capability_management() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 1,
     };
 
     let signed_request = create_signed_request(&alice_sk, grant_request);
@@ -484,7 +450,7 @@ fn test_capability_management() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 2,
     };
 
     let signed_request = create_signed_request(&alice_sk, revoke_request);
@@ -519,13 +485,6 @@ fn test_application_update() {
     let (pic, canister) = setup();
     let mut rng = rand::thread_rng();
 
-    // Advance IC time
-    let current_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
-    pic.advance_time(Duration::from_nanos(current_nanos));
-
     // Create test identities
     let context_sk = SigningKey::from_bytes(&rng.gen());
     let context_pk = context_sk.verifying_key();
@@ -559,7 +518,7 @@ fn test_application_update() {
             },
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -616,7 +575,7 @@ fn test_application_update() {
             },
         }),
         signer_id: (bob_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&bob_sk, update_request);
@@ -668,7 +627,7 @@ fn test_application_update() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, update_request);
@@ -737,7 +696,7 @@ fn test_edge_cases() {
             },
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -756,7 +715,7 @@ fn test_edge_cases() {
             kind: ICContextRequestKind::AddMembers { members: vec![] },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_empty_members);
@@ -778,7 +737,7 @@ fn test_edge_cases() {
             },
         }),
         signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 1,
     };
 
     let signed_request = create_signed_request(&alice_sk, add_duplicate_members);
@@ -806,71 +765,6 @@ fn test_edge_cases() {
             "Member should only appear once"
         );
     }
-}
-
-#[ignore = "we're deprecating timestamp checks, in favor of nonce checks"]
-#[test]
-fn test_timestamp_scenarios() {
-    let (pic, canister) = setup();
-    let mut rng = rand::thread_rng();
-
-    // Setup initial context
-    let context_sk = SigningKey::from_bytes(&rng.gen());
-    let context_pk = context_sk.verifying_key();
-    let context_id = context_pk.to_bytes().rt().expect("infallible conversion");
-    let alice_sk = SigningKey::from_bytes(&rng.gen());
-    let alice_pk = alice_sk.verifying_key();
-    let alice_id = alice_pk.to_bytes().rt().expect("infallible conversion");
-
-    // Create initial context with current timestamp
-    let current_time = get_time_nanos(&pic);
-    let create_request = ICRequest {
-        kind: ICRequestKind::Context(ICContextRequest {
-            context_id,
-            kind: ICContextRequestKind::Add {
-                author_id: alice_id,
-                application: ICApplication {
-                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
-                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
-                    size: 0,
-                    source: String::new(),
-                    metadata: vec![],
-                },
-            },
-        }),
-        signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: current_time,
-    };
-
-    let signed_request = create_signed_request(&context_sk, create_request);
-    let response = pic.update_call(
-        canister,
-        Principal::anonymous(),
-        "mutate",
-        candid::encode_one(signed_request).unwrap(),
-    );
-    handle_response(response, true, "Context creation");
-
-    // Try with expired timestamp (more than 5 seconds old)
-    let expired_request = ICRequest {
-        kind: ICRequestKind::Context(ICContextRequest {
-            context_id,
-            kind: ICContextRequestKind::AddMembers {
-                members: vec![rng.gen::<[_; 32]>().rt().expect("infallible conversion")],
-            },
-        }),
-        signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: current_time - 6_000_000_000, // 6 seconds ago
-    };
-
-    let signed_request = create_signed_request(&alice_sk, expired_request);
-    let response = pic.update_call(
-        canister,
-        Principal::anonymous(),
-        "mutate",
-        candid::encode_one(signed_request).unwrap(),
-    );
-    handle_response(response, false, "Expired timestamp request");
 }
 
 #[test]
@@ -902,7 +796,7 @@ fn test_concurrent_operations() {
             },
         }),
         signer_id: (context_id.as_bytes().rt().expect("infallible conversion")),
-        timestamp_ms: get_time_nanos(&pic),
+        nonce: 0,
     };
 
     let signed_request = create_signed_request(&context_sk, create_request);
@@ -915,9 +809,8 @@ fn test_concurrent_operations() {
     .expect("Context creation should succeed");
 
     // Create multiple member additions with same timestamp
-    let timestamp = get_time_nanos(&pic);
     let mut requests = Vec::new();
-    for _ in 0..3 {
+    for i in 0..3 {
         let new_member = rng.gen::<[_; 32]>().rt().expect("infallible conversion");
         let request = ICRequest {
             kind: ICRequestKind::Context(ICContextRequest {
@@ -927,7 +820,7 @@ fn test_concurrent_operations() {
                 },
             }),
             signer_id: (alice_pk.to_bytes().rt().expect("infallible conversion")),
-            timestamp_ms: timestamp,
+            nonce: i as u64,
         };
         requests.push(create_signed_request(&alice_sk, request));
     }
@@ -967,4 +860,111 @@ fn test_concurrent_operations() {
             "Should have all members (Alice + 3 new members)"
         );
     }
+}
+
+#[test]
+fn test_nonce_management() {
+    let (pic, canister) = setup();
+    let mut rng = rand::thread_rng();
+
+    // Create test identities
+    let context_sk = SigningKey::from_bytes(&rng.gen());
+    let context_pk = context_sk.verifying_key();
+    let context_id = context_pk.rt().expect("infallible conversion");
+
+    let alice_sk = SigningKey::from_bytes(&rng.gen());
+    let alice_pk = alice_sk.verifying_key();
+    let alice_id = alice_pk.rt().expect("infallible conversion");
+
+    // Create initial context
+    let create_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::Add {
+                author_id: alice_id,
+                application: ICApplication {
+                    id: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    blob: rng.gen::<[_; 32]>().rt().expect("infallible conversion"),
+                    size: 0,
+                    source: String::new(),
+                    metadata: vec![],
+                },
+            },
+        }),
+        signer_id: context_id.rt().expect("infallible conversion"),
+        nonce: 0,
+    };
+
+    let signed_request = create_signed_request(&context_sk, create_request);
+    let response = pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "mutate",
+        candid::encode_one(signed_request).unwrap(),
+    );
+    handle_response(response, true, "Context creation");
+
+    // Test sequential nonce increment
+    for i in 0..3 {
+        let request = ICRequest {
+            kind: ICRequestKind::Context(ICContextRequest {
+                context_id,
+                kind: ICContextRequestKind::AddMembers {
+                    members: vec![rng.gen::<[_; 32]>().rt().expect("infallible conversion")],
+                },
+            }),
+            signer_id: alice_id.rt().expect("infallible conversion"),
+            nonce: i as u64,
+        };
+
+        let signed_request = create_signed_request(&alice_sk, request);
+        let response = pic.update_call(
+            canister,
+            Principal::anonymous(),
+            "mutate",
+            candid::encode_one(signed_request).unwrap(),
+        );
+        handle_response(response, true, &format!("Member addition {}", i));
+
+        // Verify nonce was incremented
+        let query_response = pic.query_call(
+            canister,
+            Principal::anonymous(),
+            "fetch_nonce",
+            candid::encode_args((context_id, alice_id)).unwrap(),
+        );
+
+        let current_nonce = if let Ok(WasmResult::Reply(bytes)) = query_response {
+            candid::decode_one::<Option<u64>>(&bytes).expect("Failed to decode nonce")
+        } else {
+            panic!("Failed to fetch nonce");
+        };
+
+        assert_eq!(
+            current_nonce.unwrap(),
+            i + 1,
+            "Nonce should be incremented after operation"
+        );
+    }
+
+    // Test invalid nonce rejection
+    let invalid_nonce_request = ICRequest {
+        kind: ICRequestKind::Context(ICContextRequest {
+            context_id,
+            kind: ICContextRequestKind::AddMembers {
+                members: vec![rng.gen::<[_; 32]>().rt().expect("infallible conversion")],
+            },
+        }),
+        signer_id: alice_id.rt().expect("infallible conversion"),
+        nonce: 0, // Using old nonce
+    };
+
+    let signed_request = create_signed_request(&alice_sk, invalid_nonce_request);
+    let response = pic.update_call(
+        canister,
+        Principal::anonymous(),
+        "mutate",
+        candid::encode_one(signed_request).unwrap(),
+    );
+    handle_response(response, false, "Invalid nonce rejection");
 }

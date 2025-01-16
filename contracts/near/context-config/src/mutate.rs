@@ -6,7 +6,7 @@ use calimero_context_config::types::{
 };
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
 use near_sdk::serde_json::{self, json};
-use near_sdk::store::IterableSet;
+use near_sdk::store::{IterableMap, IterableSet};
 use near_sdk::{env, near, require, AccountId, Gas, NearToken, Promise, PromiseError};
 
 use super::{
@@ -23,48 +23,68 @@ impl ContextConfigs {
             .parse(|i| *i.signer_id)
             .expect("failed to parse input");
 
-        require!(
-            env::block_timestamp_ms().saturating_sub(request.timestamp_ms)
-                <= self.config.validity_threshold_ms,
-            "request expired"
-        );
-
-        match request.kind {
+        let (context_id, kind) = match request.kind {
             RequestKind::Context(ContextRequest {
                 context_id, kind, ..
-            }) => match kind {
-                ContextRequestKind::Add {
-                    author_id,
-                    application,
-                } => {
-                    let _is_sent_on_drop =
-                        self.add_context(&request.signer_id, context_id, author_id, application);
-                }
-                ContextRequestKind::UpdateApplication { application } => {
-                    self.update_application(&request.signer_id, context_id, application);
-                }
-                ContextRequestKind::AddMembers { members } => {
-                    self.add_members(&request.signer_id, context_id, members.into_owned());
-                }
-                ContextRequestKind::RemoveMembers { members } => {
-                    self.remove_members(&request.signer_id, context_id, members.into_owned());
-                }
-                ContextRequestKind::Grant { capabilities } => {
-                    self.grant(&request.signer_id, context_id, capabilities.into_owned());
-                }
-                ContextRequestKind::Revoke { capabilities } => {
-                    self.revoke(&request.signer_id, context_id, capabilities.into_owned());
-                }
-                ContextRequestKind::UpdateProxyContract => {
-                    let _is_sent_on_drop =
-                        self.update_proxy_contract(&request.signer_id, context_id);
-                }
-            },
+            }) => (context_id, kind),
+        };
+
+        self.check_and_increment_nonce(
+            *context_id,
+            request.signer_id.rt().expect("infallible conversion"),
+            request.nonce,
+        );
+
+        match kind {
+            ContextRequestKind::Add {
+                author_id,
+                application,
+            } => {
+                let _is_sent_on_drop =
+                    self.add_context(&request.signer_id, context_id, author_id, application);
+            }
+            ContextRequestKind::UpdateApplication { application } => {
+                self.update_application(&request.signer_id, context_id, application);
+            }
+            ContextRequestKind::AddMembers { members } => {
+                self.add_members(&request.signer_id, context_id, members.into_owned());
+            }
+            ContextRequestKind::RemoveMembers { members } => {
+                self.remove_members(&request.signer_id, context_id, members.into_owned())
+            }
+            ContextRequestKind::Grant { capabilities } => {
+                self.grant(&request.signer_id, context_id, capabilities.into_owned());
+            }
+            ContextRequestKind::Revoke { capabilities } => {
+                self.revoke(&request.signer_id, context_id, capabilities.into_owned());
+            }
+            ContextRequestKind::UpdateProxyContract => {
+                let _is_sent_on_drop = self.update_proxy_contract(&request.signer_id, context_id);
+            }
         }
     }
 }
 
 impl ContextConfigs {
+    fn check_and_increment_nonce(
+        &mut self,
+        context_id: ContextId,
+        member_id: ContextIdentity,
+        nonce: u64,
+    ) {
+        let Some(context) = self.contexts.get_mut(&context_id) else {
+            return;
+        };
+
+        let Some(current_nonce) = context.member_nonces.get_mut(&member_id) else {
+            return;
+        };
+
+        require!(*current_nonce == nonce, "invalid nonce");
+
+        *current_nonce += 1;
+    }
+
     fn add_context(
         &mut self,
         signer_id: &SignerId,
@@ -78,7 +98,7 @@ impl ContextConfigs {
         );
 
         let mut members = IterableSet::new(Prefix::Members(*context_id));
-        let _ = members.insert(*author_id);
+        let _ignored = members.insert(*author_id);
 
         // Create incremental account ID
         let account_id: AccountId = format!("{}.{}", self.next_proxy_id, env::current_account_id())
@@ -87,7 +107,7 @@ impl ContextConfigs {
 
         self.next_proxy_id += 1;
 
-        let context = Context {
+        let mut context = Context {
             application: Guard::new(
                 Prefix::Privileges(PrivilegeScope::Context(
                     *context_id,
@@ -110,6 +130,7 @@ impl ContextConfigs {
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
+            member_nonces: IterableMap::new(b"n"),
             proxy: Guard::new(
                 Prefix::Privileges(PrivilegeScope::Context(
                     *context_id,
@@ -119,6 +140,8 @@ impl ContextConfigs {
                 account_id.clone(),
             ),
         };
+
+        let _ignored = context.member_nonces.insert(*author_id, 0);
 
         if self.contexts.insert(*context_id, context).is_some() {
             env::panic_str("context already exists");
@@ -183,7 +206,9 @@ impl ContextConfigs {
         for member in members {
             env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
 
-            let _ = ctx_members.insert(*member);
+            let _ignored = context.member_nonces.entry(*member).or_default();
+
+            let _ignored = ctx_members.insert(*member);
         }
     }
 
@@ -205,7 +230,10 @@ impl ContextConfigs {
             .get_mut();
 
         for member in members {
-            let _ = ctx_members.remove(&member);
+            let _ignored = ctx_members.remove(&member);
+
+            let _ignored = context.member_nonces.remove(&member);
+
             let member = member.rt().expect("infallible conversion");
 
             env::log_str(&format!(
@@ -324,7 +352,7 @@ impl ContextConfigs {
         code_mut.take().expect("proxy code not set")
     }
 
-    pub fn init_proxy_contract(
+    fn init_proxy_contract(
         &mut self,
         context_id: Repr<ContextId>,
         account_id: AccountId,

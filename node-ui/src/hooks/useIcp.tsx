@@ -324,13 +324,17 @@ export function useIcp(): useIcpReturn {
       // Wait for II to say it's ready
       const readyPromise = new Promise<MessageEvent>((resolve, reject) => {
         const readyHandler = (e: MessageEvent) => {
-          window.removeEventListener('message', readyHandler);
-          if (e.origin !== iiUrl.origin || e.data.kind !== 'authorize-ready') {
-            win.close();
-            reject(new Error('Bad message from II window. Please try again.'));
-          } else {
-            resolve(e);
+          // Only process messages from II
+          if (e.origin !== iiUrl.origin) {
+            return; // Ignore messages from other origins
           }
+
+          if (e.data?.kind !== 'authorize-ready') {
+            return; // Ignore messages with wrong kind
+          }
+
+          window.removeEventListener('message', readyHandler);
+          resolve(e);
         };
         window.addEventListener('message', readyHandler);
       });

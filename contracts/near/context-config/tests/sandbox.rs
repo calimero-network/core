@@ -1,9 +1,9 @@
 #![allow(unused_crate_dependencies)]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
-    Application, Capability, ContextIdentity, Revision, Signed, SignerId,
+    Application, Capability, ContextId, ContextIdentity, Revision, Signed, SignerId,
 };
 use calimero_context_config::{
     ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals,
@@ -13,9 +13,39 @@ use ed25519_dalek::{Signer, SigningKey};
 use eyre::Ok;
 use near_sdk::AccountId;
 use near_workspaces::types::NearToken;
+use near_workspaces::Contract;
 use rand::Rng;
 use serde_json::json;
-use tokio::{fs, time};
+use tokio::fs;
+
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
+enum Member {
+    Alice,
+    Bob,
+    Carol,
+}
+
+impl Member {
+    fn all() -> &'static [Member] {
+        &[Member::Alice, Member::Bob, Member::Carol]
+    }
+}
+
+async fn fetch_nonce(
+    contract: &Contract,
+    context_id: Repr<ContextId>,
+    member_pk: Repr<ContextIdentity>,
+) -> eyre::Result<Option<u64>> {
+    let res: Option<u64> = contract
+        .view("fetch_nonce")
+        .args_json(json!({
+            "context_id": context_id,
+            "member_id": member_pk,
+        }))
+        .await?
+        .json()?;
+    Ok(res)
+}
 
 #[tokio::test]
 async fn main() -> eyre::Result<()> {
@@ -79,7 +109,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 0)
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -125,7 +155,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -156,7 +186,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -233,6 +263,9 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id]);
 
+    let mut nonces: HashMap<Member, u64> =
+        Member::all().iter().map(|&member| (member, 0)).collect();
+
     let res = node1
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
@@ -244,7 +277,11 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -260,6 +297,15 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         ),]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        1,
+        "Alice: Nonce should be incremented to 1 after request is sent"
+    );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
@@ -319,7 +365,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(bob_cx_id.rt()?, kind)
+                Request::new(bob_cx_id.rt()?, kind, *nonces.get(&Member::Bob).unwrap())
             },
             |p| bob_cx_sk.sign(p),
         )?)
@@ -337,6 +383,14 @@ async fn main() -> eyre::Result<()> {
             err
         );
     }
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, bob_cx_id)
+            .await?
+            .unwrap(),
+        0,
+        "Nonce should be 0 after request is reverted"
+    );
 
     let res = contract
         .view("application_revision")
@@ -367,7 +421,11 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -383,6 +441,15 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         )]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        2,
+        "Alice: Nonce should be incremented to 2 after request is sent"
+    );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res = contract
         .view("application_revision")
@@ -413,7 +480,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(bob_cx_id.rt()?, kind)
+                Request::new(bob_cx_id.rt()?, kind, *nonces.get(&Member::Bob).unwrap())
             },
             |p| bob_cx_sk.sign(p),
         )?)
@@ -429,6 +496,15 @@ async fn main() -> eyre::Result<()> {
             carol_cx_id, context_id
         ),]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, bob_cx_id)
+            .await?
+            .unwrap(),
+        1,
+        "Bob: Nonce should be incremented to 1 after request is sent"
+    );
+    *nonces.entry(Member::Bob).or_insert(0) += 1;
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
@@ -508,7 +584,7 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(bob_cx_id.rt()?, kind)
+                Request::new(bob_cx_id.rt()?, kind, *nonces.get(&Member::Bob).unwrap())
             },
             |p| bob_cx_sk.sign(p),
         )?)
@@ -526,6 +602,14 @@ async fn main() -> eyre::Result<()> {
             err
         );
     }
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, bob_cx_id)
+            .await?
+            .unwrap(),
+        1,
+        "Bob: Nonce should be 1 after request is reverted"
+    );
 
     let res = contract
         .view("application")
@@ -574,7 +658,11 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -590,6 +678,15 @@ async fn main() -> eyre::Result<()> {
             context_id, application_id, new_application_id
         )]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        3,
+        "Alice: Nonce should be incremented to 3 after request is sent"
+    );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res = contract
         .view("application")
@@ -632,7 +729,11 @@ async fn main() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(
+                    alice_cx_id.rt()?,
+                    kind,
+                    *nonces.get(&Member::Alice).unwrap(),
+                )
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -648,6 +749,15 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         )]
     );
+
+    assert_eq!(
+        fetch_nonce(&contract, context_id, alice_cx_id)
+            .await?
+            .unwrap(),
+        4,
+        "Alice: Nonce should be incremented to 4 after request is sent"
+    );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res: BTreeMap<Repr<SignerId>, Vec<Capability>> = contract
         .view("privileges")
@@ -712,33 +822,6 @@ async fn main() -> eyre::Result<()> {
         .into_result()?;
 
     assert_eq!(res.logs(), ["Set validity threshold to `5s`"]);
-
-    let req = node1.call(contract.id(), "mutate").args_json(Signed::new(
-        &{
-            let kind = RequestKind::Context(ContextRequest::new(
-                context_id,
-                ContextRequestKind::RemoveMembers {
-                    members: vec![carol_cx_id].into(),
-                },
-            ));
-
-            Request::new(alice_cx_id.rt()?, kind)
-        },
-        |p| alice_cx_sk.sign(p),
-    )?);
-
-    time::sleep(time::Duration::from_secs(5)).await;
-
-    let res = req
-        .transact()
-        .await?
-        .raw_bytes()
-        .expect_err("request should've expired");
-
-    {
-        let err = res.to_string();
-        assert!(err.contains("request expired"), "{}", err);
-    }
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
@@ -818,7 +901,7 @@ async fn migration() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -935,7 +1018,7 @@ async fn test_deploy() -> eyre::Result<()> {
                     },
                 ));
 
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -977,7 +1060,7 @@ async fn test_deploy() -> eyre::Result<()> {
                     ContextRequestKind::UpdateProxyContract,
                 ));
 
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 0)
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -1003,7 +1086,6 @@ async fn test_deploy() -> eyre::Result<()> {
         method_name: "increment".to_string(),
         args: "[]".to_string(),
         deposit: 0,
-        gas: 1_000_000_000_000,
     }];
 
     let request = ProxyMutateRequest::Propose {
@@ -1048,14 +1130,12 @@ async fn test_deploy() -> eyre::Result<()> {
         method_name,
         args,
         deposit,
-        gas,
     } = &created_proposal.actions[0]
     {
         assert_eq!(receiver_id, contract.id());
         assert_eq!(method_name, "increment");
         assert_eq!(args, "[]");
         assert_eq!(*deposit, 0);
-        assert_eq!(*gas, 1_000_000_000_000);
     } else {
         panic!("Expected ExternalFunctionCall action");
     }
@@ -1143,7 +1223,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
                         ),
                     },
                 ));
-                Request::new(context_id.rt()?, kind)
+                Request::new(context_id.rt()?, kind, 0)
             },
             |p| context_secret.sign(p),
         )?)
@@ -1211,7 +1291,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::UpdateProxyContract,
                 ));
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 0)
             },
             |p| alice_cx_sk.sign(p),
         )?)
@@ -1291,7 +1371,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
                     context_id,
                     ContextRequestKind::UpdateProxyContract,
                 ));
-                Request::new(alice_cx_id.rt()?, kind)
+                Request::new(alice_cx_id.rt()?, kind, 1)
             },
             |p| alice_cx_sk.sign(p),
         )?)

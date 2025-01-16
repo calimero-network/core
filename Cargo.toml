@@ -41,7 +41,6 @@ members = [
 
     "./contracts/icp/context-config",
     "./contracts/icp/context-proxy",
-    "./contracts/icp/context-proxy/mock/ledger",
     "./contracts/icp/context-proxy/mock/external",
 
     "./e2e-tests",
@@ -280,7 +279,7 @@ float_cmp_const = "deny"
 fn_to_numeric_cast_any = "deny"
 format_push_string = "deny"
 get_unwrap = "deny"
-impl_trait_in_params = "deny"
+# impl_trait_in_params = "deny"
 integer_division = "deny"
 lossy_float_literal = "deny"
 mem_forget = "deny"

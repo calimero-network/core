@@ -23,6 +23,7 @@ pub struct Context {
     pub application: Guard<ICApplication>,
     pub members: Guard<BTreeSet<ICRepr<ContextIdentity>>>,
     pub proxy: Guard<Principal>,
+    pub member_nonces: BTreeMap<ICRepr<ContextIdentity>, u64>,
 }
 
 #[derive(CandidType, Deserialize, Debug)]
@@ -34,13 +35,13 @@ pub struct ContextConfigs {
 }
 
 #[ic_cdk::init]
-fn init() {
+fn init(ledger_id: Principal) {
     CONTEXT_CONFIGS.with(|state| {
         *state.borrow_mut() = Some(ContextConfigs {
             contexts: BTreeMap::new(),
             proxy_code: None,
             owner: ic_cdk::api::caller(),
-            ledger_id: Principal::anonymous(),
+            ledger_id,
         });
     });
 }

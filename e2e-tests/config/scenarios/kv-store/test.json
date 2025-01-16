@@ -1,12 +1,16 @@
 {
   "steps": [
     {
-      "contextCreate": {
-        "application": { "localFile": "./apps/kv-store/res/kv_store.wasm" }
+      "applicationInstall": {
+        "application": { "localFile": "./apps/kv-store/res/kv_store.wasm" },
+        "target": "allMembers"
       }
     },
     {
-      "jsonRpcCall": {
+      "contextCreate": null
+    },
+    {
+      "call": {
         "methodName": "set",
         "argsJson": { "key": "foo", "value": "bar" },
         "expectedResultJson": null,
@@ -14,7 +18,7 @@
       }
     },
     {
-      "jsonRpcCall": {
+      "call": {
         "methodName": "get",
         "argsJson": { "key": "foo" },
         "expectedResultJson": "bar",
@@ -23,6 +27,14 @@
     },
     {
       "contextInviteJoin": null
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": { "key": "foo" },
+        "expectedResultJson": "bar",
+        "target": "allMembers"
+      }
     }
   ]
 }
