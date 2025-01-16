@@ -12,6 +12,7 @@
 - Allowed the specification of all protocol's default context configuration
 - Exposed, and enabled functionality for context proxy storage
 - Introduced bootstrap command for quick development as a demo
+- Added additional REST endpoints for easier access and information retrieval
 
 ## [0.2.0] - 2024-12-05
 
