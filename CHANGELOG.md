@@ -1,11 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.3.0] - 2025-01-16
+
+- Introduced ICP integrations, achieving full feature parity with NEAR and
+  Starknet
+- Improved replay protection on external interactions, fixing spurious failures
+  from expired requests
+- Moved protocol selection to context creation, and out of the config
+- Allowed the specification of all protocol's default context configuration
+- Exposed, and enabled functionality for context proxy storage
+- Introduced bootstrap command for quick development as a demo
+- Added additional REST endpoints for easier access and information retrieval
+
 ## [0.2.0] - 2024-12-05
 
 Rust SDK:
 
 - env::executor_id() for fetching the runtime identity (no arbitrary signing,
-  however.
+  however).
 - env::context_id() for fetching the context ID.
 - calimero_storage::collections::{Unordered{Map,Set},Vector} for conflict-free
   operations
@@ -31,3 +45,9 @@ Integrations:
   every created context, which facilitates context representation on the network
 - Starknet: reached feature parity with the NEAR implementation, allowing
   contexts to be created in association with the Starknet protocol.
+
+[unreleased]:
+  https://github.com/calimero-network/core/compare/merod-0.3.0...HEAD
+[0.3.0]:
+  https://github.com/calimero-network/core/compare/merod-0.2.0...merod-0.3.0
+[0.2.0]: https://github.com/calimero-network/core/releases/tag/merod-0.2.0
