@@ -58,10 +58,10 @@ impl NearSandboxEnvironment {
 
         Ok(vec![
             format!(
-                "context.config.new.contract_id=\"{}\"",
+                "context.config.near.contract_id=\"{}\"",
                 self.contract.as_account().id()
             ),
-            format!("context.config.signer.use=\"{}\"", "self"),
+            format!("context.config.near.signer=\"{}\"", "self"),
             format!(
                 "context.config.signer.self.near.testnet.rpc_url=\"{}\"",
                 self.worker.rpc_addr()

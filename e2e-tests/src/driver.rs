@@ -29,6 +29,7 @@ pub struct TestContext<'a> {
     pub context_id: Option<String>,
     pub inviter_public_key: Option<String>,
     pub invitees_public_keys: HashMap<String, String>,
+    pub protocol_name: &'a str,
     pub output_writer: OutputWriter,
 }
 
@@ -43,6 +44,7 @@ impl<'a> TestContext<'a> {
         invitees: Vec<String>,
         meroctl: &'a Meroctl,
         output_writer: OutputWriter,
+        protocol_name: &'a str,
     ) -> Self {
         Self {
             inviter,
@@ -50,6 +52,7 @@ impl<'a> TestContext<'a> {
             meroctl,
             application_id: None,
             context_id: None,
+            protocol_name,
             inviter_public_key: None,
             invitees_public_keys: HashMap::new(),
             output_writer,
@@ -190,7 +193,7 @@ impl Driver {
         &self,
         mero: &Mero,
         mut report: TestRunReport,
-        protocol_name: String,
+        protocol_name: &str,
     ) -> EyreResult<TestRunReport> {
         let scenarios_dir = self.environment.input_dir.join("scenarios");
         let mut entries = read_dir(scenarios_dir).await?;
@@ -208,6 +211,7 @@ impl Driver {
                                 .to_str()
                                 .ok_or_eyre("failed to convert scenario file name")?,
                             test_file_path,
+                            protocol_name,
                         )
                         .await?;
 
@@ -216,7 +220,7 @@ impl Driver {
                             .scenario_matrix
                             .entry(scenario_report.scenario_name.clone())
                             .or_default()
-                            .insert(protocol_name.clone(), scenario_report),
+                            .insert(protocol_name.to_string(), scenario_report),
                     );
                 }
             }
@@ -230,6 +234,7 @@ impl Driver {
         mero: &Mero,
         scenarion_name: &str,
         file_path: PathBuf,
+        protocol_name: &str,
     ) -> EyreResult<TestScenarioReport> {
         self.environment
             .output_writer
@@ -255,8 +260,13 @@ impl Driver {
             .output_writer
             .write_str(&format!("Picked invitees: {invitees:?}"));
 
-        let mut ctx =
-            TestContext::new(inviter, invitees, &mero.ctl, self.environment.output_writer);
+        let mut ctx = TestContext::new(
+            inviter,
+            invitees,
+            &mero.ctl,
+            self.environment.output_writer,
+            protocol_name,
+        );
 
         let mut report = TestScenarioReport::new(scenarion_name.to_owned());
 
