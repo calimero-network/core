@@ -2,8 +2,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key::ContextMeta as ContextMetaKey;
-use calimero_store::key::ContextConfig as ContextConfigKey;
+use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use owo_colors::OwoColorize;
@@ -91,7 +90,7 @@ impl ContextCommand {
                 for (k, v) in handle.iter::<ContextMetaKey>()?.entries() {
                     let (k, v) = (k?, v?);
                     let context_id = k.context_id();
-                    
+
                     // Get the config for this context
                     let protocol = handle
                         .get(&ContextConfigKey::new(context_id))?
