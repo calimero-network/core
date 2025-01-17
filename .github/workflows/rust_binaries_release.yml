@@ -106,11 +106,23 @@ jobs:
       - name: Download and set up OpenSSL for cross-compilation
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
-          wget https://www.openssl.org/source/openssl-1.1.1k.tar.gz
-          tar -xzf openssl-1.1.1k.tar.gz
-          cd openssl-1.1.1k
-          ./Configure linux-aarch64 --prefix=$HOME/openssl-aarch64 --cross-compile-prefix=aarch64-linux-gnu-
-          make -j$(nproc)
+          wget https://www.openssl.org/source/openssl-1.1.1g.tar.gz
+          tar -xzf openssl-1.1.1g.tar.gz
+          cd openssl-1.1.1g
+          # More restrictive C99 flags and additional compiler options
+          export CROSS_COMPILE=""  # Clear CROSS_COMPILE to prevent double prefix
+          export CC="aarch64-linux-gnu-gcc"
+          export CXX="aarch64-linux-gnu-g++"
+          export CFLAGS="-std=gnu99 -O2 -fPIC -D_GNU_SOURCE -I/usr/aarch64-linux-gnu/include"
+          export LDFLAGS="-L/usr/aarch64-linux-gnu/lib"
+          ./Configure linux-aarch64 --prefix=$HOME/openssl-aarch64 \
+            no-asm \
+            no-shared \
+            no-async \
+            no-engine \
+            no-dso \
+            no-deprecated
+          make -j$(nproc) CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
           make install_sw
           cd ..
           echo "OPENSSL_DIR=$HOME/openssl-aarch64" >> $GITHUB_ENV
@@ -121,22 +133,12 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
 
-      - name: Install and configure Zig for aarch64 cross-compilation
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          wget https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz
-          tar -xf zig-linux-x86_64-0.11.0.tar.xz
-          echo "ZIG_PATH=$PWD/zig-linux-x86_64-0.11.0/zig" >> $GITHUB_ENV
-          echo "$PWD/zig-linux-x86_64-0.11.0" >> $GITHUB_PATH
-          zig-linux-x86_64-0.11.0/zig version
-          echo "CARGO_ZIGBUILD_ZIG=$PWD/zig-linux-x86_64-0.11.0/zig" >> $GITHUB_ENV
-          cargo install cargo-zigbuild
-
       - name: Build binaries
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         env:
-          C_INCLUDE_PATH: /usr/lib/gcc-cross/aarch64-linux-gnu/11/include
-          CXX_INCLUDE_PATH: /usr/lib/gcc-cross/aarch64-linux-gnu/11/include/c++
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
           OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
           OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
@@ -144,8 +146,9 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS: ${{ env.PKG_CONFIG_ALLOW_CROSS }}
           PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
           OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
-          RUSTFLAGS: '-C link-arg=-lstdc++ -C link-arg=-lpthread -C link-arg=-lc'
-        run: cargo zigbuild ${{ steps.cargo_args.outputs.args }}
+        run: |
+          # Remove cargo-zigbuild
+          cargo build ${{ steps.cargo_args.outputs.args }}
 
       - name: Build binaries
         if: matrix.target != 'aarch64-unknown-linux-gnu'
