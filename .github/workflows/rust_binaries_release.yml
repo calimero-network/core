@@ -147,7 +147,6 @@ jobs:
           PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
           OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
         run: |
-          # Remove cargo-zigbuild
           cargo build ${{ steps.cargo_args.outputs.args }}
 
       - name: Build binaries
