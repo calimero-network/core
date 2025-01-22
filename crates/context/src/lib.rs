@@ -784,7 +784,7 @@ impl ContextManager {
         Ok(handle.has(&ContextIdentityKey::new(context_id, public_key))?)
     }
 
-    fn get_context_identities(
+    pub fn get_context_identities(
         &self,
         context_id: ContextId,
         only_owned_identities: bool,

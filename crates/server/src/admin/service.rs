@@ -129,6 +129,10 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities::handler),
         )
+        .route(
+            "/contexts/:context_id/identities-owned",
+            get(get_context_identities::handler),
+        )
         .route("/contexts/invite", post(invite_to_context::handler))
         .route("/contexts/join", post(join_context::handler))
         .route("/contexts", get(get_contexts::handler))
@@ -223,6 +227,10 @@ pub(crate) fn setup(
         )
         .route(
             "/dev/contexts/:context_id/identities",
+            get(get_context_identities::handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/identities-owned",
             get(get_context_identities::handler),
         )
         .route("/dev/contexts/:context_id", delete(delete_context::handler))
