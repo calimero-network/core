@@ -7,12 +7,16 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
+bincode.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
+stellar-baselib.workspace = true
+soroban-client.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
