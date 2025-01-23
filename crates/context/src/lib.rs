@@ -1487,4 +1487,8 @@ impl ContextManager {
 
         Ok(proxy_contract)
     }
+
+    pub async fn get_peers_count(&self) -> usize {
+        self.network_client.peer_count().await
+    }
 }

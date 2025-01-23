@@ -16,12 +16,14 @@ mod bootstrap;
 mod call;
 mod context;
 mod identity;
+mod peers;
 mod proxy;
 
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use identity::IdentityCommand;
+use peers::PeersCommand;
 use proxy::ProxyCommand;
 
 pub const EXAMPLES: &str = r"
@@ -56,6 +58,7 @@ pub enum SubCommands {
     Proxy(ProxyCommand),
     Call(CallCommand),
     Bootstrap(BootstrapCommand),
+    Peers(PeersCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -106,6 +109,7 @@ impl RootCommand {
             SubCommands::Proxy(proxy) => proxy.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Bootstrap(call) => call.run(&environment).await,
+            SubCommands::Peers(peers) => peers.run(&environment).await,
         };
 
         if let Err(err) = result {
