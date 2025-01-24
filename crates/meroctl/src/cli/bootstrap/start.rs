@@ -199,6 +199,7 @@ impl StartBootstrapCommand {
             context_id,
             inviter_id: inviter_public_key,
             invitee_id: invitee_private_key.public_key(),
+            identity_name: None,
         };
         let invitation_payload = invite_command.invite(invitor_environment).await?;
 
@@ -215,6 +216,7 @@ impl StartBootstrapCommand {
         let join_command = JoinCommand {
             private_key: invitee_private_key,
             invitation_payload,
+            identity_name: None,
         };
         join_command.run(invitee_environment).await?;
         println!(

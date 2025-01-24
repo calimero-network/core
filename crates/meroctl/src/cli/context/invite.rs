@@ -1,6 +1,11 @@
+use std::fs::File;
+use std::io::BufReader;
+
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
+use calimero_server_primitives::admin::{
+    GenerateContextIdentityResponse, InviteToContextRequest, InviteToContextResponse,
+};
 use clap::Parser;
 use eyre::Result as EyreResult;
 use reqwest::Client;
@@ -21,8 +26,18 @@ pub struct InviteCommand {
     #[clap(value_name = "INVITER_ID", help = "The public key of the inviter")]
     pub inviter_id: PublicKey,
 
-    #[clap(value_name = "INVITEE_ID", help = "The public key of the invitee")]
+    #[clap(
+        value_name = "INVITEE_ID",
+        help = "The public key of the invitee",
+        conflicts_with = "identity_name"
+    )]
     pub invitee_id: PublicKey,
+
+    #[clap(
+        value_name = "IDENTITY_NAME",
+        help = "The identity with which you want to send this invite (public key)"
+    )]
+    pub identity_name: Option<String>,
 }
 
 impl Report for InviteToContextResponse {
@@ -46,13 +61,32 @@ impl InviteCommand {
     pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
+        let mut my_public_key = self.invitee_id;
+
+        if let Some(identity_name) = &self.identity_name {
+            let path = &environment
+                .args
+                .home
+                .join(&environment.args.node_name)
+                .join(format!("{}.identity", identity_name));
+
+            let file_reader = BufReader::new(File::open(path)?);
+
+            my_public_key = serde_json::from_reader::<
+                BufReader<File>,
+                GenerateContextIdentityResponse,
+            >(file_reader)?
+            .data
+            .public_key;
+        }
+
         let response: InviteToContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/invite")?,
             Some(InviteToContextRequest {
                 context_id: self.context_id,
                 inviter_id: self.inviter_id,
-                invitee_id: self.invitee_id,
+                invitee_id: my_public_key,
             }),
             &config.identity,
             RequestType::Post,

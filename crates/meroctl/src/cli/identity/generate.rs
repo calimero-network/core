@@ -1,15 +1,24 @@
+use std::fs::File;
+use std::io::BufWriter;
+
+use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::GenerateContextIdentityResponse;
 use clap::Parser;
 use eyre::Result as EyreResult;
-use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Generate public/private key pair used for context identity")]
-pub struct GenerateCommand;
+pub struct GenerateCommand {
+    #[clap(
+        short,
+        long,
+        help = "The name of the identity you are going to generate"
+    )]
+    pub name: Option<String>,
+}
 
 impl Report for GenerateContextIdentityResponse {
     fn report(&self) {
@@ -20,18 +29,21 @@ impl Report for GenerateContextIdentityResponse {
 
 impl GenerateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let private_key = PrivateKey::random(&mut rand::thread_rng());
 
-        let url = multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/identity/context")?;
+        let response = GenerateContextIdentityResponse::new(private_key.public_key(), private_key);
 
-        let response: GenerateContextIdentityResponse = do_request(
-            &Client::new(),
-            url,
-            None::<()>,
-            &config.identity,
-            RequestType::Post,
-        )
-        .await?;
+        if let Some(identity_name) = self.name {
+            let path = &environment
+                .args
+                .home
+                .join(&environment.args.node_name)
+                .join(format!("{}.identity", identity_name));
+
+            let file_writer = BufWriter::new(File::create(path)?);
+
+            serde_json::to_writer(file_writer, &response)?;
+        }
 
         environment.output.write(&response);
 

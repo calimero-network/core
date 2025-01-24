@@ -1,6 +1,11 @@
+use std::fs::File;
+use std::io::BufReader;
+
 use calimero_primitives::context::ContextInvitationPayload;
 use calimero_primitives::identity::PrivateKey;
-use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
+use calimero_server_primitives::admin::{
+    GenerateContextIdentityResponse, JoinContextRequest, JoinContextResponse,
+};
 use clap::Parser;
 use eyre::Result as EyreResult;
 use reqwest::Client;
@@ -14,7 +19,8 @@ use crate::output::Report;
 pub struct JoinCommand {
     #[clap(
         value_name = "PRIVATE_KEY",
-        help = "The private key for signing the join context request"
+        help = "The private key for signing the join context request",
+        conflicts_with = "identity_name"
     )]
     pub private_key: PrivateKey,
     #[clap(
@@ -22,6 +28,11 @@ pub struct JoinCommand {
         help = "The invitation payload for joining the context"
     )]
     pub invitation_payload: ContextInvitationPayload,
+    #[clap(
+        value_name = "IDENTITY_NAME",
+        help = "The identity which you want to sign this invite (private key)"
+    )]
+    pub identity_name: Option<String>,
 }
 
 impl Report for JoinContextResponse {
@@ -40,11 +51,30 @@ impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
+        let mut my_private_key = self.private_key;
+
+        if let Some(identity_name) = &self.identity_name {
+            let path = &environment
+                .args
+                .home
+                .join(&environment.args.node_name)
+                .join(format!("{}.identity", identity_name));
+
+            let file_reader = BufReader::new(File::open(path)?);
+
+            my_private_key = serde_json::from_reader::<
+                BufReader<File>,
+                GenerateContextIdentityResponse,
+            >(file_reader)?
+            .data
+            .private_key;
+        }
+
         let response: JoinContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/join")?,
             Some(JoinContextRequest::new(
-                self.private_key,
+                my_private_key,
                 self.invitation_payload,
             )),
             &config.identity,
