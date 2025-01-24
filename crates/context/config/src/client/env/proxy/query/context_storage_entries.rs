@@ -10,6 +10,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::types::ContextStorageEntry;
 
 #[derive(Clone, Debug, Serialize)]
@@ -101,5 +102,19 @@ impl Method<Icp> for ContextStorageEntriesRequest {
             .into_iter()
             .map(|(key, value)| ContextStorageEntry { key, value })
             .collect())
+    }
+}
+
+impl Method<Stellar> for ContextStorageEntriesRequest {
+    type Returns = Vec<ContextStorageEntry>;
+
+    const METHOD: &'static str = "context_storage_entries";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

@@ -7,6 +7,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::Repr;
 use crate::types::{ContextId, Revision};
@@ -70,5 +71,19 @@ impl Method<Icp> for ApplicationRevisionRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         Decode!(&response, Revision).map_err(Into::into)
+    }
+}
+
+impl Method<Stellar> for ApplicationRevisionRequest {
+    type Returns = Revision;
+
+    const METHOD: &'static str = "application_revision";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

@@ -11,6 +11,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::ICProposalWithApprovals;
 use crate::types::ProposalId;
@@ -98,5 +99,19 @@ impl Method<Icp> for ProposalApprovalsRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, ICProposalWithApprovals)?;
         Ok(decoded.into())
+    }
+}
+
+impl Method<Stellar> for ProposalApprovalsRequest {
+    type Returns = ProposalWithApprovals;
+
+    const METHOD: &'static str = "get_confirmations_count";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

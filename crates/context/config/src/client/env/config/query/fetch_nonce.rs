@@ -9,6 +9,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
@@ -95,5 +96,19 @@ impl Method<Icp> for FetchNonceRequest {
         let decoded = Decode!(&response, Option<u64>)?;
 
         Ok(decoded)
+    }
+}
+
+impl Method<Stellar> for FetchNonceRequest {
+    type Returns = Option<u64>;
+
+    const METHOD: &'static str = "fetch_nonce";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

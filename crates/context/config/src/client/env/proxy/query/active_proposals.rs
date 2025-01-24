@@ -5,6 +5,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 
 #[derive(Copy, Clone, Debug, Serialize, CandidType)]
 pub(super) struct ActiveProposalRequest;
@@ -67,5 +68,19 @@ impl Method<Icp> for ActiveProposalRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let value = Decode!(&response, u32)?;
         Ok(value as u16)
+    }
+}
+
+impl Method<Stellar> for ActiveProposalRequest {
+    type Returns = u16;
+
+    const METHOD: &'static str = "get_active_proposals_limit";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

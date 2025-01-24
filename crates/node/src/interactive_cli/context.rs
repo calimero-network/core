@@ -31,7 +31,7 @@ enum Commands {
         /// The seed for the context (to derive a deterministic context ID)
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
-        /// The protocol to use for the context - possible values: near|starknet|icp
+        /// The protocol to use for the context - possible values: near|starknet|icp|stellar
         #[clap(long)]
         protocol: String,
     },
