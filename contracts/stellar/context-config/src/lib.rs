@@ -2,7 +2,7 @@
 
 use guard::Guard;
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, Address, Env, Map, Symbol, BytesN, contracttype
+    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map, Symbol,
 };
 
 mod guard;
@@ -42,19 +42,19 @@ pub enum OptionalBytes {
 
 // Helper methods for the custom option type
 impl OptionalBytes {
-  pub fn from_option(opt: Option<BytesN<32>>) -> Self {
-      match opt {
-          Some(bytes) => OptionalBytes::Some(bytes),
-          None => OptionalBytes::None,
-      }
-  }
+    pub fn from_option(opt: Option<BytesN<32>>) -> Self {
+        match opt {
+            Some(bytes) => OptionalBytes::Some(bytes),
+            None => OptionalBytes::None,
+        }
+    }
 
-  pub fn to_option(&self) -> Option<BytesN<32>> {
-      match self {
-          OptionalBytes::Some(bytes) => Some(bytes.clone()),
-          OptionalBytes::None => None,
-      }
-  }
+    pub fn to_option(&self) -> Option<BytesN<32>> {
+        match self {
+            OptionalBytes::Some(bytes) => Some(bytes.clone()),
+            OptionalBytes::None => None,
+        }
+    }
 }
 
 #[contract]
@@ -76,7 +76,9 @@ impl ContextContract {
             owner,
         };
 
-        env.storage().instance().set(&symbol_short!("STATE"), &configs);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("STATE"), &configs);
 
         Ok(())
     }

@@ -1,16 +1,16 @@
 extern crate alloc;
 use alloc::vec::Vec;
-use soroban_sdk::{
-  log, testutils::Address as _, Address, Bytes, BytesN, Env, IntoVal, vec, xdr::ToXdr
-};
 
-use ed25519_dalek::{SigningKey, Signer};
+use ed25519_dalek::{Signer, SigningKey};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal};
 
-use crate::{
-  types::{
-      Application, Capability, ContextRequest, ContextRequestKind, Request, RequestKind, SignedRequest
-  }, ContextContract, ContextContractClient
+use crate::types::{
+    Application, Capability, ContextRequest, ContextRequestKind, Request, RequestKind,
+    SignedRequest,
 };
+use crate::{ContextContract, ContextContractClient};
 
 fn create_signed_request(signer_key: &SigningKey, request: Request, env: &Env) -> SignedRequest {
     let request_xdr = request.clone().to_xdr(&env);
@@ -27,19 +27,20 @@ fn create_signed_request(signer_key: &SigningKey, request: Request, env: &Env) -
 #[test]
 fn test_add_context() {
     let env = Env::default();
-    
+
     // Register the contract using the new method name
     let contract_id = env.register(ContextContract, ());
 
     let client = ContextContractClient::new(&env, &contract_id);
-    
+
     // Generate addresses using the correct method
     let owner = Address::generate(&env);
-    
+
     // Initialize the contract
     client.mock_all_auths().initialize(&owner);
     // Read the WASM bytes from the hello_world contract
-    let wasm = include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+    let wasm =
+        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
 
     // Set proxy code
@@ -48,13 +49,11 @@ fn test_add_context() {
     log!(&env, "Proxy code hash: {:?}", wasm_hash);
 
     // Wrap the PRNG call in as_contract()
-    let random_bytes: BytesN<32> = env.as_contract(&contract_id, || {
-        env.prng().gen()
-    });
+    let random_bytes: BytesN<32> = env.as_contract(&contract_id, || env.prng().gen());
 
     let signing_key = SigningKey::from_bytes(&random_bytes.to_array());
     let public_key = signing_key.verifying_key();
-    
+
     let context_id = BytesN::from_array(&env, &public_key.to_bytes());
     let author_id = BytesN::from_array(&env, &[2u8; 32]);
 
@@ -77,7 +76,7 @@ fn test_add_context() {
     };
 
     let signed_request = create_signed_request(&signing_key, request, &env);
-    
+
     // Log before mutation
     log!(&env, "About to mutate contract with request");
     client.mutate(&signed_request);
@@ -85,9 +84,14 @@ fn test_add_context() {
 
     // Query and verify the application
     let app = client.application(&context_id);
-    
+
     if app.id == application.id {
-        log!(&env, "Found application: id={:?}, source={}", app.id, app.source);
+        log!(
+            &env,
+            "Found application: id={:?}, source={}",
+            app.id,
+            app.source
+        );
     } else {
         log!(&env, "No application found for context_id={:?}", context_id);
     }
@@ -98,21 +102,26 @@ fn test_member_management() {
     let env = Env::default();
     let contract_id = env.register(ContextContract, ());
     let client = ContextContractClient::new(&env, &contract_id);
-    
+
     // Initialize contract
     let owner = Address::generate(&env);
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+    let wasm =
+        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
     // Generate context and member keys
-    let context_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let charlie_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let context_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let alice_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let bob_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let charlie_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
 
     let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
     let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
@@ -156,7 +165,11 @@ fn test_member_management() {
     // Verify members after authorized addition
     let members = client.members(&context_id, &0u32, &10u32);
     log!(&env, "Members after authorized addition: {:?}", members);
-    assert_eq!(members.len(), 2, "Should have both Alice and Bob as members");
+    assert_eq!(
+        members.len(),
+        2,
+        "Should have both Alice and Bob as members"
+    );
     assert!(members.contains(&alice_id), "Alice should be a member");
     assert!(members.contains(&bob_id), "Bob should be a member");
 
@@ -171,18 +184,28 @@ fn test_member_management() {
     };
 
     let signed_request = create_signed_request(&bob_key, unauthorized_request, &env);
-    
+
     // This should fail with Unauthorized error
     let result = client.try_mutate(&signed_request);
     assert!(result.is_err(), "Unauthorized request should fail");
-    
+
     // Verify members haven't changed
     let members = client.members(&context_id, &0u32, &10u32);
     log!(&env, "Final members list: {:?}", members);
-    assert_eq!(members.len(), 2, "Should still have only Alice and Bob as members");
-    assert!(members.contains(&alice_id), "Alice should still be a member");
+    assert_eq!(
+        members.len(),
+        2,
+        "Should still have only Alice and Bob as members"
+    );
+    assert!(
+        members.contains(&alice_id),
+        "Alice should still be a member"
+    );
     assert!(members.contains(&bob_id), "Bob should still be a member");
-    assert!(!members.contains(&charlie_id), "Charlie should not be a member");
+    assert!(
+        !members.contains(&charlie_id),
+        "Charlie should not be a member"
+    );
 
     // Try unauthorized removal (Bob trying to remove Alice)
     let unauthorized_remove = Request {
@@ -195,7 +218,7 @@ fn test_member_management() {
     };
 
     let signed_request = create_signed_request(&bob_key, unauthorized_remove, &env);
-    
+
     // This should fail with Unauthorized error
     let result = client.try_mutate(&signed_request);
     assert!(result.is_err(), "Unauthorized removal should fail");
@@ -204,7 +227,10 @@ fn test_member_management() {
     let members = client.members(&context_id, &0u32, &10u32);
     log!(&env, "Members after failed removal attempt: {:?}", members);
     assert_eq!(members.len(), 2, "Should still have both members");
-    assert!(members.contains(&alice_id), "Alice should still be a member");
+    assert!(
+        members.contains(&alice_id),
+        "Alice should still be a member"
+    );
     assert!(members.contains(&bob_id), "Bob should still be a member");
 
     // Test authorized removal (Alice removing Bob)
@@ -222,9 +248,16 @@ fn test_member_management() {
 
     // Verify final membership after successful removal
     let members = client.members(&context_id, &0u32, &10u32);
-    log!(&env, "Final members after authorized removal: {:?}", members);
+    log!(
+        &env,
+        "Final members after authorized removal: {:?}",
+        members
+    );
     assert_eq!(members.len(), 1, "Should have only Alice as member");
-    assert!(members.contains(&alice_id), "Alice should still be a member");
+    assert!(
+        members.contains(&alice_id),
+        "Alice should still be a member"
+    );
     assert!(!members.contains(&bob_id), "Bob should have been removed");
 
     log!(&env, "Member management test completed successfully");
@@ -235,20 +268,24 @@ fn test_capability_management() {
     let env = Env::default();
     let contract_id = env.register(ContextContract, ());
     let client = ContextContractClient::new(&env, &contract_id);
-    
+
     // Initialize contract
     let owner = Address::generate(&env);
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+    let wasm =
+        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
     // Generate keys for context, Alice, and Bob
-    let context_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let context_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let alice_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let bob_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
 
     let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
     let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
@@ -294,7 +331,10 @@ fn test_capability_management() {
         nonce: 1,
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: ContextRequestKind::Grant(vec![&env, (bob_id.clone(), Capability::ManageMembers)]),
+            kind: ContextRequestKind::Grant(vec![
+                &env,
+                (bob_id.clone(), Capability::ManageMembers),
+            ]),
         }),
     };
 
@@ -304,11 +344,12 @@ fn test_capability_management() {
     // Verify Bob's capabilities
     let bob_privileges = client.privileges(&context_id, &vec![&env, bob_id.clone()]);
     log!(&env, "Bob's privileges: {:?}", bob_privileges);
-    
+
     // Bob should now be able to add members
-    let charlie_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let charlie_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
     let charlie_id = BytesN::from_array(&env, &charlie_key.verifying_key().to_bytes());
-    
+
     let add_member_request = Request {
         signer_id: bob_id.clone(),
         nonce: 0,
@@ -324,7 +365,10 @@ fn test_capability_management() {
 
     // Verify Charlie was added
     let members = client.members(&context_id, &0u32, &10u32);
-    assert!(members.contains(&charlie_id), "Charlie should have been added by Bob");
+    assert!(
+        members.contains(&charlie_id),
+        "Charlie should have been added by Bob"
+    );
 
     // Now revoke Bob's ManageMembers capability
     let revoke_request = Request {
@@ -332,7 +376,10 @@ fn test_capability_management() {
         nonce: 2,
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: ContextRequestKind::Revoke(vec![&env, (bob_id.clone(), Capability::ManageMembers)]),
+            kind: ContextRequestKind::Revoke(vec![
+                &env,
+                (bob_id.clone(), Capability::ManageMembers),
+            ]),
         }),
     };
 
@@ -341,14 +388,21 @@ fn test_capability_management() {
 
     // Verify Bob's capabilities are gone
     let bob_privileges = client.privileges(&context_id, &vec![&env, bob_id.clone()]);
-    log!(&env, "Bob's privileges after revocation: {:?}", bob_privileges);
-    assert!(bob_privileges.is_empty() || !bob_privileges.contains_key(bob_id.clone()), 
-           "Bob should have no capabilities after revocation");
+    log!(
+        &env,
+        "Bob's privileges after revocation: {:?}",
+        bob_privileges
+    );
+    assert!(
+        bob_privileges.is_empty() || !bob_privileges.contains_key(bob_id.clone()),
+        "Bob should have no capabilities after revocation"
+    );
 
     // Try to add another member with Bob (should fail now)
-    let david_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let david_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
     let david_id = BytesN::from_array(&env, &david_key.verifying_key().to_bytes());
-    
+
     let unauthorized_add = Request {
         signer_id: bob_id.clone(),
         nonce: 1,
@@ -360,11 +414,17 @@ fn test_capability_management() {
 
     let signed_request = create_signed_request(&bob_key, unauthorized_add, &env);
     let result = client.try_mutate(&signed_request);
-    assert!(result.is_err(), "Bob should not be able to add members after capability revocation");
+    assert!(
+        result.is_err(),
+        "Bob should not be able to add members after capability revocation"
+    );
 
     // Verify David was not added
     let members = client.members(&context_id, &0u32, &10u32);
-    assert!(!members.contains(&david_id), "David should not have been added");
+    assert!(
+        !members.contains(&david_id),
+        "David should not have been added"
+    );
 
     log!(&env, "Capability management test completed successfully");
 }
@@ -374,20 +434,24 @@ fn test_application_update() {
     let env = Env::default();
     let contract_id = env.register(ContextContract, ());
     let client = ContextContractClient::new(&env, &contract_id);
-    
+
     // Initialize contract
     let owner = Address::generate(&env);
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+    let wasm =
+        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
     // Generate keys
-    let context_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let context_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let alice_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let bob_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
 
     let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
     let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
@@ -419,7 +483,10 @@ fn test_application_update() {
     let app = client.application(&context_id);
     log!(&env, "Initial application: {:?}", app);
     assert_eq!(app.id, initial_app.id, "Initial application ID mismatch");
-    assert_eq!(app.blob, initial_app.blob, "Initial application blob mismatch");
+    assert_eq!(
+        app.blob, initial_app.blob,
+        "Initial application blob mismatch"
+    );
 
     // Create updated application
     let updated_app = Application {
@@ -447,8 +514,14 @@ fn test_application_update() {
     // Verify application hasn't changed
     let app = client.application(&context_id);
     log!(&env, "Application after failed update: {:?}", app);
-    assert_eq!(app.id, initial_app.id, "Application should not have changed");
-    assert_eq!(app.blob, initial_app.blob, "Application should not have changed");
+    assert_eq!(
+        app.id, initial_app.id,
+        "Application should not have changed"
+    );
+    assert_eq!(
+        app.blob, initial_app.blob,
+        "Application should not have changed"
+    );
 
     // Authorized update (Alice)
     let authorized_update = Request {
@@ -466,8 +539,14 @@ fn test_application_update() {
     // Verify application has been updated
     let app = client.application(&context_id);
     log!(&env, "Final application state: {:?}", app);
-    assert_eq!(app.id, updated_app.id, "Application should have been updated");
-    assert_eq!(app.blob, updated_app.blob, "Application should have been updated");
+    assert_eq!(
+        app.id, updated_app.id,
+        "Application should have been updated"
+    );
+    assert_eq!(
+        app.blob, updated_app.blob,
+        "Application should have been updated"
+    );
 
     log!(&env, "Application update test completed successfully");
 }
@@ -477,20 +556,24 @@ fn test_query_endpoints() {
     let env = Env::default();
     let contract_id = env.register(ContextContract, ());
     let client = ContextContractClient::new(&env, &contract_id);
-    
+
     // Initialize contract
     let owner = Address::generate(&env);
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+    let wasm =
+        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
     // Generate keys
-    let context_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key = SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let context_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let alice_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+    let bob_key =
+        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
 
     let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
     let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
@@ -523,13 +606,13 @@ fn test_query_endpoints() {
     assert_eq!(alice_nonce, Some(0), "Alice's initial nonce should be 0");
     let bob_nonce = client.fetch_nonce(&context_id, &bob_id);
     log!(&env, "Bob's nonce: {:?}", bob_nonce);
-    assert!(bob_nonce.is_none(), "Bob should not have a nonce yet");  // Changed this line
+    assert!(bob_nonce.is_none(), "Bob should not have a nonce yet"); // Changed this line
 
     let app_revision = client.application_revision(&context_id);
     assert_eq!(app_revision, 0, "Initial application revision should be 0");
 
-     // Create updated application
-     let updated_app = Application {
+    // Create updated application
+    let updated_app = Application {
         id: BytesN::from_array(&env, &[4u8; 32]),
         blob: BytesN::from_array(&env, &[5u8; 32]),
         size: 200,
@@ -539,7 +622,7 @@ fn test_query_endpoints() {
     // Update application (should increment Alice's nonce)
     let update_app_request = Request {
         signer_id: alice_id.clone(),
-        nonce: 0,  // Using Alice's current nonce
+        nonce: 0, // Using Alice's current nonce
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
             kind: ContextRequestKind::UpdateApplication(updated_app.clone()),
@@ -551,7 +634,11 @@ fn test_query_endpoints() {
 
     // Verify Alice's nonce increased
     let alice_nonce_after_update = client.fetch_nonce(&context_id, &alice_id);
-    assert_eq!(alice_nonce_after_update, Some(1), "Alice's nonce should be 1 after update");
+    assert_eq!(
+        alice_nonce_after_update,
+        Some(1),
+        "Alice's nonce should be 1 after update"
+    );
 
     // Try unauthorized application update (Bob)
     let unauthorized_update = Request {
@@ -569,12 +656,15 @@ fn test_query_endpoints() {
 
     // Verify revision didn't change after failed update
     let unchanged_revision = client.application_revision(&context_id);
-    assert_eq!(unchanged_revision, 1, "Application revision should not change after failed update");
+    assert_eq!(
+        unchanged_revision, 1,
+        "Application revision should not change after failed update"
+    );
 
     // Try using old nonce (should fail)
     let invalid_nonce_request = Request {
         signer_id: alice_id.clone(),
-        nonce: 0,  // Using old nonce
+        nonce: 0, // Using old nonce
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
             kind: ContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
@@ -585,7 +675,10 @@ fn test_query_endpoints() {
     let result = client.try_mutate(&signed_request);
     assert!(result.is_err(), "Request with old nonce should fail");
 
-    assert!(!client.has_member(&context_id, &bob_id), "Bob should not be a member");
+    assert!(
+        !client.has_member(&context_id, &bob_id),
+        "Bob should not be a member"
+    );
 
     let members_rev = client.members_revision(&context_id);
     assert_eq!(members_rev, 0, "Members revision should be 0");
@@ -593,7 +686,7 @@ fn test_query_endpoints() {
     // Add Bob as member
     let add_member_request = Request {
         signer_id: alice_id.clone(),
-        nonce: 1,  // Using Alice's current nonce
+        nonce: 1, // Using Alice's current nonce
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
             kind: ContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
@@ -605,16 +698,24 @@ fn test_query_endpoints() {
 
     // Verify Bob now has a nonce
     let bob_nonce_after_add = client.fetch_nonce(&context_id, &bob_id);
-    assert_eq!(bob_nonce_after_add, Some(0), "Bob's initial nonce should be 0 after being added");
+    assert_eq!(
+        bob_nonce_after_add,
+        Some(0),
+        "Bob's initial nonce should be 0 after being added"
+    );
 
     // Verify Alice's nonce increased again
     let alice_final_nonce = client.fetch_nonce(&context_id, &alice_id);
-    assert_eq!(alice_final_nonce, Some(2), "Alice's nonce should be 2 after adding Bob");
+    assert_eq!(
+        alice_final_nonce,
+        Some(2),
+        "Alice's nonce should be 2 after adding Bob"
+    );
 
     // Try request with future nonce (should fail)
     let future_nonce_request = Request {
         signer_id: bob_id.clone(),
-        nonce: 5,  // Future nonce
+        nonce: 5, // Future nonce
         kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
             kind: ContextRequestKind::AddMembers(vec![&env, BytesN::from_array(&env, &[0u8; 32])]),
@@ -637,10 +738,16 @@ fn test_query_endpoints() {
 
     // Test proxy_contract
     let proxy_address = client.proxy_contract(&context_id);
-    assert!(proxy_address.to_string().len() > 0, "Proxy address should be set");
+    assert!(
+        proxy_address.to_string().len() > 0,
+        "Proxy address should be set"
+    );
 
     // Test has_member
-    assert!(client.has_member(&context_id, &alice_id), "Alice should be a member");
+    assert!(
+        client.has_member(&context_id, &alice_id),
+        "Alice should be a member"
+    );
 
     // Test members_revision
     let members_rev = client.members_revision(&context_id);

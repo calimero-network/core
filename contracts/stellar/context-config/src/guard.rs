@@ -1,8 +1,7 @@
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use soroban_sdk::{
-    contracttype, BytesN, Env, Vec, Address
-};
+
+use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 
 use crate::types::Application;
 
@@ -68,7 +67,7 @@ impl Guard {
     pub fn new(env: &Env, creator: &BytesN<32>, inner: GuardedValue) -> Self {
         let mut privileged = Vec::new(env);
         privileged.push_back(creator.clone());
-        
+
         Self {
             inner,
             revision: 0,

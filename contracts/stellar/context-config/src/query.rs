@@ -1,14 +1,10 @@
-use soroban_sdk::{
-    Address, BytesN, Env, Map, Vec, contractimpl
-};
-use crate::Context;
-use crate::ContextContractClient;
-use crate::ContextContractArgs;
 use core::ops::Deref;
+
+use soroban_sdk::{contractimpl, Address, BytesN, Env, Map, Vec};
 
 use crate::guard::GuardedValue;
 use crate::types::{Application, Capability, Error};
-use crate::ContextContract;
+use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
 
 #[contractimpl]
 impl ContextContract {
@@ -21,9 +17,8 @@ impl ContextContract {
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
     pub fn application(env: &Env, context_id: BytesN<32>) -> Result<Application, Error> {
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
-            
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+
         match context.application.deref() {
             GuardedValue::Application(app) => Ok(app.clone()),
             _ => Err(Error::InvalidState),
@@ -35,9 +30,8 @@ impl ContextContract {
     /// Returns ContextNotFound if context doesn't exist
     /// Returns InvalidState if application data is corrupted
     pub fn application_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, Error> {
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
-            
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+
         match context.application.deref() {
             GuardedValue::Application(_) => Ok(context.application.revision().into()),
             _ => Err(Error::InvalidState),
@@ -48,9 +42,8 @@ impl ContextContract {
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
     pub fn proxy_contract(env: &Env, context_id: BytesN<32>) -> Result<Address, Error> {
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
-            
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+
         match context.proxy.deref() {
             GuardedValue::Proxy(proxy_id) => Ok(proxy_id.clone()),
             _ => Err(Error::InvalidState),
@@ -64,19 +57,18 @@ impl ContextContract {
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
     pub fn members(
-        env: &Env, 
-        context_id: BytesN<32>, 
-        offset: u32, 
-        length: u32
+        env: &Env,
+        context_id: BytesN<32>,
+        offset: u32,
+        length: u32,
     ) -> Result<Vec<BytesN<32>>, Error> {
         // Validate input parameters
         if length == 0 {
             return Ok(Vec::new(env));
         }
 
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
-        
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+
         let members = match context.members.deref() {
             GuardedValue::Members(members) => members,
             _ => return Err(Error::InvalidState),
@@ -90,7 +82,7 @@ impl ContextContract {
 
         let end = core::cmp::min(offset + length, total_len);
         let mut result = Vec::new(env);
-        
+
         for i in offset..end {
             result.push_back(members.get(i).unwrap().clone());
         }
@@ -103,12 +95,11 @@ impl ContextContract {
     /// Returns ContextNotFound if context doesn't exist
     /// Returns InvalidState if members data is corrupted
     pub fn has_member(
-        env: &Env, 
-        context_id: BytesN<32>, 
-        identity: BytesN<32>
+        env: &Env,
+        context_id: BytesN<32>,
+        identity: BytesN<32>,
     ) -> Result<bool, Error> {
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         match context.members.deref() {
             GuardedValue::Members(members) => Ok(members.contains(identity)),
@@ -121,9 +112,8 @@ impl ContextContract {
     /// Returns ContextNotFound if context doesn't exist
     /// Returns InvalidState if members data is corrupted
     pub fn members_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, Error> {
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
-            
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+
         match context.members.deref() {
             GuardedValue::Members(_) => Ok(context.members.revision().into()),
             _ => Err(Error::InvalidState),
@@ -138,15 +128,14 @@ impl ContextContract {
         context_id: BytesN<32>,
         identities: Vec<BytesN<32>>,
     ) -> Result<Map<BytesN<32>, Vec<Capability>>, Error> {
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         let mut privileges = Map::new(env);
 
         // Helper function to reduce code duplication
-        let add_capability = |privileges: &mut Map<BytesN<32>, Vec<Capability>>, 
-                            signer_id: BytesN<32>, 
-                            capability: Capability| {
+        let add_capability = |privileges: &mut Map<BytesN<32>, Vec<Capability>>,
+                              signer_id: BytesN<32>,
+                              capability: Capability| {
             let mut caps = privileges
                 .get(signer_id.clone())
                 .unwrap_or_else(|| Vec::new(env));
@@ -199,12 +188,11 @@ impl ContextContract {
     /// Returns InvalidState if members data is corrupted
     /// Returns NotAMember if the provided member_id is not a member of the context
     pub fn fetch_nonce(
-        env: &Env, 
-        context_id: BytesN<32>, 
-        member_id: BytesN<32>
+        env: &Env,
+        context_id: BytesN<32>,
+        member_id: BytesN<32>,
     ) -> Result<Option<u64>, Error> {
-        let context = Self::get_context(env, context_id)
-            .ok_or(Error::ContextNotFound)?;
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         // Verify member exists
         let members = match context.members.deref() {
