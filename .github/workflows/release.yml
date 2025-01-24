@@ -323,3 +323,53 @@ jobs:
           git push origin "${target_branch}"
 
           gh pr create -f || true
+
+  installation-script-update:
+    if: needs.prepare.outputs.is_release_candidate == 'true' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    needs: [prepare, build, release]
+    steps:
+      - name: Get release matrix outputs
+        id: release-matrix-outputs
+        uses: cloudposse/github-action-matrix-outputs-read@v1
+        with:
+          matrix-step-name: release
+
+      - name: Process each binary and create PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for binary in $(echo '${{ needs.prepare.outputs.binary_matrix }}' | jq -r '.[]'); do
+            release_required=$(echo '${{ steps.release-matrix-outputs.outputs.result }}' | jq -r --arg key "${binary}" '.releaseRequired[$key]')
+            version=$(echo '${{ steps.release-matrix-outputs.outputs.result }}' | jq -r --arg key "${binary}" '.version[$key]')
+
+            if [ "${release_required}" == "true" ]; then
+              echo "Updating installation script for ${binary}, version: ${version}"
+
+              # Generate installation script for this binary
+              ./scripts/generate-installation-script.sh "${binary}" "${version}"
+
+              # Create a new branch for this binary
+              target_branch="chore/bump-${binary}-installation-script-to-v${version}"
+              git fetch origin "${target_branch}" || true
+              git checkout "${target_branch}" || git checkout -b "${target_branch}"
+
+              # Stage and commit changes
+              git add scripts/
+              git commit -m "chore: bump ${binary} installation script to v${version}" || true
+
+              # Push branch to remote
+              git push origin "${target_branch}"
+
+              # Create a PR for this branch
+              gh pr create \
+                --title "chore: bump ${binary} installation script to v${version}" \
+                --body "This PR updates the installation script for **${binary}** to version **${version}**." \
+                --head "${target_branch}" \
+                --base master \
+                -f || true
+
+            else
+              echo "No update required for ${binary}"
+            fi
+          done
