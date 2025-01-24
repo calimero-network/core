@@ -1,15 +1,20 @@
 use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
+use hex;
+use soroban_client::keypair::{Keypair, KeypairBehavior};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
+use super::types::stellar::StellarSignedRequest;
+use crate::client::env::config::types::stellar::StellarRequest;
 use crate::client::env::{utils, Method};
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
@@ -159,6 +164,31 @@ impl<'a> Method<Icp> for Mutate<'a> {
                 eyre::bail!("unexpected response {:?}", e)
             }
         }
+    }
+}
+
+impl<'a> Method<Stellar> for Mutate<'a> {
+    type Returns = ();
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let secret_key = hex::encode(self.signing_key);
+        let keypair = Keypair::from_secret(&secret_key).unwrap();
+
+        let request = StellarRequest::new(keypair.public_key().as_str(), self.kind, self.nonce);
+
+        let serialized_request = bincode::serialize(&request)?;
+        let signature = keypair.sign(&serialized_request).unwrap();
+
+        let signed_request = StellarSignedRequest::new(request, signature);
+
+        let encoded = bincode::serialize(&signed_request)?;
+
+        Ok(encoded)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }
 

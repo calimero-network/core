@@ -8,6 +8,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 
 #[derive(Clone, Debug, Serialize)]
@@ -98,5 +99,19 @@ impl Method<Icp> for ContextVariableRequest {
         // The response will be an Option<Vec<u8>>
         let decoded = Decode!(&response, Vec<u8>)?;
         Ok(decoded)
+    }
+}
+
+impl Method<Stellar> for ContextVariableRequest {
+    type Returns = Vec<u8>;
+
+    const METHOD: &'static str = "get_context_value";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

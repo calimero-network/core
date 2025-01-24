@@ -11,6 +11,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::Repr;
 use crate::types::{ContextIdentity, ProposalId};
@@ -119,5 +120,19 @@ impl Method<Icp> for ProposalApproversRequest {
                 Vec<ContextIdentity>,
             >(identities))
         }
+    }
+}
+
+impl Method<Stellar> for ProposalApproversRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "proposal_approvers";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

@@ -10,6 +10,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICApplication;
 use crate::repr::Repr;
@@ -109,5 +110,19 @@ impl Method<Icp> for ApplicationRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, ICApplication)?;
         Ok(decoded.into())
+    }
+}
+
+impl Method<Stellar> for ApplicationRequest {
+    type Returns = Application<'static>;
+
+    const METHOD: &'static str = "application";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

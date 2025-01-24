@@ -8,6 +8,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::Repr;
 use crate::types::ContextId;
@@ -75,5 +76,19 @@ impl Method<Icp> for ProxyContractRequest {
         let value: Principal = Decode!(&response, Principal)?;
         let value_as_string = value.to_text();
         Ok(value_as_string)
+    }
+}
+
+impl Method<Stellar> for ProxyContractRequest {
+    type Returns = String;
+
+    const METHOD: &'static str = "proxy_contract";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

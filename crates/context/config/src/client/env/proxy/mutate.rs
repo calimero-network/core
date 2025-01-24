@@ -9,6 +9,7 @@ use crate::client::env::{utils, Method};
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::ICSigned;
@@ -143,6 +144,20 @@ impl Method<Icp> for Mutate {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, Option<ICProposalWithApprovals>)?;
         Ok(decoded.map(Into::into))
+    }
+}
+
+impl Method<Stellar> for Mutate {
+    type Returns = Option<ProposalWithApprovals>;
+
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }
 
