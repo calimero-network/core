@@ -1,0 +1,19 @@
+[package]
+name = "context-config"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["alloc"] }
+soroban-env-common = { workspace = true }
+ed25519-dalek = { version = "2.0.0", default-features = false, features = ["hazmat"] }
+stellar-xdr = { workspace = true, default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
