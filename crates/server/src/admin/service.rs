@@ -41,6 +41,7 @@ use crate::admin::handlers::context::{
 };
 use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::identity::generate_context_identity;
+use crate::admin::handlers::peers::get_peers_count_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
 use crate::middleware::auth::AuthSignatureLayer;
@@ -129,6 +130,10 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities::handler),
         )
+        .route(
+            "/contexts/:context_id/identities-owned",
+            get(get_context_identities::handler),
+        )
         .route("/contexts/invite", post(invite_to_context::handler))
         .route("/contexts/join", post(join_context::handler))
         .route("/contexts", get(get_contexts::handler))
@@ -138,6 +143,7 @@ pub(crate) fn setup(
         )
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
+        .route("/peers", get(get_peers_count_handler))
         .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
 
@@ -225,6 +231,10 @@ pub(crate) fn setup(
             "/dev/contexts/:context_id/identities",
             get(get_context_identities::handler),
         )
+        .route(
+            "/dev/contexts/:context_id/identities-owned",
+            get(get_context_identities::handler),
+        )
         .route("/dev/contexts/:context_id", delete(delete_context::handler))
         .route(
             "/dev/identity/context",
@@ -250,6 +260,7 @@ pub(crate) fn setup(
             "/dev/contexts/:context_id/proposals/:proposal_id",
             get(get_proposal_handler),
         )
+        .route("/dev/peers", get(get_peers_count_handler))
         .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()

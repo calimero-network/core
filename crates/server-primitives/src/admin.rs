@@ -448,6 +448,21 @@ impl GenerateContextIdentityResponse {
 }
 
 // -------------------------------------------- Misc API --------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct GetPeersCountResponse {
+    pub count: usize,
+}
+
+impl GetPeersCountResponse {
+    #[must_use]
+    pub fn new(count: usize) -> Self {
+        Self { count }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
