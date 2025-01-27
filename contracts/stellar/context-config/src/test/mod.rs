@@ -40,7 +40,7 @@ fn test_add_context() {
     client.mock_all_auths().initialize(&owner);
     // Read the WASM bytes from the hello_world contract
     let wasm =
-        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
 
     // Set proxy code
@@ -109,7 +109,7 @@ fn test_member_management() {
 
     // Set up proxy code
     let wasm =
-        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
@@ -275,7 +275,7 @@ fn test_capability_management() {
 
     // Set up proxy code
     let wasm =
-        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
@@ -441,7 +441,7 @@ fn test_application_update() {
 
     // Set up proxy code
     let wasm =
-        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
@@ -563,7 +563,7 @@ fn test_query_endpoints() {
 
     // Set up proxy code
     let wasm =
-        include_bytes!("../../mock_proxy/target/wasm32-unknown-unknown/release/mock_proxy.wasm");
+        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 

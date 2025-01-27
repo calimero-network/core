@@ -1095,6 +1095,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-context-config-stellar"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "soroban-env-common",
+ "soroban-sdk",
+ "stellar-xdr",
+]
+
+[[package]]
 name = "calimero-context-proxy-icp"
 version = "0.1.0"
 dependencies = [
@@ -1151,6 +1161,13 @@ dependencies = [
  "ic-cdk 0.16.0",
  "ic-cdk-macros 0.16.0",
  "ic-ledger-types",
+]
+
+[[package]]
+name = "calimero-mock-proxy-stellar"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]
@@ -1683,16 +1700,6 @@ name = "constant_time_eq"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
-
-[[package]]
-name = "context-config"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "soroban-env-common",
- "soroban-sdk",
- "stellar-xdr",
-]
 
 [[package]]
 name = "convert_case"
@@ -5303,13 +5310,6 @@ dependencies = [
  "net2",
  "winapi 0.2.8",
  "ws2_32-sys",
-]
-
-[[package]]
-name = "mock_proxy"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
 ]
 
 [[package]]

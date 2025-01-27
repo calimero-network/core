@@ -4,3 +4,12 @@ target
 # Local settings
 .soroban
 .stellar
+
+# Test folder
+test_snapshots/
+mock_proxy/test_snapshots/
+
+# Res folder
+res/
+
+#

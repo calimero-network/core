@@ -1,5 +1,5 @@
 [package]
-name = "mock_proxy"
+name = "calimero-mock-proxy-stellar"
 version = "0.0.0"
 edition = "2021"
 publish = false
