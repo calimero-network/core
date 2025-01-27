@@ -36,7 +36,6 @@ impl ContextContract {
         proxy_wasm: Bytes,
         owner: Address,
     ) -> Result<BytesN<32>, StellarError> {
-
         let mut state = Self::get_state(env);
         if owner != state.owner {
             return Err(StellarError::Unauthorized);
@@ -50,7 +49,7 @@ impl ContextContract {
 
         // Upload WASM and get hash - this returns BytesN<32> directly
         let wasm_hash = env.deployer().upload_contract_wasm(proxy_wasm.clone());
-        
+
         log!(env, "WASM upload successful, hash: {:?}", wasm_hash);
 
         // Update state with new hash
