@@ -1,13 +1,11 @@
 use core::ops::{Deref, DerefMut};
 
-use calimero_context_config::stellar::stellar_types::{StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind, StellarError, StellarRequestKind, StellarSignedRequest};
 use soroban_sdk::{contractimpl, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
 
 use crate::guard::{Guard, GuardedValue};
-// use crate::types::{
-//     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
-//     Error, StellarRequestKind, StellarSignedRequest,
-// };
+use crate::types::{
+    Application, Capability, ContextRequest, ContextRequestKind, Error, RequestKind, SignedRequest,
+};
 use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
 
 #[contractimpl]
@@ -17,41 +15,41 @@ impl ContextContract {
     /// Returns InvalidSignature if request signature is invalid
     /// Returns InvalidNonce if nonce is incorrect
     /// Returns various context-specific errors based on the request kind
-    pub fn mutate(env: Env, signed_request: StellarSignedRequest) -> Result<(), StellarError> {
+    pub fn mutate(env: Env, signed_request: SignedRequest) -> Result<(), Error> {
         // Verify signature and get request
         let request = signed_request.verify(&env)?;
         // Extract context_id and kind from request
         let (context_id, kind) = match request.kind {
-            StellarRequestKind::Context(StellarContextRequest { context_id, kind }) => (context_id, kind),
+            RequestKind::Context(ContextRequest { context_id, kind }) => (context_id, kind),
         };
 
         // Check and increment nonce
         Self::check_and_increment_nonce(&env, &context_id, &request.signer_id, request.nonce)?;
 
         match kind {
-            StellarContextRequestKind::Add(author_id, application) => Self::add_context(
+            ContextRequestKind::Add(author_id, application) => Self::add_context(
                 &env,
                 &request.signer_id,
                 &context_id,
                 &author_id,
                 &application,
             ),
-            StellarContextRequestKind::UpdateApplication(application) => {
+            ContextRequestKind::UpdateApplication(application) => {
                 Self::update_application(&env, &request.signer_id, &context_id, &application)
             }
-            StellarContextRequestKind::AddMembers(members) => {
+            ContextRequestKind::AddMembers(members) => {
                 Self::add_members(&env, &request.signer_id, &context_id, &members)
             }
-            StellarContextRequestKind::RemoveMembers(members) => {
+            ContextRequestKind::RemoveMembers(members) => {
                 Self::remove_members(&env, &request.signer_id, &context_id, &members)
             }
-            StellarContextRequestKind::Grant(capabilities) => {
+            ContextRequestKind::Grant(capabilities) => {
                 Self::grant(&env, &request.signer_id, &context_id, &capabilities)
             }
-            StellarContextRequestKind::Revoke(capabilities) => {
+            ContextRequestKind::Revoke(capabilities) => {
                 Self::revoke(&env, &request.signer_id, &context_id, &capabilities)
             }
-            StellarContextRequestKind::UpdateProxyContract => {
+            ContextRequestKind::UpdateProxyContract => {
                 Self::update_proxy_contract(&env, &request.signer_id, &context_id)
             }
         }
@@ -65,7 +63,7 @@ impl ContextContract {
         context_id: &BytesN<32>,
         member_id: &BytesN<32>,
         nonce: u64,
-    ) -> Result<(), StellarError> {
+    ) -> Result<(), Error> {
         Self::update_state(env, |state| {
             // If context doesn't exist yet, allow the operation
             let Some(context) = state.contexts.get(context_id.clone()) else {
@@ -85,7 +83,7 @@ impl ContextContract {
 
             // For existing members, verify and increment nonce
             if current_nonce != nonce {
-                return Err(StellarError::InvalidNonce);
+                return Err(Error::InvalidNonce);
             }
 
             let mut updated_context = context.clone();
@@ -107,17 +105,17 @@ impl ContextContract {
         signer_id: &BytesN<32>,
         context_id: &BytesN<32>,
         author_id: &BytesN<32>,
-        application: &StellarApplication,
-    ) -> Result<(), StellarError> {
+        application: &Application,
+    ) -> Result<(), Error> {
         // Verify that the signer is the context itself
         if signer_id.as_ref() != context_id.as_ref() {
-            return Err(StellarError::Unauthorized);
+            return Err(Error::Unauthorized);
         }
 
         Self::update_state(env, |state| {
             // Check if context already exists
             if state.contexts.contains_key(context_id.clone()) {
-                return Err(StellarError::ContextExists);
+                return Err(Error::ContextExists);
             }
 
             // Deploy proxy contract
@@ -157,13 +155,13 @@ impl ContextContract {
         env: &Env,
         signer_id: &BytesN<32>,
         context_id: &BytesN<32>,
-        application: &StellarApplication,
-    ) -> Result<(), StellarError> {
+        application: &Application,
+    ) -> Result<(), Error> {
         Self::update_state(env, |state| {
             let context = state
                 .contexts
                 .get(context_id.clone())
-                .ok_or(StellarError::ContextNotFound)?;
+                .ok_or(Error::ContextNotFound)?;
 
             let mut updated_context = context.clone();
 
@@ -171,7 +169,7 @@ impl ContextContract {
             let guard = updated_context
                 .application
                 .get(signer_id)
-                .map_err(|_| StellarError::Unauthorized)?;
+                .map_err(|_| Error::Unauthorized)?;
 
             // Update application value
             *guard.get_mut() = GuardedValue::Application(application.clone());
@@ -191,12 +189,12 @@ impl ContextContract {
         signer_id: &BytesN<32>,
         context_id: &BytesN<32>,
         members: &Vec<BytesN<32>>,
-    ) -> Result<(), StellarError> {
+    ) -> Result<(), Error> {
         Self::update_state(env, |state| {
             let context = state
                 .contexts
                 .get(context_id.clone())
-                .ok_or(StellarError::ContextNotFound)?;
+                .ok_or(Error::ContextNotFound)?;
 
             let mut updated_context = context.clone();
             let mut new_members = Vec::new(env);
@@ -206,7 +204,7 @@ impl ContextContract {
                 let guard_ref = updated_context
                     .members
                     .get(signer_id)
-                    .map_err(|_| StellarError::Unauthorized)?;
+                    .map_err(|_| Error::Unauthorized)?;
 
                 let mut members_mut = guard_ref.get_mut();
                 if let GuardedValue::Members(ref mut member_list) = members_mut.deref_mut() {
@@ -238,12 +236,12 @@ impl ContextContract {
         signer_id: &BytesN<32>,
         context_id: &BytesN<32>,
         members: &Vec<BytesN<32>>,
-    ) -> Result<(), StellarError> {
+    ) -> Result<(), Error> {
         Self::update_state(env, |state| {
             let context = state
                 .contexts
                 .get(context_id.clone())
-                .ok_or(StellarError::ContextNotFound)?;
+                .ok_or(Error::ContextNotFound)?;
 
             let mut updated_context = context.clone();
             let mut members_to_remove = Vec::new(env);
@@ -252,7 +250,7 @@ impl ContextContract {
                 let guard_ref = updated_context
                     .members
                     .get(signer_id)
-                    .map_err(|_| StellarError::Unauthorized)?;
+                    .map_err(|_| Error::Unauthorized)?;
 
                 let mut members_mut = guard_ref.get_mut();
                 if let GuardedValue::Members(ref mut member_list) = members_mut.deref_mut() {
@@ -286,13 +284,13 @@ impl ContextContract {
         env: &Env,
         signer_id: &BytesN<32>,
         context_id: &BytesN<32>,
-        capabilities: &Vec<(BytesN<32>, StellarCapability)>,
-    ) -> Result<(), StellarError> {
+        capabilities: &Vec<(BytesN<32>, Capability)>,
+    ) -> Result<(), Error> {
         Self::update_state(env, |state| {
             let context = state
                 .contexts
                 .get(context_id.clone())
-                .ok_or(StellarError::ContextNotFound)?;
+                .ok_or(Error::ContextNotFound)?;
 
             let mut updated_context = context.clone();
 
@@ -301,12 +299,12 @@ impl ContextContract {
                 let members_guard = updated_context
                     .members
                     .get(signer_id)
-                    .map_err(|_| StellarError::Unauthorized)?;
+                    .map_err(|_| Error::Unauthorized)?;
 
                 if let GuardedValue::Members(ref member_list) = members_guard.deref() {
                     for (identity, _) in capabilities.iter() {
                         if !member_list.contains(identity) {
-                            return Err(StellarError::NotAMember);
+                            return Err(Error::NotAMember);
                         }
                     }
                 }
@@ -315,25 +313,25 @@ impl ContextContract {
             // Grant capabilities
             for (identity, capability) in capabilities.iter() {
                 match capability {
-                    StellarCapability::ManageApplication => {
+                    Capability::ManageApplication => {
                         let mut guard = updated_context
                             .application
                             .get(signer_id)
-                            .map_err(|_| StellarError::Unauthorized)?;
+                            .map_err(|_| Error::Unauthorized)?;
                         guard.privileges().grant(&identity);
                     }
-                    StellarCapability::ManageMembers => {
+                    Capability::ManageMembers => {
                         let mut guard = updated_context
                             .members
                             .get(signer_id)
-                            .map_err(|_| StellarError::Unauthorized)?;
+                            .map_err(|_| Error::Unauthorized)?;
                         guard.privileges().grant(&identity);
                     }
-                    StellarCapability::Proxy => {
+                    Capability::Proxy => {
                         let mut guard = updated_context
                             .proxy
                             .get(signer_id)
-                            .map_err(|_| StellarError::Unauthorized)?;
+                            .map_err(|_| Error::Unauthorized)?;
                         guard.privileges().grant(&identity);
                     }
                 }
@@ -352,37 +350,37 @@ impl ContextContract {
         env: &Env,
         signer_id: &BytesN<32>,
         context_id: &BytesN<32>,
-        capabilities: &Vec<(BytesN<32>, StellarCapability)>,
-    ) -> Result<(), StellarError> {
+        capabilities: &Vec<(BytesN<32>, Capability)>,
+    ) -> Result<(), Error> {
         Self::update_state(env, |state| {
             let context = state
                 .contexts
                 .get(context_id.clone())
-                .ok_or(StellarError::ContextNotFound)?;
+                .ok_or(Error::ContextNotFound)?;
 
             let mut updated_context = context.clone();
 
             for (identity, capability) in capabilities.iter() {
                 match capability {
-                    StellarCapability::ManageApplication => {
+                    Capability::ManageApplication => {
                         let mut guard = updated_context
                             .application
                             .get(signer_id)
-                            .map_err(|_| StellarError::Unauthorized)?;
+                            .map_err(|_| Error::Unauthorized)?;
                         guard.privileges().revoke(&identity);
                     }
-                    StellarCapability::ManageMembers => {
+                    Capability::ManageMembers => {
                         let mut guard = updated_context
                             .members
                             .get(signer_id)
-                            .map_err(|_| StellarError::Unauthorized)?;
+                            .map_err(|_| Error::Unauthorized)?;
                         guard.privileges().revoke(&identity);
                     }
-                    StellarCapability::Proxy => {
+                    Capability::Proxy => {
                         let mut guard = updated_context
                             .proxy
                             .get(signer_id)
-                            .map_err(|_| StellarError::Unauthorized)?;
+                            .map_err(|_| Error::Unauthorized)?;
                         guard.privileges().revoke(&identity);
                     }
                 }
@@ -404,12 +402,12 @@ impl ContextContract {
         env: &Env,
         signer_id: &BytesN<32>,
         context_id: &BytesN<32>,
-    ) -> Result<(), StellarError> {
+    ) -> Result<(), Error> {
         Self::update_state(env, |state| {
             let context = state
                 .contexts
                 .get(context_id.clone())
-                .ok_or(StellarError::ContextNotFound)?;
+                .ok_or(Error::ContextNotFound)?;
 
             let mut updated_context = context.clone();
 
@@ -418,21 +416,21 @@ impl ContextContract {
                 let guard_ref = updated_context
                     .proxy
                     .get(signer_id)
-                    .map_err(|_| StellarError::Unauthorized)?;
+                    .map_err(|_| Error::Unauthorized)?;
 
                 match guard_ref.deref() {
                     GuardedValue::Proxy(proxy_id) => proxy_id.clone(),
-                    _ => return Err(StellarError::InvalidState),
+                    _ => return Err(Error::InvalidState),
                 }
             };
 
             // Get proxy code
-            let proxy_code = state.proxy_code.to_option().ok_or(StellarError::ProxyCodeNotSet)?;
+            let proxy_code = state.proxy_code.to_option().ok_or(Error::ProxyCodeNotSet)?;
 
             let contract_address = env.current_contract_address();
 
             // Attempt to upgrade proxy and check response
-            match env.try_invoke_contract::<(), StellarError>(
+            match env.try_invoke_contract::<(), Error>(
                 &proxy_contract_id,
                 &Symbol::new(env, "upgrade"),
                 (proxy_code, contract_address).into_val(env),
@@ -441,7 +439,7 @@ impl ContextContract {
                     state.contexts.set(context_id.clone(), updated_context);
                     Ok(())
                 }
-                Err(_) => Err(StellarError::ProxyUpgradeFailed),
+                Err(_) => Err(Error::ProxyUpgradeFailed),
             }
         })
     }
@@ -449,11 +447,11 @@ impl ContextContract {
     /// Deploys a new proxy contract for a context
     /// # Errors
     /// - `Error::ProxyCodeNotSet` - if proxy WASM code is not set
-    fn deploy_proxy(env: &Env, context_id: &BytesN<32>) -> Result<Address, StellarError> {
+    fn deploy_proxy(env: &Env, context_id: &BytesN<32>) -> Result<Address, Error> {
         let state = Self::get_state(env);
 
         // Get stored WASM hash
-        let wasm_hash = state.proxy_code.to_option().ok_or(StellarError::ProxyCodeNotSet)?;
+        let wasm_hash = state.proxy_code.to_option().ok_or(Error::ProxyCodeNotSet)?;
 
         // Deploy new proxy instance using context_id as salt
         let proxy_address = env

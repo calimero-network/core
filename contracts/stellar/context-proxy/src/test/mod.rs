@@ -1,29 +1,24 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use calimero_context_config::stellar::stellar_types::{StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind, StellarRequest, StellarRequestKind, StellarSignedRequest};
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal};
 
-// use crate::types::{
-//     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
-//     StellarRequest, StellarRequestKind, StellarSignedRequest,
-// };
+use crate::types::{
+    Application, Capability, ContextRequest, ContextRequestKind, Request, RequestKind,
+    SignedRequest,
+};
 use crate::{ContextContract, ContextContractClient};
 
-fn create_signed_request(
-    signer_key: &SigningKey,
-    request: StellarRequest,
-    env: &Env,
-) -> StellarSignedRequest {
+fn create_signed_request(signer_key: &SigningKey, request: Request, env: &Env) -> SignedRequest {
     let request_xdr = request.clone().to_xdr(&env);
     let std_vec: Vec<u8> = request_xdr.into_iter().collect();
     let signature = signer_key.sign(&std_vec);
 
     let signature_bytes: BytesN<64> = BytesN::from_array(env, &signature.to_bytes());
-    StellarSignedRequest {
+    SignedRequest {
         payload: request,
         signature: signature_bytes,
     }
@@ -32,26 +27,37 @@ fn create_signed_request(
 #[test]
 fn test_add_context() {
     let env = Env::default();
+
+    // Register the contract using the new method name
     let contract_id = env.register(ContextContract, ());
+
     let client = ContextContractClient::new(&env, &contract_id);
 
-    // Initialize contract
+    // Generate addresses using the correct method
     let owner = Address::generate(&env);
-    client.mock_all_auths().initialize(&owner);
 
+    // Initialize the contract
+    client.mock_all_auths().initialize(&owner);
+    // Read the WASM bytes from the hello_world contract
     let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
+
+    // Set proxy code
+    log!(&env, "Setting proxy code");
     let wasm_hash = client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
     log!(&env, "Proxy code hash: {:?}", wasm_hash);
 
+    // Wrap the PRNG call in as_contract()
     let random_bytes: BytesN<32> = env.as_contract(&contract_id, || env.prng().gen());
+
     let signing_key = SigningKey::from_bytes(&random_bytes.to_array());
     let public_key = signing_key.verifying_key();
 
     let context_id = BytesN::from_array(&env, &public_key.to_bytes());
     let author_id = BytesN::from_array(&env, &[2u8; 32]);
 
-    let application = StellarApplication {
+    // Fix Application struct according to your types.rs definition
+    let application = Application {
         id: BytesN::from_array(&env, &[3u8; 32]),
         blob: BytesN::from_array(&env, &[4u8; 32]),
         size: 100,
@@ -59,19 +65,25 @@ fn test_add_context() {
         metadata: Bytes::from_array(&env, &[6u8; 32]),
     };
 
-    let request = StellarRequest {
+    let request = Request {
         signer_id: context_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(author_id.clone(), application.clone()),
+            kind: ContextRequestKind::Add(author_id.clone(), application.clone()),
         }),
     };
 
     let signed_request = create_signed_request(&signing_key, request, &env);
-    client.mutate(&signed_request);
 
+    // Log before mutation
+    log!(&env, "About to mutate contract with request");
+    client.mutate(&signed_request);
+    log!(&env, "Contract mutated successfully");
+
+    // Query and verify the application
     let app = client.application(&context_id);
+
     if app.id == application.id {
         log!(
             &env,
@@ -115,7 +127,7 @@ fn test_member_management() {
     let charlie_id = BytesN::from_array(&env, &charlie_key.verifying_key().to_bytes());
 
     // Create context with Alice as author
-    let application = StellarApplication {
+    let application = Application {
         id: BytesN::from_array(&env, &[1u8; 32]),
         blob: BytesN::from_array(&env, &[2u8; 32]),
         size: 100,
@@ -123,12 +135,12 @@ fn test_member_management() {
         metadata: Bytes::from_array(&env, &[3u8; 32]),
     };
 
-    let create_request = StellarRequest {
+    let create_request = Request {
         signer_id: context_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), application),
+            kind: ContextRequestKind::Add(alice_id.clone(), application),
         }),
     };
 
@@ -136,12 +148,12 @@ fn test_member_management() {
     client.mutate(&signed_request);
 
     // Add Bob as member (signed by Alice - authorized)
-    let add_member_request = StellarRequest {
+    let add_member_request = Request {
         signer_id: alice_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            kind: ContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
         }),
     };
 
@@ -160,12 +172,12 @@ fn test_member_management() {
     assert!(members.contains(&bob_id), "Bob should be a member");
 
     // Try to add Charlie as member (signed by Bob - unauthorized)
-    let unauthorized_request = StellarRequest {
+    let unauthorized_request = Request {
         signer_id: bob_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, charlie_id.clone()]),
+            kind: ContextRequestKind::AddMembers(vec![&env, charlie_id.clone()]),
         }),
     };
 
@@ -194,12 +206,12 @@ fn test_member_management() {
     );
 
     // Try unauthorized removal (Bob trying to remove Alice)
-    let unauthorized_remove = StellarRequest {
+    let unauthorized_remove = Request {
         signer_id: bob_id.clone(),
         nonce: 1,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::RemoveMembers(vec![&env, alice_id.clone()]),
+            kind: ContextRequestKind::RemoveMembers(vec![&env, alice_id.clone()]),
         }),
     };
 
@@ -220,12 +232,12 @@ fn test_member_management() {
     assert!(members.contains(&bob_id), "Bob should still be a member");
 
     // Test authorized removal (Alice removing Bob)
-    let authorized_remove = StellarRequest {
+    let authorized_remove = Request {
         signer_id: alice_id.clone(),
         nonce: 1,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::RemoveMembers(vec![&env, bob_id.clone()]),
+            kind: ContextRequestKind::RemoveMembers(vec![&env, bob_id.clone()]),
         }),
     };
 
@@ -277,7 +289,7 @@ fn test_capability_management() {
     let bob_id = BytesN::from_array(&env, &bob_key.verifying_key().to_bytes());
 
     // Create context with Alice as author
-    let application = StellarApplication {
+    let application = Application {
         id: BytesN::from_array(&env, &[1u8; 32]),
         blob: BytesN::from_array(&env, &[2u8; 32]),
         size: 100,
@@ -285,12 +297,12 @@ fn test_capability_management() {
         metadata: Bytes::from_array(&env, &[3u8; 32]),
     };
 
-    let create_request = StellarRequest {
+    let create_request = Request {
         signer_id: context_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), application),
+            kind: ContextRequestKind::Add(alice_id.clone(), application),
         }),
     };
 
@@ -298,12 +310,12 @@ fn test_capability_management() {
     client.mutate(&signed_request);
 
     // Add Bob as member
-    let add_member_request = StellarRequest {
+    let add_member_request = Request {
         signer_id: alice_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            kind: ContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
         }),
     };
 
@@ -311,14 +323,14 @@ fn test_capability_management() {
     client.mutate(&signed_request);
 
     // Grant ManageMembers capability to Bob
-    let grant_request = StellarRequest {
+    let grant_request = Request {
         signer_id: alice_id.clone(),
         nonce: 1,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Grant(vec![
+            kind: ContextRequestKind::Grant(vec![
                 &env,
-                (bob_id.clone(), StellarCapability::ManageMembers),
+                (bob_id.clone(), Capability::ManageMembers),
             ]),
         }),
     };
@@ -335,12 +347,12 @@ fn test_capability_management() {
         SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
     let charlie_id = BytesN::from_array(&env, &charlie_key.verifying_key().to_bytes());
 
-    let add_member_request = StellarRequest {
+    let add_member_request = Request {
         signer_id: bob_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, charlie_id.clone()]),
+            kind: ContextRequestKind::AddMembers(vec![&env, charlie_id.clone()]),
         }),
     };
 
@@ -356,14 +368,14 @@ fn test_capability_management() {
     );
 
     // Now revoke Bob's ManageMembers capability
-    let revoke_request = StellarRequest {
+    let revoke_request = Request {
         signer_id: alice_id.clone(),
         nonce: 2,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Revoke(vec![
+            kind: ContextRequestKind::Revoke(vec![
                 &env,
-                (bob_id.clone(), StellarCapability::ManageMembers),
+                (bob_id.clone(), Capability::ManageMembers),
             ]),
         }),
     };
@@ -388,12 +400,12 @@ fn test_capability_management() {
         SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
     let david_id = BytesN::from_array(&env, &david_key.verifying_key().to_bytes());
 
-    let unauthorized_add = StellarRequest {
+    let unauthorized_add = Request {
         signer_id: bob_id.clone(),
         nonce: 1,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, david_id.clone()]),
+            kind: ContextRequestKind::AddMembers(vec![&env, david_id.clone()]),
         }),
     };
 
@@ -442,7 +454,7 @@ fn test_application_update() {
     let bob_id = BytesN::from_array(&env, &bob_key.verifying_key().to_bytes());
 
     // Create initial application
-    let initial_app = StellarApplication {
+    let initial_app = Application {
         id: BytesN::from_array(&env, &[1u8; 32]),
         blob: BytesN::from_array(&env, &[2u8; 32]),
         size: 100,
@@ -451,12 +463,12 @@ fn test_application_update() {
     };
 
     // Create context with Alice as author
-    let create_request = StellarRequest {
+    let create_request = Request {
         signer_id: context_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), initial_app.clone()),
+            kind: ContextRequestKind::Add(alice_id.clone(), initial_app.clone()),
         }),
     };
 
@@ -473,7 +485,7 @@ fn test_application_update() {
     );
 
     // Create updated application
-    let updated_app = StellarApplication {
+    let updated_app = Application {
         id: BytesN::from_array(&env, &[4u8; 32]),
         blob: BytesN::from_array(&env, &[5u8; 32]),
         size: 200,
@@ -482,12 +494,12 @@ fn test_application_update() {
     };
 
     // Try unauthorized update (Bob)
-    let unauthorized_update = StellarRequest {
+    let unauthorized_update = Request {
         signer_id: bob_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
+            kind: ContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
 
@@ -508,12 +520,12 @@ fn test_application_update() {
     );
 
     // Authorized update (Alice)
-    let authorized_update = StellarRequest {
+    let authorized_update = Request {
         signer_id: alice_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
+            kind: ContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
 
@@ -563,7 +575,7 @@ fn test_query_endpoints() {
     let bob_id = BytesN::from_array(&env, &bob_key.verifying_key().to_bytes());
 
     // Create initial application and context
-    let initial_app = StellarApplication {
+    let initial_app = Application {
         id: BytesN::from_array(&env, &[1u8; 32]),
         blob: BytesN::from_array(&env, &[2u8; 32]),
         size: 100,
@@ -572,12 +584,12 @@ fn test_query_endpoints() {
     };
 
     // Create context with Alice as author
-    let create_request = StellarRequest {
+    let create_request = Request {
         signer_id: context_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), initial_app.clone()),
+            kind: ContextRequestKind::Add(alice_id.clone(), initial_app.clone()),
         }),
     };
 
@@ -595,7 +607,7 @@ fn test_query_endpoints() {
     assert_eq!(app_revision, 0, "Initial application revision should be 0");
 
     // Create updated application
-    let updated_app = StellarApplication {
+    let updated_app = Application {
         id: BytesN::from_array(&env, &[4u8; 32]),
         blob: BytesN::from_array(&env, &[5u8; 32]),
         size: 200,
@@ -603,12 +615,12 @@ fn test_query_endpoints() {
         metadata: Bytes::from_array(&env, &[6u8; 32]),
     };
     // Update application (should increment Alice's nonce)
-    let update_app_request = StellarRequest {
+    let update_app_request = Request {
         signer_id: alice_id.clone(),
         nonce: 0, // Using Alice's current nonce
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
+            kind: ContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
 
@@ -624,12 +636,12 @@ fn test_query_endpoints() {
     );
 
     // Try unauthorized application update (Bob)
-    let unauthorized_update = StellarRequest {
+    let unauthorized_update = Request {
         signer_id: bob_id.clone(),
         nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
+            kind: ContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
 
@@ -645,12 +657,12 @@ fn test_query_endpoints() {
     );
 
     // Try using old nonce (should fail)
-    let invalid_nonce_request = StellarRequest {
+    let invalid_nonce_request = Request {
         signer_id: alice_id.clone(),
         nonce: 0, // Using old nonce
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            kind: ContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
         }),
     };
 
@@ -667,12 +679,12 @@ fn test_query_endpoints() {
     assert_eq!(members_rev, 0, "Members revision should be 0");
 
     // Add Bob as member
-    let add_member_request = StellarRequest {
+    let add_member_request = Request {
         signer_id: alice_id.clone(),
         nonce: 1, // Using Alice's current nonce
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            kind: ContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
         }),
     };
 
@@ -696,12 +708,12 @@ fn test_query_endpoints() {
     );
 
     // Try request with future nonce (should fail)
-    let future_nonce_request = StellarRequest {
+    let future_nonce_request = Request {
         signer_id: bob_id.clone(),
         nonce: 5, // Future nonce
-        kind: StellarRequestKind::Context(StellarContextRequest {
+        kind: RequestKind::Context(ContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, BytesN::from_array(&env, &[0u8; 32])]),
+            kind: ContextRequestKind::AddMembers(vec![&env, BytesN::from_array(&env, &[0u8; 32])]),
         }),
     };
 

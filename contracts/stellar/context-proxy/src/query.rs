@@ -1,10 +1,9 @@
 use core::ops::Deref;
 
-use calimero_context_config::stellar::stellar_types::{StellarApplication, StellarCapability, StellarError};
 use soroban_sdk::{contractimpl, Address, BytesN, Env, Map, Vec};
 
 use crate::guard::GuardedValue;
-// use crate::types::{StellarApplication, StellarCapability, Error};
+use crate::types::{Application, Capability, Error};
 use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
 
 #[contractimpl]
@@ -17,12 +16,12 @@ impl ContextContract {
     /// Returns the application for a given context
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
-    pub fn application(env: &Env, context_id: BytesN<32>) -> Result<StellarApplication, StellarError> {
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+    pub fn application(env: &Env, context_id: BytesN<32>) -> Result<Application, Error> {
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         match context.application.deref() {
             GuardedValue::Application(app) => Ok(app.clone()),
-            _ => Err(StellarError::InvalidState),
+            _ => Err(Error::InvalidState),
         }
     }
 
@@ -30,24 +29,24 @@ impl ContextContract {
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
     /// Returns InvalidState if application data is corrupted
-    pub fn application_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, StellarError> {
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+    pub fn application_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, Error> {
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         match context.application.deref() {
             GuardedValue::Application(_) => Ok(context.application.revision().into()),
-            _ => Err(StellarError::InvalidState),
+            _ => Err(Error::InvalidState),
         }
     }
 
     /// Returns the proxy contract address
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
-    pub fn proxy_contract(env: &Env, context_id: BytesN<32>) -> Result<Address, StellarError> {
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+    pub fn proxy_contract(env: &Env, context_id: BytesN<32>) -> Result<Address, Error> {
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         match context.proxy.deref() {
             GuardedValue::Proxy(proxy_id) => Ok(proxy_id.clone()),
-            _ => Err(StellarError::InvalidState),
+            _ => Err(Error::InvalidState),
         }
     }
 
@@ -62,17 +61,17 @@ impl ContextContract {
         context_id: BytesN<32>,
         offset: u32,
         length: u32,
-    ) -> Result<Vec<BytesN<32>>, StellarError> {
+    ) -> Result<Vec<BytesN<32>>, Error> {
         // Validate input parameters
         if length == 0 {
             return Ok(Vec::new(env));
         }
 
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         let members = match context.members.deref() {
             GuardedValue::Members(members) => members,
-            _ => return Err(StellarError::InvalidState),
+            _ => return Err(Error::InvalidState),
         };
 
         let total_len = members.len();
@@ -99,12 +98,12 @@ impl ContextContract {
         env: &Env,
         context_id: BytesN<32>,
         identity: BytesN<32>,
-    ) -> Result<bool, StellarError> {
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+    ) -> Result<bool, Error> {
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         match context.members.deref() {
             GuardedValue::Members(members) => Ok(members.contains(identity)),
-            _ => Err(StellarError::InvalidState),
+            _ => Err(Error::InvalidState),
         }
     }
 
@@ -112,12 +111,12 @@ impl ContextContract {
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
     /// Returns InvalidState if members data is corrupted
-    pub fn members_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, StellarError> {
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+    pub fn members_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, Error> {
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         match context.members.deref() {
             GuardedValue::Members(_) => Ok(context.members.revision().into()),
-            _ => Err(StellarError::InvalidState),
+            _ => Err(Error::InvalidState),
         }
     }
 
@@ -128,15 +127,15 @@ impl ContextContract {
         env: &Env,
         context_id: BytesN<32>,
         identities: Vec<BytesN<32>>,
-    ) -> Result<Map<BytesN<32>, Vec<StellarCapability>>, StellarError> {
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+    ) -> Result<Map<BytesN<32>, Vec<Capability>>, Error> {
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         let mut privileges = Map::new(env);
 
         // Helper function to reduce code duplication
-        let add_capability = |privileges: &mut Map<BytesN<32>, Vec<StellarCapability>>,
+        let add_capability = |privileges: &mut Map<BytesN<32>, Vec<Capability>>,
                               signer_id: BytesN<32>,
-                              capability: StellarCapability| {
+                              capability: Capability| {
             let mut caps = privileges
                 .get(signer_id.clone())
                 .unwrap_or_else(|| Vec::new(env));
@@ -147,15 +146,15 @@ impl ContextContract {
         if identities.is_empty() {
             // Process all privileges more efficiently
             for signer_id in context.application.privileged().iter() {
-                add_capability(&mut privileges, signer_id, StellarCapability::ManageApplication);
+                add_capability(&mut privileges, signer_id, Capability::ManageApplication);
             }
 
             for signer_id in context.members.privileged().iter() {
-                add_capability(&mut privileges, signer_id, StellarCapability::ManageMembers);
+                add_capability(&mut privileges, signer_id, Capability::ManageMembers);
             }
 
             for signer_id in context.proxy.privileged().iter() {
-                add_capability(&mut privileges, signer_id, StellarCapability::Proxy);
+                add_capability(&mut privileges, signer_id, Capability::Proxy);
             }
         } else {
             // Process specific identities more efficiently
@@ -165,13 +164,13 @@ impl ContextContract {
 
                 // Check all privileges at once
                 if context.application.privileged().contains(id.clone()) {
-                    caps.push_back(StellarCapability::ManageApplication);
+                    caps.push_back(Capability::ManageApplication);
                 }
                 if context.members.privileged().contains(id.clone()) {
-                    caps.push_back(StellarCapability::ManageMembers);
+                    caps.push_back(Capability::ManageMembers);
                 }
                 if context.proxy.privileged().contains(id) {
-                    caps.push_back(StellarCapability::Proxy);
+                    caps.push_back(Capability::Proxy);
                 }
 
                 if !caps.is_empty() {
@@ -192,13 +191,13 @@ impl ContextContract {
         env: &Env,
         context_id: BytesN<32>,
         member_id: BytesN<32>,
-    ) -> Result<Option<u64>, StellarError> {
-        let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
+    ) -> Result<Option<u64>, Error> {
+        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
 
         // Verify member exists
         let members = match context.members.deref() {
             GuardedValue::Members(members) => members,
-            _ => return Err(StellarError::InvalidState),
+            _ => return Err(Error::InvalidState),
         };
 
         if !members.contains(&member_id) {

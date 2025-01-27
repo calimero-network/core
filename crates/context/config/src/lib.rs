@@ -11,6 +11,8 @@ pub mod client;
 pub mod icp;
 pub mod repr;
 pub mod types;
+#[cfg(feature = "stellar")]
+pub mod stellar;
 
 use repr::Repr;
 use types::{Application, Capability, ContextId, ContextIdentity, ProposalId, SignerId};

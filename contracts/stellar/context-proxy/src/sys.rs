@@ -1,7 +1,6 @@
-use calimero_context_config::stellar::stellar_types::StellarError;
 use soroban_sdk::{contractimpl, log, Address, Bytes, BytesN, Env};
 
-use crate::{ContextContract, ContextContractArgs, ContextContractClient, OptionalBytes};
+use crate::{ContextContract, ContextContractArgs, ContextContractClient, Error, OptionalBytes};
 
 #[contractimpl]
 impl ContextContract {
@@ -11,7 +10,7 @@ impl ContextContract {
     /// * `owner` - The contract owner's address
     /// # Errors
     /// Returns Unauthorized if caller is not the owner
-    pub fn upgrade(env: &Env, new_wasm: Bytes, owner: Address) -> Result<(), StellarError> {
+    pub fn upgrade(env: &Env, new_wasm: Bytes, owner: Address) -> Result<(), Error> {
         // Verify authorization
         owner.require_auth();
 
@@ -35,12 +34,12 @@ impl ContextContract {
         env: &Env,
         proxy_wasm: Bytes,
         owner: Address,
-    ) -> Result<BytesN<32>, StellarError> {
+    ) -> Result<BytesN<32>, Error> {
         owner.require_auth();
 
         let mut state = Self::get_state(env);
         if owner != state.owner {
-            return Err(StellarError::Unauthorized);
+            return Err(Error::Unauthorized);
         }
         log!(&env, "Uploading proxy WASM");
 

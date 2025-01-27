@@ -1,6 +1,5 @@
 #![no_std]
 
-use calimero_context_config::stellar::stellar_types::StellarError;
 use guard::Guard;
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map, Symbol,
@@ -10,9 +9,9 @@ mod guard;
 mod mutate;
 mod query;
 mod sys;
-// mod types;
+mod types;
 
-// use types::Error;
+use types::Error;
 
 const STORAGE_KEY_STATE: Symbol = symbol_short!("STATE");
 
@@ -63,12 +62,12 @@ pub struct ContextContract;
 
 #[contractimpl]
 impl ContextContract {
-    pub fn initialize(env: Env, owner: Address) -> Result<(), StellarError> {
+    pub fn initialize(env: Env, owner: Address) -> Result<(), Error> {
         // Require authorization from deployer
         owner.require_auth();
 
         if env.storage().instance().has(&symbol_short!("STATE")) {
-            return Err(StellarError::Unauthorized);
+            return Err(Error::Unauthorized);
         }
 
         let configs = ContextConfigs {
@@ -98,9 +97,9 @@ impl ContextContract {
     }
 
     // Helper function to update state
-    fn update_state<F>(env: &Env, f: F) -> Result<(), StellarError>
+    fn update_state<F>(env: &Env, f: F) -> Result<(), Error>
     where
-        F: FnOnce(&mut ContextConfigs) -> Result<(), StellarError>,
+        F: FnOnce(&mut ContextConfigs) -> Result<(), Error>,
     {
         let mut state = Self::get_state(env);
         f(&mut state)?;

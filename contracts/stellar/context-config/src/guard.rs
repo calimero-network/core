@@ -1,15 +1,14 @@
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 
+use calimero_context_config::stellar::stellar_types::StellarApplication;
 use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
-
-use crate::types::Application;
 
 /// Represents the different types of values that can be guarded
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum GuardedValue {
-    Application(Application),
+    Application(StellarApplication),
     Members(Vec<BytesN<32>>),
     Proxy(Address),
 }
