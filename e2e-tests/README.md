@@ -11,8 +11,8 @@ Example of running the e2e tests:
 ```bash
 ./apps/kv-store/build.sh
 
-./contracts/context-config/build.sh
-./contracts/proxy-lib/build.sh
+./contracts/near/context-proxy/build-test-deps.sh
+./contracts/icp/context-proxy/build_contracts.sh
 
 cargo build -p merod
 cargo build -p meroctl

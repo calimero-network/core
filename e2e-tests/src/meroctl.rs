@@ -67,7 +67,7 @@ impl Meroctl {
         &self,
         node_name: &str,
         context_id: &str,
-        inviteer_public_key: &str,
+        inviter_public_key: &str,
         invitee_public_key: &str,
     ) -> EyreResult<String> {
         let json = self
@@ -77,8 +77,8 @@ impl Meroctl {
                     "context",
                     "invite",
                     context_id,
-                    inviteer_public_key,
                     invitee_public_key,
+                    inviter_public_key,
                 ],
             )
             .await?;
@@ -99,7 +99,7 @@ impl Meroctl {
         invitation_data: &str,
     ) -> EyreResult<(String, String)> {
         let json = self
-            .run_cmd(node_name, ["context", "join", private_key, invitation_data])
+            .run_cmd(node_name, ["context", "join", invitation_data, private_key])
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
