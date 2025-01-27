@@ -8,6 +8,7 @@ use crate::cli::RootCommand;
 mod cli;
 mod common;
 mod defaults;
+mod identity;
 mod output;
 
 #[tokio::main]

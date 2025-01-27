@@ -197,7 +197,7 @@ impl StartBootstrapCommand {
 
         let invite_command = InviteCommand {
             context_id,
-            inviter_id: inviter_public_key,
+            inviter_id: Some(inviter_public_key),
             invitee_id: invitee_private_key.public_key(),
             identity_name: None,
         };
@@ -214,7 +214,7 @@ impl StartBootstrapCommand {
         );
 
         let join_command = JoinCommand {
-            private_key: invitee_private_key,
+            private_key: Some(invitee_private_key),
             invitation_payload,
             identity_name: None,
         };
@@ -307,6 +307,7 @@ impl StartBootstrapCommand {
             None,
             &config.identity,
             protocol,
+            None,
         )
         .await?;
 

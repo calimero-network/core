@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::identity::{create_identity, Identity};
 use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
@@ -62,6 +63,9 @@ pub struct CreateCommand {
 
     #[clap(long, value_name = "PROTOCOL")]
     protocol: String,
+
+    #[clap(short = 'i', long, value_name = "IDENTITY_NAME")]
+    identity_name: Option<String>,
 }
 
 impl Report for CreateContextResponse {
@@ -91,6 +95,7 @@ impl CreateCommand {
                 metadata: None,
                 params,
                 protocol,
+                identity_name,
             } => {
                 let _ = create_context(
                     environment,
@@ -101,6 +106,7 @@ impl CreateCommand {
                     params,
                     &config.identity,
                     protocol,
+                    identity_name,
                 )
                 .await?;
             }
@@ -111,6 +117,7 @@ impl CreateCommand {
                 metadata,
                 params,
                 protocol,
+                identity_name,
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
@@ -133,6 +140,7 @@ impl CreateCommand {
                     params,
                     &config.identity,
                     protocol,
+                    identity_name,
                 )
                 .await?;
 
@@ -164,6 +172,7 @@ pub async fn create_context(
     params: Option<String>,
     keypair: &Keypair,
     protocol: String,
+    identity_name: Option<String>,
 ) -> EyreResult<(ContextId, PublicKey)> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
@@ -180,9 +189,27 @@ pub async fn create_context(
     let response: CreateContextResponse =
         do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
+    let public_key = response.data.member_public_key;
+
+    let identity = Identity::new(public_key, None);
+
+    if let Some(identity_name) = identity_name {
+        // let path = &environment
+        //     .args
+        //     .home
+        //     .join(&environment.args.node_name)
+        //     .join(format!("{}.identity", identity_name));
+
+        // let file_writer = BufWriter::new(File::create(path)?);
+
+        // serde_json::to_writer(file_writer, &identity)?;
+
+        create_identity(identity, environment, identity_name)?;
+    }
+
     environment.output.write(&response);
 
-    Ok((response.data.context_id, response.data.member_public_key))
+    Ok((response.data.context_id, public_key))
 }
 
 async fn watch_app_and_update_context(

@@ -1,17 +1,13 @@
-use std::fs::File;
-use std::io::BufReader;
-
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{
-    GenerateContextIdentityResponse, InviteToContextRequest, InviteToContextResponse,
-};
+use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
 use clap::Parser;
 use eyre::Result as EyreResult;
 use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::identity::open_identity;
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -23,17 +19,19 @@ pub struct InviteCommand {
     )]
     pub context_id: ContextId,
 
-    #[clap(value_name = "INVITER_ID", help = "The public key of the inviter")]
-    pub inviter_id: PublicKey,
-
-    #[clap(
-        value_name = "INVITEE_ID",
-        help = "The public key of the invitee",
-        conflicts_with = "identity_name"
-    )]
+    #[clap(value_name = "INVITEE_ID", help = "The public key of the invitee")]
     pub invitee_id: PublicKey,
 
     #[clap(
+        value_name = "INVITER_ID",
+        help = "The public key of the inviter",
+        conflicts_with = "identity_name"
+    )]
+    pub inviter_id: Option<PublicKey>,
+
+    #[clap(
+        short = 'i',
+        long,
         value_name = "IDENTITY_NAME",
         help = "The identity with which you want to send this invite (public key)"
     )]
@@ -44,7 +42,7 @@ impl Report for InviteToContextResponse {
     fn report(&self) {
         match self.data {
             Some(ref payload) => {
-                println!("{:?}", payload)
+                println!("Invitation payload: {}", payload.to_string())
             }
             None => println!("No invitation payload"),
         }
@@ -61,32 +59,18 @@ impl InviteCommand {
     pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
-        let mut my_public_key = self.invitee_id;
-
-        if let Some(identity_name) = &self.identity_name {
-            let path = &environment
-                .args
-                .home
-                .join(&environment.args.node_name)
-                .join(format!("{}.identity", identity_name));
-
-            let file_reader = BufReader::new(File::open(path)?);
-
-            my_public_key = serde_json::from_reader::<
-                BufReader<File>,
-                GenerateContextIdentityResponse,
-            >(file_reader)?
-            .data
-            .public_key;
-        }
+        let my_public_key = match self.inviter_id {
+            Some(id) => id,
+            None => open_identity(environment, self.identity_name.as_ref().unwrap())?.public_key,
+        };
 
         let response: InviteToContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/invite")?,
             Some(InviteToContextRequest {
                 context_id: self.context_id,
-                inviter_id: self.inviter_id,
-                invitee_id: my_public_key,
+                inviter_id: my_public_key,
+                invitee_id: self.invitee_id,
             }),
             &config.identity,
             RequestType::Post,
