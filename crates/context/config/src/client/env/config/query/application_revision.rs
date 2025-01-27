@@ -1,5 +1,6 @@
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::{BytesN, Env};
 use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
@@ -9,7 +10,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes};
 use crate::types::{ContextId, Revision};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -80,7 +81,12 @@ impl Method<Stellar> for ApplicationRevisionRequest {
     const METHOD: &'static str = "application_revision";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let env = Env::default();
+        let bytes = BytesN::from_array(&env, &self.context_id.as_bytes());
+
+        let encoded = bytes.to_array().to_vec();
+        // bin encode
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

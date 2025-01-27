@@ -9,6 +9,7 @@ use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 use super::stellar_repr::StellarRepr;
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
+use crate::{ContextRequest, RequestKind};
 
 // Core types for Application
 #[contracttype]
@@ -27,6 +28,15 @@ pub struct StellarApplication {
 pub struct StellarContextRequest {
     pub context_id: BytesN<32>,
     pub kind: StellarContextRequestKind,
+}
+
+impl<'a> From<ContextRequest<'a>> for StellarContextRequest {
+    fn from(value: ContextRequest<'a>) -> Self {
+        Self {
+            context_id: value.context_id.rt().expect("infallible conversion"),
+            kind: value.kind.into(),
+        }
+    }
 }
 
 #[contracttype]
@@ -56,12 +66,27 @@ pub enum StellarRequestKind {
     Context(StellarContextRequest),
 }
 
+impl<'a> From<RequestKind<'a>> for StellarRequestKind {
+    fn from(value: RequestKind<'a>) -> Self {
+        match value {
+            RequestKind::Context(context) => StellarRequestKind::Context(context.into()),
+        }
+    }
+}
+
+// TODO implement new method
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct StellarRequest {
     pub kind: StellarRequestKind,
     pub signer_id: BytesN<32>,
     pub nonce: u64,
+}
+
+impl StellarRequest {
+    pub fn new(kind: StellarRequestKind, signer_id: BytesN<32>, nonce: u64) -> Self {
+        Self { kind, signer_id, nonce }
+    }
 }
 
 // Signed request wrapper
