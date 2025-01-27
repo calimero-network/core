@@ -194,16 +194,6 @@ pub async fn create_context(
     let identity = Identity::new(public_key, None);
 
     if let Some(identity_name) = identity_name {
-        // let path = &environment
-        //     .args
-        //     .home
-        //     .join(&environment.args.node_name)
-        //     .join(format!("{}.identity", identity_name));
-
-        // let file_writer = BufWriter::new(File::create(path)?);
-
-        // serde_json::to_writer(file_writer, &identity)?;
-
         create_identity(identity, environment, identity_name)?;
     }
 
