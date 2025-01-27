@@ -112,9 +112,8 @@ impl Meroctl {
     pub async fn identity_generate(&self, node_name: &str) -> EyreResult<(String, String)> {
         let json = self.run_cmd(node_name, ["identity", "generate"]).await?;
 
-        let data = self.remove_value_from_object(json, "data")?;
-        let public_key = self.get_string_from_object(&data, "publicKey")?;
-        let private_key = self.get_string_from_object(&data, "privateKey")?;
+        let public_key = self.get_string_from_object(&json, "publicKey")?;
+        let private_key = self.get_string_from_object(&json, "privateKey")?;
 
         Ok((public_key, private_key))
     }

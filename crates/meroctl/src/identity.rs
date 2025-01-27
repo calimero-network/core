@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::cli::Environment;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Identity {
     pub(crate) public_key: PublicKey,
     pub(crate) private_key: Option<PrivateKey>,
