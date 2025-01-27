@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::identity::open_identity;
 use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
@@ -55,8 +56,20 @@ pub struct UpdateCommand {
     )]
     watch: bool,
 
-    #[arg(long = "as", help = "Public key of the executor")]
-    pub executor: PublicKey,
+    #[arg(
+        long = "as",
+        help = "Public key of the executor",
+        conflicts_with = "identity_name"
+    )]
+    pub executor: Option<PublicKey>,
+
+    #[clap(
+        short = 'i',
+        long,
+        value_name = "IDENTITY_NAME",
+        help = "Name of the identity which you want to use as executor"
+    )]
+    identity_name: Option<String>,
 }
 
 impl UpdateCommand {
@@ -73,6 +86,7 @@ impl UpdateCommand {
                 metadata: None,
                 watch: false,
                 executor: executor_public_key,
+                identity_name,
             } => {
                 update_context_application(
                     environment,
@@ -82,6 +96,7 @@ impl UpdateCommand {
                     application_id,
                     &config.identity,
                     executor_public_key,
+                    &identity_name,
                 )
                 .await?;
             }
@@ -91,6 +106,7 @@ impl UpdateCommand {
                 path: Some(path),
                 metadata,
                 executor: executor_public_key,
+                identity_name,
                 ..
             } => {
                 let metadata = metadata.map(String::into_bytes);
@@ -113,6 +129,7 @@ impl UpdateCommand {
                     application_id,
                     &config.identity,
                     executor_public_key,
+                    &identity_name,
                 )
                 .await?;
 
@@ -126,6 +143,7 @@ impl UpdateCommand {
                         metadata,
                         &config.identity,
                         executor_public_key,
+                        &identity_name,
                     )
                     .await?;
                 }
@@ -165,14 +183,20 @@ async fn update_context_application(
     context_id: ContextId,
     application_id: ApplicationId,
     keypair: &Keypair,
-    member_public_key: PublicKey,
+    member_public_key: Option<PublicKey>,
+    identity_name: &Option<String>,
 ) -> EyreResult<()> {
     let url = multiaddr_to_url(
         base_multiaddr,
         &format!("admin-api/dev/contexts/{context_id}/application"),
     )?;
 
-    let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
+    let public_key = match member_public_key {
+        Some(public_key) => public_key,
+        None => open_identity(environment, identity_name.as_ref().unwrap())?.public_key,
+    };
+
+    let request = UpdateContextApplicationRequest::new(application_id, public_key);
 
     let response: UpdateContextApplicationResponse =
         do_request(client, url, Some(request), keypair, RequestType::Post).await?;
@@ -190,7 +214,8 @@ async fn watch_app_and_update_context(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
-    member_public_key: PublicKey,
+    member_public_key: Option<PublicKey>,
+    identity_name: &Option<String>,
 ) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -249,6 +274,7 @@ async fn watch_app_and_update_context(
             application_id,
             keypair,
             member_public_key,
+            &identity_name,
         )
         .await?;
     }
