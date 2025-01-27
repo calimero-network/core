@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::Path;
+use axum::extract::{Path, Request};
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::context::ContextId;
@@ -13,6 +13,7 @@ use crate::AdminState;
 pub async fn handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
+    req: Request,
 ) -> impl IntoResponse {
     let context = state
         .ctx_manager
@@ -35,9 +36,11 @@ pub async fn handler(
         }
     };
 
+    let owned = req.uri().path().ends_with("identities-owned");
+
     let context_identities = state
         .ctx_manager
-        .get_context_owned_identities(context.id)
+        .get_context_identities(context.id, owned)
         .map_err(|err| parse_api_error(err).into_response());
 
     match context_identities {

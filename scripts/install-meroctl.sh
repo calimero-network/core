@@ -1,7 +1,7 @@
 #!/bin/bash
 
 BINARY_NAME="meroctl"
-VERSION="0.2.0"
+VERSION="0.3.0"
 REPO="calimero-network/core"
 INSTALL_DIR="$HOME/.local/bin"
 
