@@ -2,7 +2,7 @@ use calimero_server_primitives::admin::{
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
     GetContextStorageResponse, GetContextUsersResponse,
 };
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use eyre::Result as EyreResult;
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
@@ -17,20 +17,32 @@ use crate::output::Report;
 #[derive(Parser, Debug)]
 #[command(about = "Fetch details about the context")]
 pub struct GetCommand {
-    #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
-    pub method: GetRequest,
+    #[command(subcommand)]
+    pub command: GetSubcommand,
 
     #[arg(value_name = "CONTEXT_ID", help = "context_id of the context")]
     pub context_id: String,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
-pub enum GetRequest {
+#[derive(Debug, Parser)]
+pub enum GetSubcommand {
+    #[command(about = "Get context details")]
     Context,
+
+    #[command(about = "Get context users")]
     Users,
+
+    #[command(about = "Get client keys")]
     ClientKeys,
+
+    #[command(about = "Get storage information")]
     Storage,
-    Identities,
+
+    #[command(about = "Get identities")]
+    Identities {
+        #[arg(long, help = "Show only owned identities")]
+        owned: bool,
+    },
 }
 
 impl Report for GetContextResponse {
@@ -72,25 +84,25 @@ impl GetCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
-        match self.method {
-            GetRequest::Context => {
+        match self.command {
+            GetSubcommand::Context => {
                 self.get_context(environment, multiaddr, &client, &config.identity)
                     .await
             }
-            GetRequest::Users => {
+            GetSubcommand::Users => {
                 self.get_users(environment, multiaddr, &client, &config.identity)
                     .await
             }
-            GetRequest::ClientKeys => {
+            GetSubcommand::ClientKeys => {
                 self.get_client_keys(environment, multiaddr, &client, &config.identity)
                     .await
             }
-            GetRequest::Storage => {
+            GetSubcommand::Storage => {
                 self.get_storage(environment, multiaddr, &client, &config.identity)
                     .await
             }
-            GetRequest::Identities => {
-                self.get_identities(environment, multiaddr, &client, &config.identity)
+            GetSubcommand::Identities { owned } => {
+                self.get_identities(environment, multiaddr, &client, &config.identity, owned)
                     .await
             }
         }
@@ -162,11 +174,17 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        owned: bool,
     ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}/identities", self.context_id),
-        )?;
+        let endpoint = if owned {
+            format!(
+                "admin-api/dev/contexts/{}/identities-owned",
+                self.context_id
+            )
+        } else {
+            format!("admin-api/dev/contexts/{}/identities", self.context_id)
+        };
+        let url = multiaddr_to_url(multiaddr, &endpoint)?;
         self.make_request::<GetContextIdentitiesResponse>(environment, client, url, keypair)
             .await
     }
