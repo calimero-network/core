@@ -39,8 +39,7 @@ fn test_add_context() {
     // Initialize the contract
     client.mock_all_auths().initialize(&owner);
     // Read the WASM bytes from the hello_world contract
-    let wasm =
-        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
+    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
 
     // Set proxy code
@@ -108,8 +107,7 @@ fn test_member_management() {
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm =
-        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
+    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
@@ -274,8 +272,7 @@ fn test_capability_management() {
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm =
-        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
+    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
@@ -440,8 +437,7 @@ fn test_application_update() {
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm =
-        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
+    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
@@ -562,8 +558,7 @@ fn test_query_endpoints() {
     client.mock_all_auths().initialize(&owner);
 
     // Set up proxy code
-    let wasm =
-        include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
+    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
     let proxy_wasm = Bytes::from_slice(&env, wasm);
     client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
