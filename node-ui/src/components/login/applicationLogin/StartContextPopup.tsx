@@ -320,8 +320,8 @@ export default function StartContextPopup({
               Select a protocol
             </option>
             <option value="near">NEAR</option>
-            <option value="ethereum">Ethereum</option>
-            <option value="solana">Solana</option>
+            <option value="starknet">Starknet</option>
+            <option value="icp">ICP</option>
           </select>
         </div>
         <div className="flex-wrapper-buttons">
