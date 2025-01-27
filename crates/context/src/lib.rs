@@ -784,7 +784,7 @@ impl ContextManager {
         Ok(handle.has(&ContextIdentityKey::new(context_id, public_key))?)
     }
 
-    fn get_context_identities(
+    pub fn get_context_identities(
         &self,
         context_id: ContextId,
         only_owned_identities: bool,
@@ -1486,5 +1486,9 @@ impl ContextManager {
         let proxy_contract = context_config.proxy_contract.into();
 
         Ok(proxy_contract)
+    }
+
+    pub async fn get_peers_count(&self) -> usize {
+        self.network_client.peer_count().await
     }
 }
