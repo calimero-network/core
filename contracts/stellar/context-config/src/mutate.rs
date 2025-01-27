@@ -1,6 +1,9 @@
 use core::ops::{Deref, DerefMut};
 
-use calimero_context_config::stellar::stellar_types::{StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind, StellarError, StellarRequestKind, StellarSignedRequest};
+use calimero_context_config::stellar::stellar_types::{
+    StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
+    StellarError, StellarRequestKind, StellarSignedRequest,
+};
 use soroban_sdk::{contractimpl, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
 
 use crate::guard::{Guard, GuardedValue};
@@ -22,7 +25,9 @@ impl ContextContract {
         let request = signed_request.verify(&env)?;
         // Extract context_id and kind from request
         let (context_id, kind) = match request.kind {
-            StellarRequestKind::Context(StellarContextRequest { context_id, kind }) => (context_id, kind),
+            StellarRequestKind::Context(StellarContextRequest { context_id, kind }) => {
+                (context_id, kind)
+            }
         };
 
         // Check and increment nonce
@@ -427,7 +432,10 @@ impl ContextContract {
             };
 
             // Get proxy code
-            let proxy_code = state.proxy_code.to_option().ok_or(StellarError::ProxyCodeNotSet)?;
+            let proxy_code = state
+                .proxy_code
+                .to_option()
+                .ok_or(StellarError::ProxyCodeNotSet)?;
 
             let contract_address = env.current_contract_address();
 
@@ -453,7 +461,10 @@ impl ContextContract {
         let state = Self::get_state(env);
 
         // Get stored WASM hash
-        let wasm_hash = state.proxy_code.to_option().ok_or(StellarError::ProxyCodeNotSet)?;
+        let wasm_hash = state
+            .proxy_code
+            .to_option()
+            .ok_or(StellarError::ProxyCodeNotSet)?;
 
         // Deploy new proxy instance using context_id as salt
         let proxy_address = env

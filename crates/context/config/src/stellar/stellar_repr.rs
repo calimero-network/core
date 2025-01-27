@@ -1,6 +1,6 @@
 use core::borrow::Borrow;
-use core::ops::Deref;
 use core::fmt;
+use core::ops::Deref;
 
 use crate::repr::{self, ReprBytes};
 
@@ -42,7 +42,10 @@ impl<T> Borrow<T> for StellarRepr<T> {
 }
 
 impl<T: ReprBytes> ReprBytes for StellarRepr<T> {
-    type EncodeBytes<'a> = T::EncodeBytes<'a> where T: 'a;
+    type EncodeBytes<'a>
+        = T::EncodeBytes<'a>
+    where
+        T: 'a;
     type DecodeBytes = T::DecodeBytes;
     type Error = T::Error;
 

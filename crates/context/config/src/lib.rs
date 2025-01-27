@@ -10,9 +10,9 @@ pub mod client;
 #[cfg(feature = "icp")]
 pub mod icp;
 pub mod repr;
-pub mod types;
 #[cfg(feature = "stellar")]
 pub mod stellar;
+pub mod types;
 
 use repr::Repr;
 use types::{Application, Capability, ContextId, ContextIdentity, ProposalId, SignerId};

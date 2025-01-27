@@ -1,13 +1,14 @@
 extern crate alloc;
-use alloc::vec::Vec as StdVec;
 use alloc::borrow::Cow;
+use alloc::vec::Vec as StdVec;
 
+use bs58;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
-use crate::repr::{Repr, ReprBytes, ReprTransmute, ReprError};
-use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
+
 use super::stellar_repr::StellarRepr;
-use bs58;
+use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
+use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
 
 // Core types for Application
 #[contracttype]
@@ -116,8 +117,16 @@ impl From<Application<'_>> for StellarApplication {
     fn from(value: Application<'_>) -> Self {
         let env = Env::default();
         StellarApplication {
-            id: value.id.rt::<StellarRepr<BytesN<32>>>().expect("infallible conversion").into_inner(),
-            blob: value.blob.rt::<StellarRepr<BytesN<32>>>().expect("infallible conversion").into_inner(),
+            id: value
+                .id
+                .rt::<StellarRepr<BytesN<32>>>()
+                .expect("infallible conversion")
+                .into_inner(),
+            blob: value
+                .blob
+                .rt::<StellarRepr<BytesN<32>>>()
+                .expect("infallible conversion")
+                .into_inner(),
             size: value.size,
             source: String::from_str(&env, &value.source.0.into_owned()),
             metadata: Bytes::from_slice(&env, &value.metadata.0.into_inner().into_owned()),
@@ -144,7 +153,10 @@ impl<'a> From<StellarApplication> for Application<'a> {
 
 // We need to implement ReprBytes for BytesN<32>
 impl ReprBytes for BytesN<32> {
-    type EncodeBytes<'a> = [u8; 32] where Self: 'a;
+    type EncodeBytes<'a>
+        = [u8; 32]
+    where
+        Self: 'a;
     type DecodeBytes = [u8; 32];
     type Error = bs58::decode::Error;
 
@@ -161,8 +173,8 @@ impl ReprBytes for BytesN<32> {
             Ok(_) => {
                 let env = Env::default();
                 Ok(BytesN::from_array(&env, &bytes))
-            },
-            Err(e) => Err(ReprError::InvalidBase58(e))
+            }
+            Err(e) => Err(ReprError::InvalidBase58(e)),
         }
     }
 }

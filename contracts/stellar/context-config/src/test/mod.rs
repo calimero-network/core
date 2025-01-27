@@ -1,7 +1,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use calimero_context_config::stellar::stellar_types::{StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind, StellarRequest, StellarRequestKind, StellarSignedRequest};
+use calimero_context_config::stellar::stellar_types::{
+    StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
+    StellarRequest, StellarRequestKind, StellarSignedRequest,
+};
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::xdr::ToXdr;
@@ -701,7 +704,10 @@ fn test_query_endpoints() {
         nonce: 5, // Future nonce
         kind: StellarRequestKind::Context(StellarContextRequest {
             context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, BytesN::from_array(&env, &[0u8; 32])]),
+            kind: StellarContextRequestKind::AddMembers(vec![
+                &env,
+                BytesN::from_array(&env, &[0u8; 32]),
+            ]),
         }),
     };
 

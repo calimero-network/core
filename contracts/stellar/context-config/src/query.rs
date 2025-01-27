@@ -1,6 +1,8 @@
 use core::ops::Deref;
 
-use calimero_context_config::stellar::stellar_types::{StellarApplication, StellarCapability, StellarError};
+use calimero_context_config::stellar::stellar_types::{
+    StellarApplication, StellarCapability, StellarError,
+};
 use soroban_sdk::{contractimpl, Address, BytesN, Env, Map, Vec};
 
 use crate::guard::GuardedValue;
@@ -17,7 +19,10 @@ impl ContextContract {
     /// Returns the application for a given context
     /// # Errors
     /// Returns ContextNotFound if context doesn't exist
-    pub fn application(env: &Env, context_id: BytesN<32>) -> Result<StellarApplication, StellarError> {
+    pub fn application(
+        env: &Env,
+        context_id: BytesN<32>,
+    ) -> Result<StellarApplication, StellarError> {
         let context = Self::get_context(env, context_id).ok_or(StellarError::ContextNotFound)?;
 
         match context.application.deref() {
@@ -147,7 +152,11 @@ impl ContextContract {
         if identities.is_empty() {
             // Process all privileges more efficiently
             for signer_id in context.application.privileged().iter() {
-                add_capability(&mut privileges, signer_id, StellarCapability::ManageApplication);
+                add_capability(
+                    &mut privileges,
+                    signer_id,
+                    StellarCapability::ManageApplication,
+                );
             }
 
             for signer_id in context.members.privileged().iter() {
