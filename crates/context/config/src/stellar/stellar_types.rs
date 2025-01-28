@@ -9,7 +9,7 @@ use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 use super::stellar_repr::StellarRepr;
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
-use crate::{ContextRequest, RequestKind};
+use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
 // Core types for Application
 #[contracttype]
@@ -60,6 +60,48 @@ pub enum StellarContextRequestKind {
     UpdateProxyContract,
 }
 
+impl From<ContextRequestKind<'_>> for StellarContextRequestKind {
+    fn from(value: ContextRequestKind<'_>) -> Self {
+        match value {
+            ContextRequestKind::Add {
+                author_id,
+                application,
+            } => StellarContextRequestKind::Add(
+                author_id.rt().expect("infallible conversion"),
+                application.into(),
+            ),
+            ContextRequestKind::UpdateApplication { application } => {
+                StellarContextRequestKind::UpdateApplication(application.into())
+            }
+            ContextRequestKind::AddMembers { members } => StellarContextRequestKind::AddMembers(
+                members
+                    .into_owned()
+                    .into_iter()
+                    .map(|m| {
+                        let bytes: [u8; 32] = m.as_bytes(); // Convert to [u8; 32] (adjust as needed)
+                        BytesN::from_array(&env, &bytes) // Convert [u8; 32] to BytesN<32> using Env
+                    })
+                    .collect(),
+            ),
+            ContextRequestKind::RemoveMembers { members } => {
+                StellarContextRequestKind::RemoveMembers(
+                    members
+                        .into_owned()
+                        .into_iter()
+                        .map(|m| m.rt().expect("infallible conversion"))
+                        .collect::<Vec<_>>(),
+                )
+            }
+            ContextRequestKind::Grant { capabilities } => {
+                StellarContextRequestKind::Grant(capabilities.into_owned())
+            }
+            ContextRequestKind::Revoke { capabilities } => {
+                StellarContextRequestKind::Revoke(capabilities.into_owned())
+            }
+        }
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum StellarRequestKind {
@@ -85,7 +127,11 @@ pub struct StellarRequest {
 
 impl StellarRequest {
     pub fn new(kind: StellarRequestKind, signer_id: BytesN<32>, nonce: u64) -> Self {
-        Self { kind, signer_id, nonce }
+        Self {
+            kind,
+            signer_id,
+            nonce,
+        }
     }
 }
 
