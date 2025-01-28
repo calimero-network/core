@@ -1,110 +1,71 @@
 #![no_std]
-
-use guard::Guard;
+use calimero_context_config::stellar::{StellarProposal, StellarProxyError};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map, Symbol,
+    contract, contractimpl, contracttype, 
+    Address, Bytes, BytesN, Env, Map, Symbol, Vec,
+    symbol_short,
 };
 
-mod guard;
 mod mutate;
 mod query;
 mod sys;
-mod types;
 
-use types::Error;
+#[derive(Clone)]
+#[contracttype]
+pub struct ProxyState {
+    pub context_id: BytesN<32>,
+    pub context_config_id: Address,
+    pub num_approvals: u32,
+    pub proposals: Map<BytesN<32>, StellarProposal>,
+    pub approvals: Map<BytesN<32>, Vec<BytesN<32>>>,  // proposal_id -> Vec<signer_id>
+    pub num_proposals_pk: Map<BytesN<32>, u32>,  // author_id -> count
+    pub active_proposals_limit: u32,
+    pub context_storage: Map<Bytes, Bytes>,
+    pub ledger_id: Address,
+}
 
 const STORAGE_KEY_STATE: Symbol = symbol_short!("STATE");
 
-#[contracttype]
-#[derive(Clone)]
-pub struct ContextConfigs {
-    pub contexts: Map<BytesN<32>, Context>,
-    pub proxy_code: OptionalBytes,
-    pub owner: Address,
-}
-
-// Storage types
-#[contracttype]
-#[derive(Clone)]
-pub struct Context {
-    pub application: Guard,
-    pub members: Guard,
-    pub proxy: Guard,
-    pub member_nonces: Map<BytesN<32>, u64>,
-}
-
-#[derive(Clone)]
-#[contracttype]
-pub enum OptionalBytes {
-    Some(BytesN<32>),
-    None,
-}
-
-// Helper methods for the custom option type
-impl OptionalBytes {
-    pub fn from_option(opt: Option<BytesN<32>>) -> Self {
-        match opt {
-            Some(bytes) => OptionalBytes::Some(bytes),
-            None => OptionalBytes::None,
-        }
-    }
-
-    pub fn to_option(&self) -> Option<BytesN<32>> {
-        match self {
-            OptionalBytes::Some(bytes) => Some(bytes.clone()),
-            OptionalBytes::None => None,
-        }
-    }
-}
-
 #[contract]
-pub struct ContextContract;
+pub struct ContextProxyContract;
 
 #[contractimpl]
-impl ContextContract {
-    pub fn initialize(env: Env, owner: Address) -> Result<(), Error> {
-        // Require authorization from deployer
-        owner.require_auth();
+impl ContextProxyContract {
+    pub fn __constructor(env: Env, context_id: BytesN<32>, owner: Address, ledger_id: Address) -> Result<(), StellarProxyError> {
+        // owner.require_auth(); 
 
-        if env.storage().instance().has(&symbol_short!("STATE")) {
-            return Err(Error::Unauthorized);
+        // Check if already initialized
+        if env.storage().instance().has(&STORAGE_KEY_STATE) {
+            return Err(StellarProxyError::AlreadyInitialized);
         }
 
-        let configs = ContextConfigs {
-            contexts: Map::new(&env),
-            proxy_code: OptionalBytes::None,
-            owner,
+        // Initialize contract state
+        let state = ProxyState {
+            context_id,
+            context_config_id: owner.clone(),
+            num_approvals: 3,
+            proposals: Map::new(&env),
+            approvals: Map::new(&env),
+            num_proposals_pk: Map::new(&env),
+            active_proposals_limit: 10,
+            context_storage: Map::new(&env),
+            ledger_id,
         };
 
-        env.storage()
-            .instance()
-            .set(&symbol_short!("STATE"), &configs);
-
+        // Save state
+        env.storage().instance().set(&STORAGE_KEY_STATE, &state);
         Ok(())
     }
 
     // Helper function to get state
-    fn get_state(env: &Env) -> ContextConfigs {
-        env.storage()
-            .instance()
-            .get(&STORAGE_KEY_STATE)
-            .expect("not initialized")
+    fn get_state(env: &Env) -> ProxyState {
+        env.storage().instance().get(&STORAGE_KEY_STATE)
+            .expect("Contract state not initialized")
     }
 
     // Helper function to save state
-    fn save_state(env: &Env, state: &ContextConfigs) {
+    fn save_state(env: &Env, state: &ProxyState) {
         env.storage().instance().set(&STORAGE_KEY_STATE, state);
-    }
-
-    // Helper function to update state
-    fn update_state<F>(env: &Env, f: F) -> Result<(), Error>
-    where
-        F: FnOnce(&mut ContextConfigs) -> Result<(), Error>,
-    {
-        let mut state = Self::get_state(env);
-        f(&mut state)?;
-        Self::save_state(env, &state);
-        Ok(())
     }
 }
 

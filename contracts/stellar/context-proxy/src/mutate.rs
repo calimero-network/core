@@ -1,464 +1,298 @@
-use core::ops::{Deref, DerefMut};
-
-use soroban_sdk::{contractimpl, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
-
-use crate::guard::{Guard, GuardedValue};
-use crate::types::{
-    Application, Capability, ContextRequest, ContextRequestKind, Error, RequestKind, SignedRequest,
+use calimero_context_config::stellar::{
+    stellar_types::{StellarSignedRequest, StellarSignedRequestPayload}, StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner, StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest
 };
-use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
+use soroban_sdk::{
+    contractimpl, log, token::TokenClient, vec, Address, BytesN, Env, FromVal, IntoVal, String, Symbol, TryFromVal, Val, Vec
+};
+
+use crate::{
+    ContextProxyContract, ContextProxyContractClient, ContextProxyContractArgs
+};
 
 #[contractimpl]
-impl ContextContract {
-    /// Process a signed mutation request
-    /// # Errors
-    /// Returns InvalidSignature if request signature is invalid
-    /// Returns InvalidNonce if nonce is incorrect
-    /// Returns various context-specific errors based on the request kind
-    pub fn mutate(env: Env, signed_request: SignedRequest) -> Result<(), Error> {
-        // Verify signature and get request
-        let request = signed_request.verify(&env)?;
-        // Extract context_id and kind from request
-        let (context_id, kind) = match request.kind {
-            RequestKind::Context(ContextRequest { context_id, kind }) => (context_id, kind),
-        };
+impl ContextProxyContract {
+    pub fn mutate(env: Env, signed_request: StellarSignedRequest) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
+        log!(&env, "Mutating proposal");
+        // Verify signature and get the payload in one step
+        let verified_payload = signed_request.verify(&env)
+            .map_err(|_| StellarProxyError::Unauthorized)?;
 
-        // Check and increment nonce
-        Self::check_and_increment_nonce(&env, &context_id, &request.signer_id, request.nonce)?;
-
-        match kind {
-            ContextRequestKind::Add(author_id, application) => Self::add_context(
-                &env,
-                &request.signer_id,
-                &context_id,
-                &author_id,
-                &application,
-            ),
-            ContextRequestKind::UpdateApplication(application) => {
-                Self::update_application(&env, &request.signer_id, &context_id, &application)
-            }
-            ContextRequestKind::AddMembers(members) => {
-                Self::add_members(&env, &request.signer_id, &context_id, &members)
-            }
-            ContextRequestKind::RemoveMembers(members) => {
-                Self::remove_members(&env, &request.signer_id, &context_id, &members)
-            }
-            ContextRequestKind::Grant(capabilities) => {
-                Self::grant(&env, &request.signer_id, &context_id, &capabilities)
-            }
-            ContextRequestKind::Revoke(capabilities) => {
-                Self::revoke(&env, &request.signer_id, &context_id, &capabilities)
-            }
-            ContextRequestKind::UpdateProxyContract => {
-                Self::update_proxy_contract(&env, &request.signer_id, &context_id)
-            }
+        // Process the verified payload
+        match verified_payload {
+            StellarSignedRequestPayload::Proxy(proxy_request) => {
+                match proxy_request {
+                    StellarProxyMutateRequest::Propose(proposal) => {
+                        Self::internal_create_proposal(&env, proposal)
+                    },
+                    StellarProxyMutateRequest::Approve(approval) => {
+                        Self::internal_approve_proposal(&env, approval)
+                    }
+                }
+            },
+            StellarSignedRequestPayload::Context(_) => Err(StellarProxyError::InvalidAction),
         }
     }
 
-    /// Validates and increments the nonce for a member's request
-    /// # Errors
-    /// Returns InvalidNonce if the provided nonce doesn't match the current value
-    fn check_and_increment_nonce(
+    fn internal_create_proposal(
         env: &Env,
-        context_id: &BytesN<32>,
-        member_id: &BytesN<32>,
-        nonce: u64,
-    ) -> Result<(), Error> {
-        Self::update_state(env, |state| {
-            // If context doesn't exist yet, allow the operation
-            let Some(context) = state.contexts.get(context_id.clone()) else {
-                return Ok(());
-            };
-
-            // If member doesn't have a nonce yet, allow the operation
-            let Some(current_nonce) = context.member_nonces.get(member_id.clone()) else {
-                // Only set the nonce if it's a new context operation
-                if nonce == 0 {
-                    let mut updated_context = context.clone();
-                    updated_context.member_nonces.set(member_id.clone(), 1);
-                    state.contexts.set(context_id.clone(), updated_context);
-                }
-                return Ok(());
-            };
-
-            // For existing members, verify and increment nonce
-            if current_nonce != nonce {
-                return Err(Error::InvalidNonce);
-            }
-
-            let mut updated_context = context.clone();
-            updated_context
-                .member_nonces
-                .set(member_id.clone(), nonce + 1);
-            state.contexts.set(context_id.clone(), updated_context);
-
-            Ok(())
-        })
-    }
-
-    /// Adds a new context with initial application and author
-    /// # Errors
-    /// Returns Unauthorized if signer is not the context itself
-    /// Returns ContextExists if context already exists
-    fn add_context(
-        env: &Env,
-        signer_id: &BytesN<32>,
-        context_id: &BytesN<32>,
-        author_id: &BytesN<32>,
-        application: &Application,
-    ) -> Result<(), Error> {
-        // Verify that the signer is the context itself
-        if signer_id.as_ref() != context_id.as_ref() {
-            return Err(Error::Unauthorized);
+        proposal: StellarProposal,
+    ) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
+        // Check membership
+        if !Self::check_member(env, &proposal.author_id)? {
+            return Err(StellarProxyError::Unauthorized);
         }
 
-        Self::update_state(env, |state| {
-            // Check if context already exists
-            if state.contexts.contains_key(context_id.clone()) {
-                return Err(Error::ContextExists);
+        if proposal.actions.is_empty() {
+            return Err(StellarProxyError::InvalidAction);
+        }
+
+        // Check if the proposal contains a delete action
+        for action in proposal.actions.iter() {
+            if let StellarProposalAction::DeleteProposal(proposal_id) = action {
+                // Get the proposal to be deleted
+                let state = Self::get_state(env);
+                let to_delete = state.proposals.get(proposal_id.clone())
+                    .ok_or(StellarProxyError::ProposalNotFound)?;
+
+                // Check if the current user is the author of the proposal to be deleted
+                if to_delete.author_id != proposal.author_id {
+                    return Err(StellarProxyError::Unauthorized);
+                }
+
+                Self::remove_proposal(env, &proposal_id);
+                return Ok(None);
             }
+        }
 
-            // Deploy proxy contract
-            let proxy_address = Self::deploy_proxy(env, context_id)?;
+        let mut state = Self::get_state(env);
+        
+        // Check proposal limit
+        let num_proposals = state.num_proposals_pk
+            .get(proposal.author_id.clone())
+            .unwrap_or(0);
 
-            // Initialize members vector
-            let mut members = Vec::new(env);
-            members.push_back(author_id.clone());
+        if num_proposals >= state.active_proposals_limit {
+            return Err(StellarProxyError::TooManyActiveProposals);
+        }
 
-            // Initialize member nonces
-            let mut member_nonces = Map::new(env);
-            member_nonces.set(author_id.clone(), 0);
+        // Validate proposal actions
+        for action in proposal.actions.iter() {
+            Self::validate_proposal_action(&action)?;
+        }
 
-            // Create context with all components
-            let context = Context {
-                application: Guard::new(
-                    env,
-                    &author_id,
-                    GuardedValue::Application(application.clone()),
-                ),
-                members: Guard::new(env, &author_id, GuardedValue::Members(members)),
-                proxy: Guard::new(env, &author_id, GuardedValue::Proxy(proxy_address)),
-                member_nonces,
-            };
+        // Store proposal
+        let proposal_id = proposal.id.clone();
+        let author_id = proposal.author_id.clone();
+        state.proposals.set(proposal_id.clone(), proposal);
 
-            state.contexts.set(context_id.clone(), context);
-            Ok(())
+        Self::save_state(env, &state);
+
+        // Auto-approve by author
+        Self::internal_approve_proposal(env, StellarProposalApprovalWithSigner {
+            proposal_id,
+            signer_id: author_id,
         })
     }
 
-    /// Updates the application configuration for a context
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    /// Returns Unauthorized if signer doesn't have ManageApplication capability
-    /// Returns InvalidState if application data is corrupted
-    fn update_application(
+    fn internal_approve_proposal(
         env: &Env,
-        signer_id: &BytesN<32>,
-        context_id: &BytesN<32>,
-        application: &Application,
-    ) -> Result<(), Error> {
-        Self::update_state(env, |state| {
-            let context = state
-                .contexts
-                .get(context_id.clone())
-                .ok_or(Error::ContextNotFound)?;
+        approval: StellarProposalApprovalWithSigner,
+    ) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
+        // Check membership
+        if !Self::check_member(env, &approval.signer_id)? {
+            return Err(StellarProxyError::Unauthorized);
+        }
 
-            let mut updated_context = context.clone();
+        let mut state = Self::get_state(env);
+        let proposal_id = approval.proposal_id.clone();
 
-            // Get application guard and verify permissions
-            let guard = updated_context
-                .application
-                .get(signer_id)
-                .map_err(|_| Error::Unauthorized)?;
+        // Check if proposal exists
+        if !state.proposals.contains_key(proposal_id.clone()) {
+            return Err(StellarProxyError::ProposalNotFound);
+        }
 
-            // Update application value
-            *guard.get_mut() = GuardedValue::Application(application.clone());
+        // Get or create approvals vector
+        let mut approvals = state.approvals
+            .get(proposal_id.clone())
+            .unwrap_or_else(|| Vec::new(env));
 
-            // Only update the context if the operation was successful
-            state.contexts.set(context_id.clone(), updated_context);
-            Ok(())
-        })
+        // Check if already approved
+        if approvals.contains(&approval.signer_id) {
+            return Err(StellarProxyError::ProposalAlreadyApproved);
+        }
+
+        // Add approval
+        approvals.push_back(approval.signer_id);
+        state.approvals.set(proposal_id.clone(), approvals.clone());
+
+        // Check if we need to execute
+        let should_execute = approvals.len() >= state.num_approvals as u32;
+
+        Self::save_state(env, &state);
+
+        // Execute if needed
+        if should_execute {
+            Self::execute_proposal(env, &proposal_id)?;
+            Ok(None)
+        } else {
+            Ok(Some(StellarProposalWithApprovals {
+                proposal_id,
+                num_approvals: approvals.len(),
+            }))
+        }
     }
 
-    /// Adds new members to the context
-    /// # Errors
-    /// - `Error::ContextNotFound` - if context doesn't exist
-    /// - `Error::Unauthorized` - if signer doesn't have ManageMembers capability
-    fn add_members(
-        env: &Env,
-        signer_id: &BytesN<32>,
-        context_id: &BytesN<32>,
-        members: &Vec<BytesN<32>>,
-    ) -> Result<(), Error> {
-        Self::update_state(env, |state| {
-            let context = state
-                .contexts
-                .get(context_id.clone())
-                .ok_or(Error::ContextNotFound)?;
+    fn check_member(env: &Env, signer_id: &BytesN<32>) -> Result<bool, StellarProxyError> {
+        // Get contract state to access context_config_id and context_id
+        let state = ContextProxyContract::get_state(env);
+        
+        log!(&env, "Context config id: {:?}", state.context_config_id);
+        log!(&env, "Context id: {:?}", state.context_id);
+        // Make cross-contract call to check membership
+        let has_member: bool = env.invoke_contract(
+            &state.context_config_id,
+            &Symbol::new(env, "has_member"),
+            vec![
+                env,
+                state.context_id.into_val(env),
+                signer_id.into_val(env),
+            ],
+        );
 
-            let mut updated_context = context.clone();
-            let mut new_members = Vec::new(env);
-
-            // Scope for guard_ref to release borrow
-            {
-                let guard_ref = updated_context
-                    .members
-                    .get(signer_id)
-                    .map_err(|_| Error::Unauthorized)?;
-
-                let mut members_mut = guard_ref.get_mut();
-                if let GuardedValue::Members(ref mut member_list) = members_mut.deref_mut() {
-                    for member in members.iter() {
-                        if !member_list.contains(member.clone()) {
-                            member_list.push_back(member.clone());
-                            new_members.push_back(member);
-                        }
-                    }
-                }
-            }
-
-            // Initialize nonces for new members
-            for member in new_members.iter() {
-                updated_context.member_nonces.set(member.clone(), 0);
-            }
-
-            state.contexts.set(context_id.clone(), updated_context);
-            Ok(())
-        })
+        Ok(has_member)
     }
 
-    /// Removes members from the context
-    /// # Errors
-    /// - `Error::ContextNotFound` - if context doesn't exist
-    /// - `Error::Unauthorized` - if signer doesn't have ManageMembers capability
-    fn remove_members(
-        env: &Env,
-        signer_id: &BytesN<32>,
-        context_id: &BytesN<32>,
-        members: &Vec<BytesN<32>>,
-    ) -> Result<(), Error> {
-        Self::update_state(env, |state| {
-            let context = state
-                .contexts
-                .get(context_id.clone())
-                .ok_or(Error::ContextNotFound)?;
-
-            let mut updated_context = context.clone();
-            let mut members_to_remove = Vec::new(env);
-
-            {
-                let guard_ref = updated_context
-                    .members
-                    .get(signer_id)
-                    .map_err(|_| Error::Unauthorized)?;
-
-                let mut members_mut = guard_ref.get_mut();
-                if let GuardedValue::Members(ref mut member_list) = members_mut.deref_mut() {
-                    for member in members.iter() {
-                        if member_list.contains(member.clone()) {
-                            if let Some(pos) = member_list.iter().position(|m| m == member) {
-                                member_list.remove(pos as u32);
-                                members_to_remove.push_back(member.clone());
-                            }
-                        }
-                    }
+    fn validate_proposal_action(action: &StellarProposalAction) -> Result<(), StellarProxyError> {
+        match action {
+            StellarProposalAction::ExternalFunctionCall(_, method_name, _, deposit) => {
+                if method_name.is_empty() || *deposit < 0 {
+                    return Err(StellarProxyError::InvalidAction);
                 }
             }
-
-            // Remove nonces for removed members
-            for member in members_to_remove.iter() {
-                updated_context.member_nonces.remove(member);
+            StellarProposalAction::Transfer(_, amount) => {
+                if *amount <= 0 {
+                    return Err(StellarProxyError::InvalidAction);
+                }
             }
-
-            state.contexts.set(context_id.clone(), updated_context);
-            Ok(())
-        })
+            StellarProposalAction::SetNumApprovals(num_approvals) => {
+                if *num_approvals == 0 {
+                    return Err(StellarProxyError::InvalidAction);
+                }
+            }
+            StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit) => {
+                if *active_proposals_limit == 0 {
+                    return Err(StellarProxyError::InvalidAction);
+                }
+            }
+            StellarProposalAction::SetContextValue(_, _) => {}
+            StellarProposalAction::DeleteProposal(_) => {}
+        }
+        Ok(())
     }
 
-    /// Grants capabilities to members
-    /// # Errors
-    /// - `Error::ContextNotFound` - if context doesn't exist
-    /// - `Error::Unauthorized` - if signer doesn't have required capability
-    /// - `Error::NotAMember` - if target identity is not a member
-    fn grant(
-        env: &Env,
-        signer_id: &BytesN<32>,
-        context_id: &BytesN<32>,
-        capabilities: &Vec<(BytesN<32>, Capability)>,
-    ) -> Result<(), Error> {
-        Self::update_state(env, |state| {
-            let context = state
-                .contexts
-                .get(context_id.clone())
-                .ok_or(Error::ContextNotFound)?;
-
-            let mut updated_context = context.clone();
-
-            // Verify all identities are members
-            {
-                let members_guard = updated_context
-                    .members
-                    .get(signer_id)
-                    .map_err(|_| Error::Unauthorized)?;
-
-                if let GuardedValue::Members(ref member_list) = members_guard.deref() {
-                    for (identity, _) in capabilities.iter() {
-                        if !member_list.contains(identity) {
-                            return Err(Error::NotAMember);
-                        }
-                    }
+    fn remove_proposal(env: &Env, proposal_id: &BytesN<32>) {
+        let mut state = Self::get_state(env);
+        
+        // Get the proposal first to access author_id
+        if let Some(proposal) = state.proposals.get(proposal_id.clone()) {
+            // Remove approvals
+            state.approvals.remove(proposal_id.clone());
+            
+            // Remove proposal
+            state.proposals.remove(proposal_id.clone());
+            
+            // Update author count
+            if let Some(count) = state.num_proposals_pk.get(proposal.author_id.clone()) {
+                if count <= 1 {
+                    state.num_proposals_pk.remove(proposal.author_id.clone());
+                } else {
+                    state.num_proposals_pk.set(proposal.author_id.clone(), count - 1);
                 }
             }
-
-            // Grant capabilities
-            for (identity, capability) in capabilities.iter() {
-                match capability {
-                    Capability::ManageApplication => {
-                        let mut guard = updated_context
-                            .application
-                            .get(signer_id)
-                            .map_err(|_| Error::Unauthorized)?;
-                        guard.privileges().grant(&identity);
-                    }
-                    Capability::ManageMembers => {
-                        let mut guard = updated_context
-                            .members
-                            .get(signer_id)
-                            .map_err(|_| Error::Unauthorized)?;
-                        guard.privileges().grant(&identity);
-                    }
-                    Capability::Proxy => {
-                        let mut guard = updated_context
-                            .proxy
-                            .get(signer_id)
-                            .map_err(|_| Error::Unauthorized)?;
-                        guard.privileges().grant(&identity);
-                    }
-                }
-            }
-
-            state.contexts.set(context_id.clone(), updated_context);
-            Ok(())
-        })
+            
+            Self::save_state(env, &state);
+        }
     }
 
-    /// Revokes capabilities from members
-    /// # Errors
-    /// - `Error::ContextNotFound` - if context doesn't exist
-    /// - `Error::Unauthorized` - if signer doesn't have required capability
-    fn revoke(
-        env: &Env,
-        signer_id: &BytesN<32>,
-        context_id: &BytesN<32>,
-        capabilities: &Vec<(BytesN<32>, Capability)>,
-    ) -> Result<(), Error> {
-        Self::update_state(env, |state| {
-            let context = state
-                .contexts
-                .get(context_id.clone())
-                .ok_or(Error::ContextNotFound)?;
-
-            let mut updated_context = context.clone();
-
-            for (identity, capability) in capabilities.iter() {
-                match capability {
-                    Capability::ManageApplication => {
-                        let mut guard = updated_context
-                            .application
-                            .get(signer_id)
-                            .map_err(|_| Error::Unauthorized)?;
-                        guard.privileges().revoke(&identity);
-                    }
-                    Capability::ManageMembers => {
-                        let mut guard = updated_context
-                            .members
-                            .get(signer_id)
-                            .map_err(|_| Error::Unauthorized)?;
-                        guard.privileges().revoke(&identity);
-                    }
-                    Capability::Proxy => {
-                        let mut guard = updated_context
-                            .proxy
-                            .get(signer_id)
-                            .map_err(|_| Error::Unauthorized)?;
-                        guard.privileges().revoke(&identity);
-                    }
-                }
-            }
-
-            state.contexts.set(context_id.clone(), updated_context);
-            Ok(())
-        })
-    }
-
-    /// Updates the proxy contract for a context
-    /// # Errors
-    /// - `Error::ContextNotFound` - if context doesn't exist
-    /// - `Error::Unauthorized` - if signer doesn't have Proxy capability
-    /// - `Error::InvalidState` - if proxy data is corrupted
-    /// - `Error::ProxyCodeNotSet` - if proxy WASM code is not set
-    /// - `Error::ProxyUpgradeFailed` - if proxy upgrade fails
-    fn update_proxy_contract(
-        env: &Env,
-        signer_id: &BytesN<32>,
-        context_id: &BytesN<32>,
-    ) -> Result<(), Error> {
-        Self::update_state(env, |state| {
-            let context = state
-                .contexts
-                .get(context_id.clone())
-                .ok_or(Error::ContextNotFound)?;
-
-            let mut updated_context = context.clone();
-
-            // Get proxy contract address
-            let proxy_contract_id = {
-                let guard_ref = updated_context
-                    .proxy
-                    .get(signer_id)
-                    .map_err(|_| Error::Unauthorized)?;
-
-                match guard_ref.deref() {
-                    GuardedValue::Proxy(proxy_id) => proxy_id.clone(),
-                    _ => return Err(Error::InvalidState),
-                }
-            };
-
-            // Get proxy code
-            let proxy_code = state.proxy_code.to_option().ok_or(Error::ProxyCodeNotSet)?;
-
-            let contract_address = env.current_contract_address();
-
-            // Attempt to upgrade proxy and check response
-            match env.try_invoke_contract::<(), Error>(
-                &proxy_contract_id,
-                &Symbol::new(env, "upgrade"),
-                (proxy_code, contract_address).into_val(env),
-            ) {
-                Ok(_) => {
-                    state.contexts.set(context_id.clone(), updated_context);
-                    Ok(())
-                }
-                Err(_) => Err(Error::ProxyUpgradeFailed),
-            }
-        })
-    }
-
-    /// Deploys a new proxy contract for a context
-    /// # Errors
-    /// - `Error::ProxyCodeNotSet` - if proxy WASM code is not set
-    fn deploy_proxy(env: &Env, context_id: &BytesN<32>) -> Result<Address, Error> {
+    fn execute_proposal(env: &Env, proposal_id: &BytesN<32>) -> Result<(), StellarProxyError> {
         let state = Self::get_state(env);
+        let proposal = state.proposals
+            .get(proposal_id.clone())
+            .ok_or(StellarProxyError::ProposalNotFound)?;
 
-        // Get stored WASM hash
-        let wasm_hash = state.proxy_code.to_option().ok_or(Error::ProxyCodeNotSet)?;
+        // Execute each action
+        for action in proposal.actions.iter() {
+            match action {
+                StellarProposalAction::ExternalFunctionCall(receiver_id, method_name, args, deposit) => {
+                    // If there's a deposit, handle the XLM transfer first
+                    if deposit > 0 {
+                        let token_client = TokenClient::new(env, &state.ledger_id);
+                        let contract_address = env.current_contract_address();
+                        
+                        // Check balance and transfer
+                        let balance = token_client.balance(&contract_address);
+                        if balance < deposit {
+                            return Err(StellarProxyError::InsufficientBalance);
+                        }
+                        
+                        token_client.transfer(
+                            &contract_address,
+                            &receiver_id,
+                            &deposit
+                        );
+                    }
 
-        // Deploy new proxy instance using context_id as salt
-        let proxy_address = env
-            .deployer()
-            .with_address(env.current_contract_address(), context_id.clone())
-            .deploy_v2(wasm_hash, ());
+                    // Convert the String to Vec<Val>
+                    let mut vec_val: Vec<Val> = Vec::new(env);
+                    let arg_val: Val = args.into_val(env);
+                    vec_val.push_back(arg_val);
 
-        Ok(proxy_address)
+                    // Make the cross-contract call
+                    env.invoke_contract::<()>(
+                        &receiver_id,
+                        &Symbol::from_val(env, &method_name.to_val()),
+                        vec_val,
+                    );
+                }
+
+                StellarProposalAction::Transfer(receiver_id, amount) => {
+                    log!(&env, "Transferring {} to {}", amount, receiver_id);
+                    let token_client = TokenClient::new(env, &state.ledger_id);
+                    let contract_address = env.current_contract_address();
+                    
+                    token_client.transfer(
+                        &contract_address,
+                        &receiver_id,
+                        &amount
+                    );
+                }
+
+                StellarProposalAction::SetNumApprovals(num_approvals) => {
+                    let mut state = Self::get_state(env);
+                    state.num_approvals = num_approvals;
+                    Self::save_state(env, &state);
+                }
+
+                StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit) => {
+                    let mut state = Self::get_state(env);
+                    state.active_proposals_limit = active_proposals_limit;
+                    Self::save_state(env, &state);
+                }
+
+                StellarProposalAction::SetContextValue(key, value) => {
+                    let mut state = Self::get_state(env);
+                    state.context_storage.set(key.clone(), value.clone());
+                    Self::save_state(env, &state);
+                }
+
+                StellarProposalAction::DeleteProposal(proposal_id) => {
+                    Self::remove_proposal(env, &proposal_id);
+                }
+            }
+        }
+
+        // Clean up after successful execution
+        Self::remove_proposal(env, proposal_id);
+        Ok(())
     }
 }

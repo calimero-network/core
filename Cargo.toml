@@ -45,6 +45,7 @@ members = [
 
     "./contracts/stellar/context-config",
     "./contracts/stellar/context-config/mock_proxy",
+    "./contracts/stellar/context-proxy",
 
     "./e2e-tests",
 ]
