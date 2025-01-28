@@ -80,7 +80,7 @@ impl From<ContextRequestKind<'_>> for StellarContextRequestKind {
                     vec.push_back(BytesN::from_array(&env, &member.as_bytes()));
                 }
                 StellarContextRequestKind::AddMembers(vec)
-            },
+            }
             ContextRequestKind::RemoveMembers { members } => {
                 let mut vec = Vec::new(&env);
                 for member in members.into_owned() {
@@ -91,14 +91,30 @@ impl From<ContextRequestKind<'_>> for StellarContextRequestKind {
             ContextRequestKind::Grant { capabilities } => {
                 let mut vec = Vec::new(&env);
                 for (id, cap) in capabilities.into_owned() {
-                    vec.push_back((BytesN::from_array(&env, &id.rt::<BytesN<32>>().expect("infallible conversion").as_bytes()), cap.into()));
+                    vec.push_back((
+                        BytesN::from_array(
+                            &env,
+                            &id.rt::<BytesN<32>>()
+                                .expect("infallible conversion")
+                                .as_bytes(),
+                        ),
+                        cap.into(),
+                    ));
                 }
                 StellarContextRequestKind::Grant(vec)
             }
             ContextRequestKind::Revoke { capabilities } => {
                 let mut vec = Vec::new(&env);
                 for (id, cap) in capabilities.into_owned() {
-                    vec.push_back((BytesN::from_array(&env, &id.rt::<BytesN<32>>().expect("infallible conversion").as_bytes()), cap.into()));
+                    vec.push_back((
+                        BytesN::from_array(
+                            &env,
+                            &id.rt::<BytesN<32>>()
+                                .expect("infallible conversion")
+                                .as_bytes(),
+                        ),
+                        cap.into(),
+                    ));
                 }
                 StellarContextRequestKind::Revoke(vec)
             }

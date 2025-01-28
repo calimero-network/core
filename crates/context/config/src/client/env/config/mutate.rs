@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::Env;
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
@@ -19,7 +20,6 @@ use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::{
     StellarContextRequest, StellarRequest, StellarRequestKind, StellarSignedRequest,
 };
-use soroban_sdk::xdr::ToXdr;
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
