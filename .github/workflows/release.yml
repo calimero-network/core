@@ -368,11 +368,10 @@ jobs:
             if [ "${release_required}" == "true" ]; then
               echo "Updating installation script for ${binary}, version: ${version}"
 
-              ./scripts/generate-installation-script.sh "${binary}" "${version}"
-
               target_branch="chore/bump-${binary}-installation-script-to-v${version}"
               git fetch origin "${target_branch}" || true
               git checkout "${target_branch}" || git checkout -b "${target_branch}"
+              ./scripts/generate-installation-script.sh "${binary}" "${version}"
 
               git add scripts/
               git commit -m "chore: bump ${binary} installation script to v${version}" || true
