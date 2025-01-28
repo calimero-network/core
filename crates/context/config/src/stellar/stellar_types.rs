@@ -62,6 +62,7 @@ pub enum StellarContextRequestKind {
 
 impl From<ContextRequestKind<'_>> for StellarContextRequestKind {
     fn from(value: ContextRequestKind<'_>) -> Self {
+        let env = Env::default();
         match value {
             ContextRequestKind::Add {
                 author_id,
@@ -73,30 +74,36 @@ impl From<ContextRequestKind<'_>> for StellarContextRequestKind {
             ContextRequestKind::UpdateApplication { application } => {
                 StellarContextRequestKind::UpdateApplication(application.into())
             }
-            ContextRequestKind::AddMembers { members } => StellarContextRequestKind::AddMembers(
-                members
-                    .into_owned()
-                    .into_iter()
-                    .map(|m| {
-                        let bytes: [u8; 32] = m.as_bytes(); // Convert to [u8; 32] (adjust as needed)
-                        BytesN::from_array(&env, &bytes) // Convert [u8; 32] to BytesN<32> using Env
-                    })
-                    .collect(),
-            ),
+            ContextRequestKind::AddMembers { members } => {
+                let mut vec = Vec::new(&env);
+                for member in members.into_owned() {
+                    vec.push_back(BytesN::from_array(&env, &member.as_bytes()));
+                }
+                StellarContextRequestKind::AddMembers(vec)
+            },
             ContextRequestKind::RemoveMembers { members } => {
-                StellarContextRequestKind::RemoveMembers(
-                    members
-                        .into_owned()
-                        .into_iter()
-                        .map(|m| m.rt().expect("infallible conversion"))
-                        .collect::<Vec<_>>(),
-                )
+                let mut vec = Vec::new(&env);
+                for member in members.into_owned() {
+                    vec.push_back(BytesN::from_array(&env, &member.as_bytes()));
+                }
+                StellarContextRequestKind::RemoveMembers(vec)
             }
             ContextRequestKind::Grant { capabilities } => {
-                StellarContextRequestKind::Grant(capabilities.into_owned())
+                let mut vec = Vec::new(&env);
+                for (id, cap) in capabilities.into_owned() {
+                    vec.push_back((BytesN::from_array(&env, &id.rt::<BytesN<32>>().expect("infallible conversion").as_bytes()), cap.into()));
+                }
+                StellarContextRequestKind::Grant(vec)
             }
             ContextRequestKind::Revoke { capabilities } => {
-                StellarContextRequestKind::Revoke(capabilities.into_owned())
+                let mut vec = Vec::new(&env);
+                for (id, cap) in capabilities.into_owned() {
+                    vec.push_back((BytesN::from_array(&env, &id.rt::<BytesN<32>>().expect("infallible conversion").as_bytes()), cap.into()));
+                }
+                StellarContextRequestKind::Revoke(vec)
+            }
+            ContextRequestKind::UpdateProxyContract => {
+                StellarContextRequestKind::UpdateProxyContract
             }
         }
     }
