@@ -19,6 +19,7 @@ use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::{
     StellarContextRequest, StellarRequest, StellarRequestKind, StellarSignedRequest,
 };
+use soroban_sdk::xdr::ToXdr;
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
@@ -185,7 +186,8 @@ impl<'a> Method<Stellar> for Mutate<'a> {
         let signed_request = StellarSignedRequest::new(&env, request, |b| Ok(signer_sk.sign(b)))
             .map_err(|_| eyre::eyre!("Failed to sign request"))?;
 
-        let serialized_request =  bincode::serialize(&signed_request);
+        // Convert to bytes using XDR
+        let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
 
         Ok(bytes)
     }
