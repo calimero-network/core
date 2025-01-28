@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
+use soroban_sdk::Env;
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -15,7 +16,9 @@ use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
-use crate::stellar::stellar_types::{StellarContextRequest, StellarRequest, StellarRequestKind};
+use crate::stellar::stellar_types::{
+    StellarContextRequest, StellarRequest, StellarRequestKind, StellarSignedRequest,
+};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
@@ -169,14 +172,22 @@ impl<'a> Method<Stellar> for Mutate<'a> {
     const METHOD: &'static str = "mutate";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
         let signer_sk = SigningKey::from_bytes(&self.signing_key);
         let verifying_key = signer_sk.verifying_key();
 
-        let request = StellarRequest::new(StellarRequestKind::Context(StellarContextRequest::new(self.kind.into())), verifying_key.rt()?, self.nonce);
+        let request = StellarRequest::new(
+            StellarRequestKind::from(self.kind),
+            verifying_key.rt()?,
+            self.nonce,
+        );
 
-        let request = StellarSignedRequest::new(env, self);
-        
-        todo!()
+        let signed_request = StellarSignedRequest::new(&env, request, |b| Ok(signer_sk.sign(b)))
+            .map_err(|_| eyre::eyre!("Failed to sign request"))?;
+
+        let serialized_request =  bincode::serialize(&signed_request);
+
+        Ok(bytes)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
