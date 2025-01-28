@@ -80,7 +80,11 @@ pub struct StellarSignedRequest {
 }
 
 impl StellarSignedRequest {
-    pub fn new<F>(env: &Env, payload: StellarSignedRequestPayload, sign: F) -> Result<Self, StellarError>
+    pub fn new<F>(
+        env: &Env,
+        payload: StellarSignedRequestPayload,
+        sign: F,
+    ) -> Result<Self, StellarError>
     where
         F: FnOnce(&[u8]) -> Result<ed25519_dalek::Signature, ed25519_dalek::SignatureError>,
     {

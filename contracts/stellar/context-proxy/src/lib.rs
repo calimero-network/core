@@ -1,9 +1,8 @@
 #![no_std]
 use calimero_context_config::stellar::{StellarProposal, StellarProxyError};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, 
-    Address, Bytes, BytesN, Env, Map, Symbol, Vec,
-    symbol_short,
+    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map, Symbol,
+    Vec,
 };
 
 mod mutate;
@@ -17,8 +16,8 @@ pub struct ProxyState {
     pub context_config_id: Address,
     pub num_approvals: u32,
     pub proposals: Map<BytesN<32>, StellarProposal>,
-    pub approvals: Map<BytesN<32>, Vec<BytesN<32>>>,  // proposal_id -> Vec<signer_id>
-    pub num_proposals_pk: Map<BytesN<32>, u32>,  // author_id -> count
+    pub approvals: Map<BytesN<32>, Vec<BytesN<32>>>, // proposal_id -> Vec<signer_id>
+    pub num_proposals_pk: Map<BytesN<32>, u32>,      // author_id -> count
     pub active_proposals_limit: u32,
     pub context_storage: Map<Bytes, Bytes>,
     pub ledger_id: Address,
@@ -31,8 +30,13 @@ pub struct ContextProxyContract;
 
 #[contractimpl]
 impl ContextProxyContract {
-    pub fn __constructor(env: Env, context_id: BytesN<32>, owner: Address, ledger_id: Address) -> Result<(), StellarProxyError> {
-        // owner.require_auth(); 
+    pub fn __constructor(
+        env: Env,
+        context_id: BytesN<32>,
+        owner: Address,
+        ledger_id: Address,
+    ) -> Result<(), StellarProxyError> {
+        // owner.require_auth();
 
         // Check if already initialized
         if env.storage().instance().has(&STORAGE_KEY_STATE) {
@@ -59,7 +63,9 @@ impl ContextProxyContract {
 
     // Helper function to get state
     fn get_state(env: &Env) -> ProxyState {
-        env.storage().instance().get(&STORAGE_KEY_STATE)
+        env.storage()
+            .instance()
+            .get(&STORAGE_KEY_STATE)
             .expect("Contract state not initialized")
     }
 

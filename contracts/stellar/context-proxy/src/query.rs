@@ -1,9 +1,7 @@
-use soroban_sdk::{contractimpl, Bytes, BytesN, Env, Vec};
 use calimero_context_config::stellar::{
-    StellarProposal,
-    StellarProposalWithApprovals,
-    StellarProposalApprovalWithSigner,
+    StellarProposal, StellarProposalApprovalWithSigner, StellarProposalWithApprovals,
 };
+use soroban_sdk::{contractimpl, Bytes, BytesN, Env, Vec};
 
 use crate::{ContextProxyContract, ContextProxyContractArgs, ContextProxyContractClient};
 
@@ -28,21 +26,28 @@ impl ContextProxyContract {
     pub fn proposals(env: Env, from_index: u32, limit: u32) -> Vec<StellarProposal> {
         let state = Self::get_state(&env);
         let mut result = Vec::new(&env);
-        
-        for (_, proposal) in state.proposals.iter()
+
+        for (_, proposal) in state
+            .proposals
+            .iter()
             .skip(from_index as usize)
-            .take(limit as usize) {
-                result.push_back(proposal);
+            .take(limit as usize)
+        {
+            result.push_back(proposal);
         }
         result
     }
 
     #[allow(dead_code)]
-    pub fn get_confirmations_count(env: Env, proposal_id: BytesN<32>) -> Option<StellarProposalWithApprovals> {
+    pub fn get_confirmations_count(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<StellarProposalWithApprovals> {
         let state = Self::get_state(&env);
-        
+
         if state.proposals.contains_key(proposal_id.clone()) {
-            let num_approvals = state.approvals
+            let num_approvals = state
+                .approvals
                 .get(proposal_id.clone())
                 .map_or(0, |approvals| approvals.len());
 
@@ -91,11 +96,14 @@ impl ContextProxyContract {
     pub fn context_storage_entries(env: Env, from_index: u32, limit: u32) -> Vec<(Bytes, Bytes)> {
         let state = Self::get_state(&env);
         let mut result = Vec::new(&env);
-        
-        for (key, value) in state.context_storage.iter()
+
+        for (key, value) in state
+            .context_storage
+            .iter()
             .skip(from_index as usize)
-            .take(limit as usize) {
-                result.push_back((key.clone(), value.clone()));
+            .take(limit as usize)
+        {
+            result.push_back((key.clone(), value.clone()));
         }
         result
     }

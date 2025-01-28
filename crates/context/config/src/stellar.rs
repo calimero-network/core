@@ -14,12 +14,12 @@ pub struct StellarProposalId(pub BytesN<32>);
 #[derive(Clone, Debug)]
 #[contracttype]
 pub enum StellarProposalAction {
-    ExternalFunctionCall(Address, String, String, i128),  // receiver_id, method_name, args, deposit
-    Transfer(Address, i128),  // receiver_id, amount
+    ExternalFunctionCall(Address, String, String, i128), // receiver_id, method_name, args, deposit
+    Transfer(Address, i128),                             // receiver_id, amount
     SetNumApprovals(u32),
     SetActiveProposalsLimit(u32),
-    SetContextValue(Bytes, Bytes),  // key, value
-    DeleteProposal(BytesN<32>),  // proposal_id
+    SetContextValue(Bytes, Bytes), // key, value
+    DeleteProposal(BytesN<32>),    // proposal_id
 }
 
 #[derive(Clone, Debug)]

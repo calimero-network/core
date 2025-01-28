@@ -17,11 +17,11 @@ impl ContextContract {
     /// Returns InvalidNonce if nonce is incorrect
     /// Returns various context-specific errors based on the request kind
     pub fn mutate(env: Env, signed_request: StellarSignedRequest) -> Result<(), StellarError> {
-        // Verify signature and get request 
+        // Verify signature and get request
         let request = signed_request.verify(&env)?;
 
-         // Extract request from payload
-         let request = match request {
+        // Extract request from payload
+        let request = match request {
             StellarSignedRequestPayload::Context(req) => req,
             StellarSignedRequestPayload::Proxy(_) => return Err(StellarError::InvalidSignature),
         };
@@ -474,7 +474,14 @@ impl ContextContract {
         let proxy_address = env
             .deployer()
             .with_address(env.current_contract_address(), context_id.clone())
-            .deploy_v2(wasm_hash, (context_id.clone(), env.current_contract_address(), state.ledger_id));
+            .deploy_v2(
+                wasm_hash,
+                (
+                    context_id.clone(),
+                    env.current_contract_address(),
+                    state.ledger_id,
+                ),
+            );
 
         Ok(proxy_address)
     }

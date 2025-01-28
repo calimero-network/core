@@ -1,6 +1,6 @@
 use calimero_context_config::stellar::stellar_types::{
     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
-    StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload
+    StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
@@ -15,7 +15,8 @@ fn create_signed_request(
 ) -> StellarSignedRequest {
     StellarSignedRequest::new(env, StellarSignedRequestPayload::Context(request), |data| {
         Ok(signer_key.sign(data))
-    }).unwrap()
+    })
+    .unwrap()
 }
 
 // Helper struct to manage test context
@@ -31,7 +32,16 @@ impl<'a> TestContext<'a> {
         let env = Env::default();
         env.mock_all_auths();
         let owner = Address::generate(&env);
-        let contract_id = env.register(ContextContract, (&owner, Address::from_str(&env, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC")));
+        let contract_id = env.register(
+            ContextContract,
+            (
+                &owner,
+                Address::from_str(
+                    &env,
+                    "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+                ),
+            ),
+        );
         let client = ContextContractClient::new(&env, &contract_id);
 
         // Set up proxy code
@@ -40,9 +50,8 @@ impl<'a> TestContext<'a> {
         client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
         // Generate context key
-        let context_key = SigningKey::from_bytes(
-            &env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>())
-        );
+        let context_key =
+            SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
         let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
 
         Self {
@@ -54,9 +63,11 @@ impl<'a> TestContext<'a> {
     }
 
     fn generate_key(&self) -> (SigningKey, BytesN<32>) {
-        let contract_id = self.client.address.clone();  // Get the contract's address
+        let contract_id = self.client.address.clone(); // Get the contract's address
         let key = SigningKey::from_bytes(
-            &self.env.as_contract(&contract_id, || self.env.prng().gen::<[u8; 32]>())
+            &self
+                .env
+                .as_contract(&contract_id, || self.env.prng().gen::<[u8; 32]>()),
         );
         let id = BytesN::from_array(&self.env, &key.verifying_key().to_bytes());
         (key, id)
@@ -90,10 +101,14 @@ impl<'a> TestContext<'a> {
 #[test]
 fn test_add_context() {
     let ctx = TestContext::setup();
-    log!(&ctx.env, "Context contract address: {:?}", ctx.client.address);
+    log!(
+        &ctx.env,
+        "Context contract address: {:?}",
+        ctx.client.address
+    );
     let (_author_key, author_id) = ctx.generate_key();
     let app = ctx.create_application(1);
-    
+
     ctx.create_context(author_id.clone(), app.clone());
 
     let stored_app = ctx.client.application(&ctx.context_id);
@@ -187,7 +202,11 @@ fn test_member_management() {
 
     // Verify members haven't changed after failed removal
     let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
-    log!(&ctx.env, "Members after failed removal attempt: {:?}", members);
+    log!(
+        &ctx.env,
+        "Members after failed removal attempt: {:?}",
+        members
+    );
     assert_eq!(members.len(), 2, "Should still have both members");
     assert!(
         members.contains(&alice_id),
@@ -266,7 +285,9 @@ fn test_capability_management() {
     ctx.client.mutate(&signed_request);
 
     // Verify Bob's capabilities
-    let bob_privileges = ctx.client.privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
+    let bob_privileges = ctx
+        .client
+        .privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
     log!(&ctx.env, "Bob's privileges: {:?}", bob_privileges);
 
     // Bob should now be able to add members
@@ -307,7 +328,9 @@ fn test_capability_management() {
     ctx.client.mutate(&signed_request);
 
     // Verify Bob's capabilities are gone
-    let bob_privileges = ctx.client.privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
+    let bob_privileges = ctx
+        .client
+        .privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
     log!(
         &ctx.env,
         "Bob's privileges after revocation: {:?}",
@@ -344,7 +367,10 @@ fn test_capability_management() {
         "David should not have been added"
     );
 
-    log!(&ctx.env, "Capability management test completed successfully");
+    log!(
+        &ctx.env,
+        "Capability management test completed successfully"
+    );
 }
 
 #[test]
@@ -496,7 +522,7 @@ fn test_query_endpoints() {
     // Test invalid nonce scenarios
     let old_nonce_request = StellarRequest {
         signer_id: alice_id.clone(),
-        nonce: 0,  // Using old nonce
+        nonce: 0, // Using old nonce
         kind: StellarRequestKind::Context(StellarContextRequest {
             context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, bob_id.clone()]),
@@ -547,7 +573,10 @@ fn test_query_endpoints() {
         nonce: 5,
         kind: StellarRequestKind::Context(StellarContextRequest {
             context_id: ctx.context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, BytesN::from_array(&ctx.env, &[0u8; 32])]),
+            kind: StellarContextRequestKind::AddMembers(vec![
+                &ctx.env,
+                BytesN::from_array(&ctx.env, &[0u8; 32]),
+            ]),
         }),
     };
     let signed_request = create_signed_request(&bob_key, future_nonce_request, &ctx.env);
