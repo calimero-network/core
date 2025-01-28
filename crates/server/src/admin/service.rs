@@ -36,8 +36,7 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
-    get_context_storage, get_context_users, get_contexts, invite_to_context, join_context,
-    update_context_application,
+    get_context_storage, get_contexts, invite_to_context, join_context, update_context_application,
 };
 use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::identity::generate_context_identity;
@@ -114,10 +113,6 @@ pub(crate) fn setup(
         .route("/contexts", post(create_context::handler))
         .route("/contexts/:context_id", delete(delete_context::handler))
         .route("/contexts/:context_id", get(get_context::handler))
-        .route(
-            "/contexts/:context_id/users",
-            get(get_context_users::handler),
-        )
         .route(
             "/contexts/:context_id/client-keys",
             get(get_context_client_keys::handler),
@@ -215,10 +210,6 @@ pub(crate) fn setup(
         )
         .route("/dev/applications", get(list_applications::handler))
         .route("/dev/contexts/:context_id", get(get_context::handler))
-        .route(
-            "/dev/contexts/:context_id/users",
-            get(get_context_users::handler),
-        )
         .route(
             "/dev/contexts/:context_id/client-keys",
             get(get_context_client_keys::handler),
