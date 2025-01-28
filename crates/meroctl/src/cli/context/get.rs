@@ -26,11 +26,8 @@ pub struct GetCommand {
 
 #[derive(Debug, Parser)]
 pub enum GetSubcommand {
-    #[command(about = "Get context details")]
-    Context,
-
-    #[command(about = "Get context users")]
-    Users,
+    #[command(about = "Get context information")]
+    Info,
 
     #[command(about = "Get client keys")]
     ClientKeys,
@@ -85,12 +82,8 @@ impl GetCommand {
         let client = Client::new();
 
         match self.command {
-            GetSubcommand::Context => {
+            GetSubcommand::Info => {
                 self.get_context(environment, multiaddr, &client, &config.identity)
-                    .await
-            }
-            GetSubcommand::Users => {
-                self.get_users(environment, multiaddr, &client, &config.identity)
                     .await
             }
             GetSubcommand::ClientKeys => {
@@ -120,21 +113,6 @@ impl GetCommand {
             &format!("admin-api/dev/contexts/{}", self.context_id),
         )?;
         self.make_request::<GetContextResponse>(environment, client, url, keypair)
-            .await
-    }
-
-    async fn get_users(
-        &self,
-        environment: &Environment,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-    ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}/users", self.context_id),
-        )?;
-        self.make_request::<GetContextUsersResponse>(environment, client, url, keypair)
             .await
     }
 
