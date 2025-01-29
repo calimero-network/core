@@ -36,6 +36,19 @@ impl Meroctl {
         Ok(app_id)
     }
 
+    pub async fn application_get(
+        &self,
+        node_name: &str,
+        app_id: &str,
+    ) -> EyreResult<serde_json::Value> {
+        let json = self.run_cmd(node_name, ["app", "get", app_id]).await?;
+
+        let data = self.remove_value_from_object(json, "data")?;
+        let application = self.remove_value_from_object(data, "application")?;
+
+        Ok(application)
+    }
+
     pub async fn context_create(
         &self,
         node_name: &str,

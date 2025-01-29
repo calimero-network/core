@@ -3,7 +3,7 @@ use std::sync::Arc;
 use calimero_network::client::NetworkClient;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
-use eyre::Result;
+use eyre::Result as EyreResult;
 use libp2p::gossipsub::TopicHash;
 use owo_colors::OwoColorize;
 
@@ -15,7 +15,7 @@ pub struct PeersCommand {
 }
 
 impl PeersCommand {
-    pub async fn run(self, network_client: Arc<NetworkClient>) -> Result<()> {
+    pub async fn run(self, network_client: Arc<NetworkClient>) -> EyreResult<()> {
         let ind = ">>".blue();
         println!(
             "{ind} Peers (General): {:#?}",
