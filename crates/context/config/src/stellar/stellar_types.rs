@@ -3,21 +3,23 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec as StdVec;
 
 use bs58;
-use ed25519_dalek::Signer;
-use soroban_env_common::Env as CommonEnv;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    contracterror, contracttype, Bytes, BytesN, Env, IntoVal, String, TryIntoVal, Val, Vec,
+    contracterror, contracttype, Bytes, BytesN, Env, String, Vec,
 };
 
-use super::stellar_repr::StellarRepr;
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
 use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
+// Trait for environment-aware conversion
+pub trait FromWithEnv<T> {
+  fn from_with_env(value: T, env: &Env) -> Self;
+}
+
 // Core types for Application
-#[contracttype]
 #[derive(Clone, Debug)]
+#[contracttype]
 pub struct StellarApplication {
     pub id: BytesN<32>,
     pub blob: BytesN<32>,
@@ -26,34 +28,83 @@ pub struct StellarApplication {
     pub metadata: Bytes,
 }
 
+//TODO, fix metadata cast
+impl<'a> FromWithEnv<Application<'a>> for StellarApplication {
+  fn from_with_env(value: Application<'a>, env: &Env) -> Self {
+      StellarApplication {
+        id: BytesN::from_array(env, &value.id.rt().expect("infallible conversion")),
+        blob: BytesN::from_array(env, &value.blob.rt().expect("infallible conversion")),
+        size: value.size,
+        source: String::from_str(env, &value.source.0.into_owned()),
+        metadata: Bytes::new(env),
+      }
+  }
+}
+//TODO, check if this is optimized way
+impl<'a> From<StellarApplication> for Application<'a> {
+  fn from(value: StellarApplication) -> Self {
+      // Convert Soroban String to std::String
+      let mut bytes = vec![0u8; value.source.len() as usize];
+      value.source.copy_into_slice(&mut bytes);
+      let std_string = std::string::String::from_utf8(bytes).expect("valid utf8");
+
+      Application::new(
+          value.id.rt().expect("infallible conversion"),
+          value.blob.rt().expect("infallible conversion"),
+          value.size,
+          ApplicationSource(Cow::Owned(std_string)),
+          ApplicationMetadata(Repr::new(Cow::Owned(value.metadata.into_iter().collect()))),
+      )
+  }
+}
+
 // Request structures
-#[contracttype]
 #[derive(Clone, Debug)]
+#[contracttype]
 pub struct StellarContextRequest {
     pub context_id: BytesN<32>,
     pub kind: StellarContextRequestKind,
 }
 
-impl<'a> From<ContextRequest<'a>> for StellarContextRequest {
-    fn from(value: ContextRequest<'a>) -> Self {
-        let repr_context_id: [u8; 32] = value.context_id.rt().expect("infallible conversion");
-        let context_id = BytesN::from_array(&Env::default(), &repr_context_id);
-        let kind = value.kind.into();
+impl<'a> FromWithEnv<ContextRequest<'a>> for StellarContextRequest {
+    fn from_with_env(value: ContextRequest<'a>, env: &Env) -> Self {
+        let context_id = BytesN::from_array(env, &value.context_id.rt().expect("infallible conversion"));
+        let kind = StellarContextRequestKind::from_with_env(value.kind, env);
         Self { context_id, kind }
     }
 }
 
-#[contracttype]
 #[derive(Clone, Debug, Copy)]
+#[contracttype]
 pub enum StellarCapability {
     ManageApplication,
     ManageMembers,
     Proxy,
 }
 
+impl From<Capability> for StellarCapability {
+  fn from(value: Capability) -> Self {
+      match value {
+          Capability::ManageApplication => StellarCapability::ManageApplication,
+          Capability::ManageMembers => StellarCapability::ManageMembers,
+          Capability::Proxy => StellarCapability::Proxy,
+      }
+  }
+}
+
+impl From<StellarCapability> for Capability {
+  fn from(value: StellarCapability) -> Self {
+      match value {
+          StellarCapability::ManageApplication => Capability::ManageApplication,
+          StellarCapability::ManageMembers => Capability::ManageMembers,
+          StellarCapability::Proxy => Capability::Proxy,
+      }
+  }
+}
+
 // Request types without named fields in enum variants
-#[contracttype]
 #[derive(Clone, Debug)]
+#[contracttype]
 pub enum StellarContextRequestKind {
     Add(BytesN<32>, StellarApplication),
     UpdateApplication(StellarApplication),
@@ -64,21 +115,16 @@ pub enum StellarContextRequestKind {
     UpdateProxyContract,
 }
 
-impl From<ContextRequestKind<'_>> for StellarContextRequestKind {
-    fn from(value: ContextRequestKind<'_>) -> Self {
+impl FromWithEnv<ContextRequestKind<'_>> for StellarContextRequestKind {
+    fn from_with_env(value: ContextRequestKind<'_>, env: &Env) -> Self {
         match value {
-            ContextRequestKind::Add {
-                author_id,
-                application,
-            } => {
-                let repr_author_id: [u8; 32] = author_id.rt().expect("infallible conversion");
-                let author_id = BytesN::from_array(&Env::default(), &repr_author_id);
-                let stellar_app: StellarApplication = application.into();
-
+            ContextRequestKind::Add { author_id, application } => {
+                let author_id = BytesN::from_array(env, &author_id.rt().expect("infallible conversion"));
+                let stellar_app = StellarApplication::from_with_env(application, env);
                 StellarContextRequestKind::Add(author_id, stellar_app)
             }
             ContextRequestKind::UpdateApplication { application } => {
-                StellarContextRequestKind::UpdateApplication(application.into())
+                StellarContextRequestKind::UpdateApplication(StellarApplication::from_with_env(application, env))
             }
             ContextRequestKind::AddMembers { members } => {
                 let mut vec = Vec::new(&Env::default());
@@ -131,17 +177,17 @@ impl From<ContextRequestKind<'_>> for StellarContextRequestKind {
     }
 }
 
-#[contracttype]
 #[derive(Clone, Debug)]
+#[contracttype]
 pub enum StellarRequestKind {
     Context(StellarContextRequest),
 }
 
-impl<'a> From<RequestKind<'a>> for StellarRequestKind {
-    fn from(value: RequestKind<'a>) -> Self {
+impl<'a> FromWithEnv<RequestKind<'a>> for StellarRequestKind {
+    fn from_with_env(value: RequestKind<'a>, env: &Env) -> Self {
         match value {
             RequestKind::Context(context) => {
-                let stellar_context = context.into();
+                let stellar_context = StellarContextRequest::from_with_env(context, env);
                 StellarRequestKind::Context(stellar_context)
             }
         }
@@ -149,8 +195,8 @@ impl<'a> From<RequestKind<'a>> for StellarRequestKind {
 }
 
 // TODO implement new method
-#[contracttype]
 #[derive(Clone, Debug)]
+#[contracttype]
 pub struct StellarRequest {
     pub signer_id: BytesN<32>,
     pub kind: StellarRequestKind,
@@ -168,8 +214,8 @@ impl StellarRequest {
 }
 
 // Signed request wrapper
-#[contracttype]
 #[derive(Clone, Debug)]
+#[contracttype]
 pub struct StellarSignedRequest {
     pub payload: StellarRequest,
     pub signature: BytesN<64>,
@@ -195,37 +241,8 @@ impl StellarSignedRequest {
     where
         F: FnOnce(&[u8]) -> Result<ed25519_dalek::Signature, ed25519_dalek::SignatureError>,
     {
-        println!("=== Starting XDR Serialization ===");
-
-        // Serialize kind first
-        println!("Serializing kind...");
-        let kind_xdr = match &payload.kind {
-            StellarRequestKind::Context(context) => {
-                println!("Context kind: {:?}", context);
-                let context_xdr = context.clone().to_xdr(env);
-                println!("Context XDR: {:?}", context_xdr);
-                context_xdr
-            }
-        };
-
-        // Serialize signer_id
-        println!("Serializing signer_id...");
-        let signer_xdr = payload.signer_id.clone().to_xdr(env);
-        println!("Signer XDR: {:?}", signer_xdr);
-
-        // Serialize nonce
-        println!("Serializing nonce...");
-        let nonce_xdr = payload.nonce.to_xdr(env);
-        println!("Nonce XDR: {:?}", nonce_xdr);
-
-        // Combine all parts
-        let mut combined_vec = StdVec::new();
-        combined_vec.extend(kind_xdr.into_iter());
-        combined_vec.extend(signer_xdr.into_iter());
-        combined_vec.extend(nonce_xdr.into_iter());
-
-        println!("Combined XDR bytes: {:?}", combined_vec);
-
+        let payload_xdr = payload.clone().to_xdr(env);
+        let combined_vec: StdVec<u8> = payload_xdr.into_iter().collect();
         let signature = sign(&combined_vec).map_err(|_| StellarError::InvalidSignature)?;
 
         Ok(Self {
@@ -244,43 +261,6 @@ impl StellarSignedRequest {
     }
 }
 
-impl<'a> From<Application<'a>> for StellarApplication {
-    fn from(value: Application<'a>) -> Self {
-        let env = Env::default();
-        let repr_id: [u8; 32] = value.id.rt().expect("infallible conversion");
-        let id = BytesN::from_array(&env, &repr_id);
-        let repr_blob: [u8; 32] = value.blob.rt().expect("infallible conversion");
-        let blob = BytesN::from_array(&env, &repr_blob);
-        let app = StellarApplication {
-            id,
-            blob,
-            size: value.size,
-            source: String::from_str(&env, &value.source.0.into_owned()),
-            metadata: Bytes::new(&env),
-        };
-
-        app
-    }
-}
-
-impl<'a> From<StellarApplication> for Application<'a> {
-    fn from(value: StellarApplication) -> Self {
-        // Convert Soroban String to std::String
-        let mut bytes = vec![0u8; value.source.len() as usize];
-        value.source.copy_into_slice(&mut bytes);
-        let std_string = std::string::String::from_utf8(bytes).expect("valid utf8");
-
-        Application::new(
-            value.id.rt().expect("infallible conversion"),
-            value.blob.rt().expect("infallible conversion"),
-            value.size,
-            ApplicationSource(Cow::Owned(std_string)),
-            ApplicationMetadata(Repr::new(Cow::Owned(value.metadata.into_iter().collect()))),
-        )
-    }
-}
-
-// We need to implement ReprBytes for BytesN<32>
 impl ReprBytes for BytesN<32> {
     type EncodeBytes<'a>
         = [u8; 32]
@@ -304,27 +284,6 @@ impl ReprBytes for BytesN<32> {
                 Ok(BytesN::from_array(&env, &bytes))
             }
             Err(e) => Err(ReprError::InvalidBase58(e)),
-        }
-    }
-}
-
-// Similar implementations for other types that need conversion
-impl From<Capability> for StellarCapability {
-    fn from(value: Capability) -> Self {
-        match value {
-            Capability::ManageApplication => StellarCapability::ManageApplication,
-            Capability::ManageMembers => StellarCapability::ManageMembers,
-            Capability::Proxy => StellarCapability::Proxy,
-        }
-    }
-}
-
-impl From<StellarCapability> for Capability {
-    fn from(value: StellarCapability) -> Self {
-        match value {
-            StellarCapability::ManageApplication => Capability::ManageApplication,
-            StellarCapability::ManageMembers => Capability::ManageMembers,
-            StellarCapability::Proxy => Capability::Proxy,
         }
     }
 }

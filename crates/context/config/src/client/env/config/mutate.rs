@@ -25,6 +25,8 @@ use crate::types::Signed;
 use crate::{ContextIdentity, ContextRequestKind, Request, RequestKind};
 pub mod methods;
 
+use crate::stellar::stellar_types::FromWithEnv;
+
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
     pub client: CallClient<'a, T>,
@@ -177,69 +179,17 @@ impl<'a> Method<Stellar> for Mutate<'a> {
         let env = Env::default();
         let signer_sk = SigningKey::from_bytes(&self.signing_key);
 
-        // Get context_id, author_id from RequestKind
-        let (context_id, author_id) = match self.kind {
-            RequestKind::Context(context_request) => {
-                let author_id = match context_request.kind {
-                    ContextRequestKind::Add {
-                        author_id,
-                        application: _,
-                    } => author_id,
-                    // Add other variants if they exist
-                    _ => todo!(),
-                };
-                (context_request.context_id, author_id)
-            } // Add other variants if they exist
-        };
-        let repr_context: [u8; 32] = context_id.rt().expect("infallible conversion");
-        let repr_author: [u8; 32] = author_id.rt().expect("infallible conversion");
+        let request = StellarRequest::new(
+          signer_sk.verifying_key().rt()?,
+          StellarRequestKind::from_with_env(self.kind, &env),
+          self.nonce,
+        );
+        let signed_request = StellarSignedRequest::new(
+            &env,
+            request,
+            |b| Ok(signer_sk.sign(b))
+        ).map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
 
-        let env2 = Env::default();
-        let env3 = Env::default();
-        let env4 = Env::default();
-        // Create manual request with the same application
-        let request = StellarRequest {
-            signer_id: signer_sk.verifying_key().rt()?,
-            kind: StellarRequestKind::Context(StellarContextRequest {
-                context_id: BytesN::from_array(&env, &repr_context),
-                kind: StellarContextRequestKind::Add(
-                  BytesN::from_array(&env, &repr_author),
-                  StellarApplication {
-                      id: BytesN::from_array(&env, &[126, 35, 190, 176, 246, 106, 186, 210, 195, 253, 66, 3, 122, 11, 94, 205, 217, 8, 15, 148, 42, 194, 8, 90, 142, 213, 103, 57, 2, 167, 120, 90]),
-                      blob: BytesN::from_array(&env, &[121, 241, 32, 37, 189, 60, 64, 97, 148, 69, 252, 159, 0, 161, 121, 181, 89, 128, 182, 170, 91, 158, 176, 33, 119, 230, 220, 88, 167, 97, 137, 238]),
-                      size: 352709,
-                      source: "file:///Users/alen/www/calimero/demo-blockchain-integrations/logic/res/proxy_contract_demo.wasm".into_val(&env),
-                      metadata: Bytes::new(&env),
-                  }
-                )
-            }),
-            nonce: self.nonce,
-        };
-
-        println!("request: {:?}", request);
-
-        let signed_request = StellarSignedRequest::new(&env, request, |b| Ok(signer_sk.sign(b)))
-            .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
-
-        println!("signed_request: {:?}", signed_request);
-
-        // let req = StellarRequest::new(
-        //   signer_sk.verifying_key().rt()?,
-        //   self.kind.into(),
-        //   self.nonce,
-        // );
-
-        // println!("req: {:?}", req);
-
-        // let calimero_signed_request = StellarSignedRequest::new(
-        //     &env,
-        //     calimero_request,
-        //     |b| Ok(signer_sk.sign(b))
-        // ).map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
-
-        // println!("calimero_signed_request: {:?}", calimero_signed_request);
-        // Convert to bytes using XDR
-        // todo!()
         let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
 
         Ok(bytes)
