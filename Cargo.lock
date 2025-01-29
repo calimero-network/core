@@ -1070,6 +1070,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soroban-client",
+ "soroban-env-common",
  "soroban-sdk",
  "starknet",
  "starknet-crypto 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",

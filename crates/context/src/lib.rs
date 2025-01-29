@@ -250,6 +250,8 @@ impl ContextManager {
                 .send(*context_secret, 0)
                 .await?;
 
+            println!("Got to proxy contract");
+
             let proxy_contract = this
                 .config_client
                 .query::<ContextConfigEnv>(
