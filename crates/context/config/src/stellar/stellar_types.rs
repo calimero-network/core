@@ -4,9 +4,7 @@ use alloc::vec::Vec as StdVec;
 
 use bs58;
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{
-    contracterror, contracttype, Bytes, BytesN, Env, String, Vec,
-};
+use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
@@ -14,7 +12,7 @@ use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
 // Trait for environment-aware conversion
 pub trait FromWithEnv<T> {
-  fn from_with_env(value: T, env: &Env) -> Self;
+    fn from_with_env(value: T, env: &Env) -> Self;
 }
 
 // Core types for Application
@@ -30,32 +28,32 @@ pub struct StellarApplication {
 
 //TODO, fix metadata cast
 impl<'a> FromWithEnv<Application<'a>> for StellarApplication {
-  fn from_with_env(value: Application<'a>, env: &Env) -> Self {
-      StellarApplication {
-        id: BytesN::from_array(env, &value.id.rt().expect("infallible conversion")),
-        blob: BytesN::from_array(env, &value.blob.rt().expect("infallible conversion")),
-        size: value.size,
-        source: String::from_str(env, &value.source.0.into_owned()),
-        metadata: Bytes::new(env),
-      }
-  }
+    fn from_with_env(value: Application<'a>, env: &Env) -> Self {
+        StellarApplication {
+            id: BytesN::from_array(env, &value.id.rt().expect("infallible conversion")),
+            blob: BytesN::from_array(env, &value.blob.rt().expect("infallible conversion")),
+            size: value.size,
+            source: String::from_str(env, &value.source.0.into_owned()),
+            metadata: Bytes::new(env),
+        }
+    }
 }
 //TODO, check if this is optimized way
 impl<'a> From<StellarApplication> for Application<'a> {
-  fn from(value: StellarApplication) -> Self {
-      // Convert Soroban String to std::String
-      let mut bytes = vec![0u8; value.source.len() as usize];
-      value.source.copy_into_slice(&mut bytes);
-      let std_string = std::string::String::from_utf8(bytes).expect("valid utf8");
+    fn from(value: StellarApplication) -> Self {
+        // Convert Soroban String to std::String
+        let mut bytes = vec![0u8; value.source.len() as usize];
+        value.source.copy_into_slice(&mut bytes);
+        let std_string = std::string::String::from_utf8(bytes).expect("valid utf8");
 
-      Application::new(
-          value.id.rt().expect("infallible conversion"),
-          value.blob.rt().expect("infallible conversion"),
-          value.size,
-          ApplicationSource(Cow::Owned(std_string)),
-          ApplicationMetadata(Repr::new(Cow::Owned(value.metadata.into_iter().collect()))),
-      )
-  }
+        Application::new(
+            value.id.rt().expect("infallible conversion"),
+            value.blob.rt().expect("infallible conversion"),
+            value.size,
+            ApplicationSource(Cow::Owned(std_string)),
+            ApplicationMetadata(Repr::new(Cow::Owned(value.metadata.into_iter().collect()))),
+        )
+    }
 }
 
 // Request structures
@@ -68,7 +66,8 @@ pub struct StellarContextRequest {
 
 impl<'a> FromWithEnv<ContextRequest<'a>> for StellarContextRequest {
     fn from_with_env(value: ContextRequest<'a>, env: &Env) -> Self {
-        let context_id = BytesN::from_array(env, &value.context_id.rt().expect("infallible conversion"));
+        let context_id =
+            BytesN::from_array(env, &value.context_id.rt().expect("infallible conversion"));
         let kind = StellarContextRequestKind::from_with_env(value.kind, env);
         Self { context_id, kind }
     }
@@ -83,23 +82,23 @@ pub enum StellarCapability {
 }
 
 impl From<Capability> for StellarCapability {
-  fn from(value: Capability) -> Self {
-      match value {
-          Capability::ManageApplication => StellarCapability::ManageApplication,
-          Capability::ManageMembers => StellarCapability::ManageMembers,
-          Capability::Proxy => StellarCapability::Proxy,
-      }
-  }
+    fn from(value: Capability) -> Self {
+        match value {
+            Capability::ManageApplication => StellarCapability::ManageApplication,
+            Capability::ManageMembers => StellarCapability::ManageMembers,
+            Capability::Proxy => StellarCapability::Proxy,
+        }
+    }
 }
 
 impl From<StellarCapability> for Capability {
-  fn from(value: StellarCapability) -> Self {
-      match value {
-          StellarCapability::ManageApplication => Capability::ManageApplication,
-          StellarCapability::ManageMembers => Capability::ManageMembers,
-          StellarCapability::Proxy => Capability::Proxy,
-      }
-  }
+    fn from(value: StellarCapability) -> Self {
+        match value {
+            StellarCapability::ManageApplication => Capability::ManageApplication,
+            StellarCapability::ManageMembers => Capability::ManageMembers,
+            StellarCapability::Proxy => Capability::Proxy,
+        }
+    }
 }
 
 // Request types without named fields in enum variants
@@ -118,13 +117,20 @@ pub enum StellarContextRequestKind {
 impl FromWithEnv<ContextRequestKind<'_>> for StellarContextRequestKind {
     fn from_with_env(value: ContextRequestKind<'_>, env: &Env) -> Self {
         match value {
-            ContextRequestKind::Add { author_id, application } => {
-                let author_id = BytesN::from_array(env, &author_id.rt().expect("infallible conversion"));
+            ContextRequestKind::Add {
+                author_id,
+                application,
+            } => {
+                let author_id =
+                    BytesN::from_array(env, &author_id.rt().expect("infallible conversion"));
                 let stellar_app = StellarApplication::from_with_env(application, env);
                 StellarContextRequestKind::Add(author_id, stellar_app)
             }
             ContextRequestKind::UpdateApplication { application } => {
-                StellarContextRequestKind::UpdateApplication(StellarApplication::from_with_env(application, env))
+                StellarContextRequestKind::UpdateApplication(StellarApplication::from_with_env(
+                    application,
+                    env,
+                ))
             }
             ContextRequestKind::AddMembers { members } => {
                 let mut vec = Vec::new(&Env::default());

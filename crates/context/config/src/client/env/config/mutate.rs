@@ -180,15 +180,12 @@ impl<'a> Method<Stellar> for Mutate<'a> {
         let signer_sk = SigningKey::from_bytes(&self.signing_key);
 
         let request = StellarRequest::new(
-          signer_sk.verifying_key().rt()?,
-          StellarRequestKind::from_with_env(self.kind, &env),
-          self.nonce,
+            signer_sk.verifying_key().rt()?,
+            StellarRequestKind::from_with_env(self.kind, &env),
+            self.nonce,
         );
-        let signed_request = StellarSignedRequest::new(
-            &env,
-            request,
-            |b| Ok(signer_sk.sign(b))
-        ).map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
+        let signed_request = StellarSignedRequest::new(&env, request, |b| Ok(signer_sk.sign(b)))
+            .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
 
         let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
 
