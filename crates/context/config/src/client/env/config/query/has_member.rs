@@ -9,7 +9,8 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes};
+use crate::stellar::stellar_repr::StellarRepr;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -100,10 +101,24 @@ impl Method<Stellar> for HasMemberRequest {
     const METHOD: &'static str = "has_member";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let context_id = StellarRepr::new(*self.context_id);
+        let identity = StellarRepr::new(*self.identity);
+
+        let mut encoded_context_id = context_id.as_bytes().to_vec();
+        let encoded_identity = identity.as_bytes().to_vec();
+
+        encoded_context_id.extend(encoded_identity);
+
+        Ok(encoded_context_id)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        if response.is_empty() {
+            return Err(eyre::eyre!("Error fetching members"));
+        }
+
+        let value = response[0] != 0;
+
+        Ok(value)
     }
 }

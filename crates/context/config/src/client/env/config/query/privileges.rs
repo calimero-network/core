@@ -17,7 +17,8 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes};
+use crate::stellar::stellar_repr::StellarRepr;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -171,10 +172,22 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let context_id = StellarRepr::new(self.context_id);
+        let identities: Vec<StellarRepr<Repr<ContextIdentity>>> = self
+            .identities
+            .iter()
+            .map(|&id| StellarRepr::new(id))
+            .collect();
+
+        let mut encoded_context_id = context_id.as_bytes().to_vec();
+        for identity in identities {
+            encoded_context_id.extend(identity.as_bytes());
+        }
+
+        Ok(encoded_context_id)
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }

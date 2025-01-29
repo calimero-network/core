@@ -9,7 +9,8 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes};
+use crate::stellar::stellar_repr::StellarRepr;
 use crate::types::{ContextId, Revision};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -90,10 +91,19 @@ impl Method<Stellar> for MembersRevisionRequest {
     const METHOD: &'static str = "members_revision";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let context_id = StellarRepr::new(*self.context_id);
+        let encoded = context_id.as_bytes().to_vec();
+
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        let revision = u64::from_be_bytes(
+            response
+                .try_into()
+                .map_err(|_| eyre::eyre!("Invalid response length: expected 8 bytes"))?,
+        );
+
+        Ok(revision)
     }
 }

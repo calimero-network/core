@@ -1,6 +1,5 @@
 use candid::{Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::{BytesN, Env};
 use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
@@ -11,6 +10,7 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::{Repr, ReprBytes};
+use crate::stellar::stellar_repr::StellarRepr;
 use crate::types::{ContextId, Revision};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -81,15 +81,19 @@ impl Method<Stellar> for ApplicationRevisionRequest {
     const METHOD: &'static str = "application_revision";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let env = Env::default();
-        let bytes = BytesN::from_array(&env, &self.context_id.as_bytes());
+        let context_id = StellarRepr::new(*self.context_id);
+        let encoded = context_id.as_bytes().to_vec();
 
-        let encoded = bytes.to_array().to_vec();
-        // bin encode
         Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        let revision = u64::from_be_bytes(
+            response
+                .try_into()
+                .map_err(|_| eyre::eyre!("Invalid response length: expected 8 bytes"))?,
+        );
+
+        Ok(revision)
     }
 }

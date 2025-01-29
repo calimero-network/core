@@ -13,7 +13,8 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICApplication;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes};
+use crate::stellar::stellar_repr::StellarRepr;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -119,10 +120,17 @@ impl Method<Stellar> for ApplicationRequest {
     const METHOD: &'static str = "application";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let context_id = StellarRepr::new(*self.context_id);
+        let encoded = context_id.as_bytes().to_vec();
+
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Err(eyre::eyre!("No application found"));
+        }
+
         todo!()
     }
 }
