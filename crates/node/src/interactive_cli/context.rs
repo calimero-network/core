@@ -4,7 +4,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
 use clap::{Parser, Subcommand};
-use eyre::Result;
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -73,7 +73,7 @@ enum Commands {
 impl ContextCommand {
     #[expect(clippy::similar_names, reason = "Acceptable here")]
     #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub async fn run(self, node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
 
         match self.command {

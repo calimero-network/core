@@ -291,7 +291,7 @@ async fn app_installed(
 ) -> eyre::Result<bool> {
     let url = multiaddr_to_url(
         base_multiaddr,
-        &format!("admin-api/dev/application/{application_id}"),
+        &format!("admin-api/dev/applications/{application_id}"),
     )?;
 
     let response: GetApplicationResponse =

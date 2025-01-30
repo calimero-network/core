@@ -2,7 +2,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
 use clap::Parser;
-use eyre::Result;
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 
 use crate::Node;
@@ -15,7 +15,7 @@ pub struct StateCommand {
 }
 
 impl StateCommand {
-    pub fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
 
         let handle = node.store.handle();
