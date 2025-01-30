@@ -1,5 +1,7 @@
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
+use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::Env;
 use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -15,6 +17,10 @@ use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::ICSigned;
 use crate::icp::{ICProposalWithApprovals, ICProxyMutateRequest};
 use crate::repr::ReprTransmute;
+use crate::stellar::stellar_types::{
+    FromWithEnv, StellarSignedRequest, StellarSignedRequestPayload,
+};
+use crate::stellar::StellarProxyMutateRequest;
 use crate::types::Signed;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
@@ -153,7 +159,21 @@ impl Method<Stellar> for Mutate {
     const METHOD: &'static str = "mutate";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let env = Env::default();
+        let signer_sk = SigningKey::from_bytes(&self.signing_key);
+
+        let payload: StellarProxyMutateRequest =
+            StellarProxyMutateRequest::from_with_env(self.raw_request, &env);
+
+        let signed_request_payload = StellarSignedRequestPayload::Proxy(payload);
+
+        let signed_request =
+            StellarSignedRequest::new(&env, signed_request_payload, |b| Ok(signer_sk.sign(b)))
+                .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
+
+        let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
+
+        Ok(bytes)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

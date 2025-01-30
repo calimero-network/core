@@ -17,7 +17,9 @@ use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
-use crate::stellar::stellar_types::{StellarRequest, StellarRequestKind, StellarSignedRequest};
+use crate::stellar::stellar_types::{
+    StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
+};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
@@ -181,8 +183,12 @@ impl<'a> Method<Stellar> for Mutate<'a> {
             StellarRequestKind::from_with_env(self.kind, &env),
             self.nonce,
         );
-        let signed_request = StellarSignedRequest::new(&env, request, |b| Ok(signer_sk.sign(b)))
-            .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
+
+        let signed_request_payload = StellarSignedRequestPayload::Context(request);
+
+        let signed_request =
+            StellarSignedRequest::new(&env, signed_request_payload, |b| Ok(signer_sk.sign(b)))
+                .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
 
         let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
 

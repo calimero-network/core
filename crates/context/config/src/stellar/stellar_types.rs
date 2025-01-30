@@ -3,12 +3,27 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec as StdVec;
 
 use bs58;
-use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 
+use super::StellarProxyMutateRequest;
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
 use crate::{ContextRequest, ContextRequestKind, RequestKind};
+
+#[derive(Clone, Debug, Copy)]
+#[contracterror]
+pub enum StellarProxyError {
+    AlreadyInitialized = 1,
+    Unauthorized = 2,
+    ProposalNotFound = 3,
+    ProposalAlreadyApproved = 4,
+    TooManyActiveProposals = 5,
+    InvalidAction = 6,
+    ExecutionFailed = 7,
+    InsufficientBalance = 8,
+    TransferFailed = 9,
+}
 
 // Trait for environment-aware conversion
 pub trait FromWithEnv<T> {
@@ -201,8 +216,8 @@ impl<'a> FromWithEnv<RequestKind<'a>> for StellarRequestKind {
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct StellarRequest {
-    pub signer_id: BytesN<32>,
     pub kind: StellarRequestKind,
+    pub signer_id: BytesN<32>,
     pub nonce: u64,
 }
 
@@ -216,11 +231,17 @@ impl StellarRequest {
     }
 }
 
-// Signed request wrapper
 #[derive(Clone, Debug)]
 #[contracttype]
+pub enum StellarSignedRequestPayload {
+    Context(StellarRequest),
+    Proxy(StellarProxyMutateRequest),
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
 pub struct StellarSignedRequest {
-    pub payload: StellarRequest,
+    pub payload: StellarSignedRequestPayload,
     pub signature: BytesN<64>,
 }
 
@@ -240,13 +261,18 @@ pub enum StellarError {
 }
 
 impl StellarSignedRequest {
-    pub fn new<F>(env: &Env, payload: StellarRequest, sign: F) -> Result<Self, StellarError>
+    pub fn new<F>(
+        env: &Env,
+        payload: StellarSignedRequestPayload,
+        sign: F,
+    ) -> Result<Self, StellarError>
     where
         F: FnOnce(&[u8]) -> Result<ed25519_dalek::Signature, ed25519_dalek::SignatureError>,
     {
-        let payload_xdr = payload.clone().to_xdr(env);
-        let combined_vec: StdVec<u8> = payload_xdr.into_iter().collect();
-        let signature = sign(&combined_vec).map_err(|_| StellarError::InvalidSignature)?;
+        let request_xdr = payload.clone().to_xdr(env);
+        let std_vec: StdVec<u8> = request_xdr.into_iter().collect();
+
+        let signature = sign(&std_vec).map_err(|_| StellarError::InvalidSignature)?;
 
         Ok(Self {
             payload,
@@ -254,11 +280,20 @@ impl StellarSignedRequest {
         })
     }
 
-    pub fn verify(&self, env: &Env) -> Result<StellarRequest, StellarError> {
+    pub fn verify(&self, env: &Env) -> Result<StellarSignedRequestPayload, StellarError> {
         let bytes = self.payload.clone().to_xdr(env);
 
+        // Get signer_id based on payload type
+        let signer_id = match &self.payload {
+            StellarSignedRequestPayload::Context(req) => &req.signer_id,
+            StellarSignedRequestPayload::Proxy(req) => match req {
+                StellarProxyMutateRequest::Propose(proposal) => &proposal.author_id,
+                StellarProxyMutateRequest::Approve(approval) => &approval.signer_id,
+            },
+        };
+
         env.crypto()
-            .ed25519_verify(&self.payload.signer_id, &bytes, &self.signature);
+            .ed25519_verify(signer_id, &bytes, &self.signature);
 
         Ok(self.payload.clone())
     }
