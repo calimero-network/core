@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{Bytes, BytesN, Env, IntoVal};
+use soroban_sdk::Env;
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -17,12 +17,9 @@ use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
-use crate::stellar::stellar_types::{
-    StellarApplication, StellarContextRequest, StellarContextRequestKind, StellarRequest,
-    StellarRequestKind, StellarSignedRequest,
-};
+use crate::stellar::stellar_types::{StellarRequest, StellarRequestKind, StellarSignedRequest};
 use crate::types::Signed;
-use crate::{ContextIdentity, ContextRequestKind, Request, RequestKind};
+use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
 
 use crate::stellar::stellar_types::FromWithEnv;
@@ -192,8 +189,8 @@ impl<'a> Method<Stellar> for Mutate<'a> {
         Ok(bytes)
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        Ok(())
     }
 }
 
