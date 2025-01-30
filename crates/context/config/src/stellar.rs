@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, String, Vec};
+use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, String, Symbol, Val, Vec};
 
 pub mod stellar_repr;
 pub mod stellar_types;
@@ -14,7 +14,7 @@ pub struct StellarProposalId(pub BytesN<32>);
 #[derive(Clone, Debug)]
 #[contracttype]
 pub enum StellarProposalAction {
-    ExternalFunctionCall(Address, String, String, i128), // receiver_id, method_name, args, deposit
+    ExternalFunctionCall(Address, Symbol, Vec<Val>, i128), // receiver_id, method_name, args, deposit
     Transfer(Address, i128),                             // receiver_id, amount
     SetNumApprovals(u32),
     SetActiveProposalsLimit(u32),
@@ -63,4 +63,6 @@ pub enum StellarProxyError {
     ExecutionFailed = 7,
     InsufficientBalance = 8,
     TransferFailed = 9,
+    CrossContractCallFailed = 10,
+    ParseError = 11,
 }

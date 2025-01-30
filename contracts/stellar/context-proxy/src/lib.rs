@@ -36,17 +36,13 @@ impl ContextProxyContract {
         owner: Address,
         ledger_id: Address,
     ) -> Result<(), StellarProxyError> {
-        // owner.require_auth();
-
-        // Check if already initialized
         if env.storage().instance().has(&STORAGE_KEY_STATE) {
             return Err(StellarProxyError::AlreadyInitialized);
         }
 
-        // Initialize contract state
         let state = ProxyState {
             context_id,
-            context_config_id: owner.clone(),
+            context_config_id: owner,
             num_approvals: 3,
             proposals: Map::new(&env),
             approvals: Map::new(&env),
@@ -56,12 +52,10 @@ impl ContextProxyContract {
             ledger_id,
         };
 
-        // Save state
         env.storage().instance().set(&STORAGE_KEY_STATE, &state);
         Ok(())
     }
 
-    // Helper function to get state
     fn get_state(env: &Env) -> ProxyState {
         env.storage()
             .instance()
@@ -69,7 +63,6 @@ impl ContextProxyContract {
             .expect("Contract state not initialized")
     }
 
-    // Helper function to save state
     fn save_state(env: &Env, state: &ProxyState) {
         env.storage().instance().set(&STORAGE_KEY_STATE, state);
     }

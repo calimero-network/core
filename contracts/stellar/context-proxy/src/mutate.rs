@@ -7,10 +7,8 @@ use calimero_context_config::stellar::{
 };
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{
-    contractimpl, log, vec, Address, BytesN, Env, FromVal, IntoVal, String, Symbol, TryFromVal,
-    Val, Vec,
+    contractimpl, log, vec, BytesN, Env, Symbol, Val, IntoVal, Vec
 };
-
 use crate::{ContextProxyContract, ContextProxyContractArgs, ContextProxyContractClient};
 
 #[contractimpl]
@@ -19,21 +17,15 @@ impl ContextProxyContract {
         env: Env,
         signed_request: StellarSignedRequest,
     ) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
-        log!(&env, "Mutating proposal");
-        // Verify signature and get the payload in one step
+        // Verify signature and get the payload
         let verified_payload = signed_request
             .verify(&env)
             .map_err(|_| StellarProxyError::Unauthorized)?;
 
-        // Process the verified payload
         match verified_payload {
             StellarSignedRequestPayload::Proxy(proxy_request) => match proxy_request {
-                StellarProxyMutateRequest::Propose(proposal) => {
-                    Self::internal_create_proposal(&env, proposal)
-                }
-                StellarProxyMutateRequest::Approve(approval) => {
-                    Self::internal_approve_proposal(&env, approval)
-                }
+                StellarProxyMutateRequest::Propose(proposal) => Self::internal_create_proposal(&env, proposal),
+                StellarProxyMutateRequest::Approve(approval) => Self::internal_approve_proposal(&env, approval),
             },
             StellarSignedRequestPayload::Context(_) => Err(StellarProxyError::InvalidAction),
         }
@@ -43,7 +35,7 @@ impl ContextProxyContract {
         env: &Env,
         proposal: StellarProposal,
     ) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
-        // Check membership
+        // Check membership and validate proposal
         if !Self::check_member(env, &proposal.author_id)? {
             return Err(StellarProxyError::Unauthorized);
         }
@@ -52,17 +44,15 @@ impl ContextProxyContract {
             return Err(StellarProxyError::InvalidAction);
         }
 
-        // Check if the proposal contains a delete action
-        for action in proposal.actions.iter() {
-            if let StellarProposalAction::DeleteProposal(proposal_id) = action {
-                // Get the proposal to be deleted
+        // Handle delete action if present
+        if let Some(delete_action) = proposal.actions.iter().find(|action| matches!(action, StellarProposalAction::DeleteProposal(_))) {
+            if let StellarProposalAction::DeleteProposal(proposal_id) = delete_action {
                 let state = Self::get_state(env);
                 let to_delete = state
                     .proposals
                     .get(proposal_id.clone())
                     .ok_or(StellarProxyError::ProposalNotFound)?;
 
-                // Check if the current user is the author of the proposal to be deleted
                 if to_delete.author_id != proposal.author_id {
                     return Err(StellarProxyError::Unauthorized);
                 }
@@ -84,15 +74,17 @@ impl ContextProxyContract {
             return Err(StellarProxyError::TooManyActiveProposals);
         }
 
-        // Validate proposal actions
-        for action in proposal.actions.iter() {
-            Self::validate_proposal_action(&action)?;
-        }
+        // Validate all actions
+        proposal.actions.iter()
+            .try_for_each(|action| Self::validate_proposal_action(&action))?;
 
         // Store proposal
         let proposal_id = proposal.id.clone();
         let author_id = proposal.author_id.clone();
         state.proposals.set(proposal_id.clone(), proposal);
+
+        // Increment the number of proposals for this author
+        state.num_proposals_pk.set(author_id.clone(), num_proposals + 1);
 
         Self::save_state(env, &state);
 
@@ -110,7 +102,6 @@ impl ContextProxyContract {
         env: &Env,
         approval: StellarProposalApprovalWithSigner,
     ) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
-        // Check membership
         if !Self::check_member(env, &approval.signer_id)? {
             return Err(StellarProxyError::Unauthorized);
         }
@@ -134,16 +125,13 @@ impl ContextProxyContract {
             return Err(StellarProxyError::ProposalAlreadyApproved);
         }
 
-        // Add approval
+        // Add approval and update state
         approvals.push_back(approval.signer_id);
         state.approvals.set(proposal_id.clone(), approvals.clone());
 
-        // Check if we need to execute
         let should_execute = approvals.len() >= state.num_approvals as u32;
-
         Self::save_state(env, &state);
 
-        // Execute if needed
         if should_execute {
             Self::execute_proposal(env, &proposal_id)?;
             Ok(None)
@@ -156,16 +144,18 @@ impl ContextProxyContract {
     }
 
     fn check_member(env: &Env, signer_id: &BytesN<32>) -> Result<bool, StellarProxyError> {
-        // Get contract state to access context_config_id and context_id
-        let state = ContextProxyContract::get_state(env);
+        let state = Self::get_state(env);
+          
+        let args = vec![
+            env,
+            state.context_id.into_val(env),
+            signer_id.into_val(env)
+        ];
 
-        log!(&env, "Context config id: {:?}", state.context_config_id);
-        log!(&env, "Context id: {:?}", state.context_id);
-        // Make cross-contract call to check membership
         let has_member: bool = env.invoke_contract(
             &state.context_config_id,
             &Symbol::new(env, "has_member"),
-            vec![env, state.context_id.into_val(env), signer_id.into_val(env)],
+            args,
         );
 
         Ok(has_member)
@@ -173,51 +163,39 @@ impl ContextProxyContract {
 
     fn validate_proposal_action(action: &StellarProposalAction) -> Result<(), StellarProxyError> {
         match action {
-            StellarProposalAction::ExternalFunctionCall(_, method_name, _, deposit) => {
-                if method_name.is_empty() || *deposit < 0 {
-                    return Err(StellarProxyError::InvalidAction);
-                }
+            StellarProposalAction::ExternalFunctionCall(_, method_name, _, deposit) 
+                if method_name.to_val().is_void() || *deposit < 0 => {
+                    Err(StellarProxyError::InvalidAction)
             }
-            StellarProposalAction::Transfer(_, amount) => {
-                if *amount <= 0 {
-                    return Err(StellarProxyError::InvalidAction);
-                }
+            StellarProposalAction::Transfer(_, amount) if *amount <= 0 => {
+                Err(StellarProxyError::InvalidAction)
             }
-            StellarProposalAction::SetNumApprovals(num_approvals) => {
-                if *num_approvals == 0 {
-                    return Err(StellarProxyError::InvalidAction);
-                }
+            StellarProposalAction::SetNumApprovals(num_approvals) if *num_approvals == 0 => {
+                Err(StellarProxyError::InvalidAction)
             }
-            StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit) => {
-                if *active_proposals_limit == 0 {
-                    return Err(StellarProxyError::InvalidAction);
-                }
+            StellarProposalAction::SetActiveProposalsLimit(limit) if *limit == 0 => {
+                Err(StellarProxyError::InvalidAction)
             }
-            StellarProposalAction::SetContextValue(_, _) => {}
-            StellarProposalAction::DeleteProposal(_) => {}
+            _ => Ok(())
         }
-        Ok(())
     }
 
     fn remove_proposal(env: &Env, proposal_id: &BytesN<32>) {
         let mut state = Self::get_state(env);
 
-        // Get the proposal first to access author_id
         if let Some(proposal) = state.proposals.get(proposal_id.clone()) {
-            // Remove approvals
+            let author_id = proposal.author_id.clone();
+            
+            // Batch removals
             state.approvals.remove(proposal_id.clone());
-
-            // Remove proposal
             state.proposals.remove(proposal_id.clone());
 
             // Update author count
-            if let Some(count) = state.num_proposals_pk.get(proposal.author_id.clone()) {
+            if let Some(count) = state.num_proposals_pk.get(author_id.clone()) {
                 if count <= 1 {
-                    state.num_proposals_pk.remove(proposal.author_id.clone());
+                    state.num_proposals_pk.remove(author_id);
                 } else {
-                    state
-                        .num_proposals_pk
-                        .set(proposal.author_id.clone(), count - 1);
+                    state.num_proposals_pk.set(author_id, count - 1);
                 }
             }
 
@@ -241,6 +219,9 @@ impl ContextProxyContract {
                     args,
                     deposit,
                 ) => {
+                    let current_address = env.current_contract_address();
+                    current_address.require_auth();
+
                     // If there's a deposit, handle the XLM transfer first
                     if deposit > 0 {
                         let token_client = TokenClient::new(env, &state.ledger_id);
@@ -252,20 +233,36 @@ impl ContextProxyContract {
                             return Err(StellarProxyError::InsufficientBalance);
                         }
 
-                        token_client.transfer(&contract_address, &receiver_id, &deposit);
+                        // Approve transfer with longer expiration
+                        let current_ledger = env.ledger().sequence();
+                        let expiration_ledger = current_ledger + 100;
+                        token_client.approve(&contract_address, &receiver_id, &deposit, &expiration_ledger);
                     }
-
-                    // Convert the String to Vec<Val>
-                    let mut vec_val: Vec<Val> = Vec::new(env);
-                    let arg_val: Val = args.into_val(env);
-                    vec_val.push_back(arg_val);
-
-                    // Make the cross-contract call
-                    env.invoke_contract::<()>(
+                    
+                    // Ignoring the return value completely
+                    env.invoke_contract::<Val>(
                         &receiver_id,
-                        &Symbol::from_val(env, &method_name.to_val()),
-                        vec_val,
+                        &method_name,
+                        args,
                     );
+
+                    // If there's a deposit, handle the XLM transfer first
+                    if deposit > 0 {
+                        let token_client = TokenClient::new(env, &state.ledger_id);
+                        let contract_address = env.current_contract_address();
+
+                        // Check balance and transfer
+                        let balance = token_client.balance(&contract_address);
+                        if balance < deposit {
+                            return Err(StellarProxyError::InsufficientBalance);
+                        }
+
+                        // Get current ledger
+                        let current_ledger = env.ledger().sequence();
+                        // Set expiration to some blocks in the future
+                        let expiration_ledger = current_ledger + 1;
+                        token_client.approve(&contract_address, &receiver_id, &deposit, &expiration_ledger);
+                  }
                 }
 
                 StellarProposalAction::Transfer(receiver_id, amount) => {
@@ -282,9 +279,9 @@ impl ContextProxyContract {
                     Self::save_state(env, &state);
                 }
 
-                StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit) => {
+                StellarProposalAction::SetActiveProposalsLimit(limit) => {
                     let mut state = Self::get_state(env);
-                    state.active_proposals_limit = active_proposals_limit;
+                    state.active_proposals_limit = limit;
                     Self::save_state(env, &state);
                 }
 

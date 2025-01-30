@@ -44,7 +44,7 @@ members = [
     "./contracts/icp/context-proxy/mock/external",
 
     "./contracts/stellar/context-config",
-    "./contracts/stellar/context-config/mock_proxy",
+    "./contracts/stellar/context-proxy/mock_external",
     "./contracts/stellar/context-proxy",
 
     "./e2e-tests",

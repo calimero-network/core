@@ -21,11 +21,6 @@ impl ContextProxyContract {
             return Err(StellarProxyError::Unauthorized);
         }
 
-        // Verify the context address matches
-        if context_address != state.context_config_id {
-            return Err(StellarProxyError::Unauthorized);
-        }
-
         // Deploy the upgrade
         env.deployer().update_current_contract_wasm(wasm_hash);
 

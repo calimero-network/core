@@ -1,20 +1,19 @@
 extern crate alloc;
 use alloc::vec::Vec as StdVec;
 
-use calimero_context_config::stellar::stellar_types::{
-    StellarSignedRequest, StellarSignedRequestPayload,
-};
-use calimero_context_config::stellar::{
-    StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner,
-    StellarProxyMutateRequest,
-};
+use calimero_context_config::stellar::{StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner, StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest};
+// Cryptographic imports
 use ed25519_dalek::{Signer, SigningKey};
-use soroban_env_common::Env as EnvCommon;
-use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+
+// Soroban SDK imports
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Val};
+use soroban_sdk::{
+    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryIntoVal, Val, Vec
+};
 
+// Local imports
 use crate::ContextProxyContractClient;
 
 // Import the context contract
@@ -24,68 +23,94 @@ mod context_contract {
     );
 }
 
+// Import mock external contract
+mod mock_external {
+    soroban_sdk::contractimport!(
+        file = "/Users/alen/www/calimero/core/contracts/stellar/context-proxy/mock_external/res/calimero_mock_external_stellar.wasm"
+    );
+}
+
+// For proxy contract operations (like creating proposals), use calimero_context_config types:
+use calimero_context_config::stellar::stellar_types::{
+    StellarSignedRequest as ProxySignedRequest,
+    StellarSignedRequestPayload as ProxySignedRequestPayload,
+};
+
+// For context contract operations (like adding members), use context_contract types:
+// These come from the contractimport! macro
+use context_contract::{
+    StellarSignedRequest as ContextSignedRequest,
+    StellarSignedRequestPayload as ContextSignedRequestPayload,
+};
+
 struct ProxyTestContext<'a> {
     env: Env,
     proxy_contract: Address,
-    context_contract_address: Address,
-    context_id: BytesN<32>,
-    mock_token: Address,
-    mock_external: Address,
     context_author_sk: SigningKey,
     context_author_id: BytesN<32>,
-    test_user: Address,
-    xlm_token_admin: Address,
-    xlm_token_address: Address,
+    signer2_sk: SigningKey,
+    signer2_id: BytesN<32>,
+    signer3_sk: SigningKey,
+    signer3_id: BytesN<32>,
     token_client: TokenClient<'a>,
-    token_asset_client: StellarAssetClient<'a>,
+    xlm_token_address: Address,
 }
 
 fn create_signed_request(
     env: &Env,
     signer_key: &SigningKey,
-    payload: StellarSignedRequestPayload,
-) -> StellarSignedRequest {
-    StellarSignedRequest::new(env, payload, |bytes| Ok(signer_key.sign(bytes)))
+    payload: ProxySignedRequestPayload,
+) -> ProxySignedRequest {
+    ProxySignedRequest::new(env, payload, |bytes| Ok(signer_key.sign(bytes)))
         .expect("Failed to create signed request")
+}
+
+fn create_context_signed_request(
+    env: &Env,
+    signer_key: &SigningKey,
+    payload: ContextSignedRequestPayload,
+) -> ContextSignedRequest {
+    let request_xdr = payload.clone().to_xdr(env);
+    let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
+    let signature = signer_key.sign(&message_to_sign);
+    
+    ContextSignedRequest {
+        payload,
+        signature: BytesN::from_array(env, &signature.to_bytes()),
+    }
 }
 
 fn setup<'a>() -> ProxyTestContext<'a> {
     let env = Env::default();
-
     env.mock_all_auths();
 
-    let context_owner = Address::generate(&env);
+    // Setup token contract
     let xlm_token_admin = Address::generate(&env);
     let xlm_token = env.register_stellar_asset_contract_v2(xlm_token_admin.clone());
-
-    // Create token client and mint XLM to proxy contract
     let token_client = TokenClient::new(&env, &xlm_token.address());
     let token_asset_client = StellarAssetClient::new(&env, &xlm_token.address());
     token_asset_client.mint(&xlm_token_admin, &1_000_000_000);
 
-    // Read wasm file
+    // Setup context contract
+    let context_owner = Address::generate(&env);
     let wasm = include_bytes!("../../../context-config/res/calimero_context_config_stellar.wasm");
     let contract_hash = env.deployer().upload_contract_wasm(*wasm);
-
+    
     let salt = BytesN::<32>::from_array(&env, &[0; 32]);
     let context_contract_address = env
         .deployer()
         .with_address(context_owner.clone(), salt)
-        .deploy_v2(
-            contract_hash,
-            (&context_owner.clone(), &xlm_token.address()),
-        );
+        .deploy_v2(contract_hash, (&context_owner, &xlm_token.address()));
 
     let context_client = context_contract::Client::new(&env, &context_contract_address);
 
     // Set proxy contract code
     let proxy_wasm = include_bytes!("../../res/calimero_context_proxy_stellar.wasm");
-    let proxy_wasm = Bytes::from_slice(&env, proxy_wasm);
     context_client
         .mock_all_auths()
-        .set_proxy_code(&proxy_wasm, &context_owner);
+        .set_proxy_code(&Bytes::from_slice(&env, proxy_wasm), &context_owner);
 
-    // Generate context key and author key
+    // Generate context and author keys
     let context_bytes: BytesN<32> = env.as_contract(&context_contract_address, || env.prng().gen());
     let author_bytes: BytesN<32> = env.as_contract(&context_contract_address, || env.prng().gen());
 
@@ -97,7 +122,20 @@ fn setup<'a>() -> ProxyTestContext<'a> {
     let context_author_pk = context_author_sk.verifying_key();
     let context_author_id = BytesN::from_array(&env, &context_author_pk.to_bytes());
 
-    // Create initial application
+    // Generate additional signers
+    let signer2_bytes: BytesN<32> = env.as_contract(&context_contract_address, || env.prng().gen());
+    let signer3_bytes: BytesN<32> = env.as_contract(&context_contract_address, || env.prng().gen());
+
+    let signer2_sk = SigningKey::from_bytes(&signer2_bytes.to_array());
+    let signer3_sk = SigningKey::from_bytes(&signer3_bytes.to_array());
+
+    let signer2_pk = signer2_sk.verifying_key();
+    let signer3_pk = signer3_sk.verifying_key();
+
+    let signer2_id = BytesN::from_array(&env, &signer2_pk.to_bytes());
+    let signer3_id = BytesN::from_array(&env, &signer3_pk.to_bytes());
+
+    // Create initial application and context
     let app_id: BytesN<32> = env.as_contract(&context_contract_address, || env.prng().gen());
     let app_blob: BytesN<32> = env.as_contract(&context_contract_address, || env.prng().gen());
 
@@ -109,7 +147,6 @@ fn setup<'a>() -> ProxyTestContext<'a> {
         metadata: Bytes::from_slice(&env, &[]),
     };
 
-    // Create context request
     let context_request = context_contract::StellarRequest {
         kind: context_contract::StellarRequestKind::Context(
             context_contract::StellarContextRequest {
@@ -123,96 +160,70 @@ fn setup<'a>() -> ProxyTestContext<'a> {
         signer_id: context_id.clone(),
         nonce: 0,
     };
-    let context_req = context_contract::StellarSignedRequestPayload::Context(context_request);
 
-    // Create signed request
-    let request_xdr = context_req.clone().to_xdr(&env);
-    let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
-    let signature = context_sk.sign(&message_to_sign);
-
-    let signed_request = context_contract::StellarSignedRequest {
-        payload: context_req,
-        signature: BytesN::from_array(&env, &signature.to_bytes()),
-    };
-
+    let context_req = ContextSignedRequestPayload::Context(context_request);
+    let signed_request = create_context_signed_request(&env, &context_sk, context_req);
     context_client.mutate(&signed_request);
 
-    // Get proxy contract address
+    // Get and deploy proxy contract
     let proxy_contract = context_client.proxy_contract(&context_id);
-
-    // Seed XLM to proxy contract
+    // Fund the proxy contract
     token_asset_client.mint(&proxy_contract, &1_000_000_000);
-
-    // Generate test addresses for mock contracts
-    let test_user = Address::generate(&env);
-    let mock_token = Address::generate(&env);
-    let mock_external = Address::generate(&env);
+    
+    // Add signers as members
+    add_members(
+        &env,
+        &context_client,
+        &context_id,
+        &context_author_id,
+        &context_author_sk,
+        vec![&env, signer2_id.clone(), signer3_id.clone()],
+    );
 
     ProxyTestContext {
         env,
         proxy_contract,
-        context_contract_address,
-        context_id,
-        mock_token,
-        mock_external,
         context_author_sk,
         context_author_id,
-        test_user,
-        xlm_token_admin,
-        xlm_token_address: xlm_token.address(),
+        signer2_sk,
+        signer2_id,
+        signer3_sk,
+        signer3_id,
         token_client,
-        token_asset_client,
+        xlm_token_address: xlm_token.address(),
     }
 }
 
-#[test]
-fn test_create_proposal() {
-    let ProxyTestContext {
-        env,
-        proxy_contract,
-        context_author_sk,
-        mock_external,
-        ..
-    } = setup();
-
-    let author_pk = context_author_sk.verifying_key();
-    let author_id = BytesN::from_array(&env, &author_pk.to_bytes());
-
-    // Generate proposal ID
-    let proposal_id: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-
-    let proposal = StellarProposal {
-        id: proposal_id.clone(),
-        author_id: author_id.clone(),
-        actions: vec![
-            &env,
-            StellarProposalAction::Transfer(mock_external, 1_000_000),
-        ],
+fn submit_approval(
+    env: &Env,
+    client: &ContextProxyContractClient,
+    proposal_id: &BytesN<32>,
+    signer_id: &BytesN<32>,
+    signer_sk: &SigningKey,
+    expected_approvals: u32,
+) -> Option<StellarProposalWithApprovals> {
+    let approval = StellarProposalApprovalWithSigner {
+        proposal_id: proposal_id.clone(),
+        signer_id: signer_id.clone(),
     };
-
-    let request = StellarProxyMutateRequest::Propose(proposal);
+    
+    let request = StellarProxyMutateRequest::Approve(approval);
     let signed_request = create_signed_request(
-        &env,
-        &context_author_sk,
-        StellarSignedRequestPayload::Proxy(request.clone()),
+        env,
+        signer_sk,
+        ProxySignedRequestPayload::Proxy(request),
     );
 
-    let client = ContextProxyContractClient::new(&env, &proxy_contract);
-
-    // Add authorization for the contract call
-    env.mock_all_auths();
-
     let result = client.mutate(&signed_request);
-
-    match result {
-        Some(proposal_with_approvals) => {
-            // Verify the returned proposal matches what we expect
-            assert_eq!(proposal_with_approvals.proposal_id, proposal_id);
-            assert_eq!(proposal_with_approvals.num_approvals, 1);
-        }
-        None => {
-            log!(&env, "Operation completed but no proposal was returned");
-        }
+    
+    if expected_approvals == 0 {
+        assert!(result.is_none(), "Expected proposal to be executed");
+        None
+    } else {
+        let proposal = result.expect("Expected proposal with approvals to be returned");
+        assert_eq!(proposal.proposal_id, *proposal_id);
+        assert_eq!(proposal.num_approvals, expected_approvals);
+        Some(proposal)
     }
 }
 
@@ -222,148 +233,53 @@ fn test_execute_proposal_transfer() {
         env,
         proxy_contract,
         context_author_sk,
-        context_contract_address,
-        test_user,
-        context_id,
         context_author_id,
+        signer2_sk,
+        signer2_id,
+        signer3_sk,
+        signer3_id,
         token_client,
         ..
     } = setup();
 
-    // Create two more signers
-    let signer2_bytes: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-    let signer3_bytes: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-
-    let signer2_sk = SigningKey::from_bytes(&signer2_bytes.to_array());
-    let signer3_sk = SigningKey::from_bytes(&signer3_bytes.to_array());
-
-    let signer2_pk = signer2_sk.verifying_key();
-    let signer3_pk = signer3_sk.verifying_key();
-
-    let signer2_id = BytesN::from_array(&env, &signer2_pk.to_bytes());
-    let signer3_id = BytesN::from_array(&env, &signer3_pk.to_bytes());
-
-    // Add signer2 and signer3 as context members
-    let context_client = context_contract::Client::new(&env, &context_contract_address);
-
-    let add_members_request = context_contract::StellarRequest {
-        signer_id: context_author_id.clone(),
-        nonce: 0,
-        kind: context_contract::StellarRequestKind::Context(
-            context_contract::StellarContextRequest {
-                context_id: context_id.clone(),
-                kind: context_contract::StellarContextRequestKind::AddMembers(vec![
-                    &env,
-                    signer2_id.clone(),
-                    signer3_id.clone(),
-                ]),
-            },
-        ),
-    };
-    let add_members_req =
-        context_contract::StellarSignedRequestPayload::Context(add_members_request);
-    let request_xdr = add_members_req.clone().to_xdr(&env);
-    let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
-    let signature = context_author_sk.sign(&message_to_sign);
-
-    let signed_add_members = context_contract::StellarSignedRequest {
-        payload: add_members_req,
-        signature: BytesN::from_array(&env, &signature.to_bytes()),
-    };
-
-    context_client.mutate(&signed_add_members);
-
     // Verify initial balance
     let initial_balance = token_client.balance(&proxy_contract);
+    let test_user = Address::generate(&env);
 
-    // Generate proposal ID
-    let proposal_id: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-
-    // Create transfer proposal
+    // Create and submit transfer proposal
     let transfer_amount = 100_000;
-    let proposal = StellarProposal {
-        id: proposal_id.clone(),
-        author_id: context_author_id.clone(),
-        actions: vec![
-            &env,
-            StellarProposalAction::Transfer(test_user.clone(), transfer_amount),
-        ],
-    };
+    let (proposal_id, proposal) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![&env, StellarProposalAction::Transfer(test_user.clone(), transfer_amount)],
+    );
 
     let client = ContextProxyContractClient::new(&env, &proxy_contract);
-
-    // Submit the initial proposal (first approval)
     let request = StellarProxyMutateRequest::Propose(proposal);
     let signed_request = create_signed_request(
         &env,
         &context_author_sk,
-        StellarSignedRequestPayload::Proxy(request),
+        ProxySignedRequestPayload::Proxy(request),
     );
 
+    // Verify proposal creation
     let result = client.mutate(&signed_request);
-
-    // Verify first approval result
     let proposal_after_first = result.expect("Expected proposal with approvals to be returned");
     assert_eq!(proposal_after_first.proposal_id, proposal_id);
     assert_eq!(proposal_after_first.num_approvals, 1);
+    assert_eq!(token_client.balance(&proxy_contract), initial_balance, "Balance shouldn't change after first approval");
 
-    // Check that transfer hasn't happened yet
-    assert_eq!(
-        token_client.balance(&proxy_contract),
-        initial_balance,
-        "Balance shouldn't change after first approval"
-    );
-
-    // Create and submit second approval
-    let second_approval = StellarProposalApprovalWithSigner {
-        proposal_id: proposal_id.clone(),
-        signer_id: signer2_id.clone(),
-    };
-
-    let second_approval_request = StellarProxyMutateRequest::Approve(second_approval);
-    let signed_second_approval = create_signed_request(
-        &env,
-        &signer2_sk,
-        StellarSignedRequestPayload::Proxy(second_approval_request),
-    );
-
-    let result = client.mutate(&signed_second_approval);
-
-    // Verify second approval result
-    let proposal_after_second = result.expect("Expected proposal with approvals to be returned");
-    assert_eq!(proposal_after_second.proposal_id, proposal_id);
-    assert_eq!(proposal_after_second.num_approvals, 2);
-
-    // Check that transfer still hasn't happened
-    assert_eq!(
-        token_client.balance(&proxy_contract),
-        initial_balance,
-        "Balance shouldn't change after second approval"
-    );
-
-    // Create and submit third approval
-    let third_approval = StellarProposalApprovalWithSigner {
-        proposal_id: proposal_id.clone(),
-        signer_id: signer3_id.clone(),
-    };
-
-    let third_approval_request = StellarProxyMutateRequest::Approve(third_approval);
-    let signed_third_approval = create_signed_request(
-        &env,
-        &signer3_sk,
-        StellarSignedRequestPayload::Proxy(third_approval_request),
-    );
-
-    // Execute the proposal with third approval
-    let result = client.mutate(&signed_third_approval);
-    assert!(result.is_none(), "Expected None after proposal execution");
+    // Submit second approval
+    submit_approval(&env, &client, &proposal_id, &signer2_id, &signer2_sk, 2);
+    
+    // Submit final approval which executes the proposal
+    submit_approval(&env, &client, &proposal_id, &signer3_id, &signer3_sk, 0);
 
     // Verify the transfer was executed
     let final_proxy_balance = token_client.balance(&proxy_contract);
     let final_recipient_balance = token_client.balance(&test_user);
 
-    log!(&env, "Final proxy balance: {}", final_proxy_balance);
-    log!(&env, "Final recipient balance: {}", final_recipient_balance);
     assert_eq!(
         final_proxy_balance,
         initial_balance - transfer_amount,
@@ -380,140 +296,501 @@ fn test_execute_proposal_set_num_approvals() {
     let ProxyTestContext {
         env,
         proxy_contract,
-        context_contract_address,
         context_author_sk,
         context_author_id,
-        context_id,
+        signer2_sk,
+        signer2_id,
+        signer3_sk,
+        signer3_id,
         ..
     } = setup();
 
-    // Create two more signers
-    let signer2_bytes: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-    let signer3_bytes: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-
-    let signer2_sk = SigningKey::from_bytes(&signer2_bytes.to_array());
-    let signer3_sk = SigningKey::from_bytes(&signer3_bytes.to_array());
-
-    let signer2_pk = signer2_sk.verifying_key();
-    let signer3_pk = signer3_sk.verifying_key();
-
-    let signer2_id = BytesN::from_array(&env, &signer2_pk.to_bytes());
-    let signer3_id = BytesN::from_array(&env, &signer3_pk.to_bytes());
-
-    // Add signer2 and signer3 as context members
-    let context_client = context_contract::Client::new(&env, &context_contract_address);
-
-    let add_members_request = context_contract::StellarRequest {
-        signer_id: context_author_id.clone(),
-        nonce: 0,
-        kind: context_contract::StellarRequestKind::Context(
-            context_contract::StellarContextRequest {
-                context_id: context_id.clone(),
-                kind: context_contract::StellarContextRequestKind::AddMembers(vec![
-                    &env,
-                    signer2_id.clone(),
-                    signer3_id.clone(),
-                ]),
-            },
-        ),
-    };
-
-    let signed_add_members = create_signed_request(
-        &env,
-        &context_author_sk,
-        context_contract::StellarSignedRequestPayload::Context(add_members_request),
-    );
-
-    env.mock_all_auths();
-    context_client.mutate(&signed_add_members);
-
-    // Generate proposal ID
-    let proposal_id: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-
-    // Create proposal to change num_approvals to 2
-    let new_num_approvals = 2;
-    let proposal = StellarProposal {
-        id: proposal_id.clone(),
-        author_id: context_author_id.clone(),
-        actions: vec![
-            &env,
-            StellarProposalAction::SetNumApprovals(new_num_approvals),
-        ],
-    };
-
     let client = ContextProxyContractClient::new(&env, &proxy_contract);
 
-    // Submit the initial proposal
+    // Create proposal to change num_approvals to 2
+    let (proposal_id, proposal) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![&env, StellarProposalAction::SetNumApprovals(2)],
+    );
+
+    // Submit initial proposal
     let request = StellarProxyMutateRequest::Propose(proposal);
     let signed_request = create_signed_request(
         &env,
         &context_author_sk,
-        StellarSignedRequestPayload::Proxy(request),
+        ProxySignedRequestPayload::Proxy(request),
     );
 
     let result = client.mutate(&signed_request);
     let proposal_after_first = result.expect("Expected proposal with approvals to be returned");
     assert_eq!(proposal_after_first.num_approvals, 1);
 
-    // Create and submit second approval
-    let second_approval = StellarProposalApprovalWithSigner {
-        proposal_id: proposal_id.clone(),
-        signer_id: signer2_id.clone(),
-    };
+    // Submit second approval
+    submit_approval(&env, &client, &proposal_id, &signer2_id, &signer2_sk, 2);
 
-    let second_approval_request = StellarProxyMutateRequest::Approve(second_approval);
-    let signed_second_approval = create_signed_request(
+    // Submit final approval which executes the proposal
+    submit_approval(&env, &client, &proposal_id, &signer3_id, &signer3_sk, 0);
+
+    // Verify the change by creating a new proposal
+    let (verify_proposal_id, verify_proposal) = create_test_proposal(
         &env,
-        &signer2_sk,
-        StellarSignedRequestPayload::Proxy(second_approval_request),
-    );
-
-    let result = client.mutate(&signed_second_approval);
-    let proposal_after_second = result.expect("Expected proposal with approvals to be returned");
-    assert_eq!(proposal_after_second.num_approvals, 2);
-
-    // Create and submit third approval
-    let third_approval = StellarProposalApprovalWithSigner {
-        proposal_id: proposal_id.clone(),
-        signer_id: signer3_id.clone(),
-    };
-
-    let third_approval_request = StellarProxyMutateRequest::Approve(third_approval);
-    let signed_third_approval = create_signed_request(
-        &env,
-        &signer3_sk,
-        StellarSignedRequestPayload::Proxy(third_approval_request),
-    );
-
-    let result = client.mutate(&signed_third_approval);
-    assert!(result.is_none(), "Expected None after proposal execution");
-
-    // Create a new proposal to verify the num_approvals was changed
-    let verify_proposal_id: BytesN<32> = env.as_contract(&proxy_contract, || env.prng().gen());
-
-    let verify_proposal = StellarProposal {
-        id: verify_proposal_id.clone(),
-        author_id: context_author_id.clone(),
-        actions: vec![
+        &proxy_contract,
+        &context_author_id,
+        vec![
             &env,
             StellarProposalAction::SetContextValue(
-                String::from_str(&env, "test"),
-                String::from_str(&env, "value"),
+                Bytes::from_slice(&env, "test".as_bytes()),
+                Bytes::from_slice(&env, "value".as_bytes()),
             ),
         ],
-    };
+    );
 
     let verify_request = StellarProxyMutateRequest::Propose(verify_proposal);
     let signed_verify_request = create_signed_request(
         &env,
         &context_author_sk,
-        StellarSignedRequestPayload::Proxy(verify_request),
+        ProxySignedRequestPayload::Proxy(verify_request),
     );
 
     let result = client.mutate(&signed_verify_request);
     let verify_proposal_result = result.expect("Expected proposal with approvals to be returned");
-
-    // Verify that the new proposal requires only 2 approvals
     assert_eq!(verify_proposal_result.num_approvals, 1);
-    assert_eq!(verify_proposal_result.required_approvals, new_num_approvals);
+
+    // Second approval should now execute the proposal since num_approvals is 2
+    let result = submit_approval(&env, &client, &verify_proposal_id, &signer2_id, &signer2_sk, 0);
+    assert!(result.is_none(), "Expected None after proposal execution");
+
+    // Verify the context value was set
+    let test_key = Bytes::from_slice(&env, "test".as_bytes());
+    let test_value = Bytes::from_slice(&env, "value".as_bytes());
+    let stored_value = client.get_context_value(&test_key);
+    assert_eq!(stored_value, Some(test_value.clone()), "Context value was not set correctly");
+
+    // Verify the context value was set using context_storage_entries
+    let storage_entries = client.context_storage_entries(&0,& 10);
+    assert_eq!(storage_entries.len(), 1, "Expected one storage entry");
+    assert_eq!(storage_entries.get(0), Some((test_key, test_value)), "Context value was not set correctly");
+
+}
+
+#[test]
+fn test_execute_proposal_set_active_proposals_limit() {
+    let ProxyTestContext {
+        env,
+        proxy_contract,
+        context_author_sk,
+        context_author_id,
+        signer2_sk,
+        signer2_id,
+        signer3_sk,
+        signer3_id,
+        ..
+    } = setup();
+
+    let client = ContextProxyContractClient::new(&env, &proxy_contract);
+    let new_limit = 5;
+
+    // Create and submit proposal
+    let (proposal_id, proposal) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![&env, StellarProposalAction::SetActiveProposalsLimit(new_limit)],
+    );
+
+    let request = StellarProxyMutateRequest::Propose(proposal);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+
+    // Submit initial proposal
+    let result = client.mutate(&signed_request);
+    let proposal_after_first = result.expect("Expected proposal with approvals to be returned");
+    assert_eq!(proposal_after_first.num_approvals, 1);
+    assert_eq!(proposal_after_first.proposal_id, proposal_id);
+
+    // Submit second approval
+    submit_approval(&env, &client, &proposal_id, &signer2_id, &signer2_sk, 2);
+
+    // Submit final approval which executes the proposal
+    submit_approval(&env, &client, &proposal_id, &signer3_id, &signer3_sk, 0);
+
+    // Verify the limit was updated
+    let updated_limit = client.get_active_proposals_limit();
+    assert_eq!(updated_limit, new_limit, "Active proposals limit not updated correctly");
+}
+
+#[test]
+fn test_execute_proposal_external_call_deposit() {
+    let ProxyTestContext {
+        env,
+        proxy_contract,
+        context_author_sk,
+        context_author_id,
+        signer2_sk,
+        signer2_id,
+        signer3_sk,
+        signer3_id,
+        token_client,
+        xlm_token_address,
+        ..
+    } = setup();
+
+    let (mock_external_address, mock_external_client) = deploy_mock_external(&env, &xlm_token_address);
+
+    // Create external call proposal with deposit
+    let method_name = Symbol::new(&env, "deposit");
+    let key = String::from_str(&env, "test_key");
+    let value = String::from_str(&env, "test_value");
+    let deposit: i128 = 1_000;
+
+    // Create args for external call
+    let args: Vec<Val> = vec![
+        &env,
+        proxy_contract.to_val(),
+        deposit.into_val(&env),
+        key.to_val(),
+        value.to_val(),
+    ];
+
+    let (proposal_id, proposal) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![
+            &env,
+            StellarProposalAction::ExternalFunctionCall(
+                mock_external_address.clone(),
+                method_name,
+                args,
+                deposit,
+            ),
+        ],
+    );
+
+    let client = ContextProxyContractClient::new(&env, &proxy_contract);
+    env.mock_all_auths();
+
+    let initial_proxy_balance = token_client.balance(&proxy_contract);
+    let initial_external_balance = token_client.balance(&mock_external_address);
+
+    // Submit initial proposal
+    let request = StellarProxyMutateRequest::Propose(proposal);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+
+    let result = client.mutate(&signed_request);
+    let proposal_after_first = result.expect("Expected proposal with approvals to be returned");
+    assert_eq!(proposal_after_first.num_approvals, 1);
+
+    // Submit second approval
+    submit_approval(&env, &client, &proposal_id, &signer2_id, &signer2_sk, 2);
+
+    // Submit final approval which executes the proposal
+    submit_approval(&env, &client, &proposal_id, &signer3_id, &signer3_sk, 0);
+
+    // Verify execution
+    let stored_value = mock_external_client.get_value(&key);
+    assert_eq!(stored_value, Some(value), "Value not stored correctly");
+
+    let final_proxy_balance = token_client.balance(&proxy_contract);
+    let final_external_balance = token_client.balance(&mock_external_address);
+    
+    assert_eq!(
+        final_proxy_balance,
+        initial_proxy_balance - deposit,
+        "Proxy balance not decreased correctly"
+    );
+    assert_eq!(
+        final_external_balance,
+        initial_external_balance + deposit,
+        "External contract balance not increased correctly"
+    );
+
+    let final_state = mock_external_client.get_state();
+    assert_eq!(final_state.total_deposits, deposit, "Total deposits not updated correctly");
+}
+
+#[test]
+fn test_execute_proposal_external_call_no_deposit() {
+    let ProxyTestContext {
+        env,
+        proxy_contract,
+        context_author_sk,
+        context_author_id,
+        signer2_sk,
+        signer2_id,
+        signer3_sk,
+        signer3_id,
+        xlm_token_address,
+        ..
+    } = setup();
+
+    let (mock_external_address, mock_external_client) = deploy_mock_external(&env, &xlm_token_address);
+
+    // Create external call proposal without deposit
+    let method_name = Symbol::new(&env, "no_deposit");
+    let key = String::from_str(&env, "test_key");
+    let value = String::from_str(&env, "test_value");
+
+    let args: Vec<Val> = vec![
+        &env,
+        key.to_val(),
+        value.to_val(),
+    ];
+
+    let (proposal_id, proposal) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![
+            &env,
+            StellarProposalAction::ExternalFunctionCall(
+                mock_external_address.clone(),
+                method_name,
+                args,
+                0,
+            ),
+        ],
+    );
+
+    let client = ContextProxyContractClient::new(&env, &proxy_contract);
+    env.mock_all_auths();
+
+    // Submit initial proposal
+    let request = StellarProxyMutateRequest::Propose(proposal);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+
+    let result = client.mutate(&signed_request);
+    let proposal_after_first = result.expect("Expected proposal with approvals to be returned");
+    assert_eq!(proposal_after_first.num_approvals, 1);
+
+    // Submit second approval
+    submit_approval(&env, &client, &proposal_id, &signer2_id, &signer2_sk, 2);
+
+    // Submit final approval which executes the proposal
+    submit_approval(&env, &client, &proposal_id, &signer3_id, &signer3_sk, 0);
+
+    // Verify execution
+    let stored_value = mock_external_client.get_value(&key);
+    assert_eq!(stored_value, Some(value), "Value not stored correctly");
+}
+
+#[test]
+fn test_proposal_limits_and_deletion() {
+    let ProxyTestContext {
+        env,
+        proxy_contract,
+        context_author_sk,
+        context_author_id,
+        signer2_sk,
+        signer2_id,
+        signer3_sk,
+        signer3_id,
+        ..
+    } = setup();
+
+    let client = ContextProxyContractClient::new(&env, &proxy_contract);
+    let new_limit = 2;
+
+    // First set the active proposals limit to 2
+    let (limit_proposal_id, limit_proposal) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![&env, StellarProposalAction::SetActiveProposalsLimit(new_limit)],
+    );
+
+    // Submit and approve limit change proposal
+    let request = StellarProxyMutateRequest::Propose(limit_proposal);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+    client.mutate(&signed_request);
+    submit_approval(&env, &client, &limit_proposal_id, &signer2_id, &signer2_sk, 2);
+    submit_approval(&env, &client, &limit_proposal_id, &signer3_id, &signer3_sk, 0);
+
+    // Verify limit was set
+    assert_eq!(client.get_active_proposals_limit(), new_limit);
+    // Create first proposal
+    let (proposal1_id, proposal1) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![&env, StellarProposalAction::SetContextValue(
+            Bytes::from_slice(&env, "key".as_bytes()),
+            Bytes::from_slice(&env, "value".as_bytes()),
+        )],
+    );
+    let request = StellarProxyMutateRequest::Propose(proposal1);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+    client.mutate(&signed_request);
+    
+    // Create second proposal
+    let (_ , proposal2) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![
+            &env,
+            StellarProposalAction::SetContextValue(
+                Bytes::from_slice(&env, "key".as_bytes()),
+                Bytes::from_slice(&env, "value".as_bytes()),
+            ),
+        ],
+    );
+    let request = StellarProxyMutateRequest::Propose(proposal2);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+    client.mutate(&signed_request);
+    
+    // Try to create third proposal - should fail with HostError
+    let (_, proposal3) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![&env, StellarProposalAction::SetActiveProposalsLimit(3)],
+    );
+    let request = StellarProxyMutateRequest::Propose(proposal3.clone());
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+    let result = client.try_mutate(&signed_request);
+    match result {
+        Ok(_) => panic!("Expected error for exceeding proposal limit"),
+        Err(e) => match e {
+            Ok(StellarProxyError::TooManyActiveProposals) => {
+                // This is what we expect
+                log!(&env, "Got expected TooManyActiveProposals error");
+            },
+            other => panic!("Got unexpected error: {:?}", other),
+        }
+    }
+
+    // Delete first proposal to free up space
+    let (_ , delete_proposal) = create_test_proposal(
+        &env,
+        &proxy_contract,
+        &context_author_id,
+        vec![&env, StellarProposalAction::DeleteProposal(proposal1_id)],
+    );
+    
+    let request = StellarProxyMutateRequest::Propose(delete_proposal);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+    client.mutate(&signed_request);
+
+    let current_proposals = client.proposals(&0, &10);
+    assert_eq!(current_proposals.len(), 1, "Should have exactly 1 active proposal");
+
+    // Now we should be able to create another proposal
+    let request = StellarProxyMutateRequest::Propose(proposal3);
+    let signed_request = create_signed_request(
+        &env,
+        &context_author_sk,
+        ProxySignedRequestPayload::Proxy(request),
+    );
+    let result = client.mutate(&signed_request);
+    assert!(result.is_some(), "Should allow new proposal after deleting previous one");
+
+    // Verify proposal counts
+    let active_proposals = client.proposals(&0, &10);
+    assert_eq!(active_proposals.len(), 2, "Should have exactly 2 active proposals");
+}
+
+fn add_members(
+    env: &Env,
+    context_client: &context_contract::Client,
+    context_id: &BytesN<32>,
+    context_author_id: &BytesN<32>,
+    context_author_sk: &SigningKey,
+    members: Vec<BytesN<32>>,
+) {
+    let add_members_request = context_contract::StellarRequest {
+        signer_id: context_author_id.clone(),
+        nonce: 0,
+        kind: context_contract::StellarRequestKind::Context(
+            context_contract::StellarContextRequest {
+                context_id: context_id.clone(),
+                kind: context_contract::StellarContextRequestKind::AddMembers(members),
+            },
+        ),
+    };
+    let add_members_req = ContextSignedRequestPayload::Context(add_members_request);
+
+    // Create signed request
+    let request_xdr = add_members_req.clone().to_xdr(env);
+    let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
+    let signature = context_author_sk.sign(&message_to_sign);
+    
+    let signed_add_members = ContextSignedRequest {
+        payload: add_members_req,
+        signature: BytesN::from_array(env, &signature.to_bytes()),
+    };
+
+    context_client.mutate(&signed_add_members);
+}
+
+fn create_test_proposal(
+    env: &Env,
+    contract_address: &Address,
+    author_id: &BytesN<32>,
+    actions: Vec<StellarProposalAction>,
+) -> (BytesN<32>, StellarProposal) {
+    let proposal_id: BytesN<32> = env.as_contract(contract_address, || env.prng().gen());
+    
+    let proposal = StellarProposal {
+        id: proposal_id.clone(),
+        author_id: author_id.clone(),
+        actions,
+    };
+
+    (proposal_id, proposal)
+}
+
+fn deploy_mock_external<'a>(
+    env: &'a Env,
+    xlm_token_address: &Address,
+) -> (Address, mock_external::Client<'a>) {
+    let mock_owner = Address::generate(env);
+    let mock_external_wasm = include_bytes!("../../mock_external/res/calimero_mock_external_stellar.wasm");
+    let mock_external_hash = env.deployer().upload_contract_wasm(*mock_external_wasm);
+
+    let salt = BytesN::<32>::from_array(env, &[0; 32]);
+    let mock_external_address = env
+        .deployer()
+        .with_address(mock_owner, salt)
+        .deploy_v2(
+            mock_external_hash,
+            (xlm_token_address,),
+        );
+
+    let mock_external_client = mock_external::Client::new(env, &mock_external_address);
+    
+    (mock_external_address, mock_external_client)
 }
