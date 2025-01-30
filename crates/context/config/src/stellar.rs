@@ -1,8 +1,9 @@
 use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, Env, String, Vec};
 use stellar_types::FromWithEnv;
 
-use crate::repr::ReprTransmute;
-use crate::{ProposalAction, ProxyMutateRequest};
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::types::{ContextIdentity, ProposalId};
+use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 
 pub mod stellar_repr;
 pub mod stellar_types;
@@ -39,6 +40,21 @@ pub struct StellarProposal {
 pub struct StellarProposalWithApprovals {
     pub proposal_id: BytesN<32>,
     pub num_approvals: u32,
+}
+
+impl From<StellarProposalWithApprovals> for ProposalWithApprovals {
+    fn from(value: StellarProposalWithApprovals) -> Self {
+        let proposal_id = ProposalId::from_bytes(|bytes| {
+            bytes.copy_from_slice(&value.proposal_id.to_array());
+            Ok(32)
+        })
+        .expect("valid proposal ID");
+
+        ProposalWithApprovals {
+            proposal_id: Repr::new(proposal_id),
+            num_approvals: value.num_approvals as usize,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

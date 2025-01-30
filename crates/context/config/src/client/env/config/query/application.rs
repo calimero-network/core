@@ -1,5 +1,7 @@
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::FromXdr;
+use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -15,6 +17,7 @@ use crate::icp::repr::ICRepr;
 use crate::icp::types::ICApplication;
 use crate::repr::{Repr, ReprBytes};
 use crate::stellar::stellar_repr::StellarRepr;
+use crate::stellar::stellar_types::StellarApplication;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -131,6 +134,14 @@ impl Method<Stellar> for ApplicationRequest {
             return Err(eyre::eyre!("No application found"));
         }
 
-        todo!()
+        let env = Env::default();
+        let env_bytes = Bytes::from_slice(&env, &response);
+
+        let stellar_application = StellarApplication::from_xdr(&env, &env_bytes)
+            .map_err(|_| eyre::eyre!("Failed to deserialize response"))?;
+
+        let application: Application<'_> = stellar_application.into();
+
+        Ok(application)
     }
 }

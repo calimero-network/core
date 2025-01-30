@@ -117,8 +117,6 @@ impl Method<Stellar> for HasMemberRequest {
             return Err(eyre::eyre!("Error fetching members"));
         }
 
-        let value = response[0] != 0;
-
-        Ok(value)
+        Ok(response[0] != 0)
     }
 }

@@ -1,7 +1,7 @@
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
-use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::Env;
+use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -20,7 +20,7 @@ use crate::repr::ReprTransmute;
 use crate::stellar::stellar_types::{
     FromWithEnv, StellarSignedRequest, StellarSignedRequestPayload,
 };
-use crate::stellar::StellarProxyMutateRequest;
+use crate::stellar::{StellarProposalWithApprovals, StellarProxyMutateRequest};
 use crate::types::Signed;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
@@ -177,7 +177,18 @@ impl Method<Stellar> for Mutate {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        if response.is_empty() {
+            return Ok(None);
+        }
+        let env = Env::default();
+        let env_bytes = Bytes::from_slice(&env, &response);
+
+        let stellar_proposal = StellarProposalWithApprovals::from_xdr(&env, &env_bytes)
+            .map_err(|_| eyre::eyre!("Failed to deserialize response"))?;
+
+        let proposal: ProposalWithApprovals = stellar_proposal.into();
+
+        Ok(Some(proposal))
     }
 }
 

@@ -2,6 +2,8 @@ use core::mem;
 
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::FromXdr;
+use soroban_sdk::{Bytes, BytesN, Env};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -149,6 +151,25 @@ impl Method<Stellar> for MembersRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        if response.is_empty() {
+            return Err(eyre::eyre!("No members found"));
+        }
+
+        let env = Env::default();
+        let env_bytes = Bytes::from_slice(&env, &response);
+
+        let members = soroban_sdk::Vec::<BytesN<32>>::from_xdr(&env, &env_bytes)
+            .map_err(|_| eyre::eyre!("Failed to deserialize members"))?;
+
+        Ok(members
+            .iter()
+            .map(|id| {
+                ContextIdentity::from_bytes(|dest| {
+                    dest.copy_from_slice(&id.to_array());
+                    Ok(32)
+                })
+                .expect("Valid 32-byte array")
+            })
+            .collect())
     }
 }
