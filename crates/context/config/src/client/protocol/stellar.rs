@@ -184,36 +184,11 @@ impl ProtocolTransport for StellarTransport<'_> {
         let contract: Contracts = Contracts::new(&request.contract_id)
             .map_err(|_| StellarError::InvalidContractId(request.contract_id.into_owned()))?;
 
-        match request.operation {
-            Operation::Read { method } => network.query(&contract, &method, payload).await,
-            Operation::Write { method } => network.mutate(&contract, &method, payload).await,
-        }
-    }
-}
+        let mut args = None;
 
-impl Network {
-    async fn query(
-        &self,
-        contract: &Contracts,
-        method: &str,
-        args: Vec<u8>,
-    ) -> Result<Vec<u8>, StellarError> {
-        let account = self
-            .client
-            .get_account(self.keypair.public_key().as_str())
-            .await
-            .map_err(|e| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: e.to_string(),
-            })?;
-
-        let source_account = Rc::new(RefCell::new(account));
-
-        let mut request = None;
-
-        if !args.is_empty() {
+        if !payload.is_empty() {
             let env = Env::default();
-            let env_bytes = Bytes::from_slice(&env, &args);
+            let env_bytes = Bytes::from_slice(&env, &payload);
             let signed_request =
                 StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
                     StellarError::Custom {
@@ -231,12 +206,37 @@ impl Network {
                 operation: ErrorOperation::Query,
                 reason: "Failed to convert to ScVal".to_owned(),
             })?;
-            request = Some(vec![sc_val]);
+            args = Some(vec![sc_val]);
         }
+
+        match request.operation {
+            Operation::Read { method } => network.query(&contract, &method, args).await,
+            Operation::Write { method } => network.mutate(&contract, &method, args).await,
+        }
+    }
+}
+
+impl Network {
+    async fn query(
+        &self,
+        contract: &Contracts,
+        method: &str,
+        args: Option<Vec<ScVal>>,
+    ) -> Result<Vec<u8>, StellarError> {
+        let account = self
+            .client
+            .get_account(self.keypair.public_key().as_str())
+            .await
+            .map_err(|e| StellarError::Custom {
+                operation: ErrorOperation::Query,
+                reason: e.to_string(),
+            })?;
+
+        let source_account = Rc::new(RefCell::new(account));
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
-            .add_operation(contract.call(method, request))
+            .add_operation(contract.call(method, args))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
@@ -281,7 +281,7 @@ impl Network {
         &self,
         contract: &Contracts,
         method: &str,
-        args: Vec<u8>,
+        args: Option<Vec<ScVal>>,
     ) -> Result<Vec<u8>, StellarError> {
         let account = self
             .client
@@ -294,34 +294,9 @@ impl Network {
 
         let source_account = Rc::new(RefCell::new(account));
 
-        let mut request = None;
-
-        if !args.is_empty() {
-            let env = Env::default();
-            let env_bytes = Bytes::from_slice(&env, &args);
-            let signed_request =
-                StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
-                    StellarError::Custom {
-                        operation: ErrorOperation::Mutate,
-                        reason: "Failed to deserialize signed request".to_owned(),
-                    }
-                })?;
-            let val: Val = signed_request
-                .try_into_val(&env)
-                .map_err(|_| StellarError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: "Failed to convert to Val".to_owned(),
-                })?;
-            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Mutate,
-                reason: "Failed to convert to ScVal".to_owned(),
-            })?;
-            request = Some(vec![sc_val]);
-        }
-
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
-            .add_operation(contract.call(method, request))
+            .add_operation(contract.call(method, args))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
