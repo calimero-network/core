@@ -391,6 +391,9 @@ jobs:
                 --base master \
                 -f || true
 
+              # Reset the repository to a clean state
+              git reset --hard HEAD
+
             else
               echo "No update required for ${binary}"
             fi
