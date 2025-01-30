@@ -26,7 +26,6 @@ pub struct StellarApplication {
     pub metadata: Bytes,
 }
 
-//TODO, fix metadata cast
 impl<'a> FromWithEnv<Application<'a>> for StellarApplication {
     fn from_with_env(value: Application<'a>, env: &Env) -> Self {
         StellarApplication {
@@ -34,11 +33,11 @@ impl<'a> FromWithEnv<Application<'a>> for StellarApplication {
             blob: BytesN::from_array(env, &value.blob.rt().expect("infallible conversion")),
             size: value.size,
             source: String::from_str(env, &value.source.0.into_owned()),
-            metadata: Bytes::new(env),
+            metadata: Bytes::from_slice(env, &value.metadata.0.as_bytes().to_vec()),
         }
     }
 }
-//TODO, check if this is optimized way
+
 impl<'a> From<StellarApplication> for Application<'a> {
     fn from(value: StellarApplication) -> Self {
         // Convert Soroban String to std::String
@@ -133,25 +132,25 @@ impl FromWithEnv<ContextRequestKind<'_>> for StellarContextRequestKind {
                 ))
             }
             ContextRequestKind::AddMembers { members } => {
-                let mut vec = Vec::new(&Env::default());
+                let mut vec = Vec::new(&env);
                 for member in members.into_owned() {
-                    vec.push_back(BytesN::from_array(&Env::default(), &member.as_bytes()));
+                    vec.push_back(BytesN::from_array(&env, &member.as_bytes()));
                 }
                 StellarContextRequestKind::AddMembers(vec)
             }
             ContextRequestKind::RemoveMembers { members } => {
-                let mut vec = Vec::new(&Env::default());
+                let mut vec = Vec::new(&env);
                 for member in members.into_owned() {
-                    vec.push_back(BytesN::from_array(&Env::default(), &member.as_bytes()));
+                    vec.push_back(BytesN::from_array(&env, &member.as_bytes()));
                 }
                 StellarContextRequestKind::RemoveMembers(vec)
             }
             ContextRequestKind::Grant { capabilities } => {
-                let mut vec = Vec::new(&Env::default());
+                let mut vec = Vec::new(&env);
                 for (id, cap) in capabilities.into_owned() {
                     vec.push_back((
                         BytesN::from_array(
-                            &Env::default(),
+                            &env,
                             &id.rt::<BytesN<32>>()
                                 .expect("infallible conversion")
                                 .as_bytes(),
@@ -162,11 +161,11 @@ impl FromWithEnv<ContextRequestKind<'_>> for StellarContextRequestKind {
                 StellarContextRequestKind::Grant(vec)
             }
             ContextRequestKind::Revoke { capabilities } => {
-                let mut vec = Vec::new(&Env::default());
+                let mut vec = Vec::new(&env);
                 for (id, cap) in capabilities.into_owned() {
                     vec.push_back((
                         BytesN::from_array(
-                            &Env::default(),
+                            &env,
                             &id.rt::<BytesN<32>>()
                                 .expect("infallible conversion")
                                 .as_bytes(),
@@ -200,7 +199,6 @@ impl<'a> FromWithEnv<RequestKind<'a>> for StellarRequestKind {
     }
 }
 
-// TODO implement new method
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct StellarRequest {
