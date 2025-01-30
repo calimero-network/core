@@ -1,16 +1,18 @@
 extern crate alloc;
 use alloc::vec::Vec as StdVec;
 
-use calimero_context_config::stellar::{StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner, StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest};
+use calimero_context_config::stellar::{
+    StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner,
+    StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest,
+};
 // Cryptographic imports
 use ed25519_dalek::{Signer, SigningKey};
-
 // Soroban SDK imports
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryIntoVal, Val, Vec
+    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryIntoVal, Val, Vec,
 };
 
 // Local imports
@@ -35,7 +37,6 @@ use calimero_context_config::stellar::stellar_types::{
     StellarSignedRequest as ProxySignedRequest,
     StellarSignedRequestPayload as ProxySignedRequestPayload,
 };
-
 // For context contract operations (like adding members), use context_contract types:
 // These come from the contractimport! macro
 use context_contract::{
@@ -73,7 +74,7 @@ fn create_context_signed_request(
     let request_xdr = payload.clone().to_xdr(env);
     let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
     let signature = signer_key.sign(&message_to_sign);
-    
+
     ContextSignedRequest {
         payload,
         signature: BytesN::from_array(env, &signature.to_bytes()),
@@ -95,7 +96,7 @@ fn setup<'a>() -> ProxyTestContext<'a> {
     let context_owner = Address::generate(&env);
     let wasm = include_bytes!("../../../context-config/res/calimero_context_config_stellar.wasm");
     let contract_hash = env.deployer().upload_contract_wasm(*wasm);
-    
+
     let salt = BytesN::<32>::from_array(&env, &[0; 32]);
     let context_contract_address = env
         .deployer()
@@ -169,7 +170,7 @@ fn setup<'a>() -> ProxyTestContext<'a> {
     let proxy_contract = context_client.proxy_contract(&context_id);
     // Fund the proxy contract
     token_asset_client.mint(&proxy_contract, &1_000_000_000);
-    
+
     // Add signers as members
     add_members(
         &env,
@@ -206,16 +207,13 @@ fn submit_approval(
         proposal_id: proposal_id.clone(),
         signer_id: signer_id.clone(),
     };
-    
+
     let request = StellarProxyMutateRequest::Approve(approval);
-    let signed_request = create_signed_request(
-        env,
-        signer_sk,
-        ProxySignedRequestPayload::Proxy(request),
-    );
+    let signed_request =
+        create_signed_request(env, signer_sk, ProxySignedRequestPayload::Proxy(request));
 
     let result = client.mutate(&signed_request);
-    
+
     if expected_approvals == 0 {
         assert!(result.is_none(), "Expected proposal to be executed");
         None
@@ -252,7 +250,10 @@ fn test_execute_proposal_transfer() {
         &env,
         &proxy_contract,
         &context_author_id,
-        vec![&env, StellarProposalAction::Transfer(test_user.clone(), transfer_amount)],
+        vec![
+            &env,
+            StellarProposalAction::Transfer(test_user.clone(), transfer_amount),
+        ],
     );
 
     let client = ContextProxyContractClient::new(&env, &proxy_contract);
@@ -268,11 +269,15 @@ fn test_execute_proposal_transfer() {
     let proposal_after_first = result.expect("Expected proposal with approvals to be returned");
     assert_eq!(proposal_after_first.proposal_id, proposal_id);
     assert_eq!(proposal_after_first.num_approvals, 1);
-    assert_eq!(token_client.balance(&proxy_contract), initial_balance, "Balance shouldn't change after first approval");
+    assert_eq!(
+        token_client.balance(&proxy_contract),
+        initial_balance,
+        "Balance shouldn't change after first approval"
+    );
 
     // Submit second approval
     submit_approval(&env, &client, &proposal_id, &signer2_id, &signer2_sk, 2);
-    
+
     // Submit final approval which executes the proposal
     submit_approval(&env, &client, &proposal_id, &signer3_id, &signer3_sk, 0);
 
@@ -359,20 +364,34 @@ fn test_execute_proposal_set_num_approvals() {
     assert_eq!(verify_proposal_result.num_approvals, 1);
 
     // Second approval should now execute the proposal since num_approvals is 2
-    let result = submit_approval(&env, &client, &verify_proposal_id, &signer2_id, &signer2_sk, 0);
+    let result = submit_approval(
+        &env,
+        &client,
+        &verify_proposal_id,
+        &signer2_id,
+        &signer2_sk,
+        0,
+    );
     assert!(result.is_none(), "Expected None after proposal execution");
 
     // Verify the context value was set
     let test_key = Bytes::from_slice(&env, "test".as_bytes());
     let test_value = Bytes::from_slice(&env, "value".as_bytes());
     let stored_value = client.get_context_value(&test_key);
-    assert_eq!(stored_value, Some(test_value.clone()), "Context value was not set correctly");
+    assert_eq!(
+        stored_value,
+        Some(test_value.clone()),
+        "Context value was not set correctly"
+    );
 
     // Verify the context value was set using context_storage_entries
-    let storage_entries = client.context_storage_entries(&0,& 10);
+    let storage_entries = client.context_storage_entries(&0, &10);
     assert_eq!(storage_entries.len(), 1, "Expected one storage entry");
-    assert_eq!(storage_entries.get(0), Some((test_key, test_value)), "Context value was not set correctly");
-
+    assert_eq!(
+        storage_entries.get(0),
+        Some((test_key, test_value)),
+        "Context value was not set correctly"
+    );
 }
 
 #[test]
@@ -397,7 +416,10 @@ fn test_execute_proposal_set_active_proposals_limit() {
         &env,
         &proxy_contract,
         &context_author_id,
-        vec![&env, StellarProposalAction::SetActiveProposalsLimit(new_limit)],
+        vec![
+            &env,
+            StellarProposalAction::SetActiveProposalsLimit(new_limit),
+        ],
     );
 
     let request = StellarProxyMutateRequest::Propose(proposal);
@@ -421,7 +443,10 @@ fn test_execute_proposal_set_active_proposals_limit() {
 
     // Verify the limit was updated
     let updated_limit = client.get_active_proposals_limit();
-    assert_eq!(updated_limit, new_limit, "Active proposals limit not updated correctly");
+    assert_eq!(
+        updated_limit, new_limit,
+        "Active proposals limit not updated correctly"
+    );
 }
 
 #[test]
@@ -440,7 +465,8 @@ fn test_execute_proposal_external_call_deposit() {
         ..
     } = setup();
 
-    let (mock_external_address, mock_external_client) = deploy_mock_external(&env, &xlm_token_address);
+    let (mock_external_address, mock_external_client) =
+        deploy_mock_external(&env, &xlm_token_address);
 
     // Create external call proposal with deposit
     let method_name = Symbol::new(&env, "deposit");
@@ -502,7 +528,7 @@ fn test_execute_proposal_external_call_deposit() {
 
     let final_proxy_balance = token_client.balance(&proxy_contract);
     let final_external_balance = token_client.balance(&mock_external_address);
-    
+
     assert_eq!(
         final_proxy_balance,
         initial_proxy_balance - deposit,
@@ -515,7 +541,10 @@ fn test_execute_proposal_external_call_deposit() {
     );
 
     let final_state = mock_external_client.get_state();
-    assert_eq!(final_state.total_deposits, deposit, "Total deposits not updated correctly");
+    assert_eq!(
+        final_state.total_deposits, deposit,
+        "Total deposits not updated correctly"
+    );
 }
 
 #[test]
@@ -533,18 +562,15 @@ fn test_execute_proposal_external_call_no_deposit() {
         ..
     } = setup();
 
-    let (mock_external_address, mock_external_client) = deploy_mock_external(&env, &xlm_token_address);
+    let (mock_external_address, mock_external_client) =
+        deploy_mock_external(&env, &xlm_token_address);
 
     // Create external call proposal without deposit
     let method_name = Symbol::new(&env, "no_deposit");
     let key = String::from_str(&env, "test_key");
     let value = String::from_str(&env, "test_value");
 
-    let args: Vec<Val> = vec![
-        &env,
-        key.to_val(),
-        value.to_val(),
-    ];
+    let args: Vec<Val> = vec![&env, key.to_val(), value.to_val()];
 
     let (proposal_id, proposal) = create_test_proposal(
         &env,
@@ -609,7 +635,10 @@ fn test_proposal_limits_and_deletion() {
         &env,
         &proxy_contract,
         &context_author_id,
-        vec![&env, StellarProposalAction::SetActiveProposalsLimit(new_limit)],
+        vec![
+            &env,
+            StellarProposalAction::SetActiveProposalsLimit(new_limit),
+        ],
     );
 
     // Submit and approve limit change proposal
@@ -620,8 +649,22 @@ fn test_proposal_limits_and_deletion() {
         ProxySignedRequestPayload::Proxy(request),
     );
     client.mutate(&signed_request);
-    submit_approval(&env, &client, &limit_proposal_id, &signer2_id, &signer2_sk, 2);
-    submit_approval(&env, &client, &limit_proposal_id, &signer3_id, &signer3_sk, 0);
+    submit_approval(
+        &env,
+        &client,
+        &limit_proposal_id,
+        &signer2_id,
+        &signer2_sk,
+        2,
+    );
+    submit_approval(
+        &env,
+        &client,
+        &limit_proposal_id,
+        &signer3_id,
+        &signer3_sk,
+        0,
+    );
 
     // Verify limit was set
     assert_eq!(client.get_active_proposals_limit(), new_limit);
@@ -630,10 +673,13 @@ fn test_proposal_limits_and_deletion() {
         &env,
         &proxy_contract,
         &context_author_id,
-        vec![&env, StellarProposalAction::SetContextValue(
-            Bytes::from_slice(&env, "key".as_bytes()),
-            Bytes::from_slice(&env, "value".as_bytes()),
-        )],
+        vec![
+            &env,
+            StellarProposalAction::SetContextValue(
+                Bytes::from_slice(&env, "key".as_bytes()),
+                Bytes::from_slice(&env, "value".as_bytes()),
+            ),
+        ],
     );
     let request = StellarProxyMutateRequest::Propose(proposal1);
     let signed_request = create_signed_request(
@@ -642,9 +688,9 @@ fn test_proposal_limits_and_deletion() {
         ProxySignedRequestPayload::Proxy(request),
     );
     client.mutate(&signed_request);
-    
+
     // Create second proposal
-    let (_ , proposal2) = create_test_proposal(
+    let (_, proposal2) = create_test_proposal(
         &env,
         &proxy_contract,
         &context_author_id,
@@ -663,7 +709,7 @@ fn test_proposal_limits_and_deletion() {
         ProxySignedRequestPayload::Proxy(request),
     );
     client.mutate(&signed_request);
-    
+
     // Try to create third proposal - should fail with HostError
     let (_, proposal3) = create_test_proposal(
         &env,
@@ -684,19 +730,19 @@ fn test_proposal_limits_and_deletion() {
             Ok(StellarProxyError::TooManyActiveProposals) => {
                 // This is what we expect
                 log!(&env, "Got expected TooManyActiveProposals error");
-            },
+            }
             other => panic!("Got unexpected error: {:?}", other),
-        }
+        },
     }
 
     // Delete first proposal to free up space
-    let (_ , delete_proposal) = create_test_proposal(
+    let (_, delete_proposal) = create_test_proposal(
         &env,
         &proxy_contract,
         &context_author_id,
         vec![&env, StellarProposalAction::DeleteProposal(proposal1_id)],
     );
-    
+
     let request = StellarProxyMutateRequest::Propose(delete_proposal);
     let signed_request = create_signed_request(
         &env,
@@ -706,7 +752,11 @@ fn test_proposal_limits_and_deletion() {
     client.mutate(&signed_request);
 
     let current_proposals = client.proposals(&0, &10);
-    assert_eq!(current_proposals.len(), 1, "Should have exactly 1 active proposal");
+    assert_eq!(
+        current_proposals.len(),
+        1,
+        "Should have exactly 1 active proposal"
+    );
 
     // Now we should be able to create another proposal
     let request = StellarProxyMutateRequest::Propose(proposal3);
@@ -716,11 +766,18 @@ fn test_proposal_limits_and_deletion() {
         ProxySignedRequestPayload::Proxy(request),
     );
     let result = client.mutate(&signed_request);
-    assert!(result.is_some(), "Should allow new proposal after deleting previous one");
+    assert!(
+        result.is_some(),
+        "Should allow new proposal after deleting previous one"
+    );
 
     // Verify proposal counts
     let active_proposals = client.proposals(&0, &10);
-    assert_eq!(active_proposals.len(), 2, "Should have exactly 2 active proposals");
+    assert_eq!(
+        active_proposals.len(),
+        2,
+        "Should have exactly 2 active proposals"
+    );
 }
 
 fn add_members(
@@ -747,7 +804,7 @@ fn add_members(
     let request_xdr = add_members_req.clone().to_xdr(env);
     let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
     let signature = context_author_sk.sign(&message_to_sign);
-    
+
     let signed_add_members = ContextSignedRequest {
         payload: add_members_req,
         signature: BytesN::from_array(env, &signature.to_bytes()),
@@ -763,7 +820,7 @@ fn create_test_proposal(
     actions: Vec<StellarProposalAction>,
 ) -> (BytesN<32>, StellarProposal) {
     let proposal_id: BytesN<32> = env.as_contract(contract_address, || env.prng().gen());
-    
+
     let proposal = StellarProposal {
         id: proposal_id.clone(),
         author_id: author_id.clone(),
@@ -778,19 +835,17 @@ fn deploy_mock_external<'a>(
     xlm_token_address: &Address,
 ) -> (Address, mock_external::Client<'a>) {
     let mock_owner = Address::generate(env);
-    let mock_external_wasm = include_bytes!("../../mock_external/res/calimero_mock_external_stellar.wasm");
+    let mock_external_wasm =
+        include_bytes!("../../mock_external/res/calimero_mock_external_stellar.wasm");
     let mock_external_hash = env.deployer().upload_contract_wasm(*mock_external_wasm);
 
     let salt = BytesN::<32>::from_array(env, &[0; 32]);
     let mock_external_address = env
         .deployer()
         .with_address(mock_owner, salt)
-        .deploy_v2(
-            mock_external_hash,
-            (xlm_token_address,),
-        );
+        .deploy_v2(mock_external_hash, (xlm_token_address,));
 
     let mock_external_client = mock_external::Client::new(env, &mock_external_address);
-    
+
     (mock_external_address, mock_external_client)
 }

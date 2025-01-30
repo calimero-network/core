@@ -7,21 +7,17 @@ use crate::{ContextProxyContract, ContextProxyContractArgs, ContextProxyContract
 
 #[contractimpl]
 impl ContextProxyContract {
-
     pub fn get_num_approvals(env: Env) -> u32 {
         Self::get_state(&env).num_approvals
     }
-
 
     pub fn get_active_proposals_limit(env: Env) -> u32 {
         Self::get_state(&env).active_proposals_limit
     }
 
-
     pub fn proposal(env: Env, proposal_id: BytesN<32>) -> Option<StellarProposal> {
         Self::get_state(&env).proposals.get(proposal_id)
     }
-
 
     pub fn proposals(env: Env, from_index: u32, limit: u32) -> Vec<StellarProposal> {
         let state = Self::get_state(&env);
@@ -38,13 +34,12 @@ impl ContextProxyContract {
         result
     }
 
-
     pub fn get_confirmations_count(
         env: Env,
         proposal_id: BytesN<32>,
     ) -> Option<StellarProposalWithApprovals> {
         let state = Self::get_state(&env);
-        
+
         state.proposals.get(proposal_id.clone()).map(|_| {
             let num_approvals = state
                 .approvals
@@ -58,14 +53,12 @@ impl ContextProxyContract {
         })
     }
 
-
     pub fn proposal_approvers(env: Env, proposal_id: BytesN<32>) -> Option<Vec<BytesN<32>>> {
         Self::get_state(&env)
             .approvals
             .get(proposal_id)
             .map(|approvals| approvals.clone())
     }
-
 
     pub fn proposal_approvals_with_signer(
         env: Env,
@@ -85,11 +78,9 @@ impl ContextProxyContract {
         result
     }
 
-
     pub fn get_context_value(env: Env, key: Bytes) -> Option<Bytes> {
         Self::get_state(&env).context_storage.get(key)
     }
-
 
     pub fn context_storage_entries(env: Env, from_index: u32, limit: u32) -> Vec<(Bytes, Bytes)> {
         let state = Self::get_state(&env);

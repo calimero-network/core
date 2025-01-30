@@ -6,9 +6,8 @@ use calimero_context_config::stellar::{
     StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest,
 };
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{
-    contractimpl, log, vec, BytesN, Env, Symbol, Val, IntoVal, Vec
-};
+use soroban_sdk::{contractimpl, log, vec, BytesN, Env, IntoVal, Symbol, Val, Vec};
+
 use crate::{ContextProxyContract, ContextProxyContractArgs, ContextProxyContractClient};
 
 #[contractimpl]
@@ -24,8 +23,12 @@ impl ContextProxyContract {
 
         match verified_payload {
             StellarSignedRequestPayload::Proxy(proxy_request) => match proxy_request {
-                StellarProxyMutateRequest::Propose(proposal) => Self::internal_create_proposal(&env, proposal),
-                StellarProxyMutateRequest::Approve(approval) => Self::internal_approve_proposal(&env, approval),
+                StellarProxyMutateRequest::Propose(proposal) => {
+                    Self::internal_create_proposal(&env, proposal)
+                }
+                StellarProxyMutateRequest::Approve(approval) => {
+                    Self::internal_approve_proposal(&env, approval)
+                }
             },
             StellarSignedRequestPayload::Context(_) => Err(StellarProxyError::InvalidAction),
         }
@@ -45,7 +48,11 @@ impl ContextProxyContract {
         }
 
         // Handle delete action if present
-        if let Some(delete_action) = proposal.actions.iter().find(|action| matches!(action, StellarProposalAction::DeleteProposal(_))) {
+        if let Some(delete_action) = proposal
+            .actions
+            .iter()
+            .find(|action| matches!(action, StellarProposalAction::DeleteProposal(_)))
+        {
             if let StellarProposalAction::DeleteProposal(proposal_id) = delete_action {
                 let state = Self::get_state(env);
                 let to_delete = state
@@ -75,7 +82,9 @@ impl ContextProxyContract {
         }
 
         // Validate all actions
-        proposal.actions.iter()
+        proposal
+            .actions
+            .iter()
             .try_for_each(|action| Self::validate_proposal_action(&action))?;
 
         // Store proposal
@@ -84,7 +93,9 @@ impl ContextProxyContract {
         state.proposals.set(proposal_id.clone(), proposal);
 
         // Increment the number of proposals for this author
-        state.num_proposals_pk.set(author_id.clone(), num_proposals + 1);
+        state
+            .num_proposals_pk
+            .set(author_id.clone(), num_proposals + 1);
 
         Self::save_state(env, &state);
 
@@ -145,12 +156,8 @@ impl ContextProxyContract {
 
     fn check_member(env: &Env, signer_id: &BytesN<32>) -> Result<bool, StellarProxyError> {
         let state = Self::get_state(env);
-          
-        let args = vec![
-            env,
-            state.context_id.into_val(env),
-            signer_id.into_val(env)
-        ];
+
+        let args = vec![env, state.context_id.into_val(env), signer_id.into_val(env)];
 
         let has_member: bool = env.invoke_contract(
             &state.context_config_id,
@@ -163,9 +170,10 @@ impl ContextProxyContract {
 
     fn validate_proposal_action(action: &StellarProposalAction) -> Result<(), StellarProxyError> {
         match action {
-            StellarProposalAction::ExternalFunctionCall(_, method_name, _, deposit) 
-                if method_name.to_val().is_void() || *deposit < 0 => {
-                    Err(StellarProxyError::InvalidAction)
+            StellarProposalAction::ExternalFunctionCall(_, method_name, _, deposit)
+                if method_name.to_val().is_void() || *deposit < 0 =>
+            {
+                Err(StellarProxyError::InvalidAction)
             }
             StellarProposalAction::Transfer(_, amount) if *amount <= 0 => {
                 Err(StellarProxyError::InvalidAction)
@@ -176,7 +184,7 @@ impl ContextProxyContract {
             StellarProposalAction::SetActiveProposalsLimit(limit) if *limit == 0 => {
                 Err(StellarProxyError::InvalidAction)
             }
-            _ => Ok(())
+            _ => Ok(()),
         }
     }
 
@@ -185,7 +193,7 @@ impl ContextProxyContract {
 
         if let Some(proposal) = state.proposals.get(proposal_id.clone()) {
             let author_id = proposal.author_id.clone();
-            
+
             // Batch removals
             state.approvals.remove(proposal_id.clone());
             state.proposals.remove(proposal_id.clone());
@@ -236,15 +244,16 @@ impl ContextProxyContract {
                         // Approve transfer with longer expiration
                         let current_ledger = env.ledger().sequence();
                         let expiration_ledger = current_ledger + 100;
-                        token_client.approve(&contract_address, &receiver_id, &deposit, &expiration_ledger);
+                        token_client.approve(
+                            &contract_address,
+                            &receiver_id,
+                            &deposit,
+                            &expiration_ledger,
+                        );
                     }
-                    
+
                     // Ignoring the return value completely
-                    env.invoke_contract::<Val>(
-                        &receiver_id,
-                        &method_name,
-                        args,
-                    );
+                    env.invoke_contract::<Val>(&receiver_id, &method_name, args);
 
                     // If there's a deposit, handle the XLM transfer first
                     if deposit > 0 {
@@ -261,8 +270,13 @@ impl ContextProxyContract {
                         let current_ledger = env.ledger().sequence();
                         // Set expiration to some blocks in the future
                         let expiration_ledger = current_ledger + 1;
-                        token_client.approve(&contract_address, &receiver_id, &deposit, &expiration_ledger);
-                  }
+                        token_client.approve(
+                            &contract_address,
+                            &receiver_id,
+                            &deposit,
+                            &expiration_ledger,
+                        );
+                    }
                 }
 
                 StellarProposalAction::Transfer(receiver_id, amount) => {

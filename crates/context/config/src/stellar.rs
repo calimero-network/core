@@ -15,7 +15,7 @@ pub struct StellarProposalId(pub BytesN<32>);
 #[contracttype]
 pub enum StellarProposalAction {
     ExternalFunctionCall(Address, Symbol, Vec<Val>, i128), // receiver_id, method_name, args, deposit
-    Transfer(Address, i128),                             // receiver_id, amount
+    Transfer(Address, i128),                               // receiver_id, amount
     SetNumApprovals(u32),
     SetActiveProposalsLimit(u32),
     SetContextValue(Bytes, Bytes), // key, value
