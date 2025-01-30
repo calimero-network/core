@@ -209,34 +209,34 @@ impl Network {
 
         let source_account = Rc::new(RefCell::new(account));
 
-        let args = if args.is_empty() {
-            None
-        } else {
+        let mut request = None;
+
+        if !args.is_empty() {
             let env = Env::default();
             let env_bytes = Bytes::from_slice(&env, &args);
             let signed_request =
                 StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
                     StellarError::Custom {
-                        operation: ErrorOperation::Mutate,
+                        operation: ErrorOperation::Query,
                         reason: "Failed to deserialize signed request".to_owned(),
                     }
                 })?;
             let val: Val = signed_request
                 .try_into_val(&env)
                 .map_err(|_| StellarError::Custom {
-                    operation: ErrorOperation::Mutate,
+                    operation: ErrorOperation::Query,
                     reason: "Failed to convert to Val".to_owned(),
                 })?;
             let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Mutate,
+                operation: ErrorOperation::Query,
                 reason: "Failed to convert to ScVal".to_owned(),
             })?;
-            Some(vec![sc_val])
-        };
+            request = Some(vec![sc_val]);
+        }
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
-            .add_operation(contract.call(method, args))
+            .add_operation(contract.call(method, request))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
