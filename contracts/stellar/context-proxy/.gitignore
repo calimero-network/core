@@ -1,0 +1,20 @@
+# Build artifacts
+target/
+res/
+*.wasm
+
+# Test artifacts
+test_snapshot/*
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rust
+**/*.rs.bk
+Cargo.lock
