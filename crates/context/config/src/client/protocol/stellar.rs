@@ -18,7 +18,7 @@ use soroban_client::soroban_rpc::{
 };
 use soroban_client::transaction::{TransactionBehavior, TransactionBuilder};
 use soroban_client::transaction_builder::TransactionBuilderBehavior;
-use soroban_client::xdr::{ScBytes, ScVal};
+use soroban_client::xdr::ScVal;
 use soroban_sdk::xdr::FromXdr;
 use soroban_sdk::{Bytes, Env, TryIntoVal, Val};
 use stellar_baselib::xdr::{self, ReadXdr};
@@ -212,12 +212,26 @@ impl Network {
         let args = if args.is_empty() {
             None
         } else {
-            let sc_bytes = ScBytes::try_from(args).map_err(|e| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: e.to_string(),
+            let env = Env::default();
+            let env_bytes = Bytes::from_slice(&env, &args);
+            let signed_request =
+                StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
+                    StellarError::Custom {
+                        operation: ErrorOperation::Mutate,
+                        reason: "Failed to deserialize signed request".to_owned(),
+                    }
+                })?;
+            let val: Val = signed_request
+                .try_into_val(&env)
+                .map_err(|_| StellarError::Custom {
+                    operation: ErrorOperation::Mutate,
+                    reason: "Failed to convert to Val".to_owned(),
+                })?;
+            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: "Failed to convert to ScVal".to_owned(),
             })?;
-            let scval_bytes = ScVal::Bytes(sc_bytes);
-            Some(vec![scval_bytes])
+            Some(vec![sc_val])
         };
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
@@ -279,25 +293,26 @@ impl Network {
             })?;
 
         let source_account = Rc::new(RefCell::new(account));
+
         let args = if args.is_empty() {
             None
         } else {
             let env = Env::default();
             let env_bytes = Bytes::from_slice(&env, &args);
-            let signed_request = StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|e| {
-                StellarError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: "Failed to deserialize signed request".to_owned(),
-                }
-            })?;
-            // Convert StellarSignedRequest to ScVal
+            let signed_request =
+                StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
+                    StellarError::Custom {
+                        operation: ErrorOperation::Mutate,
+                        reason: "Failed to deserialize signed request".to_owned(),
+                    }
+                })?;
             let val: Val = signed_request
                 .try_into_val(&env)
-                .map_err(|e| StellarError::Custom {
+                .map_err(|_| StellarError::Custom {
                     operation: ErrorOperation::Mutate,
                     reason: "Failed to convert to Val".to_owned(),
                 })?;
-            let sc_val: ScVal = val.try_into_val(&env).map_err(|e| StellarError::Custom {
+            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: "Failed to convert to ScVal".to_owned(),
             })?;
@@ -311,18 +326,16 @@ impl Network {
             .expect("Transaction timeout")
             .build();
 
-        // First simulate the transaction to get proper values
         let simulation_result = self
             .client
             .simulate_transaction(transaction.clone(), None)
             .await;
 
         match simulation_result {
-            Ok(sim_response) => {
-                println!("Simulation successful: {:?}", sim_response);
+            Ok(_) => {
+                // Simulation succeeded, continue with execution
             }
             Err(e) => {
-                println!("Simulation failed: {:?}", e);
                 return Err(StellarError::Custom {
                     operation: ErrorOperation::Mutate,
                     reason: format!("Simulation failed: {:?}", e),
