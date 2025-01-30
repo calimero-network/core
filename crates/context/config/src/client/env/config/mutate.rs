@@ -17,12 +17,12 @@ use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
-use crate::stellar::stellar_types::{
-    StellarContextRequest, StellarRequest, StellarRequestKind, StellarSignedRequest,
-};
+use crate::stellar::stellar_types::{StellarRequest, StellarRequestKind, StellarSignedRequest};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
+
+use crate::stellar::stellar_types::FromWithEnv;
 
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
@@ -175,25 +175,22 @@ impl<'a> Method<Stellar> for Mutate<'a> {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
         let signer_sk = SigningKey::from_bytes(&self.signing_key);
-        let verifying_key = signer_sk.verifying_key();
 
         let request = StellarRequest::new(
-            StellarRequestKind::from(self.kind),
-            verifying_key.rt()?,
+            signer_sk.verifying_key().rt()?,
+            StellarRequestKind::from_with_env(self.kind, &env),
             self.nonce,
         );
-
         let signed_request = StellarSignedRequest::new(&env, request, |b| Ok(signer_sk.sign(b)))
-            .map_err(|_| eyre::eyre!("Failed to sign request"))?;
+            .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
 
-        // Convert to bytes using XDR
         let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
 
         Ok(bytes)
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        Ok(())
     }
 }
 

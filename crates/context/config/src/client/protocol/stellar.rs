@@ -18,7 +18,9 @@ use soroban_client::soroban_rpc::{
 };
 use soroban_client::transaction::{TransactionBehavior, TransactionBuilder};
 use soroban_client::transaction_builder::TransactionBuilderBehavior;
-use soroban_client::xdr::{ScBytes, ScVal};
+use soroban_client::xdr::ScVal;
+use soroban_sdk::xdr::FromXdr;
+use soroban_sdk::{Bytes, Env, TryIntoVal, Val};
 use stellar_baselib::xdr::{self, ReadXdr};
 use thiserror::Error;
 use url::Url;
@@ -27,6 +29,7 @@ use super::Protocol;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
+use crate::stellar::stellar_types::StellarSignedRequest;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Stellar {}
@@ -181,9 +184,34 @@ impl ProtocolTransport for StellarTransport<'_> {
         let contract: Contracts = Contracts::new(&request.contract_id)
             .map_err(|_| StellarError::InvalidContractId(request.contract_id.into_owned()))?;
 
+        let mut args = None;
+
+        if !payload.is_empty() {
+            let env = Env::default();
+            let env_bytes = Bytes::from_slice(&env, &payload);
+            let signed_request =
+                StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
+                    StellarError::Custom {
+                        operation: ErrorOperation::Query,
+                        reason: "Failed to deserialize signed request".to_owned(),
+                    }
+                })?;
+            let val: Val = signed_request
+                .try_into_val(&env)
+                .map_err(|_| StellarError::Custom {
+                    operation: ErrorOperation::Query,
+                    reason: "Failed to convert to Val".to_owned(),
+                })?;
+            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
+                operation: ErrorOperation::Query,
+                reason: "Failed to convert to ScVal".to_owned(),
+            })?;
+            args = Some(vec![sc_val]);
+        }
+
         match request.operation {
-            Operation::Read { method } => network.query(&contract, &method, payload).await,
-            Operation::Write { method } => network.mutate(&contract, &method, payload).await,
+            Operation::Read { method } => network.query(&contract, &method, args).await,
+            Operation::Write { method } => network.mutate(&contract, &method, args).await,
         }
     }
 }
@@ -193,7 +221,7 @@ impl Network {
         &self,
         contract: &Contracts,
         method: &str,
-        args: Vec<u8>,
+        args: Option<Vec<ScVal>>,
     ) -> Result<Vec<u8>, StellarError> {
         let account = self
             .client
@@ -205,17 +233,6 @@ impl Network {
             })?;
 
         let source_account = Rc::new(RefCell::new(account));
-
-        let args = if args.is_empty() {
-            None
-        } else {
-            let sc_bytes = ScBytes::try_from(args).map_err(|e| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: e.to_string(),
-            })?;
-            let scval_bytes = ScVal::Bytes(sc_bytes);
-            Some(vec![scval_bytes])
-        };
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
@@ -264,7 +281,7 @@ impl Network {
         &self,
         contract: &Contracts,
         method: &str,
-        args: Vec<u8>,
+        args: Option<Vec<ScVal>>,
     ) -> Result<Vec<u8>, StellarError> {
         let account = self
             .client
@@ -277,23 +294,24 @@ impl Network {
 
         let source_account = Rc::new(RefCell::new(account));
 
-        let args = if args.is_empty() {
-            None
-        } else {
-            let sc_bytes = ScBytes::try_from(args).map_err(|e| StellarError::Custom {
-                operation: ErrorOperation::Mutate,
-                reason: e.to_string(),
-            })?;
-            let scval_bytes = ScVal::Bytes(sc_bytes);
-            Some(vec![scval_bytes])
-        };
-
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
             .add_operation(contract.call(method, args))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
+
+        let simulation_result = self
+            .client
+            .simulate_transaction(transaction.clone(), None)
+            .await;
+
+        if let Err(err) = simulation_result {
+            return Err(StellarError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Simulation failed: {:?}", err),
+            });
+        }
 
         let signed_tx = {
             let prepared_tx = self
