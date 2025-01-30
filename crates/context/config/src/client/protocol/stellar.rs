@@ -294,9 +294,9 @@ impl Network {
 
         let source_account = Rc::new(RefCell::new(account));
 
-        let args = if args.is_empty() {
-            None
-        } else {
+        let mut request = None;
+
+        if !args.is_empty() {
             let env = Env::default();
             let env_bytes = Bytes::from_slice(&env, &args);
             let signed_request =
@@ -316,12 +316,12 @@ impl Network {
                 operation: ErrorOperation::Mutate,
                 reason: "Failed to convert to ScVal".to_owned(),
             })?;
-            Some(vec![sc_val])
-        };
+            request = Some(vec![sc_val]);
+        }
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
-            .add_operation(contract.call(method, args))
+            .add_operation(contract.call(method, request))
             .set_timeout(15)
             .expect("Transaction timeout")
             .build();
@@ -331,16 +331,11 @@ impl Network {
             .simulate_transaction(transaction.clone(), None)
             .await;
 
-        match simulation_result {
-            Ok(_) => {
-                // Simulation succeeded, continue with execution
-            }
-            Err(e) => {
-                return Err(StellarError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: format!("Simulation failed: {:?}", e),
-                });
-            }
+        if let Err(err) = simulation_result {
+            return Err(StellarError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Simulation failed: {:?}", err),
+            });
         }
 
         let signed_tx = {

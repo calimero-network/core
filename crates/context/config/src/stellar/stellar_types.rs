@@ -32,25 +32,20 @@ impl<'a> FromWithEnv<Application<'a>> for StellarApplication {
             id: BytesN::from_array(env, &value.id.rt().expect("infallible conversion")),
             blob: BytesN::from_array(env, &value.blob.rt().expect("infallible conversion")),
             size: value.size,
-            source: String::from_str(env, &value.source.0.into_owned()),
-            metadata: Bytes::from_slice(env, &value.metadata.0.as_bytes().to_vec()),
+            source: String::from_str(env, &value.source.0),
+            metadata: Bytes::from_slice(env, &value.metadata.0),
         }
     }
 }
 
 impl<'a> From<StellarApplication> for Application<'a> {
     fn from(value: StellarApplication) -> Self {
-        // Convert Soroban String to std::String
-        let mut bytes = vec![0u8; value.source.len() as usize];
-        value.source.copy_into_slice(&mut bytes);
-        let std_string = std::string::String::from_utf8(bytes).expect("valid utf8");
-
         Application::new(
             value.id.rt().expect("infallible conversion"),
             value.blob.rt().expect("infallible conversion"),
             value.size,
-            ApplicationSource(Cow::Owned(std_string)),
-            ApplicationMetadata(Repr::new(Cow::Owned(value.metadata.into_iter().collect()))),
+            ApplicationSource(Cow::Owned(value.source.to_string())),
+            ApplicationMetadata(Repr::new(Cow::Owned(value.metadata.to_alloc_vec()))),
         )
     }
 }
