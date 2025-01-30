@@ -64,7 +64,7 @@ pub struct CreateCommand {
     #[clap(long, value_name = "PROTOCOL")]
     protocol: String,
 
-    #[clap(short = 'i', long, value_name = "IDENTITY_NAME")]
+    #[clap(long = "as", value_name = "IDENTITY_NAME")]
     identity_name: Option<String>,
 }
 
@@ -191,7 +191,7 @@ pub async fn create_context(
 
     let public_key = response.data.member_public_key;
 
-    let identity = Identity::new(public_key, None);
+    let identity = Identity::new(public_key);
 
     if let Some(identity_name) = identity_name {
         create_identity(identity, environment, identity_name)?;

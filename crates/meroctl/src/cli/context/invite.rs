@@ -22,20 +22,8 @@ pub struct InviteCommand {
     #[clap(value_name = "INVITEE_ID", help = "The public key of the invitee")]
     pub invitee_id: PublicKey,
 
-    #[clap(
-        value_name = "INVITER_ID",
-        help = "The public key of the inviter",
-        conflicts_with = "identity_name"
-    )]
-    pub inviter_id: Option<PublicKey>,
-
-    #[clap(
-        short = 'i',
-        long,
-        value_name = "IDENTITY_NAME",
-        help = "The identity with which you want to send this invite (public key)"
-    )]
-    pub identity_name: Option<String>,
+    #[clap(value_name = "INVITER_ID", help = "The public key of the inviter")]
+    pub inviter_id: String,
 }
 
 impl Report for InviteToContextResponse {
@@ -59,17 +47,20 @@ impl InviteCommand {
     pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
-        let my_public_key = match self.inviter_id {
-            Some(id) => id,
-            None => open_identity(environment, self.identity_name.as_ref().unwrap())?.public_key,
-        };
+        let public_key: PublicKey;
+
+        if let Ok(my_public_key) = self.inviter_id.parse::<PublicKey>() {
+            public_key = my_public_key;
+        } else {
+            public_key = open_identity(environment, &self.inviter_id)?.public_key;
+        }
 
         let response: InviteToContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/invite")?,
             Some(InviteToContextRequest {
                 context_id: self.context_id,
-                inviter_id: my_public_key,
+                inviter_id: public_key,
                 invitee_id: self.invitee_id,
             }),
             &config.identity,

@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use eyre::{eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 
@@ -11,15 +11,11 @@ use crate::cli::Environment;
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
     pub(crate) public_key: PublicKey,
-    pub(crate) private_key: Option<PrivateKey>,
 }
 
 impl Identity {
-    pub fn new(public_key: PublicKey, private_key: Option<PrivateKey>) -> Self {
-        Self {
-            public_key,
-            private_key,
-        }
+    pub fn new(public_key: PublicKey) -> Self {
+        Self { public_key }
     }
 }
 

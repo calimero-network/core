@@ -35,20 +35,8 @@ pub struct CallCommand {
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
     pub args: Option<Value>,
 
-    #[arg(
-        long = "as",
-        help = "Public key of the executor",
-        conflicts_with = "identity_name"
-    )]
-    pub executor: Option<PublicKey>,
-
-    #[clap(
-        short = 'i',
-        long,
-        value_name = "IDENTITY_NAME",
-        help = "Name of the identity which you want to use as executor"
-    )]
-    identity_name: Option<String>,
+    #[arg(long = "as", help = "Public key of the executor")]
+    pub executor: String,
 
     #[arg(
         long,
@@ -103,10 +91,13 @@ impl CallCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
-        let public_key = match self.executor {
-            Some(public_key) => public_key,
-            None => open_identity(environment, self.identity_name.as_ref().unwrap())?.public_key,
-        };
+        let public_key: PublicKey;
+
+        if let Ok(my_public_key) = self.executor.parse::<PublicKey>() {
+            public_key = my_public_key;
+        } else {
+            public_key = open_identity(environment, &self.executor)?.public_key;
+        }
 
         let payload = RequestPayload::Execute(ExecuteRequest::new(
             self.context_id,

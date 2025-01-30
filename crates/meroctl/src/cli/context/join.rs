@@ -2,12 +2,11 @@ use calimero_primitives::context::ContextInvitationPayload;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
-use eyre::{eyre, Result as EyreResult};
+use eyre::Result as EyreResult;
 use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
-use crate::identity::open_identity;
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -21,18 +20,9 @@ pub struct JoinCommand {
 
     #[clap(
         value_name = "PRIVATE_KEY",
-        help = "The private key for signing the join context request",
-        conflicts_with = "identity_name"
+        help = "The private key for signing the join context request"
     )]
-    pub private_key: Option<PrivateKey>,
-
-    #[clap(
-        short = 'i',
-        long,
-        value_name = "IDENTITY_NAME",
-        help = "The identity which you want to sign this invite (private key)"
-    )]
-    pub identity_name: Option<String>,
+    pub private_key: PrivateKey,
 }
 
 impl Report for JoinContextResponse {
@@ -51,20 +41,11 @@ impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
-        let my_private_key = match self.private_key {
-            Some(private_key) => private_key,
-            None => open_identity(environment, self.identity_name.as_ref().unwrap())?
-                .private_key
-                .ok_or(eyre!(
-                    "Identity file does not contain private key, please create new identity."
-                ))?,
-        };
-
         let response: JoinContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/join")?,
             Some(JoinContextRequest::new(
-                my_private_key,
+                self.private_key,
                 self.invitation_payload,
             )),
             &config.identity,
