@@ -40,11 +40,15 @@ impl<'a> FromWithEnv<Application<'a>> for StellarApplication {
 
 impl<'a> From<StellarApplication> for Application<'a> {
     fn from(value: StellarApplication) -> Self {
+        let mut bytes = vec![0u8; value.source.len() as usize];
+        value.source.copy_into_slice(&mut bytes);
+        let std_string = std::string::String::from_utf8(bytes).expect("valid utf8");
+
         Application::new(
             value.id.rt().expect("infallible conversion"),
             value.blob.rt().expect("infallible conversion"),
             value.size,
-            ApplicationSource(Cow::Owned(value.source.to_string())),
+            ApplicationSource(Cow::Owned(std_string)),
             ApplicationMetadata(Repr::new(Cow::Owned(value.metadata.to_alloc_vec()))),
         )
     }
