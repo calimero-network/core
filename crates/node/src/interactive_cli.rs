@@ -15,6 +15,7 @@ pub mod store;
 use clap::{Parser, Subcommand};
 
 use crate::Node;
+
 #[derive(Debug, Parser)]
 #[command(multicall = true, bin_name = "{repl}")]
 #[non_exhaustive]

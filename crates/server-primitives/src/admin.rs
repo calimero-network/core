@@ -116,18 +116,6 @@ impl ListApplicationsResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetApplicationDetailsResponse {
-    pub data: Application,
-}
-
-impl GetApplicationDetailsResponse {
-    pub const fn new(application: Application) -> Self {
-        Self { data: application }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GetApplicationResponseData {
     pub application: Option<Application>,
 }

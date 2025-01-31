@@ -43,6 +43,16 @@ impl Test for ApplicationInstallStep {
                         );
                     }
                 }
+
+                if ctx
+                    .meroctl
+                    .application_get(invitee, &application_id)
+                    .await?
+                    .is_null()
+                {
+                    bail!("Failed to lookup installed application on '{}'", invitee);
+                }
+
                 ctx.application_id = Some(application_id);
 
                 ctx.output_writer.write_str(&format!(
@@ -61,6 +71,19 @@ impl Test for ApplicationInstallStep {
                 );
             }
         }
+
+        if ctx
+            .meroctl
+            .application_get(&ctx.inviter, &application_id)
+            .await?
+            .is_null()
+        {
+            bail!(
+                "Failed to lookup installed application on '{}'",
+                &ctx.inviter
+            );
+        }
+
         ctx.application_id = Some(application_id);
 
         ctx.output_writer.write_str(&format!(

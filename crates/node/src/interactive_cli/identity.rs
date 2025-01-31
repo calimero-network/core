@@ -3,7 +3,7 @@ use core::str::FromStr;
 use calimero_primitives::context::ContextId;
 use calimero_store::key::ContextIdentity as ContextIdentityKey;
 use clap::{Parser, Subcommand};
-use eyre::Result;
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 
 use crate::Node;
@@ -27,7 +27,7 @@ enum IdentitySubcommands {
 }
 
 impl IdentityCommand {
-    pub fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
 
         match &self.subcommand {

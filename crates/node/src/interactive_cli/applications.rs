@@ -1,7 +1,7 @@
 use calimero_primitives::hash::Hash;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
-use eyre::Result;
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use url::Url;
 
@@ -22,6 +22,11 @@ enum ApplicationSubcommand {
     Install {
         #[command(subcommand)]
         resource: Resource,
+    },
+    /// Get application details
+    Get {
+        /// The application ID
+        application_id: String,
     },
 }
 
@@ -46,7 +51,7 @@ enum Resource {
 }
 
 impl ApplicationCommand {
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub async fn run(self, node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
         match self.command {
             ApplicationSubcommand::Install { resource } => {
@@ -108,6 +113,21 @@ impl ApplicationCommand {
                     for line in entry.lines() {
                         println!("{ind} {}", line.cyan());
                     }
+                }
+            }
+            ApplicationSubcommand::Get { application_id } => {
+                let Ok(application_id) = application_id.parse() else {
+                    println!("{ind} Failed to parse application ID");
+                    eyre::bail!("Failed to parse application ID");
+                };
+
+                if let Some(application) = node.ctx_manager.get_application(&application_id)? {
+                    println!("{ind} Application ID: {}", application.id);
+                    println!("{ind} Blob ID: {}", application.blob);
+                    println!("{ind} Source: {}", application.source);
+                    println!("{ind} Metadata: {:?}", application.metadata);
+                } else {
+                    println!("{ind} Application not found");
                 }
             }
         }

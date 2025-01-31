@@ -71,7 +71,9 @@ impl Report for GetContextStorageResponse {
 
 impl Report for GetContextIdentitiesResponse {
     fn report(&self) {
-        println!("Identities: {self:?}");
+        for identity in &self.data.identities {
+            println!("{}", identity);
+        }
     }
 }
 
