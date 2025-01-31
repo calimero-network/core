@@ -89,4 +89,3 @@ impl ContextProxyContract {
         env.storage().instance().set(&STORAGE_KEY_STATE, state);
     }
 }
-
