@@ -273,7 +273,7 @@ impl Network {
         &self,
         contract: &Contracts,
         method: &str,
-        payload: Vec<u8>
+        payload: Vec<u8>,
     ) -> Result<Vec<u8>, StellarError> {
         let account = self
             .client
