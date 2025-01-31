@@ -1,5 +1,6 @@
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -111,7 +112,12 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
     const METHOD: &'static str = "context_storage_entries";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(&self.offset.to_le_bytes());
+
+        encoded.extend_from_slice(&self.limit.to_le_bytes());
+
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

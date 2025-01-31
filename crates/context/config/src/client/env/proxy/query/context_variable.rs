@@ -108,10 +108,10 @@ impl Method<Stellar> for ContextVariableRequest {
     const METHOD: &'static str = "get_context_value";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Ok(self.key)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        Ok(response)
     }
 }

@@ -111,7 +111,13 @@ impl Method<Stellar> for ProposalsRequest {
     const METHOD: &'static str = "proposals";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let mut encoded = Vec::new();
+
+        encoded.extend_from_slice(&self.offset.to_le_bytes());
+
+        encoded.extend_from_slice(&self.length.to_le_bytes());
+
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

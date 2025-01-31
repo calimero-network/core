@@ -77,10 +77,16 @@ impl Method<Stellar> for ActiveProposalRequest {
     const METHOD: &'static str = "get_active_proposals_limit";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Ok(Vec::new())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        let value = u16::from_be_bytes(
+            response
+                .try_into()
+                .map_err(|_| eyre::eyre!("Invalid response length: expected 8 bytes"))?,
+        );
+
+        Ok(value)
     }
 }

@@ -13,7 +13,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextIdentity, ProposalId};
 
 #[derive(Clone, Debug, Serialize)]
@@ -129,7 +129,12 @@ impl Method<Stellar> for ProposalApproversRequest {
     const METHOD: &'static str = "proposal_approvers";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let mut encoded = Vec::new();
+
+        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&proposal_id);
+
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
