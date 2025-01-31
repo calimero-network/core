@@ -151,7 +151,6 @@ fn deploy_mock_external<'a>(
     (mock_external_address, mock_external_client)
 }
 
-
 fn setup<'a>() -> ProxyTestContext<'a> {
     let env = Env::default();
     env.mock_all_auths();
