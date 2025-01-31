@@ -1,56 +1,35 @@
-use soroban_sdk::{contractimpl, log, Address, Bytes, BytesN, Env};
+use soroban_sdk::{contractimpl, Address, BytesN, Env};
 
-use crate::{ContextContract, ContextContractArgs, ContextContractClient, Error, OptionalBytes};
+use crate::{
+    ContextProxyContract, ContextProxyContractArgs, ContextProxyContractClient, StellarProxyError,
+};
 
 #[contractimpl]
-impl ContextContract {
-    /// Upgrades the context contract with new WASM code
+impl ContextProxyContract {
+    /// Upgrades the proxy contract with new WASM code
     /// # Arguments
-    /// * `new_wasm` - The new WASM bytecode
-    /// * `owner` - The contract owner's address
+    /// * `wasm_hash` - Hash of the new WASM code to upgrade to
+    /// * `context_address` - Address of the context configuration contract
     /// # Errors
-    /// Returns Unauthorized if caller is not the owner
-    pub fn upgrade(env: &Env, new_wasm: Bytes, owner: Address) -> Result<(), Error> {
-        // Verify authorization
-        owner.require_auth();
+    /// * Returns Unauthorized if caller is not the context configuration contract
+    pub fn upgrade(
+        env: Env,
+        wasm_hash: BytesN<32>,
+        context_address: Address,
+    ) -> Result<(), StellarProxyError> {
+        context_address.require_auth();
 
-        log!(env, "Upgrading context contract with new WASM");
+        // Get current state
+        let state = Self::get_state(&env);
 
-        // Deploy the new WASM and get its hash
-        let new_hash = env.deployer().upload_contract_wasm(new_wasm.clone());
-
-        // Upgrade the contract to the new WASM
-        env.deployer().update_current_contract_wasm(new_hash);
-        Ok(())
-    }
-
-    /// Sets the proxy contract WASM code
-    /// # Arguments
-    /// * `proxy_wasm` - The proxy contract WASM bytecode
-    /// * `owner` - The contract owner's address
-    /// # Errors
-    /// Returns Unauthorized if caller is not the owner
-    pub fn set_proxy_code(
-        env: &Env,
-        proxy_wasm: Bytes,
-        owner: Address,
-    ) -> Result<BytesN<32>, Error> {
-        owner.require_auth();
-
-        let mut state = Self::get_state(env);
-        if owner != state.owner {
-            return Err(Error::Unauthorized);
+        // Check if caller is the context contract
+        if context_address != state.context_config_id {
+            return Err(StellarProxyError::Unauthorized);
         }
-        log!(&env, "Uploading proxy WASM");
 
-        // Upload WASM and get hash
-        let wasm_hash = env.deployer().upload_contract_wasm(proxy_wasm.clone());
-        log!(&env, "Generated WASM hash: {:?}", wasm_hash);
+        // Deploy the upgrade
+        env.deployer().update_current_contract_wasm(wasm_hash);
 
-        // Store the hash in state
-        state.proxy_code = OptionalBytes::from_option(Some(wasm_hash.clone()));
-        Self::save_state(env, &state);
-
-        Ok(wasm_hash)
+        Ok(())
     }
 }

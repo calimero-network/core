@@ -6,6 +6,8 @@ use bs58;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 
+use super::stellar_repr::StellarRepr;
+
 use super::StellarProxyMutateRequest;
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
@@ -245,19 +247,11 @@ pub struct StellarSignedRequest {
     pub signature: BytesN<64>,
 }
 
-// Contract error enum (keep this for contract errors)
-#[contracterror]
-#[derive(Copy, Clone, Debug)]
-pub enum StellarError {
-    InvalidSignature = 1,
-    Unauthorized = 2,
-    ContextExists = 3,
-    ContextNotFound = 4,
-    InvalidNonce = 5,
-    ProxyCodeNotSet = 6,
-    NotAMember = 7,
-    InvalidState = 8,
-    ProxyUpgradeFailed = 9,
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct StellarSignedRequest {
+    pub payload: StellarSignedRequestPayload,
+    pub signature: BytesN<64>,
 }
 
 impl StellarSignedRequest {
@@ -324,4 +318,19 @@ impl ReprBytes for BytesN<32> {
             Err(e) => Err(ReprError::InvalidBase58(e)),
         }
     }
+}
+
+// Contract error enum (keep this for contract errors)
+#[contracterror]
+#[derive(Copy, Clone, Debug)]
+pub enum StellarError {
+    InvalidSignature = 1,
+    Unauthorized = 2,
+    ContextExists = 3,
+    ContextNotFound = 4,
+    InvalidNonce = 5,
+    ProxyCodeNotSet = 6,
+    NotAMember = 7,
+    InvalidState = 8,
+    ProxyUpgradeFailed = 9,
 }

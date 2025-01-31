@@ -1,210 +1,128 @@
-use core::ops::Deref;
+use calimero_context_config::stellar::{
+    StellarProposal, StellarProposalApprovalWithSigner, StellarProposalWithApprovals,
+};
+use soroban_sdk::{contractimpl, Bytes, BytesN, Env, Vec};
 
-use soroban_sdk::{contractimpl, Address, BytesN, Env, Map, Vec};
-
-use crate::guard::GuardedValue;
-use crate::types::{Application, Capability, Error};
-use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
+use crate::{ContextProxyContract, ContextProxyContractArgs, ContextProxyContractClient};
 
 #[contractimpl]
-impl ContextContract {
-    /// Helper function to get context
-    fn get_context(env: &Env, context_id: BytesN<32>) -> Option<Context> {
-        Self::get_state(env).contexts.get(context_id)
+impl ContextProxyContract {
+    /// Returns the number of approvals required for proposal execution
+    pub fn get_num_approvals(env: Env) -> u32 {
+        Self::get_state(&env).num_approvals
     }
 
-    /// Returns the application for a given context
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    pub fn application(env: &Env, context_id: BytesN<32>) -> Result<Application, Error> {
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
-
-        match context.application.deref() {
-            GuardedValue::Application(app) => Ok(app.clone()),
-            _ => Err(Error::InvalidState),
-        }
+    /// Returns the maximum number of active proposals allowed per author
+    pub fn get_active_proposals_limit(env: Env) -> u32 {
+        Self::get_state(&env).active_proposals_limit
     }
 
-    /// Returns the application revision number
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    /// Returns InvalidState if application data is corrupted
-    pub fn application_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, Error> {
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
-
-        match context.application.deref() {
-            GuardedValue::Application(_) => Ok(context.application.revision().into()),
-            _ => Err(Error::InvalidState),
-        }
-    }
-
-    /// Returns the proxy contract address
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    pub fn proxy_contract(env: &Env, context_id: BytesN<32>) -> Result<Address, Error> {
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
-
-        match context.proxy.deref() {
-            GuardedValue::Proxy(proxy_id) => Ok(proxy_id.clone()),
-            _ => Err(Error::InvalidState),
-        }
-    }
-
-    /// Returns a paginated list of members
+    /// Retrieves a specific proposal by ID
     /// # Arguments
-    /// * `offset` - Starting position in the members list
-    /// * `length` - Number of members to return
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    pub fn members(
-        env: &Env,
-        context_id: BytesN<32>,
-        offset: u32,
-        length: u32,
-    ) -> Result<Vec<BytesN<32>>, Error> {
-        // Validate input parameters
-        if length == 0 {
-            return Ok(Vec::new(env));
-        }
-
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
-
-        let members = match context.members.deref() {
-            GuardedValue::Members(members) => members,
-            _ => return Err(Error::InvalidState),
-        };
-
-        let total_len = members.len();
-        // Early return with empty vec for out of bounds offset
-        if offset >= total_len {
-            return Ok(Vec::new(env));
-        }
-
-        let end = core::cmp::min(offset + length, total_len);
-        let mut result = Vec::new(env);
-
-        for i in offset..end {
-            result.push_back(members.get(i).unwrap().clone());
-        }
-
-        Ok(result)
+    /// * `proposal_id` - The ID of the proposal to retrieve
+    pub fn proposal(env: Env, proposal_id: BytesN<32>) -> Option<StellarProposal> {
+        Self::get_state(&env).proposals.get(proposal_id)
     }
 
-    /// Checks if an identity is a member of the context
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    /// Returns InvalidState if members data is corrupted
-    pub fn has_member(
-        env: &Env,
-        context_id: BytesN<32>,
-        identity: BytesN<32>,
-    ) -> Result<bool, Error> {
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+    /// Returns a paginated list of active proposals
+    /// # Arguments
+    /// * `from_index` - Starting index for pagination
+    /// * `limit` - Maximum number of proposals to return
+    pub fn proposals(env: Env, from_index: u32, limit: u32) -> Vec<StellarProposal> {
+        let state = Self::get_state(&env);
+        let mut result = Vec::new(&env);
 
-        match context.members.deref() {
-            GuardedValue::Members(members) => Ok(members.contains(identity)),
-            _ => Err(Error::InvalidState),
+        for (_, proposal) in state
+            .proposals
+            .iter()
+            .skip(from_index as usize)
+            .take(limit as usize)
+        {
+            result.push_back(proposal);
         }
+        result
     }
 
-    /// Returns the revision number of the members list
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    /// Returns InvalidState if members data is corrupted
-    pub fn members_revision(env: &Env, context_id: BytesN<32>) -> Result<u64, Error> {
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+    /// Gets the number of confirmations for a specific proposal
+    /// # Arguments
+    /// * `proposal_id` - The ID of the proposal to check
+    /// # Returns
+    /// Returns None if the proposal doesn't exist, otherwise returns the proposal ID and number of approvals
+    pub fn get_confirmations_count(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Option<StellarProposalWithApprovals> {
+        let state = Self::get_state(&env);
 
-        match context.members.deref() {
-            GuardedValue::Members(_) => Ok(context.members.revision().into()),
-            _ => Err(Error::InvalidState),
-        }
+        state.proposals.get(proposal_id.clone()).map(|_| {
+            let num_approvals = state
+                .approvals
+                .get(proposal_id.clone())
+                .map_or(0, |approvals| approvals.len());
+
+            StellarProposalWithApprovals {
+                proposal_id,
+                num_approvals,
+            }
+        })
     }
 
-    /// Returns the privileges for given identities or all if identities is empty
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    pub fn privileges(
-        env: &Env,
-        context_id: BytesN<32>,
-        identities: Vec<BytesN<32>>,
-    ) -> Result<Map<BytesN<32>, Vec<Capability>>, Error> {
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
-
-        let mut privileges = Map::new(env);
-
-        // Helper function to reduce code duplication
-        let add_capability = |privileges: &mut Map<BytesN<32>, Vec<Capability>>,
-                              signer_id: BytesN<32>,
-                              capability: Capability| {
-            let mut caps = privileges
-                .get(signer_id.clone())
-                .unwrap_or_else(|| Vec::new(env));
-            caps.push_back(capability);
-            privileges.set(signer_id, caps);
-        };
-
-        if identities.is_empty() {
-            // Process all privileges more efficiently
-            for signer_id in context.application.privileged().iter() {
-                add_capability(&mut privileges, signer_id, Capability::ManageApplication);
-            }
-
-            for signer_id in context.members.privileged().iter() {
-                add_capability(&mut privileges, signer_id, Capability::ManageMembers);
-            }
-
-            for signer_id in context.proxy.privileged().iter() {
-                add_capability(&mut privileges, signer_id, Capability::Proxy);
-            }
-        } else {
-            // Process specific identities more efficiently
-            for identity in identities.iter() {
-                let mut caps = Vec::new(env);
-                let id = identity.clone(); // Clone once instead of multiple times
-
-                // Check all privileges at once
-                if context.application.privileged().contains(id.clone()) {
-                    caps.push_back(Capability::ManageApplication);
-                }
-                if context.members.privileged().contains(id.clone()) {
-                    caps.push_back(Capability::ManageMembers);
-                }
-                if context.proxy.privileged().contains(id) {
-                    caps.push_back(Capability::Proxy);
-                }
-
-                if !caps.is_empty() {
-                    privileges.set(identity, caps);
-                }
-            }
-        }
-
-        Ok(privileges)
+    /// Returns the list of addresses that have approved a specific proposal
+    /// # Arguments
+    /// * `proposal_id` - The ID of the proposal to check
+    pub fn proposal_approvers(env: Env, proposal_id: BytesN<32>) -> Option<Vec<BytesN<32>>> {
+        Self::get_state(&env)
+            .approvals
+            .get(proposal_id)
+            .map(|approvals| approvals.clone())
     }
 
-    /// Fetches the nonce for a member in a given context
-    /// # Errors
-    /// Returns ContextNotFound if context doesn't exist
-    /// Returns InvalidState if members data is corrupted
-    /// Returns NotAMember if the provided member_id is not a member of the context
-    pub fn fetch_nonce(
-        env: &Env,
-        context_id: BytesN<32>,
-        member_id: BytesN<32>,
-    ) -> Result<Option<u64>, Error> {
-        let context = Self::get_context(env, context_id).ok_or(Error::ContextNotFound)?;
+    /// Returns detailed approval information for a proposal
+    /// # Arguments
+    /// * `proposal_id` - The ID of the proposal to check
+    /// # Returns
+    /// Returns a vector of approval records containing both proposal ID and signer ID
+    pub fn proposal_approvals_with_signer(
+        env: Env,
+        proposal_id: BytesN<32>,
+    ) -> Vec<StellarProposalApprovalWithSigner> {
+        let state = Self::get_state(&env);
+        let mut result = Vec::new(&env);
 
-        // Verify member exists
-        let members = match context.members.deref() {
-            GuardedValue::Members(members) => members,
-            _ => return Err(Error::InvalidState),
-        };
-
-        if !members.contains(&member_id) {
-            return Ok(None);
+        if let Some(approvals) = state.approvals.get(proposal_id.clone()) {
+            for signer_id in approvals.iter() {
+                result.push_back(StellarProposalApprovalWithSigner {
+                    proposal_id: proposal_id.clone(),
+                    signer_id: signer_id.clone(),
+                });
+            }
         }
+        result
+    }
 
-        // Return nonce if it exists
-        Ok(context.member_nonces.get(member_id))
+    /// Retrieves a value from the context storage
+    /// # Arguments
+    /// * `key` - The key to look up in the context storage
+    pub fn get_context_value(env: Env, key: Bytes) -> Option<Bytes> {
+        Self::get_state(&env).context_storage.get(key)
+    }
+
+    /// Returns a paginated list of key-value pairs from the context storage
+    /// # Arguments
+    /// * `from_index` - Starting index for pagination
+    /// * `limit` - Maximum number of entries to return
+    pub fn context_storage_entries(env: Env, from_index: u32, limit: u32) -> Vec<(Bytes, Bytes)> {
+        let state = Self::get_state(&env);
+        let mut result = Vec::new(&env);
+
+        for (key, value) in state
+            .context_storage
+            .iter()
+            .skip(from_index as usize)
+            .take(limit as usize)
+        {
+            result.push_back((key.clone(), value.clone()));
+        }
+        result
     }
 }

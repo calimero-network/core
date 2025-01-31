@@ -14,5 +14,5 @@ mkdir -p res
 cp $TARGET/wasm32-unknown-unknown/app-release/calimero_context_config_stellar.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/calimero_context_config_near.wasm -o ./res/calimero_context_config_stellar.wasm
+  wasm-opt -Oz ./res/calimero_context_config_stellar.wasm -o ./res/calimero_context_config_stellar.wasm
 fi

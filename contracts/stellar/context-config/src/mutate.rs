@@ -2,15 +2,11 @@ use core::ops::{Deref, DerefMut};
 
 use calimero_context_config::stellar::stellar_types::{
     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
-    StellarError, StellarRequestKind, StellarSignedRequest,
+    StellarError, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
 use soroban_sdk::{contractimpl, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
 
 use crate::guard::{Guard, GuardedValue};
-// use crate::types::{
-//     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
-//     Error, StellarRequestKind, StellarSignedRequest,
-// };
 use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
 
 #[contractimpl]
@@ -23,6 +19,12 @@ impl ContextContract {
     pub fn mutate(env: Env, signed_request: StellarSignedRequest) -> Result<(), StellarError> {
         // Verify signature and get request
         let request = signed_request.verify(&env)?;
+
+        // Extract request from payload
+        let request = match request {
+            StellarSignedRequestPayload::Context(req) => req,
+            StellarSignedRequestPayload::Proxy(_) => return Err(StellarError::InvalidSignature),
+        };
         // Extract context_id and kind from request
         let (context_id, kind) = match request.kind {
             StellarRequestKind::Context(StellarContextRequest { context_id, kind }) => {
@@ -460,6 +462,8 @@ impl ContextContract {
     fn deploy_proxy(env: &Env, context_id: &BytesN<32>) -> Result<Address, StellarError> {
         let state = Self::get_state(env);
 
+        state.owner.require_auth();
+
         // Get stored WASM hash
         let wasm_hash = state
             .proxy_code
@@ -470,7 +474,14 @@ impl ContextContract {
         let proxy_address = env
             .deployer()
             .with_address(env.current_contract_address(), context_id.clone())
-            .deploy_v2(wasm_hash, ());
+            .deploy_v2(
+                wasm_hash,
+                (
+                    context_id.clone(),
+                    env.current_contract_address(),
+                    state.ledger_id,
+                ),
+            );
 
         Ok(proxy_address)
     }
