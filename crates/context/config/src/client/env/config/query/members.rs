@@ -18,6 +18,7 @@ use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::{Repr, ReprBytes};
 use crate::stellar::stellar_repr::StellarRepr;
+use crate::repr::ReprTransmute;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -137,17 +138,19 @@ impl Method<Stellar> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id = StellarRepr::new(*self.context_id);
-        let offset = StellarRepr::new(self.offset);
-        let length = StellarRepr::new(self.length);
-        let mut encoded_context_id = context_id.as_bytes().to_vec();
-        let encoded_offset = offset.to_le_bytes().to_vec();
-        let encoded_length = length.to_le_bytes().to_vec();
-
-        encoded_context_id.extend(encoded_offset);
-        encoded_context_id.extend(encoded_length);
-
-        Ok(encoded_context_id)
+        let mut encoded = Vec::new();
+        
+        // Encode context_id (BytesN<32>)
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&context_raw);
+        
+        // Encode offset (u32)
+        encoded.extend_from_slice(&self.offset.to_le_bytes());
+        
+        // Encode length (u32)
+        encoded.extend_from_slice(&self.length.to_le_bytes());
+        
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
