@@ -232,13 +232,8 @@ impl Network {
             })?;
             args = Some(vec![sc_val]);
         }
-        let network = match self.network.as_str() {
-            "mainnet" => Networks::public(),
-            "testnet" => Networks::testnet(),
-            _ => Networks::testnet(),
-        };
 
-        let transaction = TransactionBuilder::new(source_account, network, None)
+        let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
             .add_operation(contract.call(method, args))
             .set_timeout(15)
