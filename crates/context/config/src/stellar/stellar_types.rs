@@ -7,6 +7,7 @@ use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 
 use super::stellar_repr::StellarRepr;
+use super::StellarProxyMutateRequest;
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
 
@@ -64,31 +65,26 @@ pub struct StellarRequest {
     pub nonce: u64,
 }
 
-// Signed request wrapper
+#[contracttype]
+#[derive(Clone, Debug)]
+pub enum StellarSignedRequestPayload {
+    Context(StellarRequest),
+    Proxy(StellarProxyMutateRequest),
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct StellarSignedRequest {
-    pub payload: StellarRequest,
+    pub payload: StellarSignedRequestPayload,
     pub signature: BytesN<64>,
 }
 
-// Contract error enum (keep this for contract errors)
-#[contracterror]
-#[derive(Copy, Clone, Debug)]
-pub enum StellarError {
-    InvalidSignature = 1,
-    Unauthorized = 2,
-    ContextExists = 3,
-    ContextNotFound = 4,
-    InvalidNonce = 5,
-    ProxyCodeNotSet = 6,
-    NotAMember = 7,
-    InvalidState = 8,
-    ProxyUpgradeFailed = 9,
-}
-
 impl StellarSignedRequest {
-    pub fn new<F>(env: &Env, payload: StellarRequest, sign: F) -> Result<Self, StellarError>
+    pub fn new<F>(
+        env: &Env,
+        payload: StellarSignedRequestPayload,
+        sign: F,
+    ) -> Result<Self, StellarError>
     where
         F: FnOnce(&[u8]) -> Result<ed25519_dalek::Signature, ed25519_dalek::SignatureError>,
     {
@@ -103,11 +99,20 @@ impl StellarSignedRequest {
         })
     }
 
-    pub fn verify(&self, env: &Env) -> Result<StellarRequest, StellarError> {
+    pub fn verify(&self, env: &Env) -> Result<StellarSignedRequestPayload, StellarError> {
         let bytes = self.payload.clone().to_xdr(env);
 
+        // Get signer_id based on payload type
+        let signer_id = match &self.payload {
+            StellarSignedRequestPayload::Context(req) => &req.signer_id,
+            StellarSignedRequestPayload::Proxy(req) => match req {
+                StellarProxyMutateRequest::Propose(proposal) => &proposal.author_id,
+                StellarProxyMutateRequest::Approve(approval) => &approval.signer_id,
+            },
+        };
+
         env.crypto()
-            .ed25519_verify(&self.payload.signer_id, &bytes, &self.signature);
+            .ed25519_verify(signer_id, &bytes, &self.signature);
 
         Ok(self.payload.clone())
     }
@@ -198,4 +203,19 @@ impl From<StellarCapability> for Capability {
             StellarCapability::Proxy => Capability::Proxy,
         }
     }
+}
+
+// Contract error enum (keep this for contract errors)
+#[contracterror]
+#[derive(Copy, Clone, Debug)]
+pub enum StellarError {
+    InvalidSignature = 1,
+    Unauthorized = 2,
+    ContextExists = 3,
+    ContextNotFound = 4,
+    InvalidNonce = 5,
+    ProxyCodeNotSet = 6,
+    NotAMember = 7,
+    InvalidState = 8,
+    ProxyUpgradeFailed = 9,
 }

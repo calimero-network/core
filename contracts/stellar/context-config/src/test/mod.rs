@@ -1,19 +1,11 @@
-extern crate alloc;
-use alloc::vec::Vec;
-
 use calimero_context_config::stellar::stellar_types::{
     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
-    StellarRequest, StellarRequestKind, StellarSignedRequest,
+    StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal};
 
-// use crate::types::{
-//     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
-//     StellarRequest, StellarRequestKind, StellarSignedRequest,
-// };
 use crate::{ContextContract, ContextContractClient};
 
 fn create_signed_request(
@@ -21,139 +13,135 @@ fn create_signed_request(
     request: StellarRequest,
     env: &Env,
 ) -> StellarSignedRequest {
-    let request_xdr = request.clone().to_xdr(&env);
-    let std_vec: Vec<u8> = request_xdr.into_iter().collect();
-    let signature = signer_key.sign(&std_vec);
+    StellarSignedRequest::new(env, StellarSignedRequestPayload::Context(request), |data| {
+        Ok(signer_key.sign(data))
+    })
+    .unwrap()
+}
 
-    let signature_bytes: BytesN<64> = BytesN::from_array(env, &signature.to_bytes());
-    StellarSignedRequest {
-        payload: request,
-        signature: signature_bytes,
+// Helper struct to manage test context
+struct TestContext<'a> {
+    env: Env,
+    client: ContextContractClient<'a>,
+    context_key: SigningKey,
+    context_id: BytesN<32>,
+}
+
+impl<'a> TestContext<'a> {
+    fn setup() -> Self {
+        let env = Env::default();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let contract_id = env.register(
+            ContextContract,
+            (
+                &owner,
+                Address::from_str(
+                    &env,
+                    "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+                ),
+            ),
+        );
+        let client = ContextContractClient::new(&env, &contract_id);
+
+        // Set up proxy code
+        let wasm = include_bytes!("../../../context-proxy/res/calimero_context_proxy_stellar.wasm");
+        let proxy_wasm = Bytes::from_slice(&env, wasm);
+        client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
+
+        // Generate context key
+        let context_key =
+            SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
+        let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
+
+        Self {
+            env,
+            client,
+            context_key,
+            context_id,
+        }
+    }
+
+    fn generate_key(&self) -> (SigningKey, BytesN<32>) {
+        let contract_id = self.client.address.clone(); // Get the contract's address
+        let key = SigningKey::from_bytes(
+            &self
+                .env
+                .as_contract(&contract_id, || self.env.prng().gen::<[u8; 32]>()),
+        );
+        let id = BytesN::from_array(&self.env, &key.verifying_key().to_bytes());
+        (key, id)
+    }
+
+    fn create_application(&self, id: u8) -> StellarApplication {
+        StellarApplication {
+            id: BytesN::from_array(&self.env, &[id; 32]),
+            blob: BytesN::from_array(&self.env, &[id + 1; 32]),
+            size: 100,
+            source: "test_app".into_val(&self.env),
+            metadata: Bytes::from_array(&self.env, &[id + 2; 32]),
+        }
+    }
+
+    fn create_context(&self, author_id: BytesN<32>, app: StellarApplication) {
+        let request = StellarRequest {
+            signer_id: self.context_id.clone(),
+            nonce: 0,
+            kind: StellarRequestKind::Context(StellarContextRequest {
+                context_id: self.context_id.clone(),
+                kind: StellarContextRequestKind::Add(author_id, app),
+            }),
+        };
+
+        let signed_request = create_signed_request(&self.context_key, request, &self.env);
+        self.client.mutate(&signed_request);
     }
 }
 
 #[test]
 fn test_add_context() {
-    let env = Env::default();
-    let contract_id = env.register(ContextContract, ());
-    let client = ContextContractClient::new(&env, &contract_id);
+    let ctx = TestContext::setup();
+    log!(
+        &ctx.env,
+        "Context contract address: {:?}",
+        ctx.client.address
+    );
+    let (_author_key, author_id) = ctx.generate_key();
+    let app = ctx.create_application(1);
 
-    // Initialize contract
-    let owner = Address::generate(&env);
-    client.mock_all_auths().initialize(&owner);
+    ctx.create_context(author_id.clone(), app.clone());
 
-    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
-    let proxy_wasm = Bytes::from_slice(&env, wasm);
-    let wasm_hash = client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
-    log!(&env, "Proxy code hash: {:?}", wasm_hash);
-
-    let random_bytes: BytesN<32> = env.as_contract(&contract_id, || env.prng().gen());
-    let signing_key = SigningKey::from_bytes(&random_bytes.to_array());
-    let public_key = signing_key.verifying_key();
-
-    let context_id = BytesN::from_array(&env, &public_key.to_bytes());
-    let author_id = BytesN::from_array(&env, &[2u8; 32]);
-
-    let application = StellarApplication {
-        id: BytesN::from_array(&env, &[3u8; 32]),
-        blob: BytesN::from_array(&env, &[4u8; 32]),
-        size: 100,
-        source: "test_app".into_val(&env),
-        metadata: Bytes::from_array(&env, &[6u8; 32]),
-    };
-
-    let request = StellarRequest {
-        signer_id: context_id.clone(),
-        nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(author_id.clone(), application.clone()),
-        }),
-    };
-
-    let signed_request = create_signed_request(&signing_key, request, &env);
-    client.mutate(&signed_request);
-
-    let app = client.application(&context_id);
-    if app.id == application.id {
-        log!(
-            &env,
-            "Found application: id={:?}, source={}",
-            app.id,
-            app.source
-        );
-    } else {
-        log!(&env, "No application found for context_id={:?}", context_id);
-    }
+    let stored_app = ctx.client.application(&ctx.context_id);
+    assert_eq!(stored_app.id, app.id, "Application not stored correctly");
 }
 
 #[test]
 fn test_member_management() {
-    let env = Env::default();
-    let contract_id = env.register(ContextContract, ());
-    let client = ContextContractClient::new(&env, &contract_id);
-
-    // Initialize contract
-    let owner = Address::generate(&env);
-    client.mock_all_auths().initialize(&owner);
-
-    // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
-    let proxy_wasm = Bytes::from_slice(&env, wasm);
-    client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
-
-    // Generate context and member keys
-    let context_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let charlie_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-
-    let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
-    let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
-    let bob_id = BytesN::from_array(&env, &bob_key.verifying_key().to_bytes());
-    let charlie_id = BytesN::from_array(&env, &charlie_key.verifying_key().to_bytes());
+    let ctx = TestContext::setup();
+    let (alice_key, alice_id) = ctx.generate_key();
+    let (bob_key, bob_id) = ctx.generate_key();
+    let (_charlie_key, charlie_id) = ctx.generate_key();
 
     // Create context with Alice as author
-    let application = StellarApplication {
-        id: BytesN::from_array(&env, &[1u8; 32]),
-        blob: BytesN::from_array(&env, &[2u8; 32]),
-        size: 100,
-        source: "test_app".into_val(&env),
-        metadata: Bytes::from_array(&env, &[3u8; 32]),
-    };
+    let app = ctx.create_application(1);
+    ctx.create_context(alice_id.clone(), app);
 
-    let create_request = StellarRequest {
-        signer_id: context_id.clone(),
-        nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), application),
-        }),
-    };
-
-    let signed_request = create_signed_request(&context_key, create_request, &env);
-    client.mutate(&signed_request);
-
-    // Add Bob as member (signed by Alice - authorized)
-    let add_member_request = StellarRequest {
+    // Add Bob as member (signed by Alice)
+    let add_bob_request = StellarRequest {
         signer_id: alice_id.clone(),
         nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, bob_id.clone()]),
         }),
     };
 
-    let signed_request = create_signed_request(&alice_key, add_member_request, &env);
-    client.mutate(&signed_request);
+    let signed_request = create_signed_request(&alice_key, add_bob_request, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
     // Verify members after authorized addition
-    let members = client.members(&context_id, &0u32, &10u32);
-    log!(&env, "Members after authorized addition: {:?}", members);
+    let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
+    log!(&ctx.env, "Members after authorized addition: {:?}", members);
     assert_eq!(
         members.len(),
         2,
@@ -167,20 +155,20 @@ fn test_member_management() {
         signer_id: bob_id.clone(),
         nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, charlie_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, charlie_id.clone()]),
         }),
     };
 
-    let signed_request = create_signed_request(&bob_key, unauthorized_request, &env);
+    let signed_request = create_signed_request(&bob_key, unauthorized_request, &ctx.env);
 
     // This should fail with Unauthorized error
-    let result = client.try_mutate(&signed_request);
+    let result = ctx.client.try_mutate(&signed_request);
     assert!(result.is_err(), "Unauthorized request should fail");
 
     // Verify members haven't changed
-    let members = client.members(&context_id, &0u32, &10u32);
-    log!(&env, "Final members list: {:?}", members);
+    let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
+    log!(&ctx.env, "Final members list: {:?}", members);
     assert_eq!(
         members.len(),
         2,
@@ -201,20 +189,24 @@ fn test_member_management() {
         signer_id: bob_id.clone(),
         nonce: 1,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::RemoveMembers(vec![&env, alice_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::RemoveMembers(vec![&ctx.env, alice_id.clone()]),
         }),
     };
 
-    let signed_request = create_signed_request(&bob_key, unauthorized_remove, &env);
+    let signed_request = create_signed_request(&bob_key, unauthorized_remove, &ctx.env);
 
     // This should fail with Unauthorized error
-    let result = client.try_mutate(&signed_request);
+    let result = ctx.client.try_mutate(&signed_request);
     assert!(result.is_err(), "Unauthorized removal should fail");
 
     // Verify members haven't changed after failed removal
-    let members = client.members(&context_id, &0u32, &10u32);
-    log!(&env, "Members after failed removal attempt: {:?}", members);
+    let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
+    log!(
+        &ctx.env,
+        "Members after failed removal attempt: {:?}",
+        members
+    );
     assert_eq!(members.len(), 2, "Should still have both members");
     assert!(
         members.contains(&alice_id),
@@ -227,18 +219,18 @@ fn test_member_management() {
         signer_id: alice_id.clone(),
         nonce: 1,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::RemoveMembers(vec![&env, bob_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::RemoveMembers(vec![&ctx.env, bob_id.clone()]),
         }),
     };
 
-    let signed_request = create_signed_request(&alice_key, authorized_remove, &env);
-    client.mutate(&signed_request);
+    let signed_request = create_signed_request(&alice_key, authorized_remove, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
     // Verify final membership after successful removal
-    let members = client.members(&context_id, &0u32, &10u32);
+    let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
     log!(
-        &env,
+        &ctx.env,
         "Final members after authorized removal: {:?}",
         members
     );
@@ -249,110 +241,71 @@ fn test_member_management() {
     );
     assert!(!members.contains(&bob_id), "Bob should have been removed");
 
-    log!(&env, "Member management test completed successfully");
+    log!(&ctx.env, "Member management test completed successfully");
 }
 
 #[test]
 fn test_capability_management() {
-    let env = Env::default();
-    let contract_id = env.register(ContextContract, ());
-    let client = ContextContractClient::new(&env, &contract_id);
-
-    // Initialize contract
-    let owner = Address::generate(&env);
-    client.mock_all_auths().initialize(&owner);
-
-    // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
-    let proxy_wasm = Bytes::from_slice(&env, wasm);
-    client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
-
-    // Generate keys for context, Alice, and Bob
-    let context_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-
-    let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
-    let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
-    let bob_id = BytesN::from_array(&env, &bob_key.verifying_key().to_bytes());
+    let ctx = TestContext::setup();
+    let (alice_key, alice_id) = ctx.generate_key();
+    let (bob_key, bob_id) = ctx.generate_key();
+    let (_, charlie_id) = ctx.generate_key();
 
     // Create context with Alice as author
-    let application = StellarApplication {
-        id: BytesN::from_array(&env, &[1u8; 32]),
-        blob: BytesN::from_array(&env, &[2u8; 32]),
-        size: 100,
-        source: "test_app".into_val(&env),
-        metadata: Bytes::from_array(&env, &[3u8; 32]),
-    };
-
-    let create_request = StellarRequest {
-        signer_id: context_id.clone(),
-        nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), application),
-        }),
-    };
-
-    let signed_request = create_signed_request(&context_key, create_request, &env);
-    client.mutate(&signed_request);
+    let app = ctx.create_application(1);
+    ctx.create_context(alice_id.clone(), app);
 
     // Add Bob as member
     let add_member_request = StellarRequest {
         signer_id: alice_id.clone(),
         nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, bob_id.clone()]),
         }),
     };
 
-    let signed_request = create_signed_request(&alice_key, add_member_request, &env);
-    client.mutate(&signed_request);
+    let signed_request = create_signed_request(&alice_key, add_member_request, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
     // Grant ManageMembers capability to Bob
     let grant_request = StellarRequest {
         signer_id: alice_id.clone(),
         nonce: 1,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
+            context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::Grant(vec![
-                &env,
+                &ctx.env,
                 (bob_id.clone(), StellarCapability::ManageMembers),
             ]),
         }),
     };
 
-    let signed_request = create_signed_request(&alice_key, grant_request, &env);
-    client.mutate(&signed_request);
+    let signed_request = create_signed_request(&alice_key, grant_request, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
     // Verify Bob's capabilities
-    let bob_privileges = client.privileges(&context_id, &vec![&env, bob_id.clone()]);
-    log!(&env, "Bob's privileges: {:?}", bob_privileges);
+    let bob_privileges = ctx
+        .client
+        .privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
+    log!(&ctx.env, "Bob's privileges: {:?}", bob_privileges);
 
     // Bob should now be able to add members
-    let charlie_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let charlie_id = BytesN::from_array(&env, &charlie_key.verifying_key().to_bytes());
-
     let add_member_request = StellarRequest {
         signer_id: bob_id.clone(),
         nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, charlie_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, charlie_id.clone()]),
         }),
     };
 
-    let signed_request = create_signed_request(&bob_key, add_member_request, &env);
+    let signed_request = create_signed_request(&bob_key, add_member_request, &ctx.env);
     // This should succeed now that Bob has the ManageMembers capability
-    client.mutate(&signed_request);
+    ctx.client.mutate(&signed_request);
 
     // Verify Charlie was added
-    let members = client.members(&context_id, &0u32, &10u32);
+    let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
     assert!(
         members.contains(&charlie_id),
         "Charlie should have been added by Bob"
@@ -363,21 +316,23 @@ fn test_capability_management() {
         signer_id: alice_id.clone(),
         nonce: 2,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
+            context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::Revoke(vec![
-                &env,
+                &ctx.env,
                 (bob_id.clone(), StellarCapability::ManageMembers),
             ]),
         }),
     };
 
-    let signed_request = create_signed_request(&alice_key, revoke_request, &env);
-    client.mutate(&signed_request);
+    let signed_request = create_signed_request(&alice_key, revoke_request, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
     // Verify Bob's capabilities are gone
-    let bob_privileges = client.privileges(&context_id, &vec![&env, bob_id.clone()]);
+    let bob_privileges = ctx
+        .client
+        .privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
     log!(
-        &env,
+        &ctx.env,
         "Bob's privileges after revocation: {:?}",
         bob_privileges
     );
@@ -387,88 +342,52 @@ fn test_capability_management() {
     );
 
     // Try to add another member with Bob (should fail now)
-    let david_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let david_id = BytesN::from_array(&env, &david_key.verifying_key().to_bytes());
+    let (_david_key, david_id) = ctx.generate_key();
 
     let unauthorized_add = StellarRequest {
         signer_id: bob_id.clone(),
         nonce: 1,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, david_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, david_id.clone()]),
         }),
     };
 
-    let signed_request = create_signed_request(&bob_key, unauthorized_add, &env);
-    let result = client.try_mutate(&signed_request);
+    let signed_request = create_signed_request(&bob_key, unauthorized_add, &ctx.env);
+    let result = ctx.client.try_mutate(&signed_request);
     assert!(
         result.is_err(),
         "Bob should not be able to add members after capability revocation"
     );
 
     // Verify David was not added
-    let members = client.members(&context_id, &0u32, &10u32);
+    let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
     assert!(
         !members.contains(&david_id),
         "David should not have been added"
     );
 
-    log!(&env, "Capability management test completed successfully");
+    log!(
+        &ctx.env,
+        "Capability management test completed successfully"
+    );
 }
 
 #[test]
 fn test_application_update() {
-    let env = Env::default();
-    let contract_id = env.register(ContextContract, ());
-    let client = ContextContractClient::new(&env, &contract_id);
-
-    // Initialize contract
-    let owner = Address::generate(&env);
-    client.mock_all_auths().initialize(&owner);
-
-    // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
-    let proxy_wasm = Bytes::from_slice(&env, wasm);
-    client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
-
-    // Generate keys
-    let context_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-
-    let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
-    let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
-    let bob_id = BytesN::from_array(&env, &bob_key.verifying_key().to_bytes());
+    let ctx = TestContext::setup();
+    let (alice_key, alice_id) = ctx.generate_key();
+    let (bob_key, bob_id) = ctx.generate_key();
 
     // Create initial application
-    let initial_app = StellarApplication {
-        id: BytesN::from_array(&env, &[1u8; 32]),
-        blob: BytesN::from_array(&env, &[2u8; 32]),
-        size: 100,
-        source: "initial_app".into_val(&env),
-        metadata: Bytes::from_array(&env, &[3u8; 32]),
-    };
+    let initial_app = ctx.create_application(1);
 
     // Create context with Alice as author
-    let create_request = StellarRequest {
-        signer_id: context_id.clone(),
-        nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), initial_app.clone()),
-        }),
-    };
-
-    let signed_request = create_signed_request(&context_key, create_request, &env);
-    client.mutate(&signed_request);
+    ctx.create_context(alice_id.clone(), initial_app.clone());
 
     // Verify initial application state
-    let app = client.application(&context_id);
-    log!(&env, "Initial application: {:?}", app);
+    let app = ctx.client.application(&ctx.context_id);
+    log!(&ctx.env, "Initial application: {:?}", app);
     assert_eq!(app.id, initial_app.id, "Initial application ID mismatch");
     assert_eq!(
         app.blob, initial_app.blob,
@@ -476,31 +395,25 @@ fn test_application_update() {
     );
 
     // Create updated application
-    let updated_app = StellarApplication {
-        id: BytesN::from_array(&env, &[4u8; 32]),
-        blob: BytesN::from_array(&env, &[5u8; 32]),
-        size: 200,
-        source: "updated_app".into_val(&env),
-        metadata: Bytes::from_array(&env, &[6u8; 32]),
-    };
+    let updated_app = ctx.create_application(2);
 
     // Try unauthorized update (Bob)
     let unauthorized_update = StellarRequest {
         signer_id: bob_id.clone(),
         nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
+            context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
 
-    let signed_request = create_signed_request(&bob_key, unauthorized_update, &env);
-    let result = client.try_mutate(&signed_request);
+    let signed_request = create_signed_request(&bob_key, unauthorized_update, &ctx.env);
+    let result = ctx.client.try_mutate(&signed_request);
     assert!(result.is_err(), "Unauthorized update should fail");
 
     // Verify application hasn't changed
-    let app = client.application(&context_id);
-    log!(&env, "Application after failed update: {:?}", app);
+    let app = ctx.client.application(&ctx.context_id);
+    log!(&ctx.env, "Application after failed update: {:?}", app);
     assert_eq!(
         app.id, initial_app.id,
         "Application should not have changed"
@@ -515,17 +428,17 @@ fn test_application_update() {
         signer_id: alice_id.clone(),
         nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
+            context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
 
-    let signed_request = create_signed_request(&alice_key, authorized_update, &env);
-    client.mutate(&signed_request);
+    let signed_request = create_signed_request(&alice_key, authorized_update, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
     // Verify application has been updated
-    let app = client.application(&context_id);
-    log!(&env, "Final application state: {:?}", app);
+    let app = ctx.client.application(&ctx.context_id);
+    log!(&ctx.env, "Final application state: {:?}", app);
     assert_eq!(
         app.id, updated_app.id,
         "Application should have been updated"
@@ -535,212 +448,149 @@ fn test_application_update() {
         "Application should have been updated"
     );
 
-    log!(&env, "Application update test completed successfully");
+    log!(&ctx.env, "Application update test completed successfully");
 }
 
 #[test]
 fn test_query_endpoints() {
-    let env = Env::default();
-    let contract_id = env.register(ContextContract, ());
-    let client = ContextContractClient::new(&env, &contract_id);
-
-    // Initialize contract
-    let owner = Address::generate(&env);
-    client.mock_all_auths().initialize(&owner);
-
-    // Set up proxy code
-    let wasm = include_bytes!("../../mock_proxy/res/calimero_mock_proxy_stellar.wasm");
-    let proxy_wasm = Bytes::from_slice(&env, wasm);
-    client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
-
-    // Generate keys
-    let context_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let alice_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-    let bob_key =
-        SigningKey::from_bytes(&env.as_contract(&contract_id, || env.prng().gen::<[u8; 32]>()));
-
-    let context_id = BytesN::from_array(&env, &context_key.verifying_key().to_bytes());
-    let alice_id = BytesN::from_array(&env, &alice_key.verifying_key().to_bytes());
-    let bob_id = BytesN::from_array(&env, &bob_key.verifying_key().to_bytes());
+    let ctx = TestContext::setup();
+    let (alice_key, alice_id) = ctx.generate_key();
+    let (bob_key, bob_id) = ctx.generate_key();
 
     // Create initial application and context
-    let initial_app = StellarApplication {
-        id: BytesN::from_array(&env, &[1u8; 32]),
-        blob: BytesN::from_array(&env, &[2u8; 32]),
-        size: 100,
-        source: "initial_app".into_val(&env),
-        metadata: Bytes::from_array(&env, &[3u8; 32]),
-    };
-
-    // Create context with Alice as author
-    let create_request = StellarRequest {
-        signer_id: context_id.clone(),
-        nonce: 0,
-        kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::Add(alice_id.clone(), initial_app.clone()),
-        }),
-    };
-
-    let signed_request = create_signed_request(&context_key, create_request, &env);
-    client.mutate(&signed_request);
+    let initial_app = ctx.create_application(1);
+    ctx.create_context(alice_id.clone(), initial_app.clone());
 
     // Test initial nonces
-    let alice_nonce = client.fetch_nonce(&context_id, &alice_id);
-    assert_eq!(alice_nonce, Some(0), "Alice's initial nonce should be 0");
-    let bob_nonce = client.fetch_nonce(&context_id, &bob_id);
-    log!(&env, "Bob's nonce: {:?}", bob_nonce);
-    assert!(bob_nonce.is_none(), "Bob should not have a nonce yet"); // Changed this line
+    assert_eq!(
+        ctx.client.fetch_nonce(&ctx.context_id, &alice_id),
+        Some(0),
+        "Alice's initial nonce should be 0"
+    );
+    assert!(
+        ctx.client.fetch_nonce(&ctx.context_id, &bob_id).is_none(),
+        "Bob should not have a nonce yet"
+    );
 
-    let app_revision = client.application_revision(&context_id);
-    assert_eq!(app_revision, 0, "Initial application revision should be 0");
+    // Test initial revisions
+    assert_eq!(
+        ctx.client.application_revision(&ctx.context_id),
+        0,
+        "Initial application revision should be 0"
+    );
 
-    // Create updated application
-    let updated_app = StellarApplication {
-        id: BytesN::from_array(&env, &[4u8; 32]),
-        blob: BytesN::from_array(&env, &[5u8; 32]),
-        size: 200,
-        source: "updated_app".into_val(&env),
-        metadata: Bytes::from_array(&env, &[6u8; 32]),
-    };
     // Update application (should increment Alice's nonce)
-    let update_app_request = StellarRequest {
+    let updated_app = ctx.create_application(2);
+    let update_request = StellarRequest {
         signer_id: alice_id.clone(),
-        nonce: 0, // Using Alice's current nonce
+        nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
+            context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
+    let signed_request = create_signed_request(&alice_key, update_request, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
-    let signed_request = create_signed_request(&alice_key, update_app_request, &env);
-    client.mutate(&signed_request);
-
-    // Verify Alice's nonce increased
-    let alice_nonce_after_update = client.fetch_nonce(&context_id, &alice_id);
+    // Verify nonce and revision updates
     assert_eq!(
-        alice_nonce_after_update,
+        ctx.client.fetch_nonce(&ctx.context_id, &alice_id),
         Some(1),
         "Alice's nonce should be 1 after update"
     );
+    assert_eq!(
+        ctx.client.application_revision(&ctx.context_id),
+        1,
+        "Application revision should be 1"
+    );
 
-    // Try unauthorized application update (Bob)
+    // Test unauthorized update
     let unauthorized_update = StellarRequest {
         signer_id: bob_id.clone(),
         nonce: 0,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
+            context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::UpdateApplication(updated_app.clone()),
         }),
     };
-
-    let signed_request = create_signed_request(&bob_key, unauthorized_update, &env);
-    let result = client.try_mutate(&signed_request);
-    assert!(result.is_err(), "Unauthorized update should fail");
-
-    // Verify revision didn't change after failed update
-    let unchanged_revision = client.application_revision(&context_id);
-    assert_eq!(
-        unchanged_revision, 1,
-        "Application revision should not change after failed update"
+    let signed_request = create_signed_request(&bob_key, unauthorized_update, &ctx.env);
+    assert!(
+        ctx.client.try_mutate(&signed_request).is_err(),
+        "Unauthorized update should fail"
     );
 
-    // Try using old nonce (should fail)
-    let invalid_nonce_request = StellarRequest {
+    // Test invalid nonce scenarios
+    let old_nonce_request = StellarRequest {
         signer_id: alice_id.clone(),
         nonce: 0, // Using old nonce
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, bob_id.clone()]),
         }),
     };
-
-    let signed_request = create_signed_request(&alice_key, invalid_nonce_request, &env);
-    let result = client.try_mutate(&signed_request);
-    assert!(result.is_err(), "Request with old nonce should fail");
-
+    let signed_request = create_signed_request(&alice_key, old_nonce_request, &ctx.env);
     assert!(
-        !client.has_member(&context_id, &bob_id),
-        "Bob should not be a member"
+        ctx.client.try_mutate(&signed_request).is_err(),
+        "Request with old nonce should fail"
     );
-
-    let members_rev = client.members_revision(&context_id);
-    assert_eq!(members_rev, 0, "Members revision should be 0");
 
     // Add Bob as member
     let add_member_request = StellarRequest {
         signer_id: alice_id.clone(),
-        nonce: 1, // Using Alice's current nonce
+        nonce: 1,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
-            kind: StellarContextRequestKind::AddMembers(vec![&env, bob_id.clone()]),
+            context_id: ctx.context_id.clone(),
+            kind: StellarContextRequestKind::AddMembers(vec![&ctx.env, bob_id.clone()]),
         }),
     };
+    let signed_request = create_signed_request(&alice_key, add_member_request, &ctx.env);
+    ctx.client.mutate(&signed_request);
 
-    let signed_request = create_signed_request(&alice_key, add_member_request, &env);
-    client.mutate(&signed_request);
-
-    // Verify Bob now has a nonce
-    let bob_nonce_after_add = client.fetch_nonce(&context_id, &bob_id);
+    // Verify member status and nonces
     assert_eq!(
-        bob_nonce_after_add,
+        ctx.client.fetch_nonce(&ctx.context_id, &bob_id),
         Some(0),
         "Bob's initial nonce should be 0 after being added"
     );
-
-    // Verify Alice's nonce increased again
-    let alice_final_nonce = client.fetch_nonce(&context_id, &alice_id);
     assert_eq!(
-        alice_final_nonce,
+        ctx.client.fetch_nonce(&ctx.context_id, &alice_id),
         Some(2),
         "Alice's nonce should be 2 after adding Bob"
     );
+    assert!(
+        ctx.client.has_member(&ctx.context_id, &bob_id),
+        "Bob should be a member"
+    );
+    assert_eq!(
+        ctx.client.members_revision(&ctx.context_id),
+        1,
+        "Members revision should be 1"
+    );
 
-    // Try request with future nonce (should fail)
+    // Test future nonce
     let future_nonce_request = StellarRequest {
         signer_id: bob_id.clone(),
-        nonce: 5, // Future nonce
+        nonce: 5,
         kind: StellarRequestKind::Context(StellarContextRequest {
-            context_id: context_id.clone(),
+            context_id: ctx.context_id.clone(),
             kind: StellarContextRequestKind::AddMembers(vec![
-                &env,
-                BytesN::from_array(&env, &[0u8; 32]),
+                &ctx.env,
+                BytesN::from_array(&ctx.env, &[0u8; 32]),
             ]),
         }),
     };
-
-    let signed_request = create_signed_request(&bob_key, future_nonce_request, &env);
-    let result = client.try_mutate(&signed_request);
-    assert!(result.is_err(), "Request with future nonce should fail");
-
-    // Test fetch_nonce
-    let alice_nonce = client.fetch_nonce(&context_id, &alice_id);
-    assert!(alice_nonce.is_some(), "Alice should have a nonce");
-    let bob_nonce = client.fetch_nonce(&context_id, &bob_id);
-    assert_eq!(bob_nonce, Some(0), "Bob should not have a nonce");
-
-    // Test initial application_revision
-    let app_revision = client.application_revision(&context_id);
-    assert_eq!(app_revision, 1, "Application revision should be 1");
-
-    // Test proxy_contract
-    let proxy_address = client.proxy_contract(&context_id);
+    let signed_request = create_signed_request(&bob_key, future_nonce_request, &ctx.env);
     assert!(
-        proxy_address.to_string().len() > 0,
+        ctx.client.try_mutate(&signed_request).is_err(),
+        "Request with future nonce should fail"
+    );
+
+    // Test proxy contract
+    let proxy_address = ctx.client.proxy_contract(&ctx.context_id);
+    assert!(
+        !proxy_address.to_string().is_empty(),
         "Proxy address should be set"
     );
 
-    // Test has_member
-    assert!(
-        client.has_member(&context_id, &alice_id),
-        "Alice should be a member"
-    );
-
-    // Test members_revision
-    let members_rev = client.members_revision(&context_id);
-    assert_eq!(members_rev, 1, "Members revision should be 1");
-
-    log!(&env, "Query endpoints test completed successfully");
+    log!(&ctx.env, "Query endpoints test completed successfully");
 }

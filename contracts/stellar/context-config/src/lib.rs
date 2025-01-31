@@ -22,6 +22,7 @@ pub struct ContextConfigs {
     pub contexts: Map<BytesN<32>, Context>,
     pub proxy_code: OptionalBytes,
     pub owner: Address,
+    pub ledger_id: Address,
 }
 
 // Storage types
@@ -63,7 +64,7 @@ pub struct ContextContract;
 
 #[contractimpl]
 impl ContextContract {
-    pub fn initialize(env: Env, owner: Address) -> Result<(), StellarError> {
+    pub fn __constructor(env: Env, owner: Address, ledger_id: Address) -> Result<(), StellarError> {
         // Require authorization from deployer
         owner.require_auth();
 
@@ -75,6 +76,7 @@ impl ContextContract {
             contexts: Map::new(&env),
             proxy_code: OptionalBytes::None,
             owner,
+            ledger_id,
         };
 
         env.storage()

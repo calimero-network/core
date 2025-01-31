@@ -1144,6 +1144,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-context-proxy-stellar"
+version = "0.1.0"
+dependencies = [
+ "calimero-context-config",
+ "ed25519-dalek",
+ "soroban-env-common",
+ "soroban-sdk",
+ "stellar-xdr",
+]
+
+[[package]]
 name = "calimero-crypto"
 version = "0.1.0"
 dependencies = [
@@ -1166,7 +1177,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-mock-proxy-stellar"
+name = "calimero-mock-external-stellar"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
