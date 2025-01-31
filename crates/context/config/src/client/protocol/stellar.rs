@@ -113,12 +113,12 @@ impl<'a> StellarTransport<'a> {
         for (network_id, network_config) in &config.networks {
             let keypair: Keypair = Keypair::from_secret(&network_config.secret_key).unwrap();
 
-            const OPTIONS: Options = Options {
+            let options: Options = Options {
                 allow_http: None,
                 timeout: Some(1000),
                 headers: None,
             };
-            let server = Server::new(network_config.rpc_url.as_str(), OPTIONS).unwrap();
+            let server = Server::new(network_config.rpc_url.as_str(), options).unwrap();
 
             let _ignored = networks.insert(
                 network_id.clone(),
