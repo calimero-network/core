@@ -110,6 +110,3 @@ impl ContextContract {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod test;

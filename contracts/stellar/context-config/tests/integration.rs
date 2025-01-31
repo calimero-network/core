@@ -6,7 +6,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal};
 
-use crate::{ContextContract, ContextContractClient};
+use calimero_context_config_stellar::{ContextContract, ContextContractClient};
+
+use std::fs;
 
 fn create_signed_request(
     signer_key: &SigningKey,
@@ -45,8 +47,9 @@ impl<'a> TestContext<'a> {
         let client = ContextContractClient::new(&env, &contract_id);
 
         // Set up proxy code
-        let wasm = include_bytes!("../../../context-proxy/res/calimero_context_proxy_stellar.wasm");
-        let proxy_wasm = Bytes::from_slice(&env, wasm);
+        let proxy_wasm = fs::read("../context-proxy/res/calimero_context_proxy_stellar.wasm")
+            .expect("Failed to read proxy WASM file");
+        let proxy_wasm = Bytes::from_slice(&env, &proxy_wasm);
         client.mock_all_auths().set_proxy_code(&proxy_wasm, &owner);
 
         // Generate context key
