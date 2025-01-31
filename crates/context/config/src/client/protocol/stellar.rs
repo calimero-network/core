@@ -20,8 +20,8 @@ use soroban_client::soroban_rpc::{
 use soroban_client::transaction::{TransactionBehavior, TransactionBuilder};
 use soroban_client::transaction_builder::TransactionBuilderBehavior;
 use soroban_client::xdr::ScVal;
-use soroban_sdk::xdr::FromXdr;
-use soroban_sdk::{Bytes, Env, TryIntoVal, Val};
+use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::Env;
 use stellar_baselib::xdr::{self, ReadXdr};
 use thiserror::Error;
 use url::Url;
@@ -30,7 +30,6 @@ use super::Protocol;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
-use crate::stellar::stellar_types::StellarSignedRequest;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Stellar {}
@@ -188,12 +187,24 @@ impl ProtocolTransport for StellarTransport<'_> {
             ));
         };
 
+        let mut args = None;
+
+        if !payload.is_empty() {
+            let cursor = Cursor::new(payload);
+            let mut limited = xdr::Limited::new(cursor, xdr::Limits::none());
+            let sc_val = ScVal::read_xdr(&mut limited).map_err(|_| StellarError::Custom {
+                operation: ErrorOperation::Query,
+                reason: "Failed to decode ScVal from payload".to_owned(),
+            })?;
+            args = Some(vec![sc_val]);
+        }
+
         let contract: Contracts = Contracts::new(&request.contract_id)
             .map_err(|_| StellarError::InvalidContractId(request.contract_id.into_owned()))?;
 
         match request.operation {
-            Operation::Read { method } => network.query(&contract, &method, payload).await,
-            Operation::Write { method } => network.mutate(&contract, &method, payload).await,
+            Operation::Read { method } => network.query(&contract, &method, args).await,
+            Operation::Write { method } => network.mutate(&contract, &method, args).await,
         }
     }
 }
@@ -203,7 +214,7 @@ impl Network {
         &self,
         contract: &Contracts,
         method: &str,
-        payload: Vec<u8>,
+        args: Option<Vec<ScVal>>,
     ) -> Result<Vec<u8>, StellarError> {
         let account = self
             .client
@@ -215,23 +226,6 @@ impl Network {
             })?;
 
         let source_account = Rc::new(RefCell::new(account));
-
-        let mut args = None;
-
-        if !payload.is_empty() {
-            let env = Env::default();
-            let env_bytes = Bytes::from_slice(&env, &payload);
-            let val = Val::from_xdr(&env, &env_bytes).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: "Failed to convert to ScVal".to_owned(),
-            })?;
-
-            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: "Failed to convert to ScVal".to_owned(),
-            })?;
-            args = Some(vec![sc_val]);
-        }
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
@@ -258,14 +252,14 @@ impl Network {
                 let cursor = Cursor::new(xdr_bytes);
                 let mut limited = xdr::Limited::new(cursor, xdr::Limits::none());
                 match ScVal::read_xdr(&mut limited) {
-                    Ok(ScVal::Bytes(bytes)) => Ok(bytes.into()),
-                    Ok(_) => Err(StellarError::Custom {
-                        operation: ErrorOperation::Query,
-                        reason: "Unexpected XDR response type; expected ScVal::Bytes".to_owned(),
-                    }),
+                    Ok(sc_val) => {
+                        let env = Env::default();
+                        let bytes = sc_val.to_xdr(&env).to_alloc_vec();
+                        Ok(bytes)
+                    }
                     Err(_) => Err(StellarError::Custom {
                         operation: ErrorOperation::Query,
-                        reason: "Failed to parse XDR type; expected ScVal::Bytes".to_owned(),
+                        reason: "Failed to parse XDR type".to_owned(),
                     }),
                 }
             }
@@ -280,7 +274,7 @@ impl Network {
         &self,
         contract: &Contracts,
         method: &str,
-        payload: Vec<u8>,
+        args: Option<Vec<ScVal>>,
     ) -> Result<Vec<u8>, StellarError> {
         let account = self
             .client
@@ -292,31 +286,6 @@ impl Network {
             })?;
 
         let source_account = Rc::new(RefCell::new(account));
-
-        let mut args = None;
-
-        if !payload.is_empty() {
-            let env = Env::default();
-            let env_bytes = Bytes::from_slice(&env, &payload);
-            let signed_request =
-                StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
-                    StellarError::Custom {
-                        operation: ErrorOperation::Query,
-                        reason: "Failed to deserialize signed request".to_owned(),
-                    }
-                })?;
-            let val: Val = signed_request
-                .try_into_val(&env)
-                .map_err(|_| StellarError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: "Failed to convert to Val".to_owned(),
-                })?;
-            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: "Failed to convert to ScVal".to_owned(),
-            })?;
-            args = Some(vec![sc_val]);
-        }
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
             .fee(10000u32)
@@ -401,12 +370,13 @@ impl Network {
         };
 
         match result.flatten() {
-            Some(ScVal::Bytes(bytes)) => Ok(bytes.into()),
-            Some(ScVal::Void) => Ok(vec![]),
-            Some(other) => Err(StellarError::Custom {
-                operation: ErrorOperation::Mutate,
-                reason: format!("Unexpected return type: {:?}", other),
-            }),
+            Some(sc_val) => match sc_val {
+                ScVal::Void => Ok(vec![]),
+                other => {
+                    let env = Env::default();
+                    Ok(other.to_xdr(&env).to_alloc_vec())
+                }
+            },
             None => Err(StellarError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: "No value returned".to_owned(),
