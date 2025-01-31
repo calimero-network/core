@@ -298,7 +298,7 @@ impl InitCommand {
             let _ignored = client_params.insert(
                 "stellar".to_owned(),
                 ClientConfigParams {
-                    network: "Test SDF Network ; September 2015".into(),
+                    network: "testnet".into(),
                     protocol: "stellar".into(),
                     contract_id: "CDOQVQE4UARLUXZHOT5YVKTE4UV4CT5PK6UXYOHILWQNSSO4POGJF6PS"
                         .parse()?,
@@ -311,7 +311,7 @@ impl InitCommand {
             };
 
             let _ignored = local_config.signers.insert(
-                "Public Global Stellar Network ; September 2015".to_owned(),
+                "mainnet".to_owned(),
                 generate_local_signer(
                     "https://soroban.stellar.org".parse()?,
                     ConfigProtocol::Stellar,
@@ -319,7 +319,7 @@ impl InitCommand {
             );
 
             let _ignored = local_config.signers.insert(
-                "Test SDF Network ; September 2015".to_owned(),
+                "testnet".to_owned(),
                 generate_local_signer(
                     "https://soroban-testnet.stellar.org".parse()?,
                     ConfigProtocol::Stellar,

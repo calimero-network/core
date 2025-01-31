@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use soroban_client::contract::{ContractBehavior, Contracts};
 use soroban_client::error::Error;
 use soroban_client::keypair::{Keypair, KeypairBehavior};
+use soroban_client::network::{NetworkPassphrase, Networks};
 use soroban_client::server::{Options, Server};
 use soroban_client::soroban_rpc::{
     GetTransactionResponse, RawSimulateHostFunctionResult, RawSimulateTransactionResponse,
@@ -120,12 +121,18 @@ impl<'a> StellarTransport<'a> {
             };
             let server = Server::new(network_config.rpc_url.as_str(), options).unwrap();
 
+            let network = match network_config.network.as_str() {
+                "mainnet" => Networks::public(),
+                "testnet" => Networks::testnet(),
+                _ => Networks::testnet(),
+            };
+
             let _ignored = networks.insert(
                 network_id.clone(),
                 Network {
                     client: Arc::new(server),
                     keypair,
-                    network: network_config.network.clone(),
+                    network: network.to_string(),
                 },
             );
         }
@@ -225,8 +232,13 @@ impl Network {
             })?;
             args = Some(vec![sc_val]);
         }
+        let network = match self.network.as_str() {
+            "mainnet" => Networks::public(),
+            "testnet" => Networks::testnet(),
+            _ => Networks::testnet(),
+        };
 
-        let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
+        let transaction = TransactionBuilder::new(source_account, network, None)
             .fee(10000u32)
             .add_operation(contract.call(method, args))
             .set_timeout(15)
