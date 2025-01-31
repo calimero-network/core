@@ -20,8 +20,8 @@ use soroban_client::soroban_rpc::{
 use soroban_client::transaction::{TransactionBehavior, TransactionBuilder};
 use soroban_client::transaction_builder::TransactionBuilderBehavior;
 use soroban_client::xdr::ScVal;
-use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::Env;
+use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::{Bytes, Env, TryIntoVal, Val};
 use stellar_baselib::xdr::{self, ReadXdr};
 use thiserror::Error;
 use url::Url;
@@ -30,6 +30,7 @@ use super::Protocol;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
+use crate::stellar::stellar_types::StellarSignedRequest;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Stellar {}
@@ -190,11 +191,24 @@ impl ProtocolTransport for StellarTransport<'_> {
         let mut args = None;
 
         if !payload.is_empty() {
-            let cursor = Cursor::new(payload);
-            let mut limited = xdr::Limited::new(cursor, xdr::Limits::none());
-            let sc_val = ScVal::read_xdr(&mut limited).map_err(|_| StellarError::Custom {
+            let env = Env::default();
+            let env_bytes = Bytes::from_slice(&env, &payload);
+            let signed_request =
+                StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
+                    StellarError::Custom {
+                        operation: ErrorOperation::Query,
+                        reason: "Failed to deserialize signed request".to_owned(),
+                    }
+                })?;
+            let val: Val = signed_request
+                .try_into_val(&env)
+                .map_err(|_| StellarError::Custom {
+                    operation: ErrorOperation::Query,
+                    reason: "Failed to convert to Val".to_owned(),
+                })?;
+            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
                 operation: ErrorOperation::Query,
-                reason: "Failed to decode ScVal from payload".to_owned(),
+                reason: "Failed to convert to ScVal".to_owned(),
             })?;
             args = Some(vec![sc_val]);
         }
