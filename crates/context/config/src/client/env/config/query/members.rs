@@ -16,9 +16,8 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprBytes};
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::stellar::stellar_repr::StellarRepr;
-use crate::repr::ReprTransmute;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -139,17 +138,17 @@ impl Method<Stellar> for MembersRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let mut encoded = Vec::new();
-        
+
         // Encode context_id (BytesN<32>)
         let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
         encoded.extend_from_slice(&context_raw);
-        
+
         // Encode offset (u32)
         encoded.extend_from_slice(&self.offset.to_le_bytes());
-        
+
         // Encode length (u32)
         encoded.extend_from_slice(&self.length.to_le_bytes());
-        
+
         Ok(encoded)
     }
 
