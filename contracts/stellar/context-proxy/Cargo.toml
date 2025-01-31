@@ -7,11 +7,11 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-calimero-context-config = { path = "../../../crates/context/config", features = ["stellar"] }
 ed25519-dalek = { version = "2.0.0", default-features = false, features = ["hazmat"] }
 soroban-sdk = { workspace = true, features = ["alloc"] }
 soroban-env-common = { workspace = true }
 stellar-xdr = { workspace = true, default-features = false }
+calimero-context-config = { workspace = true, features = ["stellar"] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

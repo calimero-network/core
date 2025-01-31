@@ -52,7 +52,7 @@ impl ContextProxyContract {
         proposal: StellarProposal,
     ) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
         // Check membership and validate proposal
-        if !Self::check_member(env, &proposal.author_id)? {
+        if !Self::is_member(env, &proposal.author_id)? {
             return Err(StellarProxyError::Unauthorized);
         }
 
@@ -133,7 +133,7 @@ impl ContextProxyContract {
         env: &Env,
         approval: StellarProposalApprovalWithSigner,
     ) -> Result<Option<StellarProposalWithApprovals>, StellarProxyError> {
-        if !Self::check_member(env, &approval.signer_id)? {
+        if !Self::is_member(env, &approval.signer_id)? {
             return Err(StellarProxyError::Unauthorized);
         }
 
@@ -165,19 +165,19 @@ impl ContextProxyContract {
 
         if should_execute {
             Self::execute_proposal(env, &proposal_id)?;
-            Ok(None)
-        } else {
-            Ok(Some(StellarProposalWithApprovals {
-                proposal_id,
-                num_approvals: approvals.len(),
-            }))
+            return Ok(None);
         }
+
+        Ok(Some(StellarProposalWithApprovals {
+            proposal_id,
+            num_approvals: approvals.len(),
+        }))
     }
 
     /// Verifies if an address is a member of the context
     /// # Errors
     /// Returns error from context contract if verification fails
-    fn check_member(env: &Env, signer_id: &BytesN<32>) -> Result<bool, StellarProxyError> {
+    fn is_member(env: &Env, signer_id: &BytesN<32>) -> Result<bool, StellarProxyError> {
         let state = Self::get_state(env);
 
         let args = vec![env, state.context_id.into_val(env), signer_id.into_val(env)];
