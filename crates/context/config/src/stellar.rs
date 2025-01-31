@@ -1,4 +1,7 @@
-use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contracterror, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal, String,
+    Symbol, Val, Vec,
+};
 use stellar_types::FromWithEnv;
 
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
@@ -79,12 +82,19 @@ impl FromWithEnv<ProposalAction> for StellarProposalAction {
                 method_name,
                 args,
                 deposit,
-            } => StellarProposalAction::ExternalFunctionCall(
-                Address::from_string(&String::from_str(&env, &receiver_id)),
-                String::from_str(&env, &method_name),
-                String::from_str(&env, &args),
-                deposit.try_into().unwrap(),
-            ),
+            } => {
+                let mut vec_args = Vec::new(env);
+                vec_args.push_back(String::from_str(env, &args).into());
+
+                let symbol = symbol_short!("TODO_ALEN");
+
+                StellarProposalAction::ExternalFunctionCall(
+                    Address::from_string(&String::from_str(env, &receiver_id)),
+                    symbol,
+                    vec_args,
+                    deposit.try_into().unwrap(),
+                )
+            }
             ProposalAction::Transfer {
                 receiver_id,
                 amount,

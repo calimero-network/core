@@ -1,14 +1,13 @@
+use std::fs;
+
 use calimero_context_config::stellar::stellar_types::{
     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
     StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
+use calimero_context_config_stellar::{ContextContract, ContextContractClient};
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal};
-
-use calimero_context_config_stellar::{ContextContract, ContextContractClient};
-
-use std::fs;
 
 fn create_signed_request(
     signer_key: &SigningKey,
