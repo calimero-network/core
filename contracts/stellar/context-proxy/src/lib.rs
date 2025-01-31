@@ -90,5 +90,3 @@ impl ContextProxyContract {
     }
 }
 
-// #[cfg(test)]
-// mod test;
