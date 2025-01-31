@@ -23,7 +23,7 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-soroban-sdk = { workspace = true, optional = true }
+soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
