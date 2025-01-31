@@ -1,5 +1,11 @@
+use std::io::Cursor;
+
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use candid::{Decode, Encode, Principal};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal};
+use soroban_sdk::{Address, Env, TryFromVal};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
@@ -90,8 +96,24 @@ impl Method<Stellar> for ProxyContractRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value = String::from_utf8(response)
-            .map_err(|e| eyre::eyre!("Failed to decode proxy contract address: {}", e))?;
-        Ok(value)
+        let base64_str = BASE64.encode(&response);
+
+        let xdr_bytes = BASE64
+            .decode(base64_str)
+            .map_err(|e| format!("Failed to decode base64: {}", e))
+            .unwrap();
+
+        let cursor = Cursor::new(xdr_bytes);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| format!("Failed to read XDR: {}", e))
+            .unwrap();
+
+        let env = Env::default();
+        match Address::try_from_val(&env, &sc_val) {
+            Ok(address) => Ok(address.to_string().to_string()),
+            Err(e) => return Err(eyre::eyre!("failed to convert to address: {:?}", e)),
+        }
     }
 }
