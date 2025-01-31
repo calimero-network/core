@@ -2,7 +2,7 @@ use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, Env, Stri
 use stellar_types::FromWithEnv;
 
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
-use crate::types::{ContextIdentity, ProposalId};
+use crate::types::ProposalId;
 use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 
 pub mod stellar_repr;

@@ -3,7 +3,7 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec as StdVec;
 
 use bs58;
-use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 
 use super::StellarProxyMutateRequest;
