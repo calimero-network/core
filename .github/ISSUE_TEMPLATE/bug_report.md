@@ -30,7 +30,7 @@ echo "CPU Architecture: $(uname -m)"
 echo "Processor Model: $(grep -m 1 'model name' /proc/cpuinfo | cut -d: -f2-)"
 ```
 
-- Browser [e.g. chrome , safari]
+- Browser [e.g. chrome , safari] (Optional)
 
 ## How are you running the node?
 
