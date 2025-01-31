@@ -8,18 +8,15 @@ use calimero_context_config::stellar::{
     StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner,
     StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest,
 };
+// Local imports
+use calimero_context_proxy_stellar::ContextProxyContractClient;
 // Cryptographic imports
 use ed25519_dalek::{Signer, SigningKey};
 // Soroban SDK imports
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{
-    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
-};
-
-// Local imports
-use calimero_context_proxy_stellar::ContextProxyContractClient;
+use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
 
 // Import the context contract
 mod context_contract {
@@ -170,7 +167,9 @@ fn deploy_mock_external<'a>(
     let mock_owner = Address::generate(env);
     let mock_external_wasm = fs::read("./mock_external/res/calimero_mock_external_stellar.wasm")
         .expect("Failed to read mock external WASM file");
-    let mock_external_hash = env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &mock_external_wasm));
+    let mock_external_hash = env
+        .deployer()
+        .upload_contract_wasm(Bytes::from_slice(&env, &mock_external_wasm));
 
     let salt = BytesN::<32>::from_array(env, &[0; 32]);
     let mock_external_address = env
@@ -201,7 +200,9 @@ fn setup<'a>() -> ProxyTestContext<'a> {
     let context_owner = Address::generate(&env);
     let wasm = fs::read("../context-config/res/calimero_context_config_stellar.wasm")
         .expect("Failed to read context config WASM file");
-    let contract_hash = env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &wasm));
+    let contract_hash = env
+        .deployer()
+        .upload_contract_wasm(Bytes::from_slice(&env, &wasm));
 
     let salt = BytesN::<32>::from_array(&env, &[0; 32]);
     let context_contract_address = env
@@ -343,7 +344,7 @@ fn submit_approval(
 }
 
 /// Tests proposal execution for token transfer functionality
-/// 
+///
 /// This test verifies:
 /// - Proposal creation for token transfer
 /// - Multi-signature approval process
@@ -421,13 +422,13 @@ fn test_execute_proposal_transfer() {
 }
 
 /// Tests proposal execution for changing the required number of approvals
-/// 
+///
 /// This test verifies:
 /// - Proposal creation for changing num_approvals
 /// - Execution of approval change
 /// - Verification of new approval requirement with a subsequent proposal
 /// - Storage updates with new approval requirement
-/// 
+///
 /// Test flow:
 /// 1. Create and execute proposal to change num_approvals to 2
 /// 2. Verify change by creating a new proposal
@@ -532,7 +533,7 @@ fn test_execute_proposal_set_num_approvals() {
 }
 
 /// Tests proposal execution for changing the active proposals limit
-/// 
+///
 /// This test verifies:
 /// - Proposal creation for changing active proposals limit
 /// - Multi-signature approval process
@@ -594,7 +595,7 @@ fn test_execute_proposal_set_active_proposals_limit() {
 }
 
 /// Tests the execution of a proposal with an external contract call with deposit
-/// 
+///
 /// This test verifies:
 /// - Proposal creation and approval process
 /// - External contract interaction with deposit
@@ -698,7 +699,7 @@ fn test_execute_proposal_external_call_deposit() {
 }
 
 /// Tests proposal execution for an external contract call without deposit
-/// 
+///
 /// This test verifies:
 /// - Proposal creation and approval process
 /// - External contract interaction without token transfer
@@ -770,13 +771,13 @@ fn test_execute_proposal_external_call_no_deposit() {
 }
 
 /// Tests proposal limits and deletion functionality
-/// 
+///
 /// This test verifies:
 /// - Setting proposal limits
 /// - Enforcing maximum proposal count per author
 /// - Proposal deletion
 /// - Creating new proposals after deletion
-/// 
+///
 /// Test flow:
 /// 1. Set proposal limit to 2
 /// 2. Create two proposals successfully
