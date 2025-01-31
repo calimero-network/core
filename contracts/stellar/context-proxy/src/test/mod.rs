@@ -81,6 +81,77 @@ fn create_context_signed_request(
     }
 }
 
+fn add_members(
+    env: &Env,
+    context_client: &context_contract::Client,
+    context_id: &BytesN<32>,
+    context_author_id: &BytesN<32>,
+    context_author_sk: &SigningKey,
+    members: Vec<BytesN<32>>,
+) {
+    let add_members_request = context_contract::StellarRequest {
+        signer_id: context_author_id.clone(),
+        nonce: 0,
+        kind: context_contract::StellarRequestKind::Context(
+            context_contract::StellarContextRequest {
+                context_id: context_id.clone(),
+                kind: context_contract::StellarContextRequestKind::AddMembers(members),
+            },
+        ),
+    };
+    let add_members_req = ContextSignedRequestPayload::Context(add_members_request);
+
+    // Create signed request
+    let request_xdr = add_members_req.clone().to_xdr(env);
+    let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
+    let signature = context_author_sk.sign(&message_to_sign);
+
+    let signed_add_members = ContextSignedRequest {
+        payload: add_members_req,
+        signature: BytesN::from_array(env, &signature.to_bytes()),
+    };
+
+    context_client.mutate(&signed_add_members);
+}
+
+fn create_test_proposal(
+    env: &Env,
+    contract_address: &Address,
+    author_id: &BytesN<32>,
+    actions: Vec<StellarProposalAction>,
+) -> (BytesN<32>, StellarProposal) {
+    let proposal_id: BytesN<32> = env.as_contract(contract_address, || env.prng().gen());
+
+    let proposal = StellarProposal {
+        id: proposal_id.clone(),
+        author_id: author_id.clone(),
+        actions,
+    };
+
+    (proposal_id, proposal)
+}
+
+fn deploy_mock_external<'a>(
+    env: &'a Env,
+    xlm_token_address: &Address,
+) -> (Address, mock_external::Client<'a>) {
+    let mock_owner = Address::generate(env);
+    let mock_external_wasm =
+        include_bytes!("../../mock_external/res/calimero_mock_external_stellar.wasm");
+    let mock_external_hash = env.deployer().upload_contract_wasm(*mock_external_wasm);
+
+    let salt = BytesN::<32>::from_array(env, &[0; 32]);
+    let mock_external_address = env
+        .deployer()
+        .with_address(mock_owner, salt)
+        .deploy_v2(mock_external_hash, (xlm_token_address,));
+
+    let mock_external_client = mock_external::Client::new(env, &mock_external_address);
+
+    (mock_external_address, mock_external_client)
+}
+
+
 fn setup<'a>() -> ProxyTestContext<'a> {
     let env = Env::default();
     env.mock_all_auths();
@@ -778,74 +849,4 @@ fn test_proposal_limits_and_deletion() {
         2,
         "Should have exactly 2 active proposals"
     );
-}
-
-fn add_members(
-    env: &Env,
-    context_client: &context_contract::Client,
-    context_id: &BytesN<32>,
-    context_author_id: &BytesN<32>,
-    context_author_sk: &SigningKey,
-    members: Vec<BytesN<32>>,
-) {
-    let add_members_request = context_contract::StellarRequest {
-        signer_id: context_author_id.clone(),
-        nonce: 0,
-        kind: context_contract::StellarRequestKind::Context(
-            context_contract::StellarContextRequest {
-                context_id: context_id.clone(),
-                kind: context_contract::StellarContextRequestKind::AddMembers(members),
-            },
-        ),
-    };
-    let add_members_req = ContextSignedRequestPayload::Context(add_members_request);
-
-    // Create signed request
-    let request_xdr = add_members_req.clone().to_xdr(env);
-    let message_to_sign: StdVec<u8> = request_xdr.into_iter().collect();
-    let signature = context_author_sk.sign(&message_to_sign);
-
-    let signed_add_members = ContextSignedRequest {
-        payload: add_members_req,
-        signature: BytesN::from_array(env, &signature.to_bytes()),
-    };
-
-    context_client.mutate(&signed_add_members);
-}
-
-fn create_test_proposal(
-    env: &Env,
-    contract_address: &Address,
-    author_id: &BytesN<32>,
-    actions: Vec<StellarProposalAction>,
-) -> (BytesN<32>, StellarProposal) {
-    let proposal_id: BytesN<32> = env.as_contract(contract_address, || env.prng().gen());
-
-    let proposal = StellarProposal {
-        id: proposal_id.clone(),
-        author_id: author_id.clone(),
-        actions,
-    };
-
-    (proposal_id, proposal)
-}
-
-fn deploy_mock_external<'a>(
-    env: &'a Env,
-    xlm_token_address: &Address,
-) -> (Address, mock_external::Client<'a>) {
-    let mock_owner = Address::generate(env);
-    let mock_external_wasm =
-        include_bytes!("../../mock_external/res/calimero_mock_external_stellar.wasm");
-    let mock_external_hash = env.deployer().upload_contract_wasm(*mock_external_wasm);
-
-    let salt = BytesN::<32>::from_array(env, &[0; 32]);
-    let mock_external_address = env
-        .deployer()
-        .with_address(mock_owner, salt)
-        .deploy_v2(mock_external_hash, (xlm_token_address,));
-
-    let mock_external_client = mock_external::Client::new(env, &mock_external_address);
-
-    (mock_external_address, mock_external_client)
 }

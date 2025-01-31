@@ -12,6 +12,12 @@ use crate::{ContextProxyContract, ContextProxyContractArgs, ContextProxyContract
 
 #[contractimpl]
 impl ContextProxyContract {
+    /// Processes a signed mutation request for the proxy contract
+    /// # Arguments
+    /// * `signed_request` - The signed request containing the mutation action
+    /// # Errors
+    /// * Returns Unauthorized if signature verification fails
+    /// * Returns InvalidAction for invalid request payload
     pub fn mutate(
         env: Env,
         signed_request: StellarSignedRequest,
@@ -34,6 +40,13 @@ impl ContextProxyContract {
         }
     }
 
+    /// Creates a new proposal in the contract
+    /// # Arguments
+    /// * `proposal` - The proposal to be created
+    /// # Errors
+    /// * Returns Unauthorized if author is not a member
+    /// * Returns InvalidAction if proposal has no actions
+    /// * Returns TooManyActiveProposals if author exceeds proposal limit
     fn internal_create_proposal(
         env: &Env,
         proposal: StellarProposal,
@@ -109,6 +122,13 @@ impl ContextProxyContract {
         )
     }
 
+    /// Approves an existing proposal
+    /// # Arguments
+    /// * `approval` - The approval details including proposal ID and signer
+    /// # Errors
+    /// * Returns Unauthorized if signer is not a member
+    /// * Returns ProposalNotFound if proposal doesn't exist
+    /// * Returns ProposalAlreadyApproved if signer already approved
     fn internal_approve_proposal(
         env: &Env,
         approval: StellarProposalApprovalWithSigner,
@@ -154,6 +174,9 @@ impl ContextProxyContract {
         }
     }
 
+    /// Verifies if an address is a member of the context
+    /// # Errors
+    /// Returns error from context contract if verification fails
     fn check_member(env: &Env, signer_id: &BytesN<32>) -> Result<bool, StellarProxyError> {
         let state = Self::get_state(env);
 
@@ -168,6 +191,9 @@ impl ContextProxyContract {
         Ok(has_member)
     }
 
+    /// Validates a single proposal action
+    /// # Errors
+    /// Returns InvalidAction if the action parameters are invalid
     fn validate_proposal_action(action: &StellarProposalAction) -> Result<(), StellarProxyError> {
         match action {
             StellarProposalAction::ExternalFunctionCall(_, method_name, _, deposit)
@@ -188,6 +214,7 @@ impl ContextProxyContract {
         }
     }
 
+    /// Removes a proposal and updates related state
     fn remove_proposal(env: &Env, proposal_id: &BytesN<32>) {
         let mut state = Self::get_state(env);
 
@@ -211,6 +238,10 @@ impl ContextProxyContract {
         }
     }
 
+    /// Executes a proposal that has received sufficient approvals
+    /// # Errors
+    /// * Returns ProposalNotFound if proposal doesn't exist
+    /// * Returns InsufficientBalance for failed token transfers
     fn execute_proposal(env: &Env, proposal_id: &BytesN<32>) -> Result<(), StellarProxyError> {
         let state = Self::get_state(env);
         let proposal = state
@@ -230,7 +261,7 @@ impl ContextProxyContract {
                     let current_address = env.current_contract_address();
                     current_address.require_auth();
 
-                    // If there's a deposit, handle the XLM transfer first
+                    // Handle deposit if present
                     if deposit > 0 {
                         let token_client = TokenClient::new(env, &state.ledger_id);
                         let contract_address = env.current_contract_address();
@@ -252,23 +283,21 @@ impl ContextProxyContract {
                         );
                     }
 
-                    // Ignoring the return value completely
+                    // Execute external call
                     env.invoke_contract::<Val>(&receiver_id, &method_name, args);
 
-                    // If there's a deposit, handle the XLM transfer first
+                    // Handle post-call deposit if needed
                     if deposit > 0 {
                         let token_client = TokenClient::new(env, &state.ledger_id);
                         let contract_address = env.current_contract_address();
 
-                        // Check balance and transfer
+                        // Verify balance and approve transfer
                         let balance = token_client.balance(&contract_address);
                         if balance < deposit {
                             return Err(StellarProxyError::InsufficientBalance);
                         }
 
-                        // Get current ledger
                         let current_ledger = env.ledger().sequence();
-                        // Set expiration to some blocks in the future
                         let expiration_ledger = current_ledger + 1;
                         token_client.approve(
                             &contract_address,

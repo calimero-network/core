@@ -6,6 +6,12 @@ use crate::{
 
 #[contractimpl]
 impl ContextProxyContract {
+    /// Upgrades the proxy contract with new WASM code
+    /// # Arguments
+    /// * `wasm_hash` - Hash of the new WASM code to upgrade to
+    /// * `context_address` - Address of the context configuration contract
+    /// # Errors
+    /// * Returns Unauthorized if caller is not the context configuration contract
     pub fn upgrade(
         env: Env,
         wasm_hash: BytesN<32>,
