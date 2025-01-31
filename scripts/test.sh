@@ -15,5 +15,7 @@ cd "$(dirname $0)"
 ../contracts/icp/context-config/build.sh
 ../contracts/icp/context-proxy/build_contracts.sh
 ../contracts/stellar/context-config/build_all_contracts.sh
+../contracts/stellar/context-config/build.sh
+../contracts/stellar/context-proxy/build_all_contracts.sh
 # Run cargo test
 cargo test

@@ -1,5 +1,8 @@
 extern crate alloc;
+extern crate std;
+
 use alloc::vec::Vec as StdVec;
+use std::fs;
 
 use calimero_context_config::stellar::{
     StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner,
@@ -12,23 +15,23 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryIntoVal, Val, Vec,
+    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 // Local imports
-use crate::ContextProxyContractClient;
+use calimero_context_proxy_stellar::ContextProxyContractClient;
 
 // Import the context contract
 mod context_contract {
     soroban_sdk::contractimport!(
-        file = "/Users/alen/www/calimero/core/contracts/stellar/context-config/res/calimero_context_config_stellar.wasm"
+        file = "../context-config/res/calimero_context_config_stellar.wasm"
     );
 }
 
 // Import mock external contract
 mod mock_external {
     soroban_sdk::contractimport!(
-        file = "/Users/alen/www/calimero/core/contracts/stellar/context-proxy/mock_external/res/calimero_mock_external_stellar.wasm"
+        file = "../context-proxy/mock_external/res/calimero_mock_external_stellar.wasm"
     );
 }
 
@@ -44,6 +47,7 @@ use context_contract::{
     StellarSignedRequestPayload as ContextSignedRequestPayload,
 };
 
+/// Test context structure holding all necessary components for proxy contract tests
 struct ProxyTestContext<'a> {
     env: Env,
     proxy_contract: Address,
@@ -57,6 +61,11 @@ struct ProxyTestContext<'a> {
     xlm_token_address: Address,
 }
 
+/// Creates a signed request for proxy contract operations
+/// # Arguments
+/// * `env` - The Soroban environment
+/// * `signer_key` - The signing key to use
+/// * `payload` - The request payload to sign
 fn create_signed_request(
     env: &Env,
     signer_key: &SigningKey,
@@ -66,6 +75,11 @@ fn create_signed_request(
         .expect("Failed to create signed request")
 }
 
+/// Creates a signed request for context contract operations
+/// # Arguments
+/// * `env` - The Soroban environment
+/// * `signer_key` - The signing key to use
+/// * `payload` - The context request payload to sign
 fn create_context_signed_request(
     env: &Env,
     signer_key: &SigningKey,
@@ -81,6 +95,14 @@ fn create_context_signed_request(
     }
 }
 
+/// Adds members to a context using the context contract
+/// # Arguments
+/// * `env` - The Soroban environment
+/// * `context_client` - The context contract client
+/// * `context_id` - The ID of the context
+/// * `context_author_id` - The ID of the context author
+/// * `context_author_sk` - The signing key of the context author
+/// * `members` - The list of member IDs to add
 fn add_members(
     env: &Env,
     context_client: &context_contract::Client,
@@ -114,6 +136,12 @@ fn add_members(
     context_client.mutate(&signed_add_members);
 }
 
+/// Creates a test proposal with given parameters
+/// # Arguments
+/// * `env` - The Soroban environment
+/// * `contract_address` - The address of the proxy contract
+/// * `author_id` - The ID of the proposal author
+/// * `actions` - The list of actions for the proposal
 fn create_test_proposal(
     env: &Env,
     contract_address: &Address,
@@ -131,14 +159,18 @@ fn create_test_proposal(
     (proposal_id, proposal)
 }
 
+/// Deploys a mock external contract for testing
+/// # Arguments
+/// * `env` - The Soroban environment
+/// * `xlm_token_address` - The address of the XLM token contract
 fn deploy_mock_external<'a>(
     env: &'a Env,
     xlm_token_address: &Address,
 ) -> (Address, mock_external::Client<'a>) {
     let mock_owner = Address::generate(env);
-    let mock_external_wasm =
-        include_bytes!("../../mock_external/res/calimero_mock_external_stellar.wasm");
-    let mock_external_hash = env.deployer().upload_contract_wasm(*mock_external_wasm);
+    let mock_external_wasm = fs::read("./mock_external/res/calimero_mock_external_stellar.wasm")
+        .expect("Failed to read mock external WASM file");
+    let mock_external_hash = env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &mock_external_wasm));
 
     let salt = BytesN::<32>::from_array(env, &[0; 32]);
     let mock_external_address = env
@@ -151,6 +183,9 @@ fn deploy_mock_external<'a>(
     (mock_external_address, mock_external_client)
 }
 
+/// Sets up the test environment with all necessary contracts and accounts
+/// # Returns
+/// Returns a ProxyTestContext containing all components needed for testing
 fn setup<'a>() -> ProxyTestContext<'a> {
     let env = Env::default();
     env.mock_all_auths();
@@ -162,10 +197,11 @@ fn setup<'a>() -> ProxyTestContext<'a> {
     let token_asset_client = StellarAssetClient::new(&env, &xlm_token.address());
     token_asset_client.mint(&xlm_token_admin, &1_000_000_000);
 
-    // Setup context contract
+    // Setup context contract - now using fs::read
     let context_owner = Address::generate(&env);
-    let wasm = include_bytes!("../../../context-config/res/calimero_context_config_stellar.wasm");
-    let contract_hash = env.deployer().upload_contract_wasm(*wasm);
+    let wasm = fs::read("../context-config/res/calimero_context_config_stellar.wasm")
+        .expect("Failed to read context config WASM file");
+    let contract_hash = env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &wasm));
 
     let salt = BytesN::<32>::from_array(&env, &[0; 32]);
     let context_contract_address = env
@@ -176,10 +212,11 @@ fn setup<'a>() -> ProxyTestContext<'a> {
     let context_client = context_contract::Client::new(&env, &context_contract_address);
 
     // Set proxy contract code
-    let proxy_wasm = include_bytes!("../../res/calimero_context_proxy_stellar.wasm");
+    let proxy_wasm = fs::read("./res/calimero_context_proxy_stellar.wasm")
+        .expect("Failed to read proxy WASM file");
     context_client
         .mock_all_auths()
-        .set_proxy_code(&Bytes::from_slice(&env, proxy_wasm), &context_owner);
+        .set_proxy_code(&Bytes::from_slice(&env, &proxy_wasm), &context_owner);
 
     // Generate context and author keys
     let context_bytes: BytesN<32> = env.as_contract(&context_contract_address, || env.prng().gen());
@@ -265,6 +302,16 @@ fn setup<'a>() -> ProxyTestContext<'a> {
     }
 }
 
+/// Helper function to submit and verify proposal approvals
+/// # Arguments
+/// * `env` - The Soroban environment
+/// * `client` - The proxy contract client
+/// * `proposal_id` - The ID of the proposal to approve
+/// * `signer_id` - The ID of the approving signer
+/// * `signer_sk` - The signing key of the approver
+/// * `expected_approvals` - Expected number of approvals after submission
+/// # Returns
+/// Returns the proposal with approvals if not executed, None if executed
 fn submit_approval(
     env: &Env,
     client: &ContextProxyContractClient,
@@ -295,6 +342,13 @@ fn submit_approval(
     }
 }
 
+/// Tests proposal execution for token transfer functionality
+/// 
+/// This test verifies:
+/// - Proposal creation for token transfer
+/// - Multi-signature approval process
+/// - Token transfer execution
+/// - Balance updates for both sender and receiver
 #[test]
 fn test_execute_proposal_transfer() {
     let ProxyTestContext {
@@ -366,6 +420,19 @@ fn test_execute_proposal_transfer() {
     );
 }
 
+/// Tests proposal execution for changing the required number of approvals
+/// 
+/// This test verifies:
+/// - Proposal creation for changing num_approvals
+/// - Execution of approval change
+/// - Verification of new approval requirement with a subsequent proposal
+/// - Storage updates with new approval requirement
+/// 
+/// Test flow:
+/// 1. Create and execute proposal to change num_approvals to 2
+/// 2. Verify change by creating a new proposal
+/// 3. Confirm new proposal executes with only 2 approvals
+/// 4. Verify storage updates
 #[test]
 fn test_execute_proposal_set_num_approvals() {
     let ProxyTestContext {
@@ -464,6 +531,13 @@ fn test_execute_proposal_set_num_approvals() {
     );
 }
 
+/// Tests proposal execution for changing the active proposals limit
+/// 
+/// This test verifies:
+/// - Proposal creation for changing active proposals limit
+/// - Multi-signature approval process
+/// - Successful update of the limit
+/// - Verification of new limit value
 #[test]
 fn test_execute_proposal_set_active_proposals_limit() {
     let ProxyTestContext {
@@ -519,6 +593,12 @@ fn test_execute_proposal_set_active_proposals_limit() {
     );
 }
 
+/// Tests the execution of a proposal with an external contract call with deposit
+/// 
+/// This test verifies:
+/// - Proposal creation and approval process
+/// - External contract interaction with deposit
+/// - State updates in external contract
 #[test]
 fn test_execute_proposal_external_call_deposit() {
     let ProxyTestContext {
@@ -617,6 +697,12 @@ fn test_execute_proposal_external_call_deposit() {
     );
 }
 
+/// Tests proposal execution for an external contract call without deposit
+/// 
+/// This test verifies:
+/// - Proposal creation and approval process
+/// - External contract interaction without token transfer
+/// - State updates in external contract
 #[test]
 fn test_execute_proposal_external_call_no_deposit() {
     let ProxyTestContext {
@@ -683,6 +769,20 @@ fn test_execute_proposal_external_call_no_deposit() {
     assert_eq!(stored_value, Some(value), "Value not stored correctly");
 }
 
+/// Tests proposal limits and deletion functionality
+/// 
+/// This test verifies:
+/// - Setting proposal limits
+/// - Enforcing maximum proposal count per author
+/// - Proposal deletion
+/// - Creating new proposals after deletion
+/// 
+/// Test flow:
+/// 1. Set proposal limit to 2
+/// 2. Create two proposals successfully
+/// 3. Verify third proposal fails
+/// 4. Delete a proposal
+/// 5. Verify new proposal can be created
 #[test]
 fn test_proposal_limits_and_deletion() {
     let ProxyTestContext {
