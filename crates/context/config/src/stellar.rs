@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, String, Symbol, Val, Vec};
+use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN, Symbol, Val, Vec};
 
 pub mod stellar_repr;
 pub mod stellar_types;

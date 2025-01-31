@@ -249,7 +249,7 @@ fn test_capability_management() {
     let ctx = TestContext::setup();
     let (alice_key, alice_id) = ctx.generate_key();
     let (bob_key, bob_id) = ctx.generate_key();
-    let (charlie_key, charlie_id) = ctx.generate_key();
+    let (_ , charlie_id) = ctx.generate_key();
 
     // Create context with Alice as author
     let app = ctx.create_application(1);
