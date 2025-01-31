@@ -11,8 +11,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprBytes};
-use crate::stellar::stellar_repr::StellarRepr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -106,15 +105,15 @@ impl Method<Stellar> for FetchNonceRequest {
     const METHOD: &'static str = "fetch_nonce";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id = StellarRepr::new(*self.context_id);
-        let member_id = StellarRepr::new(*self.member_id);
+        let mut encoded = Vec::new();
 
-        let mut encoded_context_id = context_id.as_bytes().to_vec();
-        let encoded_member_id = member_id.as_bytes().to_vec();
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&context_raw);
 
-        encoded_context_id.extend(encoded_member_id);
+        let member_raw: [u8; 32] = self.member_id.rt().expect("member does not exist");
+        encoded.extend_from_slice(&member_raw);
 
-        Ok(encoded_context_id)
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

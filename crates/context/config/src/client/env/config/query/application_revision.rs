@@ -9,8 +9,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprBytes};
-use crate::stellar::stellar_repr::StellarRepr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, Revision};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -81,10 +80,8 @@ impl Method<Stellar> for ApplicationRevisionRequest {
     const METHOD: &'static str = "application_revision";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id = StellarRepr::new(*self.context_id);
-        let encoded = context_id.as_bytes().to_vec();
-
-        Ok(encoded)
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        Ok(context_raw.to_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

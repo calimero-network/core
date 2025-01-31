@@ -1,4 +1,4 @@
-use candid::{Decode, Encode};
+use candid::Decode;
 use serde::Serialize;
 use starknet::core::codec::Encode as StarknetEncode;
 
@@ -8,8 +8,7 @@ use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
-use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprBytes};
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::stellar::stellar_repr::StellarRepr;
 use crate::types::{ContextId, ContextIdentity};
 
@@ -82,11 +81,15 @@ impl Method<Icp> for HasMemberRequest {
     const METHOD: &'static str = "has_member";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id = ICRepr::new(*self.context_id);
-        let identity = ICRepr::new(*self.identity);
-        let payload = (context_id, identity);
+        let mut encoded = Vec::new();
 
-        Encode!(&payload).map_err(Into::into)
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&context_raw);
+
+        let member_raw: [u8; 32] = self.identity.rt().expect("identity does not exist");
+        encoded.extend_from_slice(&member_raw);
+
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

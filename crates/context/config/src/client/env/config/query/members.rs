@@ -17,7 +17,6 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
-use crate::stellar::stellar_repr::StellarRepr;
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]

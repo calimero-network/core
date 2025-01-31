@@ -17,8 +17,7 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
-use crate::repr::{Repr, ReprBytes};
-use crate::stellar::stellar_repr::StellarRepr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -172,19 +171,17 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id = StellarRepr::new(self.context_id);
-        let identities: Vec<StellarRepr<Repr<ContextIdentity>>> = self
-            .identities
-            .iter()
-            .map(|&id| StellarRepr::new(id))
-            .collect();
+        let mut encoded = Vec::new();
 
-        let mut encoded_context_id = context_id.as_bytes().to_vec();
-        for identity in identities {
-            encoded_context_id.extend(identity.as_bytes());
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&context_raw);
+
+        for identity in self.identities {
+            let identity_raw: [u8; 32] = identity.rt().expect("identity does not exist");
+            encoded.extend_from_slice(&identity_raw);
         }
 
-        Ok(encoded_context_id)
+        Ok(encoded)
     }
 
     fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
