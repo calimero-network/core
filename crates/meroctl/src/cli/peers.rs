@@ -1,5 +1,6 @@
 use calimero_server_primitives::admin::GetPeersCountResponse;
 use clap::Parser;
+use const_format::concatcp;
 use eyre::Result as EyreResult;
 use reqwest::Client;
 
@@ -7,7 +8,17 @@ use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
+pub const EXAMPLES: &str = r"
+  #
+  $ meroctl -- --node-name node1 peers
+";
+
 #[derive(Debug, Parser)]
+#[command(about = "Return the number of connected peers")]
+#[command(after_help = concatcp!(
+    "Examples:",
+    EXAMPLES
+))]
 pub struct PeersCommand;
 
 impl Report for GetPeersCountResponse {
