@@ -6,7 +6,6 @@ use bs58;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contracterror, contracttype, Bytes, BytesN, Env, String, Vec};
 
-use super::stellar_repr::StellarRepr;
 use super::StellarProxyMutateRequest;
 use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
@@ -124,12 +123,12 @@ impl From<Application<'_>> for StellarApplication {
         StellarApplication {
             id: value
                 .id
-                .rt::<StellarRepr<BytesN<32>>>()
+                .rt::<Repr<BytesN<32>>>()
                 .expect("infallible conversion")
                 .into_inner(),
             blob: value
                 .blob
-                .rt::<StellarRepr<BytesN<32>>>()
+                .rt::<Repr<BytesN<32>>>()
                 .expect("infallible conversion")
                 .into_inner(),
             size: value.size,
