@@ -3,7 +3,7 @@
 use calimero_context_config::stellar::stellar_types::StellarError;
 use guard::Guard;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, log, symbol_short, Address, BytesN, Env, Map, Symbol
+    contract, contractimpl, contracttype, log, symbol_short, Address, BytesN, Env, Map, Symbol,
 };
 
 mod guard;

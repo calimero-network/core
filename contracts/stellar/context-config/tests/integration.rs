@@ -34,14 +34,24 @@ impl<'a> TestContext<'a> {
         env.mock_all_auths();
         let owner = Address::generate(&env);
 
-        let context_contract_wasm = fs::read("../context-config/res/calimero_context_config_stellar.wasm")
-            .expect("Failed to read context contract WASM file");
+        let context_contract_wasm =
+            fs::read("../context-config/res/calimero_context_config_stellar.wasm")
+                .expect("Failed to read context contract WASM file");
         let context_contract_wasm = Bytes::from_slice(&env, &context_contract_wasm);
 
         let contract_id = env.deployer().upload_contract_wasm(context_contract_wasm);
 
         let salt = BytesN::<32>::from_array(&env, &[0; 32]);
-        let contract_id = env.deployer().with_address(owner.clone(), salt).deploy_v2(contract_id, (owner.clone(), Address::from_str(&env, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC")));
+        let contract_id = env.deployer().with_address(owner.clone(), salt).deploy_v2(
+            contract_id,
+            (
+                owner.clone(),
+                Address::from_str(
+                    &env,
+                    "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+                ),
+            ),
+        );
 
         let client = ContextContractClient::new(&env, &contract_id);
 
@@ -273,8 +283,11 @@ fn test_capability_management() {
         .client
         .privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
     assert!(
-        bob_privileges.contains_key(bob_id.clone()) && 
-        bob_privileges.get(bob_id.clone()).unwrap().contains(&StellarCapability::ManageMembers),
+        bob_privileges.contains_key(bob_id.clone())
+            && bob_privileges
+                .get(bob_id.clone())
+                .unwrap()
+                .contains(&StellarCapability::ManageMembers),
         "Bob should have ManageMembers capability"
     );
 
