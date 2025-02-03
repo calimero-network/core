@@ -8,7 +8,6 @@ use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::ProposalId;
 use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 
-pub mod stellar_repr;
 pub mod stellar_types;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

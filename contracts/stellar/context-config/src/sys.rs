@@ -1,10 +1,10 @@
 use calimero_context_config::stellar::stellar_types::StellarError;
 use soroban_sdk::{contractimpl, log, Address, Bytes, BytesN, Env};
 
-use crate::{ContextContract, ContextContractArgs, ContextContractClient, OptionalBytes};
+use crate::{ContextConfig, ContextConfigArgs, ContextConfigClient, OptionalBytes};
 
 #[contractimpl]
-impl ContextContract {
+impl ContextConfig {
     /// Upgrades the context contract with new WASM code
     /// # Arguments
     /// * `new_wasm` - The new WASM bytecode
