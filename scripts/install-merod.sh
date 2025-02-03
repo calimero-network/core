@@ -1,7 +1,6 @@
 #!/bin/bash
 
 BINARY_NAME="merod"
-VERSION="0.3.0"
 REPO="calimero-network/core"
 INSTALL_DIR="$HOME/.local/bin"
 
@@ -27,9 +26,21 @@ else
   exit 1
 fi
 
+# Construct search URL
+SEARCH_URL="https://api.github.com/repos/$REPO/releases?query=tag_name:$BINARY_NAME-*"
+
+# Fetch latest release tag
+if [ -z "$1" ]; then
+  VERSION=$(curl -s "$SEARCH_URL" | jq -r '.[0].tag_name')
+else
+  VERSION="$BINARY_NAME-$1"
+fi
+
+echo "Release tag to install: $VERSION"
+
 # Construct download URL
 TARBALL_NAME="${BINARY_NAME}_${ARCH}-${PLATFORM}.tar.gz"
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/merod-$VERSION/$TARBALL_NAME"
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$TARBALL_NAME"
 
 # Ensure installation directory exists
 mkdir -p "$INSTALL_DIR"
