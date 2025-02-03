@@ -3,16 +3,13 @@
 use calimero_context_config::stellar::stellar_types::StellarError;
 use guard::Guard;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map, Symbol,
+    contract, contractimpl, contracttype, log, symbol_short, Address, BytesN, Env, Map, Symbol
 };
 
 mod guard;
 mod mutate;
 mod query;
 mod sys;
-// mod types;
-
-// use types::Error;
 
 const STORAGE_KEY_STATE: Symbol = symbol_short!("STATE");
 
@@ -72,12 +69,16 @@ impl ContextContract {
             return Err(StellarError::Unauthorized);
         }
 
+        log!(&env, "Initializing storage contract");
+
         let configs = ContextConfigs {
             contexts: Map::new(&env),
             proxy_code: OptionalBytes::None,
             owner,
             ledger_id,
         };
+
+        log!(&env, "Initializing context contract");
 
         env.storage()
             .instance()

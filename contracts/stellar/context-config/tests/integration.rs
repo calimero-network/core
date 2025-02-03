@@ -4,10 +4,10 @@ use calimero_context_config::stellar::stellar_types::{
     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
     StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
-use calimero_context_config_stellar::{ContextContract, ContextContractClient};
+use calimero_context_config_stellar::ContextContractClient;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal};
+use soroban_sdk::{vec, Address, Bytes, BytesN, Env, IntoVal};
 
 fn create_signed_request(
     signer_key: &SigningKey,
@@ -33,16 +33,16 @@ impl<'a> TestContext<'a> {
         let env = Env::default();
         env.mock_all_auths();
         let owner = Address::generate(&env);
-        let contract_id = env.register(
-            ContextContract,
-            (
-                &owner,
-                Address::from_str(
-                    &env,
-                    "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-                ),
-            ),
-        );
+
+        let context_contract_wasm = fs::read("../context-config/res/calimero_context_config_stellar.wasm")
+            .expect("Failed to read context contract WASM file");
+        let context_contract_wasm = Bytes::from_slice(&env, &context_contract_wasm);
+
+        let contract_id = env.deployer().upload_contract_wasm(context_contract_wasm);
+
+        let salt = BytesN::<32>::from_array(&env, &[0; 32]);
+        let contract_id = env.deployer().with_address(owner.clone(), salt).deploy_v2(contract_id, (owner.clone(), Address::from_str(&env, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC")));
+
         let client = ContextContractClient::new(&env, &contract_id);
 
         // Set up proxy code
@@ -103,11 +103,6 @@ impl<'a> TestContext<'a> {
 #[test]
 fn test_add_context() {
     let ctx = TestContext::setup();
-    log!(
-        &ctx.env,
-        "Context contract address: {:?}",
-        ctx.client.address
-    );
     let (_author_key, author_id) = ctx.generate_key();
     let app = ctx.create_application(1);
 
@@ -143,7 +138,6 @@ fn test_member_management() {
 
     // Verify members after authorized addition
     let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
-    log!(&ctx.env, "Members after authorized addition: {:?}", members);
     assert_eq!(
         members.len(),
         2,
@@ -170,7 +164,6 @@ fn test_member_management() {
 
     // Verify members haven't changed
     let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
-    log!(&ctx.env, "Final members list: {:?}", members);
     assert_eq!(
         members.len(),
         2,
@@ -204,11 +197,7 @@ fn test_member_management() {
 
     // Verify members haven't changed after failed removal
     let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
-    log!(
-        &ctx.env,
-        "Members after failed removal attempt: {:?}",
-        members
-    );
+    assert_eq!(members.len(), 2, "Should still have both members");
     assert_eq!(members.len(), 2, "Should still have both members");
     assert!(
         members.contains(&alice_id),
@@ -231,19 +220,12 @@ fn test_member_management() {
 
     // Verify final membership after successful removal
     let members = ctx.client.members(&ctx.context_id, &0u32, &10u32);
-    log!(
-        &ctx.env,
-        "Final members after authorized removal: {:?}",
-        members
-    );
     assert_eq!(members.len(), 1, "Should have only Alice as member");
     assert!(
         members.contains(&alice_id),
         "Alice should still be a member"
     );
     assert!(!members.contains(&bob_id), "Bob should have been removed");
-
-    log!(&ctx.env, "Member management test completed successfully");
 }
 
 #[test]
@@ -290,7 +272,11 @@ fn test_capability_management() {
     let bob_privileges = ctx
         .client
         .privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
-    log!(&ctx.env, "Bob's privileges: {:?}", bob_privileges);
+    assert!(
+        bob_privileges.contains_key(bob_id.clone()) && 
+        bob_privileges.get(bob_id.clone()).unwrap().contains(&StellarCapability::ManageMembers),
+        "Bob should have ManageMembers capability"
+    );
 
     // Bob should now be able to add members
     let add_member_request = StellarRequest {
@@ -333,11 +319,6 @@ fn test_capability_management() {
     let bob_privileges = ctx
         .client
         .privileges(&ctx.context_id, &vec![&ctx.env, bob_id.clone()]);
-    log!(
-        &ctx.env,
-        "Bob's privileges after revocation: {:?}",
-        bob_privileges
-    );
     assert!(
         bob_privileges.is_empty() || !bob_privileges.contains_key(bob_id.clone()),
         "Bob should have no capabilities after revocation"
@@ -368,11 +349,6 @@ fn test_capability_management() {
         !members.contains(&david_id),
         "David should not have been added"
     );
-
-    log!(
-        &ctx.env,
-        "Capability management test completed successfully"
-    );
 }
 
 #[test]
@@ -389,7 +365,6 @@ fn test_application_update() {
 
     // Verify initial application state
     let app = ctx.client.application(&ctx.context_id);
-    log!(&ctx.env, "Initial application: {:?}", app);
     assert_eq!(app.id, initial_app.id, "Initial application ID mismatch");
     assert_eq!(
         app.blob, initial_app.blob,
@@ -415,7 +390,6 @@ fn test_application_update() {
 
     // Verify application hasn't changed
     let app = ctx.client.application(&ctx.context_id);
-    log!(&ctx.env, "Application after failed update: {:?}", app);
     assert_eq!(
         app.id, initial_app.id,
         "Application should not have changed"
@@ -440,7 +414,6 @@ fn test_application_update() {
 
     // Verify application has been updated
     let app = ctx.client.application(&ctx.context_id);
-    log!(&ctx.env, "Final application state: {:?}", app);
     assert_eq!(
         app.id, updated_app.id,
         "Application should have been updated"
@@ -449,8 +422,6 @@ fn test_application_update() {
         app.blob, updated_app.blob,
         "Application should have been updated"
     );
-
-    log!(&ctx.env, "Application update test completed successfully");
 }
 
 #[test]
@@ -593,6 +564,4 @@ fn test_query_endpoints() {
         !proxy_address.to_string().is_empty(),
         "Proxy address should be set"
     );
-
-    log!(&ctx.env, "Query endpoints test completed successfully");
 }

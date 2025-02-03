@@ -6,7 +6,6 @@ use calimero_context_config::stellar::stellar_types::{
 use soroban_sdk::{contractimpl, Address, BytesN, Env, Map, Vec};
 
 use crate::guard::GuardedValue;
-// use crate::types::{StellarApplication, StellarCapability, Error};
 use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
 
 #[contractimpl]
