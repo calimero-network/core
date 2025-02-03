@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contracterror, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal, String,
+    contracterror, contracttype, symbol_short, Address, Bytes, BytesN, Env, String,
     Symbol, Val, Vec,
 };
 use stellar_types::FromWithEnv;

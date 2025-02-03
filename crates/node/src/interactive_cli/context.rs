@@ -51,7 +51,7 @@ enum Commands {
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
         /// The protocol to use for the context - possible values: near|starknet|icp|stellar
-        #[clap(long)]
+        #[clap(long, value_enum)]
         protocol: Protocol,
     },
     /// Invite a user to a context

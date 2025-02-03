@@ -30,7 +30,6 @@ use super::Protocol;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
-use crate::stellar::stellar_types::StellarSignedRequest;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Stellar {}
@@ -44,41 +43,9 @@ impl AssociatedTransport for StellarTransport<'_> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
     pub public_key: String,
     pub secret_key: String,
-}
-
-mod serde_creds {
-    use hex::FromHexError;
-    use serde::{Deserialize, Serialize};
-    use thiserror::Error;
-
-    #[derive(Debug, Deserialize, Serialize)]
-    pub struct Credentials {
-        public_key: String,
-        secret_key: String,
-    }
-
-    #[derive(Clone, Debug, Error)]
-    pub enum CredentialsError {
-        #[error("failed to parse SigningKey from hex")]
-        ParseError(#[from] FromHexError),
-        #[error("failed to parse SigningKey from string")]
-        IntoError(String),
-    }
-
-    impl TryFrom<Credentials> for super::Credentials {
-        type Error = CredentialsError;
-
-        fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            Ok(Self {
-                public_key: creds.public_key,
-                secret_key: creds.secret_key,
-            })
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -119,7 +86,7 @@ impl<'a> StellarTransport<'a> {
                 timeout: Some(1000),
                 headers: None,
             };
-            let server = Server::new(network_config.rpc_url.as_str(), options).unwrap();
+            let server = Server::new(network_config.rpc_url.as_str(), options).expect("Failed to create server");
 
             let network = match network_config.network.as_str() {
                 "mainnet" => Networks::public(),
@@ -148,16 +115,6 @@ pub enum StellarError {
     UnknownNetwork(String),
     #[error("invalid contract id `{0}`")]
     InvalidContractId(String),
-    #[error("failed to prepare transactions `{0}`")]
-    FailedToPrepareTransactions(String),
-    #[error("invalid response from RPC while {operation}")]
-    InvalidResponse { operation: ErrorOperation },
-    #[error(
-        "access key does not have permission to call method `{method}` on contract {contract}"
-    )]
-    NotPermittedToCallMethod { contract: String, method: String },
-    #[error("transaction timed out")]
-    TransactionTimeout,
     #[error("error while {operation}: {reason}")]
     Custom {
         operation: ErrorOperation,
@@ -172,6 +129,8 @@ pub enum ErrorOperation {
     Query,
     #[error("updating contract")]
     Mutate,
+    #[error("transport")]
+    Transport,
 }
 
 impl ProtocolTransport for StellarTransport<'_> {
@@ -299,18 +258,12 @@ impl Network {
         if !args.is_empty() {
             let env = Env::default();
             let env_bytes = Bytes::from_slice(&env, &args);
-            let signed_request =
-                StellarSignedRequest::from_xdr(&env, &env_bytes).map_err(|_| {
+            let val: Val =
+                Val::from_xdr(&env, &env_bytes).map_err(|_| {
                     StellarError::Custom {
                         operation: ErrorOperation::Query,
                         reason: "Failed to deserialize signed request".to_owned(),
                     }
-                })?;
-            let val: Val = signed_request
-                .try_into_val(&env)
-                .map_err(|_| StellarError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: "Failed to convert to Val".to_owned(),
                 })?;
             let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
                 operation: ErrorOperation::Query,
