@@ -9,8 +9,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -95,5 +96,37 @@ impl Method<Icp> for FetchNonceRequest {
         let decoded = Decode!(&response, Option<u64>)?;
 
         Ok(decoded)
+    }
+}
+
+impl Method<Stellar> for FetchNonceRequest {
+    type Returns = Option<u64>;
+
+    const METHOD: &'static str = "fetch_nonce";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let mut encoded = Vec::new();
+
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&context_raw);
+
+        let member_raw: [u8; 32] = self.member_id.rt().expect("member does not exist");
+        encoded.extend_from_slice(&member_raw);
+
+        Ok(encoded)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Err(eyre::eyre!("No nonce fetched"));
+        }
+
+        let nonce = u64::from_be_bytes(
+            response
+                .try_into()
+                .map_err(|_| eyre::eyre!("Invalid response length: expected 8 bytes"))?,
+        );
+
+        Ok(Some(nonce))
     }
 }

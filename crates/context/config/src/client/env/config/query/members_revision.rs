@@ -7,8 +7,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, Revision};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -80,5 +81,26 @@ impl Method<Icp> for MembersRevisionRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let value = Decode!(&response, Self::Returns)?;
         Ok(value)
+    }
+}
+
+impl Method<Stellar> for MembersRevisionRequest {
+    type Returns = Revision;
+
+    const METHOD: &'static str = "members_revision";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        Ok(context_raw.to_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let revision = u64::from_be_bytes(
+            response
+                .try_into()
+                .map_err(|_| eyre::eyre!("Invalid response length: expected 8 bytes"))?,
+        );
+
+        Ok(revision)
     }
 }

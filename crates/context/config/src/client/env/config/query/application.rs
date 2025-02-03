@@ -1,5 +1,7 @@
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::FromXdr;
+use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -10,9 +12,11 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICApplication;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
+use crate::stellar::stellar_types::StellarApplication;
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -109,5 +113,32 @@ impl Method<Icp> for ApplicationRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, ICApplication)?;
         Ok(decoded.into())
+    }
+}
+
+impl Method<Stellar> for ApplicationRequest {
+    type Returns = Application<'static>;
+
+    const METHOD: &'static str = "application";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        Ok(context_raw.to_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Err(eyre::eyre!("No application found"));
+        }
+
+        let env = Env::default();
+        let env_bytes = Bytes::from_slice(&env, &response);
+
+        let stellar_application = StellarApplication::from_xdr(&env, &env_bytes)
+            .map_err(|_| eyre::eyre!("Failed to deserialize response"))?;
+
+        let application: Application<'_> = stellar_application.into();
+
+        Ok(application)
     }
 }

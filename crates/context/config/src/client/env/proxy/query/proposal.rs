@@ -9,9 +9,10 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::ICProposal;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::ProposalId;
 use crate::Proposal;
 
@@ -107,5 +108,24 @@ impl Method<Icp> for ProposalRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, Option<ICProposal>)?;
         Ok(decoded.map(Into::into))
+    }
+}
+
+impl Method<Stellar> for ProposalRequest {
+    type Returns = Option<Proposal>;
+
+    const METHOD: &'static str = "proposal";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let mut encoded = Vec::new();
+
+        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&proposal_id);
+
+        Ok(encoded)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

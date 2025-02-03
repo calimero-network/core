@@ -14,9 +14,10 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -161,5 +162,29 @@ impl<'a> Method<Icp> for PrivilegesRequest<'a> {
             .into_iter()
             .map(|(k, v)| (*k, v.into_iter().map(Into::into).collect()))
             .collect())
+    }
+}
+
+impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
+    type Returns = BTreeMap<SignerId, Vec<Capability>>;
+
+    const METHOD: &'static str = "privileges";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let mut encoded = Vec::new();
+
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&context_raw);
+
+        for identity in self.identities {
+            let identity_raw: [u8; 32] = identity.rt().expect("identity does not exist");
+            encoded.extend_from_slice(&identity_raw);
+        }
+
+        Ok(encoded)
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

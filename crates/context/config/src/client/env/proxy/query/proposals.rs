@@ -8,6 +8,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::ICProposal;
 use crate::Proposal;
 
@@ -101,5 +102,25 @@ impl Method<Icp> for ProposalsRequest {
         let proposals = proposals.into_iter().map(|id| id.into()).collect();
 
         Ok(proposals)
+    }
+}
+
+impl Method<Stellar> for ProposalsRequest {
+    type Returns = Vec<Proposal>;
+
+    const METHOD: &'static str = "proposals";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let mut encoded = Vec::new();
+
+        encoded.extend_from_slice(&self.offset.to_le_bytes());
+
+        encoded.extend_from_slice(&self.length.to_le_bytes());
+
+        Ok(encoded)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

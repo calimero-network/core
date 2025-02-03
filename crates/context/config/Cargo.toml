@@ -7,6 +7,8 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
+bincode.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 candid = { workspace = true, optional = true }
@@ -24,9 +26,12 @@ reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
+soroban-env-common = { workspace = true, optional = true }
 starknet = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
+stellar-baselib.workspace = true
+soroban-client.workspace = true
 thiserror.workspace = true
 url = { workspace = true, optional = true }
 
@@ -67,7 +72,7 @@ starknet_client = [
   "dep:starknet-types-core",
 ]
 
-stellar = ["soroban-sdk"]
+stellar = ["soroban-sdk", "soroban-env-common"]
 
 stellar_client = [
   "stellar",

@@ -2,6 +2,8 @@ use core::mem;
 
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::FromXdr;
+use soroban_sdk::{Bytes, BytesN, Env};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -12,8 +14,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -124,5 +127,50 @@ impl Method<Icp> for MembersRequest {
         };
 
         Ok(members)
+    }
+}
+
+impl Method<Stellar> for MembersRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "members";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let mut encoded = Vec::new();
+
+        // Encode context_id (BytesN<32>)
+        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        encoded.extend_from_slice(&context_raw);
+
+        // Encode offset (u32)
+        encoded.extend_from_slice(&self.offset.to_le_bytes());
+
+        // Encode length (u32)
+        encoded.extend_from_slice(&self.length.to_le_bytes());
+
+        Ok(encoded)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Err(eyre::eyre!("No members found"));
+        }
+
+        let env = Env::default();
+        let env_bytes = Bytes::from_slice(&env, &response);
+
+        let members = soroban_sdk::Vec::<BytesN<32>>::from_xdr(&env, &env_bytes)
+            .map_err(|_| eyre::eyre!("Failed to deserialize members"))?;
+
+        Ok(members
+            .iter()
+            .map(|id| {
+                ContextIdentity::from_bytes(|dest| {
+                    dest.copy_from_slice(&id.to_array());
+                    Ok(32)
+                })
+                .expect("Valid 32-byte array")
+            })
+            .collect())
     }
 }
