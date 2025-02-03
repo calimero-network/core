@@ -6,10 +6,10 @@ use calimero_context_config::stellar::stellar_types::{
 use soroban_sdk::{contractimpl, Address, BytesN, Env, Map, Vec};
 
 use crate::guard::GuardedValue;
-use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
+use crate::{Context, ContextConfig, ContextConfigArgs, ContextConfigClient};
 
 #[contractimpl]
-impl ContextContract {
+impl ContextConfig {
     /// Helper function to get context
     fn get_context(env: &Env, context_id: BytesN<32>) -> Option<Context> {
         Self::get_state(env).contexts.get(context_id)

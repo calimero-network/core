@@ -7,10 +7,10 @@ use calimero_context_config::stellar::stellar_types::{
 use soroban_sdk::{contractimpl, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
 
 use crate::guard::{Guard, GuardedValue};
-use crate::{Context, ContextContract, ContextContractArgs, ContextContractClient};
+use crate::{Context, ContextConfig, ContextConfigArgs, ContextConfigClient};
 
 #[contractimpl]
-impl ContextContract {
+impl ContextConfig {
     /// Process a signed mutation request
     /// # Errors
     /// Returns InvalidSignature if request signature is invalid

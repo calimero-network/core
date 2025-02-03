@@ -4,7 +4,7 @@ use calimero_context_config::stellar::stellar_types::{
     StellarApplication, StellarCapability, StellarContextRequest, StellarContextRequestKind,
     StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
-use calimero_context_config_stellar::ContextContractClient;
+use calimero_context_config_stellar::ContextConfigClient;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec, Address, Bytes, BytesN, Env, IntoVal};
@@ -23,7 +23,7 @@ fn create_signed_request(
 // Helper struct to manage test context
 struct TestContext<'a> {
     env: Env,
-    client: ContextContractClient<'a>,
+    client: ContextConfigClient<'a>,
     context_key: SigningKey,
     context_id: BytesN<32>,
 }
@@ -53,7 +53,7 @@ impl<'a> TestContext<'a> {
             ),
         );
 
-        let client = ContextContractClient::new(&env, &contract_id);
+        let client = ContextConfigClient::new(&env, &contract_id);
 
         // Set up proxy code
         let proxy_wasm = fs::read("../context-proxy/res/calimero_context_proxy_stellar.wasm")

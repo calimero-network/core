@@ -57,10 +57,10 @@ impl OptionalBytes {
 }
 
 #[contract]
-pub struct ContextContract;
+pub struct ContextConfig;
 
 #[contractimpl]
-impl ContextContract {
+impl ContextConfig {
     pub fn __constructor(env: Env, owner: Address, ledger_id: Address) -> Result<(), StellarError> {
         // Require authorization from deployer
         owner.require_auth();
