@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ## [0.3.1] - 2025-01-29
+
 - Fixed get application endpoint and the corresponding meroctl command
 
 ## [0.3.0] - 2025-01-16
