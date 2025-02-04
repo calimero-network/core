@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 
+#[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::alias::Alias;
 use generic_array::sequence::Concat;
@@ -10,7 +11,8 @@ use super::component::KeyComponent;
 use super::{AsKeyParts, FromKeyParts, Key};
 use crate::db::Column;
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[repr(u8)]
 pub enum Kind {
     Context,
