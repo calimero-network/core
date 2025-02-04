@@ -13,6 +13,7 @@ use generic_array::{GenericArray, IntoArrayLength};
 use crate::db::Column;
 use crate::slice::Slice;
 
+mod alias;
 mod application;
 mod blobs;
 mod component;

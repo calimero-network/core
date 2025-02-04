@@ -25,3 +25,11 @@ where
 {
     type LEN = Sum<T::LEN, U::LEN>;
 }
+
+impl<T: KeyComponent, U: KeyComponent, V: KeyComponent> KeyComponents for (T, U, V)
+where
+    T::LEN: Add<U::LEN, Output: ArrayLength>,
+    Sum<T::LEN, U::LEN>: Add<V::LEN, Output: ArrayLength>,
+{
+    type LEN = Sum<Sum<T::LEN, U::LEN>, V::LEN>;
+}
