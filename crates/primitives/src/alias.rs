@@ -1,14 +1,14 @@
+#[cfg(test)]
+#[path = "tests/alias.rs"]
+mod tests;
+
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Alias(String);
 
 #[derive(Clone, Copy, Debug, Error)]
@@ -20,11 +20,7 @@ impl Alias {
 
     #[must_use]
     pub fn new(s: String) -> Option<Self> {
-        if s.len() <= Self::MAX_LENGTH {
-            Some(Self(s))
-        } else {
-            None
-        }
+        (s.len() <= Self::MAX_LENGTH).then(|| Self(s))
     }
 
     #[must_use]
@@ -37,9 +33,9 @@ impl FromStr for Alias {
     type Err = InvalidAlias;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s.to_owned()).ok_or(InvalidAlias(
-            "alias exceeds maximum length of 50 characters",
-        ))
+        s.to_owned()
+            .try_into()
+            .map_err(|_| InvalidAlias("alias exceeds maximum length of 50 characters"))
     }
 }
 
@@ -55,8 +51,34 @@ impl From<Alias> for String {
     }
 }
 
-impl From<&Alias> for String {
-    fn from(alias: &Alias) -> Self {
-        alias.0.to_owned()
+impl TryFrom<String> for Alias {
+    type Error = InvalidAlias;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value).ok_or(InvalidAlias(
+            "alias exceeds maximum length of 50 characters",
+        ))
     }
+}
+
+impl<'de> Deserialize<'de> for Alias {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        encoded.parse().map_err(|_| {
+            serde::de::Error::custom(format!(
+                "alias exceeds maximum length of {} characters",
+                Self::MAX_LENGTH
+            ))
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Context,
+    Identity,
+    Application,
 }

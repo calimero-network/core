@@ -2,23 +2,20 @@ use std::convert::Infallible;
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::alias::Alias;
+use calimero_primitives::alias::{Alias as AliasPrimitive, Kind as KindPrimitive};
+use calimero_primitives::context::ContextId;
 use generic_array::sequence::Concat;
-use generic_array::typenum::{U1, U32, U400};
+use generic_array::typenum::{U1, U32, U50};
 use generic_array::GenericArray;
 
-use super::component::KeyComponent;
+use super::component::{impl_key_components, KeyComponent, KeyComponents};
 use super::{AsKeyParts, FromKeyParts, Key};
 use crate::db::Column;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[repr(u8)]
-pub enum Kind {
-    Context,
-    Identity,
-    Application,
-}
+//impl_key_components!(Kind, Scope, Alias);
+
+#[derive(Clone, Copy, Debug)]
+pub struct Kind;
 
 impl KeyComponent for Kind {
     type LEN = U1;
@@ -30,8 +27,11 @@ impl KeyComponent for Scope {
     type LEN = U32;
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Alias;
+
 impl KeyComponent for Alias {
-    type LEN = U400;
+    type LEN = U50;
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -39,15 +39,26 @@ impl KeyComponent for Alias {
 pub struct IdentityAlias(Key<(Kind, Scope, Alias)>);
 
 impl IdentityAlias {
-    pub fn new(kind: Kind, scope: [u8; 32], alias: Alias) -> Self {
+    fn create_key(kind: KindPrimitive, scope: [u8; 32], alias: AliasPrimitive) -> Self {
         let kind_array = GenericArray::<u8, U1>::from([kind as u8]);
         let scope_array = GenericArray::<u8, U32>::from(scope);
-
-        let mut alias_array = GenericArray::<u8, U400>::default();
+        let mut alias_array = GenericArray::<u8, U50>::default();
         let alias_str = alias.as_str();
         alias_array[..alias_str.len()].copy_from_slice(alias_str.as_bytes());
 
         Self(Key(kind_array.concat(scope_array).concat(alias_array)))
+    }
+
+    pub fn context(alias: AliasPrimitive) -> Self {
+        Self::create_key(KindPrimitive::Context, [0u8; 32], alias)
+    }
+
+    pub fn application(alias: AliasPrimitive) -> Self {
+        Self::create_key(KindPrimitive::Application, [0u8; 32], alias)
+    }
+
+    pub fn identity(context_id: ContextId, alias: AliasPrimitive) -> Self {
+        Self::create_key(KindPrimitive::Identity, *context_id, alias)
     }
 }
 
