@@ -10,7 +10,7 @@ use super::component::KeyComponent;
 use super::{AsKeyParts, FromKeyParts, Key};
 use crate::db::Column;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Kind {
     Context,
@@ -32,7 +32,7 @@ impl KeyComponent for Alias {
     type LEN = U400;
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct IdentityAlias(Key<(Kind, Scope, Alias)>);
 

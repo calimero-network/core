@@ -6,6 +6,7 @@ use eyre::Result as EyreResult;
 use crate::cli::context::create::CreateCommand;
 use crate::cli::context::delete::DeleteCommand;
 use crate::cli::context::get::GetCommand;
+use crate::cli::context::identity::IdentityCommand;
 use crate::cli::context::invite::InviteCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
@@ -17,6 +18,7 @@ use crate::output::Report;
 pub mod create;
 mod delete;
 mod get;
+mod identity;
 pub mod invite;
 pub mod join;
 mod list;
@@ -58,6 +60,7 @@ pub enum ContextSubCommands {
     #[command(alias = "ws")]
     Watch(WatchCommand),
     Update(UpdateCommand),
+    Identity(IdentityCommand),
 }
 
 impl Report for Context {
@@ -79,6 +82,7 @@ impl ContextCommand {
             ContextSubCommands::List(list) => list.run(environment).await,
             ContextSubCommands::Watch(watch) => watch.run(environment).await,
             ContextSubCommands::Update(update) => update.run(environment).await,
+            ContextSubCommands::Identity(identity) => identity.run(environment).await,
         }
     }
 }

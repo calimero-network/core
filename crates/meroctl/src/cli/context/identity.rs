@@ -5,12 +5,29 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::output::Report;
 
 #[derive(Debug, Parser)]
-#[command(about = "Generate public/private key pair used for context identity")]
-pub struct GenerateCommand;
+#[command(about = "Managing your identity and alias")]
+pub struct IdentityCommand {
+    #[command(subcommand)]
+    command: IdentitySubcommand,
+}
 
-impl GenerateCommand {
+#[derive(Debug, Parser)]
+pub enum IdentitySubcommand {
+    #[command(about = "Create public/private key pair used for context identity")]
+    New,
+}
+
+impl Report for GenerateContextIdentityResponse {
+    fn report(&self) {
+        println!("public_key: {}", self.data.public_key);
+        println!("private_key: {}", self.data.private_key);
+    }
+}
+
+impl IdentityCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 

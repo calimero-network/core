@@ -20,6 +20,7 @@ mod component;
 mod context;
 mod generic;
 
+pub use alias::{IdentityAlias, Kind};
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
 pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState};
