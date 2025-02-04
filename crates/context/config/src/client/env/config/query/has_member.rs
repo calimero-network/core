@@ -2,8 +2,8 @@ use std::io::Cursor;
 
 use candid::Decode;
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{BytesN, Env, IntoVal};
-use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr, ReadXdr};
 use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
@@ -113,10 +113,7 @@ impl Method<Stellar> for HasMemberRequest {
         let identity_bytes: [u8; 32] = self.identity.rt().expect("identity does not exist");
         let identity: BytesN<32> = identity_bytes.into_val(&env);
 
-        let args = (
-          context_id,
-          identity
-        );
+        let args = (context_id, identity);
 
         let xdr = args.to_xdr(&env);
         Ok(xdr.to_alloc_vec())
@@ -125,13 +122,14 @@ impl Method<Stellar> for HasMemberRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let cursor = Cursor::new(response);
         let mut limited = Limited::new(cursor, Limits::none());
-        
-        let sc_val = ScVal::read_xdr(&mut limited)
-            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
-        let result: bool = sc_val.try_into()
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let result: bool = sc_val
+            .try_into()
             .map_err(|e| eyre::eyre!("Failed to convert to bool: {:?}", e))?;
-            
+
         Ok(result)
     }
 }

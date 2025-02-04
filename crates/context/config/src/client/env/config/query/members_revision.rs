@@ -1,9 +1,10 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{BytesN, Env, IntoVal};
 use starknet::core::codec::Encode as StarknetEncode;
-use std::io::Cursor;
-use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 
 use crate::client::env::config::types::starknet::{CallData, ContextId as StarknetContextId};
 use crate::client::env::Method;
@@ -97,9 +98,7 @@ impl Method<Stellar> for MembersRevisionRequest {
         let context_id: [u8; 32] = self.context_id.rt().expect("context does not exist");
         let context_id_val: BytesN<32> = context_id.into_val(&env);
 
-        let args = (
-            context_id_val,
-        );
+        let args = (context_id_val,);
 
         let xdr = args.to_xdr(&env);
         Ok(xdr.to_alloc_vec())
@@ -108,11 +107,12 @@ impl Method<Stellar> for MembersRevisionRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let cursor = Cursor::new(response);
         let mut limited = Limited::new(cursor, Limits::none());
-        
-        let sc_val = ScVal::read_xdr(&mut limited)
-            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
-        let revision: u64 = sc_val.try_into()
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let revision: u64 = sc_val
+            .try_into()
             .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
         Ok(revision)
     }

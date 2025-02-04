@@ -137,7 +137,6 @@ impl Method<Stellar> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-
         let env = Env::default();
         let context_id: [u8; 32] = self.context_id.rt().expect("context does not exist");
         let context_id_val: BytesN<32> = context_id.into_val(&env);
@@ -145,11 +144,7 @@ impl Method<Stellar> for MembersRequest {
         let offset_val: u32 = self.offset as u32;
         let length_val: u32 = self.length as u32;
 
-        let args = (
-            context_id_val,
-            offset_val,
-            length_val,
-        );
+        let args = (context_id_val, offset_val, length_val);
 
         let xdr = args.to_xdr(&env);
         Ok(xdr.to_alloc_vec())
@@ -158,12 +153,13 @@ impl Method<Stellar> for MembersRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let cursor = Cursor::new(response);
         let mut limited = Limited::new(cursor, Limits::none());
-        
-        let sc_val = ScVal::read_xdr(&mut limited)
-            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
         let env = Env::default();
-        let members: soroban_sdk::Vec<BytesN<32>> = sc_val.try_into_val(&env)
+        let members: soroban_sdk::Vec<BytesN<32>> = sc_val
+            .try_into_val(&env)
             .map_err(|e| eyre::eyre!("Failed to convert to Vec<BytesN<32>>: {:?}", e))?;
 
         Ok(members

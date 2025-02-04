@@ -126,9 +126,7 @@ impl Method<Stellar> for ApplicationRequest {
         let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
         let context_val: BytesN<32> = context_raw.into_val(&env);
 
-        let args = (
-            context_val,
-        );
+        let args = (context_val,);
 
         let xdr = args.to_xdr(&env);
         Ok(xdr.to_alloc_vec())

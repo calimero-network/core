@@ -181,7 +181,7 @@ impl Network {
             // Convert raw bytes to Soroban Bytes
             let env_bytes = Bytes::from_slice(&env, &args);
             // Convert to array of Vals
-            let vals: soroban_sdk::Vec<ScVal>= soroban_sdk::Vec::from_xdr(&env, &env_bytes)
+            let vals: soroban_sdk::Vec<ScVal> = soroban_sdk::Vec::from_xdr(&env, &env_bytes)
                 .map_err(|_| StellarError::Custom {
                     operation: ErrorOperation::Query,
                     reason: "Failed to decode XDR".to_owned(),
@@ -205,14 +205,12 @@ impl Network {
         let xdr_results: Vec<RawSimulateHostFunctionResult> = result.unwrap().results.unwrap();
 
         match xdr_results.first().and_then(|xdr| xdr.xdr.as_ref()) {
-            Some(xdr_bytes) => {
-                base64::engine::general_purpose::STANDARD
-                    .decode(xdr_bytes)
-                    .map_err(|_| StellarError::Custom {
-                        operation: ErrorOperation::Query,
-                        reason: "Failed to decode XDR response".to_owned(),
-                    })
-            }
+            Some(xdr_bytes) => base64::engine::general_purpose::STANDARD
+                .decode(xdr_bytes)
+                .map_err(|_| StellarError::Custom {
+                    operation: ErrorOperation::Query,
+                    reason: "Failed to decode XDR response".to_owned(),
+                }),
             None => Err(StellarError::Custom {
                 operation: ErrorOperation::Query,
                 reason: "No XDR results found".to_owned(),
