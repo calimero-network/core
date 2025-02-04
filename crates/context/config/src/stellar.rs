@@ -1,12 +1,12 @@
 use soroban_sdk::{
-    contracterror, contracttype, symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Val,
+    contracterror, contracttype, Address, Bytes, BytesN, Env, String as SorobanString, Symbol, Val,
     Vec,
 };
 use stellar_types::FromWithEnv;
 
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::ProposalId;
-use crate::{ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
+use crate::{Proposal, ProposalAction, ProposalWithApprovals, ProxyMutateRequest};
 
 pub mod stellar_types;
 
@@ -83,48 +83,84 @@ impl FromWithEnv<ProposalAction> for StellarProposalAction {
                 deposit,
             } => {
                 let mut vec_args = Vec::new(env);
-                vec_args.push_back(String::from_str(env, &args).into());
-
-                let symbol = symbol_short!("TODO_ALEN");
+                vec_args.push_back(SorobanString::from_str(env, &args).into());
 
                 StellarProposalAction::ExternalFunctionCall(
-                    Address::from_string(&String::from_str(env, &receiver_id)),
-                    symbol,
+                    Address::from_string(&SorobanString::from_str(env, &receiver_id)),
+                    Symbol::new(env, &method_name),
                     vec_args,
-                    deposit.try_into().unwrap(),
+                    deposit as i128,
                 )
-            }
+            },
             ProposalAction::Transfer {
                 receiver_id,
                 amount,
             } => StellarProposalAction::Transfer(
-                Address::from_string(&String::from_str(&env, &receiver_id)),
-                amount.try_into().unwrap(),
+                Address::from_string(&SorobanString::from_str(env, &receiver_id)),
+                amount as i128,
             ),
             ProposalAction::SetNumApprovals { num_approvals } => {
                 StellarProposalAction::SetNumApprovals(num_approvals)
-            }
-            ProposalAction::SetActiveProposalsLimit {
-                active_proposals_limit,
-            } => StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit),
+            },
+            ProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
+                StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit)
+            },
             ProposalAction::SetContextValue { key, value } => {
                 StellarProposalAction::SetContextValue(
-                    Bytes::from_slice(&env, &key),
-                    Bytes::from_slice(&env, &value),
+                    Bytes::from_slice(env, &key),
+                    Bytes::from_slice(env, &value),
                 )
-            }
+            },
             ProposalAction::DeleteProposal { proposal_id } => {
-                let proposal_id =
-                    BytesN::from_array(&env, &proposal_id.rt().expect("infallible conversion"));
-                StellarProposalAction::DeleteProposal(proposal_id)
+                StellarProposalAction::DeleteProposal(
+                    BytesN::from_array(env, &proposal_id.rt().expect("infallible conversion")),
+                )
+            },
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl From<StellarProposalAction> for ProposalAction {
+    fn from(action: StellarProposalAction) -> Self {
+        match action {
+            StellarProposalAction::ExternalFunctionCall(receiver, method, args, deposit) => {
+                ProposalAction::ExternalFunctionCall {
+                    receiver_id: receiver.to_string().to_string(),
+                    method_name: method.to_string(),
+                    args: format!("{:?}", args),
+                    deposit: deposit as u128,
+                }
             }
+            StellarProposalAction::Transfer(receiver, amount) => ProposalAction::Transfer {
+                receiver_id: receiver.to_string().to_string(),
+                amount: amount as u128,
+            },
+            StellarProposalAction::SetNumApprovals(num) => {
+                ProposalAction::SetNumApprovals { num_approvals: num }
+            }
+            StellarProposalAction::SetActiveProposalsLimit(limit) => {
+                ProposalAction::SetActiveProposalsLimit {
+                    active_proposals_limit: limit,
+                }
+            }
+            StellarProposalAction::SetContextValue(key, value) => ProposalAction::SetContextValue {
+                key: key.to_alloc_vec().into_boxed_slice(),
+                value: value.to_alloc_vec().into_boxed_slice(),
+            },
+            StellarProposalAction::DeleteProposal(id) => ProposalAction::DeleteProposal {
+                proposal_id: Repr::new(ProposalId::from_bytes(|dest| {
+                    dest.copy_from_slice(&id.to_array());
+                    Ok(32)
+                }).expect("infallible conversion")),
+            },
         }
     }
 }
 
 impl FromWithEnv<ProxyMutateRequest> for StellarProxyMutateRequest {
     fn from_with_env(request: ProxyMutateRequest, env: &Env) -> Self {
-        let request = match request {
+        match request {
             ProxyMutateRequest::Propose { proposal } => {
                 let mut actions = Vec::new(&env);
                 for action in proposal.actions {
@@ -152,8 +188,18 @@ impl FromWithEnv<ProxyMutateRequest> for StellarProxyMutateRequest {
                     ),
                 })
             }
-        };
-        request
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl From<StellarProposal> for Proposal {
+    fn from(proposal: StellarProposal) -> Self {
+        Proposal {
+            id: proposal.id.rt().expect("infallible conversion"),
+            author_id: proposal.author_id.rt().expect("infallible conversion"),
+            actions: proposal.actions.iter().map(|a| ProposalAction::from(a.clone())).collect(),
+        }
     }
 }
 

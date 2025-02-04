@@ -1,5 +1,8 @@
+use std::io::Cursor;
+
 use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ScVal, ReadXdr};
 
 use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
@@ -81,12 +84,16 @@ impl Method<Stellar> for ActiveProposalRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let value = u16::from_be_bytes(
-            response
-                .try_into()
-                .map_err(|_| eyre::eyre!("Invalid response length: expected 8 bytes"))?,
-        );
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
 
-        Ok(value)
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let active_proposals_limit: u32 = sc_val
+            .try_into()
+            .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
+        
+        Ok(active_proposals_limit as u16)
     }
 }

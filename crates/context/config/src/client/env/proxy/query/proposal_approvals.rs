@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use soroban_sdk::{BytesN, Env, IntoVal};
+use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
@@ -15,6 +19,7 @@ use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::ICProposalWithApprovals;
 use crate::repr::{ReprBytes, ReprTransmute};
+use crate::stellar::{StellarProposalId, StellarProposalWithApprovals};
 use crate::types::ProposalId;
 use crate::{ProposalWithApprovals, Repr};
 
@@ -108,10 +113,39 @@ impl Method<Stellar> for ProposalApprovalsRequest {
 
     const METHOD: &'static str = "get_confirmations_count";
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Ok(self.proposal_id.as_bytes().to_vec())
+        let env = Env::default();
+        let proposal_id_raw: [u8; 32] = self.proposal_id.rt().expect("proposal id does not exist");
+        let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env);
+
+        let args = (proposal_id_val,);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
+        // let cursor = Cursor::new(response);
+        // let mut limited = Limited::new(cursor, Limits::none());
+        
+        // let sc_val = ScVal::read_xdr(&mut limited)
+        //     .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        // // Handle None case first since it's an Option
+        // if sc_val == ScVal::Void {
+        //     return Err(eyre::eyre!("Proposal not found"));
+        // }
+
+        // let env = Env::default();
+        // let approval: StellarProposalWithApprovals = sc_val.try_into_val(&env)
+        //     .map_err(|e| eyre::eyre!("Failed to convert to proposal approvals: {:?}", e))?;
+        
+        // // Convert to our domain type
+        // let result = ProposalWithApprovals {
+        //     proposal_id: self.proposal_id,
+        //     num_approvals: approval.num_approvals,
+        // };
+            
+        // Ok(result)
     }
 }

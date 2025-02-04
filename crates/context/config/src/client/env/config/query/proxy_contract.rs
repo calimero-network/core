@@ -2,8 +2,8 @@ use std::io::Cursor;
 
 use candid::{Decode, Encode, Principal};
 use serde::Serialize;
-use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal};
-use soroban_sdk::{Address, Env, TryFromVal};
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{Address, BytesN, Env, TryFromVal, IntoVal};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
@@ -89,8 +89,14 @@ impl Method<Stellar> for ProxyContractRequest {
     const METHOD: &'static str = "proxy_contract";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
         let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
-        Ok(context_raw.to_vec())
+        let context_val: BytesN<32> = context_raw.into_val(&env);
+
+        let args = (context_val,);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

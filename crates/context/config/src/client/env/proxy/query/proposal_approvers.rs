@@ -1,7 +1,10 @@
+use std::io::Cursor;
 use std::mem;
 
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
+use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr, ReadXdr};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
@@ -13,7 +16,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprTransmute};
+use crate::repr::{Repr, ReprTransmute, ReprBytes};
 use crate::types::{ContextIdentity, ProposalId};
 
 #[derive(Clone, Debug, Serialize)]
@@ -129,15 +132,40 @@ impl Method<Stellar> for ProposalApproversRequest {
     const METHOD: &'static str = "proposal_approvers";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let mut encoded = Vec::new();
+        let env = Env::default();
+        let proposal_id_raw: [u8; 32] = self.proposal_id.rt().expect("proposal id does not exist");
+        let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env);
 
-        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("context does not exist");
-        encoded.extend_from_slice(&proposal_id);
+        let args = (proposal_id_val,);
 
-        Ok(encoded)
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
-
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+        
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        // Handle None case
+        if sc_val == ScVal::Void {
+            return Ok(Vec::new());  // Return empty vec if no approvers
+        }
+
+        let env = Env::default();
+        let approvers: soroban_sdk::Vec<BytesN<32>> = sc_val.try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert to approvers: {:?}", e))?;
+        
+        // Convert each BytesN<32> to ContextIdentity
+        Ok(approvers
+            .iter()
+            .map(|bytes| {
+                ContextIdentity::from_bytes(|dest| {
+                    dest.copy_from_slice(&bytes.to_array());
+                    Ok(32)
+                }).expect("valid 32-byte array")
+            })
+            .collect())
     }
 }

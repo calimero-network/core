@@ -1,7 +1,11 @@
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::{BytesN, Env, IntoVal, Val, TryFromVal};
+use soroban_sdk::xdr::{ToXdr, ReadXdr};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
+use std::io::Cursor;
+use soroban_sdk::xdr::{Limited, Limits, ScVal};
 
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetProposalId};
@@ -13,6 +17,7 @@ use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::ICProposal;
 use crate::repr::{Repr, ReprTransmute};
+use crate::stellar::StellarProposal;
 use crate::types::ProposalId;
 use crate::Proposal;
 
@@ -117,15 +122,34 @@ impl Method<Stellar> for ProposalRequest {
     const METHOD: &'static str = "proposal";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let mut encoded = Vec::new();
+        let env = Env::default();
+        let proposal_id_raw: [u8; 32] = self.proposal_id.rt().expect("proposal id does not exist");
+        let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env);
 
-        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("context does not exist");
-        encoded.extend_from_slice(&proposal_id);
+        let args = (proposal_id_val,);
 
-        Ok(encoded)
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+        
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        // Handle None case
+        if sc_val == ScVal::Void {
+            return Ok(None);
+        }
+
+        let env = Env::default();
+        let proposal_val = Val::try_from_val(&env, &sc_val).map_err(|e| eyre::eyre!("Failed to convert to proposal: {:?}", e))?;
+        let proposal = StellarProposal::try_from_val(&env, &proposal_val)
+            .map_err(|e| eyre::eyre!("Failed to convert to proposal: {:?}", e))?;
+        
+        // Convert StellarProposal to Proposal using our From impl
+        Ok(Some(Proposal::from(proposal)))
     }
 }

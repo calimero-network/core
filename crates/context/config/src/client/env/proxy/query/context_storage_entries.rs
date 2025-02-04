@@ -1,6 +1,9 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::{Bytes, Env};
+use soroban_sdk::xdr::{Limited, Limits, ScVal, ReadXdr, ToXdr};
+use soroban_sdk::{Bytes, Env, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -112,15 +115,36 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
     const METHOD: &'static str = "context_storage_entries";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let mut encoded = Vec::new();
-        encoded.extend_from_slice(&self.offset.to_le_bytes());
-
-        encoded.extend_from_slice(&self.limit.to_le_bytes());
-
-        Ok(encoded)
+        let env = Env::default();
+        let offset_val: u32 = self.offset as u32;
+        let limit_val: u32 = self.limit as u32;
+        
+        let args = (offset_val, limit_val);
+        
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+        
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let env = Env::default();
+        let entries: soroban_sdk::Vec<(Bytes, Bytes)> = sc_val.try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert to entries: {:?}", e))?;
+        
+         // Convert to Vec of ContextStorageEntry
+        let result = entries
+            .iter()
+            .map(|(key, value)| ContextStorageEntry {
+                key: key.to_alloc_vec(),
+                value: value.to_alloc_vec(),
+            })
+            .collect();
+            
+        Ok(result)
     }
 }

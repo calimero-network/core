@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{Bytes, Env, IntoVal, TryIntoVal};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
@@ -108,10 +112,28 @@ impl Method<Stellar> for ContextVariableRequest {
     const METHOD: &'static str = "get_context_value";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Ok(self.key)
+        let env = Env::default();
+
+        let key_val: Bytes = Bytes::from_slice(&env, &self.key);
+
+        let args = (key_val,);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        Ok(response)
+        todo!()
+        // let cursor = Cursor::new(response);
+        // let mut limited = Limited::new(cursor, Limits::none());
+
+        // let sc_val = ScVal::read_xdr(&mut limited)
+        //     .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        // let env = Env::default();
+        // let value: soroban_sdk::Vec<u8> = sc_val.try_into_val(&env)
+        //     .map_err(|e| eyre::eyre!("Failed to convert to Vec<u8>: {:?}", e))?;
+
+        // Ok(value.to_alloc_vec())
     }
 }
