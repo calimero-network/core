@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
 use candid::Decode;
 use serde::Serialize;
+use soroban_sdk::{BytesN, Env, IntoVal};
+use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr, ReadXdr};
 use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
@@ -8,7 +12,7 @@ use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -103,22 +107,31 @@ impl Method<Stellar> for HasMemberRequest {
     const METHOD: &'static str = "has_member";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id = Repr::new(*self.context_id);
-        let identity = Repr::new(*self.identity);
+        let env = Env::default();
+        let context_id_bytes: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        let context_id: BytesN<32> = context_id_bytes.into_val(&env);
+        let identity_bytes: [u8; 32] = self.identity.rt().expect("identity does not exist");
+        let identity: BytesN<32> = identity_bytes.into_val(&env);
 
-        let mut encoded_context_id = context_id.as_bytes().to_vec();
-        let encoded_identity = identity.as_bytes().to_vec();
+        let args = (
+          context_id,
+          identity
+        );
 
-        encoded_context_id.extend(encoded_identity);
-
-        Ok(encoded_context_id)
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() {
-            return Err(eyre::eyre!("Error fetching members"));
-        }
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+        
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
-        Ok(response[0] != 0)
+        let result: bool = sc_val.try_into()
+            .map_err(|e| eyre::eyre!("Failed to convert to bool: {:?}", e))?;
+            
+        Ok(result)
     }
 }

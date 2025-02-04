@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,7 +21,6 @@ use soroban_client::transaction_builder::TransactionBuilderBehavior;
 use soroban_client::xdr::ScVal;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{Bytes, Env, TryIntoVal, Val};
-use stellar_baselib::xdr::{self, ReadXdr};
 use thiserror::Error;
 use url::Url;
 
@@ -86,7 +84,8 @@ impl<'a> StellarTransport<'a> {
                 timeout: Some(1000),
                 headers: None,
             };
-            let server = Server::new(network_config.rpc_url.as_str(), options).expect("Failed to create server");
+            let server = Server::new(network_config.rpc_url.as_str(), options)
+                .expect("Failed to create server");
 
             let network = match network_config.network.as_str() {
                 "mainnet" => Networks::public(),
@@ -174,23 +173,21 @@ impl Network {
             })?;
 
         let source_account = Rc::new(RefCell::new(account));
-
         let mut encoded_args = None;
 
+        // First convert the XDR bytes back to a Vec<Val>
         if !args.is_empty() {
             let env = Env::default();
+            // Convert raw bytes to Soroban Bytes
             let env_bytes = Bytes::from_slice(&env, &args);
-            let val: Val = env_bytes
-                .try_into_val(&env)
+            // Convert to array of Vals
+            let vals: soroban_sdk::Vec<ScVal>= soroban_sdk::Vec::from_xdr(&env, &env_bytes)
                 .map_err(|_| StellarError::Custom {
                     operation: ErrorOperation::Query,
-                    reason: "Failed to convert to Val".to_owned(),
+                    reason: "Failed to decode XDR".to_owned(),
                 })?;
-            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: "Failed to convert to ScVal".to_owned(),
-            })?;
-            encoded_args = Some(vec![sc_val]);
+
+            encoded_args = Some(vals.iter().collect::<Vec<_>>());
         }
 
         let transaction = TransactionBuilder::new(source_account, self.network.as_str(), None)
@@ -204,34 +201,21 @@ impl Network {
             .client
             .simulate_transaction(transaction.clone(), None)
             .await;
+
         let xdr_results: Vec<RawSimulateHostFunctionResult> = result.unwrap().results.unwrap();
 
         match xdr_results.first().and_then(|xdr| xdr.xdr.as_ref()) {
             Some(xdr_bytes) => {
-                let xdr_bytes = base64::engine::general_purpose::STANDARD
+                base64::engine::general_purpose::STANDARD
                     .decode(xdr_bytes)
                     .map_err(|_| StellarError::Custom {
                         operation: ErrorOperation::Query,
                         reason: "Failed to decode XDR response".to_owned(),
-                    })?;
-
-                let cursor = Cursor::new(xdr_bytes);
-                let mut limited = xdr::Limited::new(cursor, xdr::Limits::none());
-                match ScVal::read_xdr(&mut limited) {
-                    Ok(sc_val) => {
-                        let env = Env::default();
-                        let bytes = sc_val.to_xdr(&env).to_alloc_vec();
-                        Ok(bytes)
-                    }
-                    Err(_) => Err(StellarError::Custom {
-                        operation: ErrorOperation::Query,
-                        reason: "Failed to parse XDR type".to_owned(),
-                    }),
-                }
+                    })
             }
             None => Err(StellarError::Custom {
                 operation: ErrorOperation::Query,
-                reason: "No XDR results found or XDR field is missing".to_owned(),
+                reason: "No XDR results found".to_owned(),
             }),
         }
     }
@@ -258,13 +242,10 @@ impl Network {
         if !args.is_empty() {
             let env = Env::default();
             let env_bytes = Bytes::from_slice(&env, &args);
-            let val: Val =
-                Val::from_xdr(&env, &env_bytes).map_err(|_| {
-                    StellarError::Custom {
-                        operation: ErrorOperation::Query,
-                        reason: "Failed to deserialize signed request".to_owned(),
-                    }
-                })?;
+            let val: Val = Val::from_xdr(&env, &env_bytes).map_err(|_| StellarError::Custom {
+                operation: ErrorOperation::Query,
+                reason: "Failed to deserialize signed request".to_owned(),
+            })?;
             let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
                 operation: ErrorOperation::Query,
                 reason: "Failed to convert to ScVal".to_owned(),

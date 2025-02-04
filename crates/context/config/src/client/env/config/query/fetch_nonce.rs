@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::{BytesN, Env, IntoVal};
+use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr, ReadXdr};
 use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{
@@ -105,28 +109,32 @@ impl Method<Stellar> for FetchNonceRequest {
     const METHOD: &'static str = "fetch_nonce";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let mut encoded = Vec::new();
+        let env = Env::default();
+        let context_id: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        let context_id_val: BytesN<32> = context_id.into_val(&env);
 
-        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
-        encoded.extend_from_slice(&context_raw);
+        let member_id: [u8; 32] = self.member_id.rt().expect("member does not exist");
+        let member_id_val: BytesN<32> = member_id.into_val(&env);
 
-        let member_raw: [u8; 32] = self.member_id.rt().expect("member does not exist");
-        encoded.extend_from_slice(&member_raw);
+        let args = (
+            context_id_val,
+            member_id_val,
+        );
 
-        Ok(encoded)
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() {
-            return Err(eyre::eyre!("No nonce fetched"));
-        }
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+        
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
-        let nonce = u64::from_be_bytes(
-            response
-                .try_into()
-                .map_err(|_| eyre::eyre!("Invalid response length: expected 8 bytes"))?,
-        );
-
+        let nonce: u64 = sc_val.try_into()
+            .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
+          
         Ok(Some(nonce))
     }
 }

@@ -1,9 +1,10 @@
 use core::mem;
+use std::io::Cursor;
 
 use candid::{Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::xdr::FromXdr;
-use soroban_sdk::{Bytes, BytesN, Env};
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -136,31 +137,34 @@ impl Method<Stellar> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let mut encoded = Vec::new();
 
-        // Encode context_id (BytesN<32>)
-        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
-        encoded.extend_from_slice(&context_raw);
+        let env = Env::default();
+        let context_id: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        let context_id_val: BytesN<32> = context_id.into_val(&env);
 
-        // Encode offset (u32)
-        encoded.extend_from_slice(&self.offset.to_le_bytes());
+        let offset_val: u32 = self.offset as u32;
+        let length_val: u32 = self.length as u32;
 
-        // Encode length (u32)
-        encoded.extend_from_slice(&self.length.to_le_bytes());
+        let args = (
+            context_id_val,
+            offset_val,
+            length_val,
+        );
 
-        Ok(encoded)
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        if response.is_empty() {
-            return Err(eyre::eyre!("No members found"));
-        }
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+        
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
         let env = Env::default();
-        let env_bytes = Bytes::from_slice(&env, &response);
-
-        let members = soroban_sdk::Vec::<BytesN<32>>::from_xdr(&env, &env_bytes)
-            .map_err(|_| eyre::eyre!("Failed to deserialize members"))?;
+        let members: soroban_sdk::Vec<BytesN<32>> = sc_val.try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert to Vec<BytesN<32>>: {:?}", e))?;
 
         Ok(members
             .iter()

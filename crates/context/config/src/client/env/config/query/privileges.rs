@@ -1,8 +1,12 @@
 use core::{mem, ptr};
 use std::collections::BTreeMap;
+use std::io::Cursor;
 
 use candid::{Decode, Encode};
+use crate::repr::ReprBytes;
 use serde::Serialize;
+use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
+use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr, ReadXdr};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
 
@@ -18,6 +22,7 @@ use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
 use crate::repr::{Repr, ReprTransmute};
+use crate::stellar::stellar_types::StellarCapability;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -171,20 +176,56 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let mut encoded = Vec::new();
+        let env = Env::default();
+        let context_id: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        let context_id_val: BytesN<32> = context_id.into_val(&env);
 
-        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
-        encoded.extend_from_slice(&context_raw);
-
-        for identity in self.identities {
+        let mut identities: soroban_sdk::Vec<BytesN<32>> = soroban_sdk::Vec::new(&env);
+        
+        for identity in self.identities.iter() {
             let identity_raw: [u8; 32] = identity.rt().expect("identity does not exist");
-            encoded.extend_from_slice(&identity_raw);
+            identities.push_back(identity_raw.into_val(&env));
         }
 
-        Ok(encoded)
+        let args = (
+          context_id_val,
+          identities
+        );
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+        
+        let sc_val = ScVal::read_xdr(&mut limited)
+            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let env = Env::default();
+        let privileges_map: soroban_sdk::Map<BytesN<32>, soroban_sdk::Vec<StellarCapability>> = 
+            sc_val.try_into_val(&env)
+                .map_err(|e| eyre::eyre!("Failed to convert to privileges map: {:?}", e))?;
+        
+        // Convert to standard collections
+        let result: BTreeMap<SignerId, Vec<Capability>> = privileges_map
+            .iter()
+            .map(|(id, caps)| {
+                let signer = SignerId::from_bytes(|dest| {
+                    dest.copy_from_slice(&id.to_array());
+                    Ok(32)
+                }).expect("Valid 32-byte array");
+                
+                let capabilities = caps
+                    .iter()
+                    .map(|cap| cap.into())
+                    .collect();
+                
+                (signer, capabilities)
+            })
+            .collect();
+            
+        Ok(result)
     }
 }

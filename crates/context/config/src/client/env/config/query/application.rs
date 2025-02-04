@@ -1,7 +1,7 @@
 use candid::{Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::xdr::FromXdr;
-use soroban_sdk::{Bytes, Env};
+use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::{Bytes, BytesN, Env, IntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -122,8 +122,16 @@ impl Method<Stellar> for ApplicationRequest {
     const METHOD: &'static str = "application";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
         let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
-        Ok(context_raw.to_vec())
+        let context_val: BytesN<32> = context_raw.into_val(&env);
+
+        let args = (
+            context_val,
+        );
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
