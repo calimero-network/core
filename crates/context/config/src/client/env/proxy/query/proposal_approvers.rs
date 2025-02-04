@@ -3,8 +3,8 @@ use std::mem;
 
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
-use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr, ReadXdr};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
@@ -16,7 +16,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprTransmute, ReprBytes};
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{ContextIdentity, ProposalId};
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,19 +144,20 @@ impl Method<Stellar> for ProposalApproversRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let cursor = Cursor::new(response);
         let mut limited = Limited::new(cursor, Limits::none());
-        
-        let sc_val = ScVal::read_xdr(&mut limited)
-            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
         // Handle None case
         if sc_val == ScVal::Void {
-            return Ok(Vec::new());  // Return empty vec if no approvers
+            return Ok(Vec::new()); // Return empty vec if no approvers
         }
 
         let env = Env::default();
-        let approvers: soroban_sdk::Vec<BytesN<32>> = sc_val.try_into_val(&env)
+        let approvers: soroban_sdk::Vec<BytesN<32>> = sc_val
+            .try_into_val(&env)
             .map_err(|e| eyre::eyre!("Failed to convert to approvers: {:?}", e))?;
-        
+
         // Convert each BytesN<32> to ContextIdentity
         Ok(approvers
             .iter()
@@ -164,7 +165,8 @@ impl Method<Stellar> for ProposalApproversRequest {
                 ContextIdentity::from_bytes(|dest| {
                     dest.copy_from_slice(&bytes.to_array());
                     Ok(32)
-                }).expect("valid 32-byte array")
+                })
+                .expect("valid 32-byte array")
             })
             .collect())
     }

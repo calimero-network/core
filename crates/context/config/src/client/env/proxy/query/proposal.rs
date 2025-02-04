@@ -1,11 +1,11 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::{BytesN, Env, IntoVal, Val, TryFromVal};
-use soroban_sdk::xdr::{ToXdr, ReadXdr};
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal, TryFromVal, Val};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
-use std::io::Cursor;
-use soroban_sdk::xdr::{Limited, Limits, ScVal};
 
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetProposalId};
@@ -135,9 +135,9 @@ impl Method<Stellar> for ProposalRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let cursor = Cursor::new(response);
         let mut limited = Limited::new(cursor, Limits::none());
-        
-        let sc_val = ScVal::read_xdr(&mut limited)
-            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
         // Handle None case
         if sc_val == ScVal::Void {
@@ -145,10 +145,11 @@ impl Method<Stellar> for ProposalRequest {
         }
 
         let env = Env::default();
-        let proposal_val = Val::try_from_val(&env, &sc_val).map_err(|e| eyre::eyre!("Failed to convert to proposal: {:?}", e))?;
+        let proposal_val = Val::try_from_val(&env, &sc_val)
+            .map_err(|e| eyre::eyre!("Failed to convert to proposal: {:?}", e))?;
         let proposal = StellarProposal::try_from_val(&env, &proposal_val)
             .map_err(|e| eyre::eyre!("Failed to convert to proposal: {:?}", e))?;
-        
+
         // Convert StellarProposal to Proposal using our From impl
         Ok(Some(Proposal::from(proposal)))
     }

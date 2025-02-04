@@ -2,8 +2,8 @@ use std::io::Cursor;
 
 use candid::{Decode, Encode};
 use serde::{Deserialize, Serialize};
-use soroban_sdk::{BytesN, Env, IntoVal};
 use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
@@ -127,7 +127,7 @@ impl Method<Stellar> for ProposalApprovalsRequest {
         todo!()
         // let cursor = Cursor::new(response);
         // let mut limited = Limited::new(cursor, Limits::none());
-        
+
         // let sc_val = ScVal::read_xdr(&mut limited)
         //     .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
 
@@ -139,13 +139,13 @@ impl Method<Stellar> for ProposalApprovalsRequest {
         // let env = Env::default();
         // let approval: StellarProposalWithApprovals = sc_val.try_into_val(&env)
         //     .map_err(|e| eyre::eyre!("Failed to convert to proposal approvals: {:?}", e))?;
-        
+
         // // Convert to our domain type
         // let result = ProposalWithApprovals {
         //     proposal_id: self.proposal_id,
         //     num_approvals: approval.num_approvals,
         // };
-            
+
         // Ok(result)
     }
 }

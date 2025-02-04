@@ -3,7 +3,7 @@ use std::io::Cursor;
 use candid::{Decode, Encode, Principal};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
-use soroban_sdk::{Address, BytesN, Env, TryFromVal, IntoVal};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, TryFromVal};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 

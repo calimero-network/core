@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
-use soroban_sdk::xdr::{Limited, Limits, ScVal, ReadXdr};
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal};
 
 use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
@@ -93,7 +93,7 @@ impl Method<Stellar> for ActiveProposalRequest {
         let active_proposals_limit: u32 = sc_val
             .try_into()
             .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
-        
+
         Ok(active_proposals_limit as u16)
     }
 }
