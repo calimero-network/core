@@ -240,10 +240,11 @@ impl Network {
         if !args.is_empty() {
             let env = Env::default();
             let env_bytes = Bytes::from_slice(&env, &args);
-            let sc_val: ScVal = ScVal::from_xdr(&env, &env_bytes).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: "Failed to convert to ScVal".to_owned(),
-            })?;
+            let sc_val: ScVal =
+                ScVal::from_xdr(&env, &env_bytes).map_err(|_| StellarError::Custom {
+                    operation: ErrorOperation::Query,
+                    reason: "Failed to convert to ScVal".to_owned(),
+                })?;
             encoded_args = Some(vec![sc_val]);
         }
 

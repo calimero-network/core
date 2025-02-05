@@ -91,7 +91,7 @@ impl FromWithEnv<ProposalAction> for StellarProposalAction {
                     vec_args,
                     deposit as i128,
                 )
-            },
+            }
             ProposalAction::Transfer {
                 receiver_id,
                 amount,
@@ -101,21 +101,22 @@ impl FromWithEnv<ProposalAction> for StellarProposalAction {
             ),
             ProposalAction::SetNumApprovals { num_approvals } => {
                 StellarProposalAction::SetNumApprovals(num_approvals)
-            },
-            ProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
-                StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit)
-            },
+            }
+            ProposalAction::SetActiveProposalsLimit {
+                active_proposals_limit,
+            } => StellarProposalAction::SetActiveProposalsLimit(active_proposals_limit),
             ProposalAction::SetContextValue { key, value } => {
                 StellarProposalAction::SetContextValue(
                     Bytes::from_slice(env, &key),
                     Bytes::from_slice(env, &value),
                 )
-            },
+            }
             ProposalAction::DeleteProposal { proposal_id } => {
-                StellarProposalAction::DeleteProposal(
-                    BytesN::from_array(env, &proposal_id.rt().expect("infallible conversion")),
-                )
-            },
+                StellarProposalAction::DeleteProposal(BytesN::from_array(
+                    env,
+                    &proposal_id.rt().expect("infallible conversion"),
+                ))
+            }
         }
     }
 }
@@ -149,10 +150,13 @@ impl From<StellarProposalAction> for ProposalAction {
                 value: value.to_alloc_vec().into_boxed_slice(),
             },
             StellarProposalAction::DeleteProposal(id) => ProposalAction::DeleteProposal {
-                proposal_id: Repr::new(ProposalId::from_bytes(|dest| {
-                    dest.copy_from_slice(&id.to_array());
-                    Ok(32)
-                }).expect("infallible conversion")),
+                proposal_id: Repr::new(
+                    ProposalId::from_bytes(|dest| {
+                        dest.copy_from_slice(&id.to_array());
+                        Ok(32)
+                    })
+                    .expect("infallible conversion"),
+                ),
             },
         }
     }
@@ -198,7 +202,11 @@ impl From<StellarProposal> for Proposal {
         Proposal {
             id: proposal.id.rt().expect("infallible conversion"),
             author_id: proposal.author_id.rt().expect("infallible conversion"),
-            actions: proposal.actions.iter().map(|a| ProposalAction::from(a.clone())).collect(),
+            actions: proposal
+                .actions
+                .iter()
+                .map(|a| ProposalAction::from(a.clone()))
+                .collect(),
         }
     }
 }
