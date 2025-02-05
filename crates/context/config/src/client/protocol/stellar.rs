@@ -240,11 +240,7 @@ impl Network {
         if !args.is_empty() {
             let env = Env::default();
             let env_bytes = Bytes::from_slice(&env, &args);
-            let val: Val = Val::from_xdr(&env, &env_bytes).map_err(|_| StellarError::Custom {
-                operation: ErrorOperation::Query,
-                reason: "Failed to deserialize signed request".to_owned(),
-            })?;
-            let sc_val: ScVal = val.try_into_val(&env).map_err(|_| StellarError::Custom {
+            let sc_val: ScVal = ScVal::from_xdr(&env, &env_bytes).map_err(|_| StellarError::Custom {
                 operation: ErrorOperation::Query,
                 reason: "Failed to convert to ScVal".to_owned(),
             })?;

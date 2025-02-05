@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::Env;
+use soroban_sdk::{BytesN, Env};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -178,8 +178,11 @@ impl<'a> Method<Stellar> for Mutate<'a> {
         let env = Env::default();
         let signer_sk = SigningKey::from_bytes(&self.signing_key);
 
+        let signer_id: [u8; 32] = signer_sk.verifying_key().rt()?;
+        let signer_id = BytesN::from_array(&env, &signer_id);
+
         let request = StellarRequest::new(
-            signer_sk.verifying_key().rt()?,
+            signer_id,
             StellarRequestKind::from_with_env(self.kind, &env),
             self.nonce,
         );
