@@ -6,7 +6,7 @@ mod tests {
 
     #[test]
     fn test_valid_alias_creation() {
-        let alias = Alias::new("test-alias".to_string()).unwrap();
+        let alias = Alias::try_from("test-alias".to_string()).unwrap();
         assert_eq!(alias.as_str(), "test-alias");
     }
 
@@ -14,11 +14,11 @@ mod tests {
     fn test_alias_length_limit() {
         // Valid: exactly 50 chars
         let valid = "a".repeat(50);
-        assert!(Alias::new(valid).is_some());
+        assert!(Alias::try_from(valid).is_ok());
 
         // Invalid: 51 chars
         let invalid = "a".repeat(51);
-        assert!(Alias::new(invalid).is_none());
+        assert!(Alias::try_from(invalid).is_err());
     }
 
     #[test]
@@ -46,8 +46,7 @@ mod tests {
 
     #[test]
     fn test_conversion_to_string() {
-        let alias = Alias::new("convert-test".to_string()).unwrap();
-
+        let alias = Alias::try_from("convert-test".to_string()).unwrap();
         // Test From<Alias> for String
         let string: String = alias.into();
         assert_eq!(string, "convert-test");
@@ -56,23 +55,23 @@ mod tests {
     #[test]
     fn test_empty_alias() {
         // Empty string should be valid
-        let alias = Alias::new(String::new()).unwrap();
+        let alias = Alias::try_from(String::new()).unwrap();
         assert_eq!(alias.as_str(), "");
     }
 
     #[test]
     fn test_special_characters() {
         // Test with various special characters
-        let special = "test-123_@#$%^&*()";
-        let alias = Alias::new(special.to_string()).unwrap();
+        let special = "test-123_@#$%^&*()".to_string();
+        let alias = Alias::try_from(special.clone()).unwrap();
         assert_eq!(alias.as_str(), special);
     }
 
     #[test]
     fn test_unicode_characters() {
         // Test with Unicode characters
-        let unicode = "测试-алиас-🦀";
-        let alias = Alias::new(unicode.to_string()).unwrap();
+        let unicode = "测试-алиас-🦀".to_string();
+        let alias = Alias::try_from(unicode.clone()).unwrap();
         assert_eq!(alias.as_str(), unicode);
     }
 
@@ -97,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_serialize_deserialize_roundtrip() {
-        let original = Alias::new("test-alias".to_string()).unwrap();
+        let original = Alias::try_from("test-alias".to_string()).unwrap();
         let serialized = serde_json::to_string(&original).unwrap();
         let deserialized: Alias = serde_json::from_str(&serialized).unwrap();
         assert_eq!(original, deserialized);

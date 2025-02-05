@@ -19,11 +19,6 @@ impl Alias {
     const MAX_LENGTH: usize = 50;
 
     #[must_use]
-    pub fn new(s: String) -> Option<Self> {
-        (s.len() <= Self::MAX_LENGTH).then(|| Self(s))
-    }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -55,9 +50,11 @@ impl TryFrom<String> for Alias {
     type Error = InvalidAlias;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value).ok_or(InvalidAlias(
-            "alias exceeds maximum length of 50 characters",
-        ))
+        (value.len() <= Self::MAX_LENGTH)
+            .then(|| Self(value))
+            .ok_or(InvalidAlias(
+                "alias exceeds maximum length of 50 characters",
+            ))
     }
 }
 
@@ -67,7 +64,7 @@ impl<'de> Deserialize<'de> for Alias {
         D: serde::Deserializer<'de>,
     {
         let encoded = String::deserialize(deserializer)?;
-        encoded.parse().map_err(|_| {
+        encoded.try_into().map_err(|_| {
             serde::de::Error::custom(format!(
                 "alias exceeds maximum length of {} characters",
                 Self::MAX_LENGTH

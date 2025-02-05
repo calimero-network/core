@@ -19,22 +19,13 @@ impl<T: KeyComponent> KeyComponents for (T,) {
     type LEN = T::LEN;
 }
 
-impl<T: KeyComponent, U: KeyComponent> KeyComponents for (T, U)
+impl<T: KeyComponents, U: KeyComponents> KeyComponents for (T, U)
 where
     T::LEN: Add<U::LEN, Output: ArrayLength>,
 {
     type LEN = Sum<T::LEN, U::LEN>;
 }
 
-impl<T: KeyComponent, U: KeyComponent, V: KeyComponent> KeyComponents for (T, U, V)
-where
-    T::LEN: Add<U::LEN, Output: ArrayLength>,
-    Sum<T::LEN, U::LEN>: Add<V::LEN, Output: ArrayLength>,
-{
-    type LEN = Sum<Sum<T::LEN, U::LEN>, V::LEN>;
-}
-
-#[macro_export]
 macro_rules! impl_key_components {
     ($a:ident, $b:ident) => {};
     ($t:ident, $($ts:ident),+) => {
@@ -58,5 +49,3 @@ macro_rules! impl_key_components {
 impl_key_components!(
     T01, T02, T03, T04, T05, T06, T07, T08, T09, T10, T11, T12, T13, T14, T15, T16
 );
-
-pub(crate) use impl_key_components;

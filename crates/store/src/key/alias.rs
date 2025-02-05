@@ -8,11 +8,9 @@ use generic_array::sequence::Concat;
 use generic_array::typenum::{U1, U32, U50};
 use generic_array::GenericArray;
 
-use super::component::{impl_key_components, KeyComponent, KeyComponents};
+use super::component::KeyComponent;
 use super::{AsKeyParts, FromKeyParts, Key};
 use crate::db::Column;
-
-//impl_key_components!(Kind, Scope, Alias);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Kind;
@@ -59,6 +57,31 @@ impl IdentityAlias {
 
     pub fn identity(context_id: ContextId, alias: AliasPrimitive) -> Self {
         Self::create_key(KindPrimitive::Identity, *context_id, alias)
+    }
+
+    pub fn kind(&self) -> KindPrimitive {
+        match AsRef::<[_; 83]>::as_ref(&self.0)[0] {
+            1 => KindPrimitive::Context,
+            2 => KindPrimitive::Identity,
+            3 => KindPrimitive::Application,
+            _ => panic!("invalid kind"),
+        }
+    }
+
+    pub fn scope(&self) -> [u8; 32] {
+        let mut scope = [0; 32];
+        scope.copy_from_slice(&AsRef::<[_; 83]>::as_ref(&self.0)[1..33]);
+        scope
+    }
+
+    pub fn alias(&self) -> AliasPrimitive {
+        let mut alias = [0; 50];
+        alias.copy_from_slice(&AsRef::<[_; 83]>::as_ref(&self.0)[33..]);
+
+        String::from_utf8(alias.to_vec())
+            .expect("valid utf-8")
+            .try_into()
+            .expect("alias length already validated during construction")
     }
 }
 
