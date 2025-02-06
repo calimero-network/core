@@ -271,25 +271,27 @@ impl ContextProxyContract {
                         if balance < deposit {
                             return Err(StellarProxyError::InsufficientBalance);
                         }
-      
+
                         // Auth for token approve
-                        let token_auth = InvokerContractAuthEntry::Contract(SubContractInvocation {
-                            context: ContractContext {
-                                contract: state.ledger_id.clone(),
-                                fn_name: symbol_short!("approve"),
-                                args: (
-                                    &contract_address,
-                                    &receiver_id,
-                                    &deposit,
-                                    &expiration_ledger,
-                                ).into_val(env),
-                            },
-                            sub_invocations: vec![&env],
-                        });
-                        
+                        let token_auth =
+                            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                                context: ContractContext {
+                                    contract: state.ledger_id.clone(),
+                                    fn_name: symbol_short!("approve"),
+                                    args: (
+                                        &contract_address,
+                                        &receiver_id,
+                                        &deposit,
+                                        &expiration_ledger,
+                                    )
+                                        .into_val(env),
+                                },
+                                sub_invocations: vec![&env],
+                            });
+
                         // Authorize token operation separately
                         env.authorize_as_current_contract(vec![&env, token_auth]);
-                        
+
                         // Execute token approve
                         token_client.approve(
                             &contract_address,
@@ -305,9 +307,10 @@ impl ContextProxyContract {
                         &env,
                         InvokerContractAuthEntry::Contract(SubContractInvocation {
                             context: ContractContext {
-                                  contract: receiver_id.clone(),
-                                  fn_name: symbol_short!("transfer"),
-                                  args: (contract_address.clone(), receiver_id.clone(), deposit).into_val(env),
+                                contract: receiver_id.clone(),
+                                fn_name: symbol_short!("transfer"),
+                                args: (contract_address.clone(), receiver_id.clone(), deposit)
+                                    .into_val(env),
                             },
                             sub_invocations: vec![&env],
                         }),
@@ -317,30 +320,32 @@ impl ContextProxyContract {
                     env.invoke_contract::<Val>(&receiver_id, &method_name, args);
 
                     // Handle post-call deposit if needed
-                    if deposit > 0 {                        
+                    if deposit > 0 {
                         let token_client = TokenClient::new(env, &state.ledger_id);
                         let current_ledger = env.ledger().sequence();
                         let expiration_ledger = current_ledger + 100;
                         let contract_address = env.current_contract_address();
-      
+
                         // Auth for token approve
-                        let token_auth = InvokerContractAuthEntry::Contract(SubContractInvocation {
-                            context: ContractContext {
-                                contract: state.ledger_id.clone(),
-                                fn_name: symbol_short!("approve"),
-                                args: (
-                                    &contract_address,
-                                    &receiver_id,
-                                    &deposit,
-                                    &expiration_ledger,
-                                ).into_val(env),
-                            },
-                            sub_invocations: vec![&env],
-                        });
-                        
+                        let token_auth =
+                            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                                context: ContractContext {
+                                    contract: state.ledger_id.clone(),
+                                    fn_name: symbol_short!("approve"),
+                                    args: (
+                                        &contract_address,
+                                        &receiver_id,
+                                        &deposit,
+                                        &expiration_ledger,
+                                    )
+                                        .into_val(env),
+                                },
+                                sub_invocations: vec![&env],
+                            });
+
                         // Authorize token operation separately
                         env.authorize_as_current_contract(vec![&env, token_auth]);
-                        
+
                         // Execute token approve
                         token_client.approve(
                             &contract_address,

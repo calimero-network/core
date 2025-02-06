@@ -1,5 +1,6 @@
 use soroban_sdk::{
-    contracterror, contracttype, Address, Bytes, BytesN, Env, IntoVal, String as SorobanString, Symbol, Val, Vec
+    contracterror, contracttype, Address, Bytes, BytesN, Env, IntoVal, String as SorobanString,
+    Symbol, Val, Vec,
 };
 use stellar_types::FromWithEnv;
 
@@ -83,57 +84,62 @@ impl FromWithEnv<ProposalAction> for StellarProposalAction {
                 deposit,
             } => {
                 // Parse the JSON string into a HashMap
-                let args_vec: std::vec::Vec<(String, String)> = serde_json::from_str(&args).unwrap_or_default();
-                
+                let args_vec: std::vec::Vec<(String, String)> =
+                    serde_json::from_str(&args).unwrap_or_default();
+
                 // Create a Soroban Vec
                 let mut vec_args = Vec::new(env);
-                
+
                 // Convert each value to SorobanString
                 for (key, value) in args_vec {
                     match key.as_str() {
-                         // 32-bit integers
+                        // 32-bit integers
                         "i32" => {
                             let number = value.parse::<i32>().unwrap_or_default();
                             vec_args.push_back(number.into_val(env));
-                        },
+                        }
                         "u32" => {
                             let number = value.parse::<u32>().unwrap_or_default();
                             vec_args.push_back(number.into_val(env));
-                        },
+                        }
                         // 64-bit integers
                         "i64" => {
                             let number = value.parse::<i64>().unwrap_or_default();
                             vec_args.push_back(number.into_val(env));
-                        },
+                        }
                         "u64" => {
                             let number = value.parse::<u64>().unwrap_or_default();
                             vec_args.push_back(number.into_val(env));
-                        },
+                        }
                         // 128-bit integers
                         "i128" => {
                             let number = value.parse::<i128>().unwrap_or_default();
                             vec_args.push_back(number.into_val(env));
-                        },
+                        }
                         "u128" => {
                             let number = value.parse::<u128>().unwrap_or_default();
                             vec_args.push_back(number.into_val(env));
-                        },
+                        }
                         "string" => {
-                          vec_args.push_back(value.into_val(env));
+                            vec_args.push_back(value.into_val(env));
                         }
                         "bool" => {
                             let bool_val = value.to_lowercase() == "true";
                             vec_args.push_back(bool_val.into_val(env));
                         }
                         "address" => {
-                            vec_args.push_back(Address::from_string(&SorobanString::from_str(env, &value)).into_val(env));
-                        },
+                            vec_args.push_back(
+                                Address::from_string(&SorobanString::from_str(env, &value))
+                                    .into_val(env),
+                            );
+                        }
                         "symbol" => {
                             vec_args.push_back(Symbol::new(env, &value).into_val(env));
-                        },
+                        }
                         "bytes" => {
-                            vec_args.push_back(Bytes::from_slice(env, &value.as_bytes()).into_val(env));
-                        },
+                            vec_args
+                                .push_back(Bytes::from_slice(env, &value.as_bytes()).into_val(env));
+                        }
                         _ => {
                             vec_args.push_back(value.into_val(env));
                         }
