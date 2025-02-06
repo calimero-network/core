@@ -5,8 +5,9 @@ use calimero_context_config::stellar::{
     StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner,
     StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest,
 };
+use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{contractimpl, log, vec, BytesN, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{contractimpl, log, symbol_short, vec, BytesN, Env, IntoVal, Symbol, Val, Vec};
 
 use crate::{ContextProxyContract, ContextProxyContractArgs, ContextProxyContractClient};
 
@@ -258,23 +259,38 @@ impl ContextProxyContract {
                     args,
                     deposit,
                 ) => {
-                    let current_address = env.current_contract_address();
-                    current_address.require_auth();
-
                     // Handle deposit if present
                     if deposit > 0 {
                         let token_client = TokenClient::new(env, &state.ledger_id);
+                        let current_ledger = env.ledger().sequence();
+                        let expiration_ledger = current_ledger + 100;
                         let contract_address = env.current_contract_address();
 
-                        // Check balance and transfer
+                        // Verify balance and approve transfer
                         let balance = token_client.balance(&contract_address);
                         if balance < deposit {
                             return Err(StellarProxyError::InsufficientBalance);
                         }
-
-                        // Approve transfer with longer expiration
-                        let current_ledger = env.ledger().sequence();
-                        let expiration_ledger = current_ledger + 100;
+      
+                        // Auth for token approve
+                        let token_auth = InvokerContractAuthEntry::Contract(SubContractInvocation {
+                            context: ContractContext {
+                                contract: state.ledger_id.clone(),
+                                fn_name: symbol_short!("approve"),
+                                args: (
+                                    &contract_address,
+                                    &receiver_id,
+                                    &deposit,
+                                    &expiration_ledger,
+                                ).into_val(env),
+                            },
+                            sub_invocations: vec![&env],
+                        });
+                        
+                        // Authorize token operation separately
+                        env.authorize_as_current_contract(vec![&env, token_auth]);
+                        
+                        // Execute token approve
                         token_client.approve(
                             &contract_address,
                             &receiver_id,
@@ -283,26 +299,53 @@ impl ContextProxyContract {
                         );
                     }
 
+                    let contract_address = env.current_contract_address();
+
+                    env.authorize_as_current_contract(vec![
+                        &env,
+                        InvokerContractAuthEntry::Contract(SubContractInvocation {
+                            context: ContractContext {
+                                  contract: receiver_id.clone(),
+                                  fn_name: symbol_short!("transfer"),
+                                  args: (contract_address.clone(), receiver_id.clone(), deposit).into_val(env),
+                            },
+                            sub_invocations: vec![&env],
+                        }),
+                    ]);
+
                     // Execute external call
                     env.invoke_contract::<Val>(&receiver_id, &method_name, args);
 
                     // Handle post-call deposit if needed
-                    if deposit > 0 {
+                    if deposit > 0 {                        
                         let token_client = TokenClient::new(env, &state.ledger_id);
-                        let contract_address = env.current_contract_address();
-
-                        // Verify balance and approve transfer
-                        let balance = token_client.balance(&contract_address);
-                        if balance < deposit {
-                            return Err(StellarProxyError::InsufficientBalance);
-                        }
-
                         let current_ledger = env.ledger().sequence();
-                        let expiration_ledger = current_ledger + 1;
+                        let expiration_ledger = current_ledger + 100;
+                        let contract_address = env.current_contract_address();
+      
+                        // Auth for token approve
+                        let token_auth = InvokerContractAuthEntry::Contract(SubContractInvocation {
+                            context: ContractContext {
+                                contract: state.ledger_id.clone(),
+                                fn_name: symbol_short!("approve"),
+                                args: (
+                                    &contract_address,
+                                    &receiver_id,
+                                    &deposit,
+                                    &expiration_ledger,
+                                ).into_val(env),
+                            },
+                            sub_invocations: vec![&env],
+                        });
+                        
+                        // Authorize token operation separately
+                        env.authorize_as_current_contract(vec![&env, token_auth]);
+                        
+                        // Execute token approve
                         token_client.approve(
                             &contract_address,
                             &receiver_id,
-                            &deposit,
+                            &0,
                             &expiration_ledger,
                         );
                     }

@@ -42,19 +42,16 @@ impl MockExternalContract {
         key: String,
         value: String,
     ) -> Result<String, Error> {
-        from.require_auth();
-
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
 
-        let state: MockExternalState = env.storage().instance().get(&STORAGE_KEY).unwrap();
+        let mut state: MockExternalState = env.storage().instance().get(&STORAGE_KEY).unwrap();
         let token_client = TokenClient::new(&env, &state.token);
 
         // Required token transfer
         token_client.transfer(&from, &env.current_contract_address(), &amount);
 
-        let mut state: MockExternalState = env.storage().instance().get(&STORAGE_KEY).unwrap();
         state.total_deposits += amount;
 
         // Store the key-value pair
