@@ -307,7 +307,7 @@ impl ContextProxyContract {
                         &env,
                         InvokerContractAuthEntry::Contract(SubContractInvocation {
                             context: ContractContext {
-                                contract: receiver_id.clone(),
+                                contract: state.ledger_id.clone(),
                                 fn_name: symbol_short!("transfer"),
                                 args: (contract_address.clone(), receiver_id.clone(), deposit)
                                     .into_val(env),

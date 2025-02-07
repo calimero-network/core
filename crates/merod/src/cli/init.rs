@@ -300,7 +300,7 @@ impl InitCommand {
                 ClientConfigParams {
                     network: "testnet".into(),
                     protocol: "stellar".into(),
-                    contract_id: "CBSIP2RDVGUIXY6HGNLRDW6JSDSRYGOVAWJUX3LP7ROVCT3FC5DFUJHB"
+                    contract_id: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY"
                         .parse()?,
                     signer: ClientSelectedSigner::Local,
                 },
