@@ -8,7 +8,7 @@ use calimero_server_primitives::admin::{
 };
 use clap::builder::PossibleValue;
 use clap::{Parser, ValueEnum};
-use eyre::Result as EyreResult;
+use eyre::{eyre, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
@@ -74,7 +74,7 @@ pub struct AliasCommand {
 
 #[derive(Clone, Debug, Parser)]
 pub enum AliasSubcommand {
-    #[command(about = "Add new alias for an identity")]
+    #[command(about = "Add new alias for an identity", alias = "create")]
     Add {
         #[arg(help = "Alias name")]
         alias: Alias,
@@ -86,13 +86,15 @@ pub enum AliasSubcommand {
         kind: CliKind,
 
         #[arg(
+            long,
+            short,
             help = "Context id (required only for identity aliases)",
             required_if_eq("kind", "identity")
         )]
         context_id: Option<ContextId>,
     },
 
-    #[command(about = "Remove an alias")]
+    #[command(about = "Remove an alias", alias = "delete", alias = "rm")]
     Remove {
         #[arg(help = "Alias name")]
         alias: Alias,
@@ -101,6 +103,8 @@ pub enum AliasSubcommand {
         kind: CliKind,
 
         #[arg(
+            long,
+            short,
             help = "Context id (required only for identity aliases)",
             required_if_eq("kind", "identity")
         )]
@@ -116,6 +120,8 @@ pub enum AliasSubcommand {
         kind: CliKind,
 
         #[arg(
+            long,
+            short,
             help = "Context id (required only for identity aliases)",
             required_if_eq("kind", "identity")
         )]
@@ -148,6 +154,16 @@ impl Report for GetIdentityAliasResponse {
     }
 }
 
+fn validate_context_id(kind: &CliKind, context_id: &Option<ContextId>) -> EyreResult<()> {
+    match (kind.0, context_id) {
+        (Kind::Identity, None) => Err(eyre!("context_id is required for identity aliases")),
+        (Kind::Application | Kind::Context, Some(_)) => Err(eyre!(
+            "context_id must not be provided for application or context aliases"
+        )),
+        _ => Ok(()),
+    }
+}
+
 impl IdentityCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
@@ -163,6 +179,7 @@ impl IdentityCommand {
                     context_id,
                     kind,
                 } => {
+                    validate_context_id(kind, context_id)?;
                     self.add_alias(
                         environment,
                         &multiaddr,
@@ -180,6 +197,7 @@ impl IdentityCommand {
                     context_id,
                     kind,
                 } => {
+                    validate_context_id(kind, context_id)?;
                     self.remove_alias(
                         environment,
                         &multiaddr,
@@ -196,6 +214,7 @@ impl IdentityCommand {
                     context_id,
                     kind,
                 } => {
+                    validate_context_id(kind, context_id)?;
                     self.get_alias(
                         environment,
                         &multiaddr,
