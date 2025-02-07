@@ -55,7 +55,7 @@ fn test_deposit_with_storage() {
     let value = String::from_str(&env, "deposit_value");
 
     // Perform deposit
-    let result = client.deposit(&user, &amount, &key, &value);
+    let result = client.mock_all_auths_allowing_non_root_auth().deposit(&user, &amount, &key, &value);
     assert_eq!(result, value);
 
     // Verify storage
@@ -92,7 +92,7 @@ fn test_multiple_operations() {
     token_asset_client.mint(&user, &1000);
 
     // First deposit
-    let result = client.deposit(
+    let result = client.mock_all_auths_allowing_non_root_auth().deposit(
         &user,
         &50,
         &String::from_str(&env, "key1"),
@@ -108,7 +108,7 @@ fn test_multiple_operations() {
     assert_eq!(result, String::from_str(&env, "value2"));
 
     // Second deposit
-    let result = client.deposit(
+    let result = client.mock_all_auths_allowing_non_root_auth().deposit(
         &user,
         &30,
         &String::from_str(&env, "key3"),
