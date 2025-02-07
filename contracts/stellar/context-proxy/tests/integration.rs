@@ -2,6 +2,7 @@ extern crate alloc;
 extern crate std;
 
 use alloc::vec::Vec as StdVec;
+use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 use std::fs;
 
 use calimero_context_config::stellar::{
@@ -16,7 +17,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
+use soroban_sdk::{log, symbol_short, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
 
 // Import the context contract
 mod context_contract {
@@ -330,7 +331,7 @@ fn submit_approval(
     let signed_request =
         create_signed_request(env, signer_sk, ProxySignedRequestPayload::Proxy(request));
 
-    let result = client.mutate(&signed_request);
+    let result = client.mock_all_auths_allowing_non_root_auth().mutate(&signed_request);
 
     if expected_approvals == 0 {
         assert!(result.is_none(), "Expected proposal to be executed");
@@ -652,6 +653,7 @@ fn test_execute_proposal_external_call_deposit() {
     let client = ContextProxyContractClient::new(&env, &proxy_contract);
     env.mock_all_auths();
 
+
     let initial_proxy_balance = token_client.balance(&proxy_contract);
     let initial_external_balance = token_client.balance(&mock_external_address);
 
@@ -663,12 +665,14 @@ fn test_execute_proposal_external_call_deposit() {
         ProxySignedRequestPayload::Proxy(request),
     );
 
-    let result = client.mutate(&signed_request);
+    let result = client.mock_all_auths().mutate(&signed_request);
     let proposal_after_first = result.expect("Expected proposal with approvals to be returned");
     assert_eq!(proposal_after_first.num_approvals, 1);
 
     // Submit second approval
     submit_approval(&env, &client, &proposal_id, &signer2_id, &signer2_sk, 2);
+    // First, enable non-root auth mocking
+    env.mock_all_auths_allowing_non_root_auth();
 
     // Submit final approval which executes the proposal
     submit_approval(&env, &client, &proposal_id, &signer3_id, &signer3_sk, 0);
