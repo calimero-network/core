@@ -1,3 +1,4 @@
+use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
 use eyre::Result as EyreResult;
@@ -11,7 +12,7 @@ use crate::output::Report;
 #[command(about = "Delete an context")]
 pub struct DeleteCommand {
     #[clap(name = "CONTEXT_ID", help = "The context ID to delete")]
-    pub context_id: String,
+    pub context_id: ContextId,
 }
 
 impl Report for DeleteContextResponse {

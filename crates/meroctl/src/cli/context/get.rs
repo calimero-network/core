@@ -1,3 +1,4 @@
+use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
     GetContextStorageResponse, GetContextUsersResponse,
@@ -19,7 +20,7 @@ pub struct GetCommand {
     pub command: GetSubcommand,
 
     #[arg(value_name = "CONTEXT_ID", help = "context_id of the context")]
-    pub context_id: String,
+    pub context_id: ContextId,
 }
 
 #[derive(Debug, Parser)]

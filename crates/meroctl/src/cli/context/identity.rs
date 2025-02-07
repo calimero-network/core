@@ -82,7 +82,7 @@ pub enum AliasSubcommand {
         #[arg(help = "Identity hash")]
         identity: Hash,
 
-        #[arg(value_enum, help = "Kind of alias", default_value_t = CliKind(Kind::Identity))]
+        #[arg(long, short, value_enum, help = "Kind of alias", default_value_t = CliKind(Kind::Identity))]
         kind: CliKind,
 
         #[arg(
@@ -99,7 +99,7 @@ pub enum AliasSubcommand {
         #[arg(help = "Alias name")]
         alias: Alias,
 
-        #[arg(value_enum, help = "Kind of alias", default_value_t = CliKind(Kind::Identity))]
+        #[arg(long, short, value_enum, help = "Kind of alias", default_value_t = CliKind(Kind::Identity))]
         kind: CliKind,
 
         #[arg(
@@ -116,7 +116,7 @@ pub enum AliasSubcommand {
         #[arg(help = "Alias name")]
         alias: Alias,
 
-        #[arg(value_enum, help = "Kind of alias", default_value_t = CliKind(Kind::Identity))]
+        #[arg(long, short, value_enum, help = "Kind of alias", default_value_t = CliKind(Kind::Identity))]
         kind: CliKind,
 
         #[arg(
