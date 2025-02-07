@@ -11,20 +11,6 @@ use crate::repr::{Repr, ReprBytes, ReprError, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
 use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
-#[derive(Clone, Debug, Copy)]
-#[contracterror]
-pub enum StellarProxyError {
-    AlreadyInitialized = 1,
-    Unauthorized = 2,
-    ProposalNotFound = 3,
-    ProposalAlreadyApproved = 4,
-    TooManyActiveProposals = 5,
-    InvalidAction = 6,
-    ExecutionFailed = 7,
-    InsufficientBalance = 8,
-    TransferFailed = 9,
-}
-
 // Trait for environment-aware conversion
 pub trait FromWithEnv<T> {
     fn from_with_env(value: T, env: &Env) -> Self;
