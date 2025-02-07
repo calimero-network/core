@@ -9,7 +9,8 @@ use reqwest::{Client, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::cli::ApiError;
+use crate::cli::{ApiError, Environment};
+use crate::output::Report;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
@@ -147,4 +148,21 @@ pub enum RequestType {
     Get,
     Post,
     Delete,
+}
+
+pub async fn make_request<I, O>(
+    environment: &Environment,
+    client: &Client,
+    url: Url,
+    request: Option<I>,
+    keypair: &Keypair,
+    request_type: RequestType,
+) -> EyreResult<()>
+where
+    I: Serialize,
+    O: DeserializeOwned + Report + Serialize,
+{
+    let response = do_request::<I, O>(client, url, request, keypair, request_type).await?;
+    environment.output.write(&response);
+    Ok(())
 }

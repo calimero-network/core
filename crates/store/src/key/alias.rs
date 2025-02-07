@@ -38,7 +38,12 @@ pub struct IdentityAlias(Key<(Kind, Scope, Alias)>);
 
 impl IdentityAlias {
     fn create_key(kind: KindPrimitive, scope: [u8; 32], alias: AliasPrimitive) -> Self {
-        let kind_array = GenericArray::<u8, U1>::from([kind as u8]);
+        let kind: u8 = match kind {
+            KindPrimitive::Context => 1,
+            KindPrimitive::Identity => 2,
+            KindPrimitive::Application => 3,
+        };
+        let kind_array = GenericArray::<u8, U1>::from([kind]);
         let scope_array = GenericArray::<u8, U32>::from(scope);
         let mut alias_array = GenericArray::<u8, U50>::default();
         let alias_str = alias.as_str();

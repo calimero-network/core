@@ -7,11 +7,9 @@ use eyre::Result as EyreResult;
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{fetch_multiaddr, load_config, make_request, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -114,8 +112,15 @@ impl GetCommand {
             multiaddr,
             &format!("admin-api/dev/contexts/{}", self.context_id),
         )?;
-        self.make_request::<GetContextResponse>(environment, client, url, keypair)
-            .await
+        make_request::<_, GetContextResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 
     async fn get_client_keys(
@@ -129,8 +134,15 @@ impl GetCommand {
             multiaddr,
             &format!("admin-api/dev/contexts/{}/client-keys", self.context_id),
         )?;
-        self.make_request::<GetContextClientKeysResponse>(environment, client, url, keypair)
-            .await
+        make_request::<_, GetContextClientKeysResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 
     async fn get_storage(
@@ -144,8 +156,15 @@ impl GetCommand {
             multiaddr,
             &format!("admin-api/dev/contexts/{}/storage", self.context_id),
         )?;
-        self.make_request::<GetContextStorageResponse>(environment, client, url, keypair)
-            .await
+        make_request::<_, GetContextStorageResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 
     async fn get_identities(
@@ -165,25 +184,14 @@ impl GetCommand {
             format!("admin-api/dev/contexts/{}/identities", self.context_id)
         };
         let url = multiaddr_to_url(multiaddr, &endpoint)?;
-        self.make_request::<GetContextIdentitiesResponse>(environment, client, url, keypair)
-            .await
-    }
-
-    async fn make_request<O>(
-        &self,
-        environment: &Environment,
-        client: &Client,
-        url: reqwest::Url,
-        keypair: &Keypair,
-    ) -> EyreResult<()>
-    where
-        O: DeserializeOwned + Report + Serialize,
-    {
-        let response =
-            do_request::<(), O>(client, url, None::<()>, keypair, RequestType::Get).await?;
-
-        environment.output.write(&response);
-
-        Ok(())
+        make_request::<_, GetContextIdentitiesResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 }

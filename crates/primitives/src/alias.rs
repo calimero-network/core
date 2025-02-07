@@ -2,7 +2,7 @@
 #[path = "tests/alias.rs"]
 mod tests;
 
-use std::fmt;
+use std::fmt::{self};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -11,9 +11,9 @@ use thiserror::Error;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Alias(String);
 
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("Invalid alias: {0}")]
-pub struct InvalidAlias(&'static str);
+pub struct InvalidAlias(String);
 
 impl Alias {
     const MAX_LENGTH: usize = 50;
@@ -28,9 +28,12 @@ impl FromStr for Alias {
     type Err = InvalidAlias;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.to_owned()
-            .try_into()
-            .map_err(|_| InvalidAlias("alias exceeds maximum length of 50 characters"))
+        s.to_owned().try_into().map_err(|_| {
+            InvalidAlias(format!(
+                "alias exceeds maximum length of {} characters",
+                Self::MAX_LENGTH
+            ))
+        })
     }
 }
 
@@ -52,12 +55,12 @@ impl TryFrom<String> for Alias {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         (value.len() <= Self::MAX_LENGTH)
             .then(|| Self(value))
-            .ok_or(InvalidAlias(
-                "alias exceeds maximum length of 50 characters",
-            ))
+            .ok_or(InvalidAlias(format!(
+                "alias exceeds maximum length of {} characters",
+                Self::MAX_LENGTH
+            )))
     }
 }
-
 impl<'de> Deserialize<'de> for Alias {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -73,9 +76,19 @@ impl<'de> Deserialize<'de> for Alias {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     Context,
     Identity,
     Application,
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Kind::Context => write!(f, "context"),
+            Kind::Identity => write!(f, "identity"),
+            Kind::Application => write!(f, "application"),
+        }
+    }
 }
