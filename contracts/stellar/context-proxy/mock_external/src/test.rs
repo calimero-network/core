@@ -55,7 +55,9 @@ fn test_deposit_with_storage() {
     let value = String::from_str(&env, "deposit_value");
 
     // Perform deposit
-    let result = client.mock_all_auths_allowing_non_root_auth().deposit(&user, &amount, &key, &value);
+    let result = client
+        .mock_all_auths_allowing_non_root_auth()
+        .deposit(&user, &amount, &key, &value);
     assert_eq!(result, value);
 
     // Verify storage
