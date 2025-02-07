@@ -5,7 +5,8 @@ use alloc::vec::Vec as StdVec;
 use std::fs;
 
 use calimero_context_config::stellar::{
-    StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner, StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest
+    StellarProposal, StellarProposalAction, StellarProposalApprovalWithSigner,
+    StellarProposalWithApprovals, StellarProxyError, StellarProxyMutateRequest,
 };
 // Local imports
 use calimero_context_proxy_stellar::ContextProxyContractClient;
@@ -30,7 +31,7 @@ mod mock_external {
         file = "../context-proxy/mock_external/res/calimero_mock_external_stellar.wasm"
     );
 }
- 
+
 // For proxy contract operations (like creating proposals), use calimero_context_config types:
 use calimero_context_config::stellar::stellar_types::{
     StellarSignedRequest as ProxySignedRequest,
