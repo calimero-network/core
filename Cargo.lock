@@ -1029,7 +1029,6 @@ dependencies = [
  "rand 0.8.5",
  "reqwest 0.12.9",
  "serde",
- "soroban-client",
  "tokio 1.41.1",
  "tokio-util 0.7.12",
  "tracing",
