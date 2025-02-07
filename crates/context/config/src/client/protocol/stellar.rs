@@ -333,14 +333,27 @@ impl Network {
         match result.flatten() {
             Some(sc_val) => match sc_val {
                 ScVal::Void => Ok(vec![]),
-                val @ (
-                    ScVal::Bool(_) | ScVal::Error(_) | ScVal::U32(_) | ScVal::I32(_) |
-                    ScVal::U64(_) | ScVal::I64(_) | ScVal::Timepoint(_) | ScVal::Duration(_) |
-                    ScVal::U128(_) | ScVal::I128(_) | ScVal::U256(_) | ScVal::I256(_) |
-                    ScVal::Bytes(_) | ScVal::String(_) | ScVal::Symbol(_) | ScVal::Vec(_) |
-                    ScVal::Map(_) | ScVal::Address(_) | ScVal::LedgerKeyContractInstance |
-                    ScVal::LedgerKeyNonce(_) | ScVal::ContractInstance(_)
-                ) => {
+                val @ (ScVal::Bool(_)
+                | ScVal::Error(_)
+                | ScVal::U32(_)
+                | ScVal::I32(_)
+                | ScVal::U64(_)
+                | ScVal::I64(_)
+                | ScVal::Timepoint(_)
+                | ScVal::Duration(_)
+                | ScVal::U128(_)
+                | ScVal::I128(_)
+                | ScVal::U256(_)
+                | ScVal::I256(_)
+                | ScVal::Bytes(_)
+                | ScVal::String(_)
+                | ScVal::Symbol(_)
+                | ScVal::Vec(_)
+                | ScVal::Map(_)
+                | ScVal::Address(_)
+                | ScVal::LedgerKeyContractInstance
+                | ScVal::LedgerKeyNonce(_)
+                | ScVal::ContractInstance(_)) => {
                     let env = Env::default();
                     Ok(val.to_xdr(&env).to_alloc_vec())
                 }
