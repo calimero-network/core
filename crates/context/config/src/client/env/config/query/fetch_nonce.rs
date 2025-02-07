@@ -116,7 +116,10 @@ impl Method<Stellar> for FetchNonceRequest {
             .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
         let context_id_val: BytesN<32> = context_id.into_val(&env);
 
-        let member_id: [u8; 32] = self.member_id.rt().expect("member does not exist");
+        let member_id: [u8; 32] = self
+            .member_id
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert member id to raw bytes: {}", e))?;
         let member_id_val: BytesN<32> = member_id.into_val(&env);
 
         let args = (context_id_val, member_id_val);

@@ -86,10 +86,16 @@ impl Method<Icp> for HasMemberRequest {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let mut encoded = Vec::new();
 
-        let context_raw: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        let context_raw: [u8; 32] = self
+            .context_id
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
         encoded.extend_from_slice(&context_raw);
 
-        let member_raw: [u8; 32] = self.identity.rt().expect("identity does not exist");
+        let member_raw: [u8; 32] = self
+            .identity
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert identity to raw bytes: {}", e))?;
         encoded.extend_from_slice(&member_raw);
 
         Ok(encoded)

@@ -333,7 +333,7 @@ impl Network {
         match result.flatten() {
             Some(sc_val) => match sc_val {
                 ScVal::Void => Ok(vec![]),
-                #[allow(clippy::wildcard_enum_match_arm)]
+                #[allow(clippy::wildcard_enum_match_arm, reason = "All non-void ScVal variants are handled the same way")]
                 other => {
                     let env = Env::default();
                     Ok(other.to_xdr(&env).to_alloc_vec())

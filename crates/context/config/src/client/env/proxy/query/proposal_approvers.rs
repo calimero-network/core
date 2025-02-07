@@ -162,15 +162,15 @@ impl Method<Stellar> for ProposalApproversRequest {
             .map_err(|e| eyre::eyre!("Failed to convert to approvers: {:?}", e))?;
 
         // Convert each BytesN<32> to ContextIdentity
-        Ok(approvers
+        approvers
             .iter()
             .map(|bytes| {
                 ContextIdentity::from_bytes(|dest| {
                     dest.copy_from_slice(&bytes.to_array());
                     Ok(32)
                 })
-                .expect("valid 32-byte array")
+                .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
             })
-            .collect())
+            .collect()
     }
 }

@@ -165,15 +165,15 @@ impl Method<Stellar> for MembersRequest {
             .try_into_val(&env)
             .map_err(|e| eyre::eyre!("Failed to convert to Vec<BytesN<32>>: {:?}", e))?;
 
-        Ok(members
+        members
             .iter()
             .map(|id| {
                 ContextIdentity::from_bytes(|dest| {
                     dest.copy_from_slice(&id.to_array());
                     Ok(32)
                 })
-                .expect("Valid 32-byte array")
+                .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
             })
-            .collect())
+            .collect()
     }
 }

@@ -211,21 +211,19 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
                 .map_err(|e| eyre::eyre!("Failed to convert to privileges map: {:?}", e))?;
 
         // Convert to standard collections
-        let result: BTreeMap<SignerId, Vec<Capability>> = privileges_map
+        privileges_map
             .iter()
             .map(|(id, caps)| {
                 let signer = SignerId::from_bytes(|dest| {
                     dest.copy_from_slice(&id.to_array());
                     Ok(32)
                 })
-                .expect("Valid 32-byte array");
+                .map_err(|e| eyre::eyre!("Failed to convert bytes to signer ID: {}", e))?;
 
                 let capabilities = caps.iter().map(|cap| cap.into()).collect();
 
-                (signer, capabilities)
+                Ok((signer, capabilities))
             })
-            .collect();
-
-        Ok(result)
+            .collect()
     }
 }
