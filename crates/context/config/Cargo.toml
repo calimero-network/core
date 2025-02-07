@@ -7,6 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 candid = { workspace = true, optional = true }
@@ -23,6 +24,7 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+soroban-client.workspace = true
 soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
