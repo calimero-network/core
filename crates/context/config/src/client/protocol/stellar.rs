@@ -98,7 +98,7 @@ impl<'a> StellarTransport<'a> {
                 Network {
                     client: Arc::new(server),
                     keypair,
-                    network: network.to_string(),
+                    network: network.to_owned(),
                 },
             );
         }
@@ -333,6 +333,7 @@ impl Network {
         match result.flatten() {
             Some(sc_val) => match sc_val {
                 ScVal::Void => Ok(vec![]),
+                #[allow(clippy::wildcard_enum_match_arm)]
                 other => {
                     let env = Env::default();
                     Ok(other.to_xdr(&env).to_alloc_vec())

@@ -110,7 +110,10 @@ impl Method<Stellar> for FetchNonceRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let context_id: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        let context_id: [u8; 32] = self
+            .context_id
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
         let context_id_val: BytesN<32> = context_id.into_val(&env);
 
         let member_id: [u8; 32] = self.member_id.rt().expect("member does not exist");

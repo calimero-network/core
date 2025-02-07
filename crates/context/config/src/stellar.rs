@@ -75,8 +75,8 @@ pub enum StellarProxyMutateRequest {
 
 #[cfg(not(target_family = "wasm"))]
 impl FromWithEnv<ProposalAction> for StellarProposalAction {
-    fn from_with_env(action: ProposalAction, env: &Env) -> Self {
-        match action {
+    fn from_with_env(value: ProposalAction, env: &Env) -> Self {
+        match value {
             ProposalAction::ExternalFunctionCall {
                 receiver_id,
                 method_name,
@@ -184,8 +184,8 @@ impl FromWithEnv<ProposalAction> for StellarProposalAction {
 
 #[cfg(not(target_family = "wasm"))]
 impl From<StellarProposalAction> for ProposalAction {
-    fn from(action: StellarProposalAction) -> Self {
-        match action {
+    fn from(value: StellarProposalAction) -> Self {
+        match value {
             StellarProposalAction::ExternalFunctionCall(receiver, method, args, deposit) => {
                 ProposalAction::ExternalFunctionCall {
                     receiver_id: receiver.to_string().to_string(),
@@ -225,8 +225,8 @@ impl From<StellarProposalAction> for ProposalAction {
 
 #[cfg(not(target_family = "wasm"))]
 impl FromWithEnv<ProxyMutateRequest> for StellarProxyMutateRequest {
-    fn from_with_env(request: ProxyMutateRequest, env: &Env) -> Self {
-        match request {
+    fn from_with_env(value: ProxyMutateRequest, env: &Env) -> Self {
+        match value {
             ProxyMutateRequest::Propose { proposal } => {
                 let mut actions = Vec::new(&env);
                 for action in proposal.actions {

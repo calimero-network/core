@@ -176,13 +176,18 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let context_id: [u8; 32] = self.context_id.rt().expect("context does not exist");
+        let context_id: [u8; 32] = self
+            .context_id
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
         let context_id_val: BytesN<32> = context_id.into_val(&env);
 
         let mut identities: soroban_sdk::Vec<BytesN<32>> = soroban_sdk::Vec::new(&env);
 
         for identity in self.identities.iter() {
-            let identity_raw: [u8; 32] = identity.rt().expect("identity does not exist");
+            let identity_raw: [u8; 32] = identity
+                .rt()
+                .map_err(|e| eyre::eyre!("cannot convert identity to raw bytes: {}", e))?;
             identities.push_back(identity_raw.into_val(&env));
         }
 

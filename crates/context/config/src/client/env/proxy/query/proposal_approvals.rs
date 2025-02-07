@@ -114,7 +114,10 @@ impl Method<Stellar> for ProposalApprovalsRequest {
     const METHOD: &'static str = "get_confirmations_count";
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let proposal_id_raw: [u8; 32] = self.proposal_id.rt().expect("proposal id does not exist");
+        let proposal_id_raw: [u8; 32] = self
+            .proposal_id
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert proposal id to raw bytes: {}", e))?;
         let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env);
 
         let args = (proposal_id_val,);
