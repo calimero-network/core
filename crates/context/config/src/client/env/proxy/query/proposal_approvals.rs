@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use candid::{Decode, Encode};
 use serde::{Deserialize, Serialize};
-use soroban_sdk::xdr::{Limited, Limits, ScVal, ToXdr, ReadXdr};
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal, Val};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
@@ -126,23 +126,25 @@ impl Method<Stellar> for ProposalApprovalsRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let cursor = Cursor::new(response);
         let mut limited = Limited::new(cursor, Limits::none());
-    
-        let sc_val = ScVal::read_xdr(&mut limited)
-            .map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
-    
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
         // Handle None case first since it's an Option
         if sc_val == ScVal::Void {
             return Err(eyre::eyre!("Proposal not found"));
         }
-    
+
         let env = Env::default();
-        let val: Val = sc_val.try_into_val(&env)
-            .map_err(|e| eyre::eyre!("Failed to convert ScVal to Val: {:?}", e))?;
-        
-        let stellar_proposal: StellarProposalWithApprovals = val
+        let val: Val = sc_val
             .try_into_val(&env)
-            .map_err(|e| eyre::eyre!("Failed to convert to StellarProposalWithApprovals: {:?}", e))?;
-    
+            .map_err(|e| eyre::eyre!("Failed to convert ScVal to Val: {:?}", e))?;
+
+        let stellar_proposal: StellarProposalWithApprovals =
+            val.try_into_val(&env).map_err(|e| {
+                eyre::eyre!("Failed to convert to StellarProposalWithApprovals: {:?}", e)
+            })?;
+
         // Use the From implementation to convert
         Ok(ProposalWithApprovals::from(stellar_proposal))
     }
