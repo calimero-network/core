@@ -1038,7 +1038,6 @@ dependencies = [
 name = "calimero-context-config"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "borsh",
  "bs58 0.5.1",
  "candid",
@@ -1055,7 +1054,6 @@ dependencies = [
  "reqwest 0.12.9",
  "serde",
  "serde_json",
- "soroban-client",
  "soroban-sdk",
  "starknet",
  "starknet-crypto 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
