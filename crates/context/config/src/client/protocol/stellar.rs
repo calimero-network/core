@@ -20,7 +20,7 @@ use soroban_client::transaction::{TransactionBehavior, TransactionBuilder};
 use soroban_client::transaction_builder::TransactionBuilderBehavior;
 use soroban_client::xdr::ScVal;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
-use soroban_sdk::{Bytes, Env, TryIntoVal, Val};
+use soroban_sdk::{Bytes, Env};
 use thiserror::Error;
 use url::Url;
 
