@@ -88,7 +88,7 @@ impl Method<Stellar> for ApplicationRevisionRequest {
         let context_id: [u8; 32] = self
             .context_id
             .rt()
-            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
+            .expect("infallible conversion");
         let context_id_val: Val = context_id.into_val(&env);
 
         let args = (context_id_val,);
