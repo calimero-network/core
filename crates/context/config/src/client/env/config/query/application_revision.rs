@@ -85,10 +85,7 @@ impl Method<Stellar> for ApplicationRevisionRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let context_id: [u8; 32] = self
-            .context_id
-            .rt()
-            .expect("infallible conversion");
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let context_id_val: Val = context_id.into_val(&env);
 
         let args = (context_id_val,);
