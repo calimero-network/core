@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
 use candid::{Decode, Encode};

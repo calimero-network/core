@@ -1,4 +1,3 @@
-#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
