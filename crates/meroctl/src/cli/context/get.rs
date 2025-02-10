@@ -1,3 +1,4 @@
+use calimero_primitives::alias::Kind;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
@@ -10,7 +11,9 @@ use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{fetch_multiaddr, load_config, make_request, multiaddr_to_url, RequestType};
+use crate::common::{
+    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_identifier, RequestType,
+};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -19,8 +22,8 @@ pub struct GetCommand {
     #[command(subcommand)]
     pub command: GetSubcommand,
 
-    #[arg(value_name = "CONTEXT_ID", help = "context_id of the context")]
-    pub context_id: ContextId,
+    #[arg(value_name = "CONTEXT_ID", help = "ContextId or alias of the context")]
+    pub context_id: String,
 }
 
 #[derive(Debug, Parser)]
@@ -82,22 +85,52 @@ impl GetCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
+        let context_id: ContextId =
+            resolve_identifier(&config, &self.context_id, Kind::Context, None)
+                .await?
+                .into();
+
         match self.command {
             GetSubcommand::Info => {
-                self.get_context(environment, multiaddr, &client, &config.identity)
-                    .await
+                self.get_context(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    &context_id,
+                )
+                .await
             }
             GetSubcommand::ClientKeys => {
-                self.get_client_keys(environment, multiaddr, &client, &config.identity)
-                    .await
+                self.get_client_keys(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    &context_id,
+                )
+                .await
             }
             GetSubcommand::Storage => {
-                self.get_storage(environment, multiaddr, &client, &config.identity)
-                    .await
+                self.get_storage(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    &context_id,
+                )
+                .await
             }
             GetSubcommand::Identities { owned } => {
-                self.get_identities(environment, multiaddr, &client, &config.identity, owned)
-                    .await
+                self.get_identities(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    owned,
+                    &context_id,
+                )
+                .await
             }
         }
     }
@@ -108,11 +141,9 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: &ContextId,
     ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}", self.context_id),
-        )?;
+        let url = multiaddr_to_url(multiaddr, &format!("admin-api/dev/contexts/{}", context_id))?;
         make_request::<_, GetContextResponse>(
             environment,
             client,
@@ -130,10 +161,11 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: &ContextId,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
-            &format!("admin-api/dev/contexts/{}/client-keys", self.context_id),
+            &format!("admin-api/dev/contexts/{}/client-keys", context_id),
         )?;
         make_request::<_, GetContextClientKeysResponse>(
             environment,
@@ -152,10 +184,11 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: &ContextId,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
-            &format!("admin-api/dev/contexts/{}/storage", self.context_id),
+            &format!("admin-api/dev/contexts/{}/storage", context_id),
         )?;
         make_request::<_, GetContextStorageResponse>(
             environment,
@@ -175,6 +208,7 @@ impl GetCommand {
         client: &Client,
         keypair: &Keypair,
         owned: bool,
+        context_id: &ContextId,
     ) -> EyreResult<()> {
         let endpoint = if owned {
             format!(
@@ -182,7 +216,7 @@ impl GetCommand {
                 self.context_id
             )
         } else {
-            format!("admin-api/dev/contexts/{}/identities", self.context_id)
+            format!("admin-api/dev/contexts/{}/identities", context_id)
         };
         let url = multiaddr_to_url(multiaddr, &endpoint)?;
         make_request::<_, GetContextIdentitiesResponse>(
