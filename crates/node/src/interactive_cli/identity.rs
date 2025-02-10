@@ -111,7 +111,7 @@ impl IdentityCommand {
         let first_alias = alias_iter
             .seek(AliasKey::identity(
                 *context_id,
-                Alias::try_from("".to_string())?,
+                Alias::try_from("".to_owned())?,
             ))
             .transpose();
         for key_result in first_alias.into_iter().chain(alias_iter.keys()) {
