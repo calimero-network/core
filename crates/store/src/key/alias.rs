@@ -26,17 +26,17 @@ impl KeyComponent for Scope {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Alias;
+pub struct Name;
 
-impl KeyComponent for Alias {
+impl KeyComponent for Name {
     type LEN = U50;
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-pub struct IdentityAlias(Key<(Kind, Scope, Alias)>);
+pub struct Alias(Key<(Kind, Scope, Name)>);
 
-impl IdentityAlias {
+impl Alias {
     fn create_key(kind: KindPrimitive, scope: [u8; 32], alias: AliasPrimitive) -> Self {
         let kind: u8 = match kind {
             KindPrimitive::Context => 1,
@@ -90,8 +90,8 @@ impl IdentityAlias {
     }
 }
 
-impl AsKeyParts for IdentityAlias {
-    type Components = (Kind, Scope, Alias);
+impl AsKeyParts for Alias {
+    type Components = (Kind, Scope, Name);
 
     fn column() -> Column {
         Column::Alias
@@ -102,7 +102,7 @@ impl AsKeyParts for IdentityAlias {
     }
 }
 
-impl FromKeyParts for IdentityAlias {
+impl FromKeyParts for Alias {
     type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {

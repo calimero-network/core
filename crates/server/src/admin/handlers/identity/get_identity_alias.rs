@@ -6,7 +6,7 @@ use calimero_primitives::alias::Kind;
 use calimero_server_primitives::admin::{
     GetIdentityAliasRequest, GetIdentityAliasResponse, GetIdentityAliasResponseData,
 };
-use calimero_store::key::IdentityAlias;
+use calimero_store::key::Alias;
 use reqwest::StatusCode;
 
 use crate::admin::service::{ApiError, ApiResponse};
@@ -19,9 +19,9 @@ pub async fn handler(
     let store = state.store.handle();
 
     let key = match payload.kind {
-        Kind::Context => IdentityAlias::context(payload.alias),
+        Kind::Context => Alias::context(payload.alias),
         Kind::Identity => match payload.context_id {
-            Some(context_id) => IdentityAlias::identity(context_id, payload.alias),
+            Some(context_id) => Alias::identity(context_id, payload.alias),
             None => {
                 return ApiError {
                     status_code: StatusCode::BAD_REQUEST,
@@ -30,7 +30,7 @@ pub async fn handler(
                 .into_response()
             }
         },
-        Kind::Application => IdentityAlias::application(payload.alias),
+        Kind::Application => Alias::application(payload.alias),
     };
 
     match store.get(&key) {
