@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 use std::mem;
 
@@ -16,7 +17,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextIdentity, ProposalId};
 
 #[derive(Clone, Debug, Serialize)]
@@ -133,10 +134,7 @@ impl Method<Stellar> for ProposalApproversRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let proposal_id_raw: [u8; 32] = self
-            .proposal_id
-            .rt()
-            .map_err(|e| eyre::eyre!("cannot convert proposal id to raw bytes: {}", e))?;
+        let proposal_id_raw: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
         let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env);
 
         let args = (proposal_id_val,);
@@ -165,11 +163,9 @@ impl Method<Stellar> for ProposalApproversRequest {
         approvers
             .iter()
             .map(|bytes| {
-                ContextIdentity::from_bytes(|dest| {
-                    dest.copy_from_slice(&bytes.to_array());
-                    Ok(32)
-                })
-                .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
+                bytes.to_array()
+                    .rt()
+                    .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
             })
             .collect()
     }

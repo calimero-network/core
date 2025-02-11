@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
 use candid::Decode;
@@ -114,15 +115,9 @@ impl Method<Stellar> for HasMemberRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let context_id_bytes: [u8; 32] = self
-            .context_id
-            .rt()
-            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
+        let context_id_bytes: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let context_id: BytesN<32> = context_id_bytes.into_val(&env);
-        let identity_bytes: [u8; 32] = self
-            .identity
-            .rt()
-            .map_err(|e| eyre::eyre!("cannot convert identity to raw bytes: {}", e))?;
+        let identity_bytes: [u8; 32] = self.identity.rt().expect("infallible conversion");
         let identity: BytesN<32> = identity_bytes.into_val(&env);
 
         let args = (context_id, identity);

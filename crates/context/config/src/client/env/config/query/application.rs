@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -123,10 +124,7 @@ impl Method<Stellar> for ApplicationRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let context_raw: [u8; 32] = self
-            .context_id
-            .rt()
-            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
+        let context_raw: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let context_val: BytesN<32> = context_raw.into_val(&env);
 
         let args = (context_val,);

@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
 use candid::{Decode, Encode, Principal};
@@ -90,10 +91,7 @@ impl Method<Stellar> for ProxyContractRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let context_raw: [u8; 32] = self
-            .context_id
-            .rt()
-            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
+        let context_raw: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let context_val: BytesN<32> = context_raw.into_val(&env);
 
         let args = (context_val,);

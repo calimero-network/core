@@ -18,7 +18,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
