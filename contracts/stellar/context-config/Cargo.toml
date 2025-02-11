@@ -11,6 +11,7 @@ ed25519-dalek = { version = "2.0.0", default-features = false, features = ["hazm
 soroban-sdk = { workspace = true, features = ["alloc"] }
 soroban-env-common = { workspace = true }
 stellar-xdr = { workspace = true, default-features = false }
+
 calimero-context-config = { workspace = true, features = ["stellar"] }
 
 [dev-dependencies]
