@@ -378,7 +378,7 @@ impl ContextProxyContract {
 
                 StellarProposalAction::SetContextValue(key, value) => {
                     let mut state = Self::get_state(env);
-                    state.context_storage.set(key.clone(), value.clone());
+                    state.context_storage.set(key, value);
                     Self::save_state(env, &state);
                 }
 
