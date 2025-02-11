@@ -4,7 +4,6 @@ pub mod get_context;
 pub mod get_context_client_keys;
 pub mod get_context_identities;
 pub mod get_context_storage;
-pub mod get_context_users;
 pub mod get_contexts;
 pub mod invite_to_context;
 pub mod join_context;

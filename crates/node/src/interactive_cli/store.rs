@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use eyre::Result;
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 
 use crate::Node;
@@ -20,7 +20,7 @@ enum Commands {
 
 impl StoreCommand {
     // todo! revisit: get specific context state
-    pub fn run(self, _node: &Node) -> Result<()> {
+    pub fn run(self, _node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
 
         println!("{ind} Not implemented yet",);

@@ -30,14 +30,13 @@ use crate::admin::handlers::add_client_key::{
     add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
 };
 use crate::admin::handlers::applications::{
-    get_application, get_application_details, install_application, install_dev_application,
-    list_applications, uninstall_application,
+    get_application, install_application, install_dev_application, list_applications,
+    uninstall_application,
 };
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
-    get_context_storage, get_context_users, get_contexts, invite_to_context, join_context,
-    update_context_application,
+    get_context_storage, get_contexts, invite_to_context, join_context, update_context_application,
 };
 use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::identity::generate_context_identity;
@@ -107,17 +106,13 @@ pub(crate) fn setup(
         )
         .route("/applications", get(list_applications::handler))
         .route(
-            "/applications/:app_id",
-            get(get_application_details::handler),
+            "/applications/:application_id",
+            get(get_application::handler),
         )
         .route("/did", get(fetch_did_handler).delete(delete_did_handler))
         .route("/contexts", post(create_context::handler))
         .route("/contexts/:context_id", delete(delete_context::handler))
         .route("/contexts/:context_id", get(get_context::handler))
-        .route(
-            "/contexts/:context_id/users",
-            get(get_context_users::handler),
-        )
         .route(
             "/contexts/:context_id/client-keys",
             get(get_context_client_keys::handler),
@@ -195,13 +190,10 @@ pub(crate) fn setup(
             "/dev/install-application",
             post(install_application::handler),
         )
+        .route("/dev/applications", get(list_applications::handler))
         .route(
-            "/dev/application/:application_id",
+            "/dev/applications/:application_id",
             get(get_application::handler),
-        )
-        .route(
-            "/dev/applications/:app_id",
-            get(get_application_details::handler),
         )
         .route(
             "/dev/contexts",
@@ -213,12 +205,7 @@ pub(crate) fn setup(
             "/dev/contexts/:context_id/application",
             post(update_context_application::handler),
         )
-        .route("/dev/applications", get(list_applications::handler))
         .route("/dev/contexts/:context_id", get(get_context::handler))
-        .route(
-            "/dev/contexts/:context_id/users",
-            get(get_context_users::handler),
-        )
         .route(
             "/dev/contexts/:context_id/client-keys",
             get(get_context_client_keys::handler),
