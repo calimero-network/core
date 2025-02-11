@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{Bytes, Env, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -10,6 +14,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::types::ContextStorageEntry;
 
 #[derive(Clone, Debug, Serialize)]
@@ -101,5 +106,46 @@ impl Method<Icp> for ContextStorageEntriesRequest {
             .into_iter()
             .map(|(key, value)| ContextStorageEntry { key, value })
             .collect())
+    }
+}
+
+impl Method<Stellar> for ContextStorageEntriesRequest {
+    type Returns = Vec<ContextStorageEntry>;
+
+    const METHOD: &'static str = "context_storage_entries";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let offset_val: u32 = self.offset as u32;
+        let limit_val: u32 = self.limit as u32;
+
+        let args = (offset_val, limit_val);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let env = Env::default();
+        let entries: soroban_sdk::Vec<(Bytes, Bytes)> = sc_val
+            .try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert to entries: {:?}", e))?;
+
+        // Convert to Vec of ContextStorageEntry
+        let result = entries
+            .iter()
+            .map(|(key, value)| ContextStorageEntry {
+                key: key.to_alloc_vec(),
+                value: value.to_alloc_vec(),
+            })
+            .collect();
+
+        Ok(result)
     }
 }

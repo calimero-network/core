@@ -3,7 +3,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use eyre::Result;
 use owo_colors::OwoColorize;
 use serde_json::Value;
@@ -16,6 +16,25 @@ use crate::Node;
 pub struct ContextCommand {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum Protocol {
+    Near,
+    Starknet,
+    Icp,
+    Stellar,
+}
+
+impl Protocol {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Protocol::Near => "near",
+            Protocol::Starknet => "starknet",
+            Protocol::Icp => "icp",
+            Protocol::Stellar => "stellar",
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -31,9 +50,9 @@ enum Commands {
         /// The seed for the context (to derive a deterministic context ID)
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
-        /// The protocol to use for the context - possible values: near|starknet|icp
-        #[clap(long)]
-        protocol: String,
+        /// The protocol to use for the context - possible values: near|starknet|icp|stellar
+        #[clap(long, value_enum)]
+        protocol: Protocol,
     },
     /// Invite a user to a context
     Invite {
@@ -145,7 +164,7 @@ impl ContextCommand {
                 let (tx, rx) = oneshot::channel();
 
                 node.ctx_manager.create_context(
-                    &protocol,
+                    &protocol.as_str(),
                     context_seed.map(Into::into),
                     application_id,
                     None,

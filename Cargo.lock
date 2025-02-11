@@ -1038,6 +1038,7 @@ dependencies = [
 name = "calimero-context-config"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "borsh",
  "bs58 0.5.1",
  "candid",
@@ -1054,6 +1055,7 @@ dependencies = [
  "reqwest 0.12.9",
  "serde",
  "serde_json",
+ "soroban-client",
  "soroban-sdk",
  "starknet",
  "starknet-crypto 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -5012,6 +5014,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsodium-sys"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b779387cd56adfbc02ea4a668e704f729be8d6a6abd2c27ca5ee537849a92fd"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "walkdir",
+]
+
+[[package]]
 name = "libz-sys"
 version = "1.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5222,6 +5236,7 @@ dependencies = [
  "multiaddr",
  "near-crypto",
  "rand 0.8.5",
+ "soroban-client",
  "starknet",
  "tokio 1.41.1",
  "toml_edit",
@@ -5386,6 +5401,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "nacl"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30aefc44d813c51b5e7952950e87c17f2e0e1a3274d63c8281a701e05323d548"
+
+[[package]]
 name = "native-tls"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5479,7 +5500,7 @@ dependencies = [
  "near-parameters",
  "near-primitives",
  "near-time",
- "num-rational",
+ "num-rational 0.3.2",
  "serde",
  "serde_json",
  "sha2 0.10.8",
@@ -5593,7 +5614,7 @@ dependencies = [
  "near-account-id",
  "near-primitives-core",
  "near-schema-checker-lib",
- "num-rational",
+ "num-rational 0.3.2",
  "serde",
  "serde_repr",
  "serde_yaml",
@@ -5627,7 +5648,7 @@ dependencies = [
  "near-schema-checker-lib",
  "near-stdx",
  "near-time",
- "num-rational",
+ "num-rational 0.3.2",
  "ordered-float",
  "primitive-types 0.10.1",
  "rand 0.8.5",
@@ -5657,7 +5678,7 @@ dependencies = [
  "enum-map",
  "near-account-id",
  "near-schema-checker-lib",
- "num-rational",
+ "num-rational 0.3.2",
  "serde",
  "serde_repr",
  "sha2 0.10.8",
@@ -5790,7 +5811,7 @@ dependencies = [
  "near-primitives-core",
  "near-schema-checker-lib",
  "near-stdx",
- "num-rational",
+ "num-rational 0.3.2",
  "rayon",
  "ripemd",
  "rustix",
@@ -6095,6 +6116,17 @@ dependencies = [
  "num-integer",
  "num-traits",
  "serde",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -6754,7 +6786,7 @@ dependencies = [
  "rustc-hash 2.0.0",
  "rustls 0.23.19",
  "socket2 0.5.8",
- "thiserror 2.0.3",
+ "thiserror 2.0.11",
  "tokio 1.41.1",
  "tracing",
 ]
@@ -6773,7 +6805,7 @@ dependencies = [
  "rustls 0.23.19",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.3",
+ "thiserror 2.0.11",
  "tinyvec",
  "tracing",
  "web-time",
@@ -8074,6 +8106,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "soroban-client"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3085bb8534d635e6b8cce0d73fb1e8a0f066315e9ea60604451c02f7f6cc8fc"
+dependencies = [
+ "futures",
+ "hex",
+ "http 0.2.12",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "stellar-baselib",
+ "thiserror 2.0.11",
+ "tracing",
+]
+
+[[package]]
 name = "soroban-env-common"
 version = "22.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8484,6 +8533,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stellar-baselib"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "658e3bf365cdddac75f418a78b8d82554b5b523aac18dc9e9247beeb65650cb7"
+dependencies = [
+ "arrayref",
+ "getrandom",
+ "hex",
+ "hex-literal",
+ "hyper 0.14.31",
+ "lazy_static",
+ "libc",
+ "libsodium-sys",
+ "nacl",
+ "num-bigint 0.4.6",
+ "num-rational 0.4.2",
+ "num-traits",
+ "rand_core 0.6.4",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "stellar-strkey",
+ "stellar-xdr",
+]
+
+[[package]]
 name = "stellar-strkey"
 version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8746,11 +8822,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.3"
+version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c006c85c7651b3cf2ada4584faa36773bd07bac24acfb39f3c431b36d7e667aa"
+checksum = "d452f284b73e6d76dd36758a0c8684b1d5be31f92b89d07fd5822175732206fc"
 dependencies = [
- "thiserror-impl 2.0.3",
+ "thiserror-impl 2.0.11",
 ]
 
 [[package]]
@@ -8766,9 +8842,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.3"
+version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f077553d607adc1caf65430528a576c757a71ed73944b66ebb58ef2bbd243568"
+checksum = "26afc1baea8a989337eeb52b6e72a039780ce45c3edfcc9c5b9d112feeb173c2"
 dependencies = [
  "proc-macro2",
  "quote",

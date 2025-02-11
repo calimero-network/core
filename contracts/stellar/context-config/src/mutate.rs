@@ -462,7 +462,7 @@ impl ContextConfig {
     fn deploy_proxy(env: &Env, context_id: &BytesN<32>) -> Result<Address, StellarError> {
         let state = Self::get_state(env);
 
-        state.owner.require_auth();
+        env.authorize_as_current_contract(Vec::new(&env));
 
         // Get stored WASM hash
         let wasm_hash = state
