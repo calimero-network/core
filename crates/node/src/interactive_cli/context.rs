@@ -4,7 +4,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
 use clap::{Parser, Subcommand, ValueEnum};
-use eyre::Result;
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::oneshot;
