@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use core::mem;
 use std::io::Cursor;
 
@@ -138,7 +139,7 @@ impl Method<Stellar> for MembersRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
-        let context_id: [u8; 32] = self.context_id.as_bytes();
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let context_id_val: BytesN<32> = context_id.into_val(&env);
 
         let offset_val: u32 = self.offset as u32;
@@ -162,15 +163,15 @@ impl Method<Stellar> for MembersRequest {
             .try_into_val(&env)
             .map_err(|e| eyre::eyre!("Failed to convert to Vec<BytesN<32>>: {:?}", e))?;
 
-        members
+        Ok(members
             .iter()
             .map(|id| {
                 ContextIdentity::from_bytes(|dest| {
                     dest.copy_from_slice(&id.to_array());
                     Ok(32)
                 })
-                .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
+                .expect("infallible conversion")
             })
-            .collect()
+            .collect())
     }
 }
