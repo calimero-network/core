@@ -210,9 +210,7 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
         privileges_map
             .iter()
             .map(|(id, caps)| {
-                let signer = id.to_array()
-                    .rt()
-                    .expect("infallible conversion");
+                let signer = id.to_array().rt().expect("infallible conversion");
 
                 let capabilities = caps.iter().map(|cap| cap.into()).collect();
 

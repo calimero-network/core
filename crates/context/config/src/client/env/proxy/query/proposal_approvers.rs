@@ -163,7 +163,8 @@ impl Method<Stellar> for ProposalApproversRequest {
         approvers
             .iter()
             .map(|bytes| {
-                bytes.to_array()
+                bytes
+                    .to_array()
                     .rt()
                     .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
             })
