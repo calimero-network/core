@@ -7,6 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 candid = { workspace = true, optional = true }
@@ -23,6 +24,8 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+soroban-client.workspace = true
+soroban-sdk = { workspace = true, optional = true, features = ["alloc"] }
 starknet = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
@@ -37,6 +40,7 @@ client = [
   "near_client",
   "icp_client",
   "starknet_client",
+  "stellar_client",
   "dep:either",
   "dep:eyre",
   "reqwest/json",
@@ -63,5 +67,13 @@ starknet_client = [
   "dep:starknet",
   "dep:starknet-crypto",
   "dep:starknet-types-core",
+]
+
+stellar = [
+    "dep:soroban-sdk",
+]
+
+stellar_client = [
+    "stellar",
 ]
 

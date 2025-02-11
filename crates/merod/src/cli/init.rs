@@ -14,6 +14,7 @@ use calimero_context_config::client::config::{
 };
 use calimero_context_config::client::protocol::{
     icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
+    stellar as stellar_protocol,
 };
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
@@ -34,6 +35,7 @@ use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
+use soroban_client::keypair::{Keypair as StellarKeypair, KeypairBehavior};
 use starknet::signers::SigningKey;
 use tracing::{info, warn};
 use url::Url;
@@ -45,6 +47,7 @@ pub enum ConfigProtocol {
     Near,
     Starknet,
     Icp,
+    Stellar,
 }
 
 /// Initialize node configuration
@@ -291,6 +294,42 @@ impl InitCommand {
                 .insert("icp".to_owned(), local_config);
         }
 
+        {
+            let _ignored = client_params.insert(
+                "stellar".to_owned(),
+                ClientConfigParams {
+                    network: "testnet".into(),
+                    protocol: "stellar".into(),
+                    contract_id: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY"
+                        .parse()?,
+                    signer: ClientSelectedSigner::Local,
+                },
+            );
+
+            let mut local_config = ClientLocalConfig {
+                signers: Default::default(),
+            };
+
+            let _ignored = local_config.signers.insert(
+                "mainnet".to_owned(),
+                generate_local_signer(
+                    "https://soroban.stellar.org".parse()?,
+                    ConfigProtocol::Stellar,
+                )?,
+            );
+
+            let _ignored = local_config.signers.insert(
+                "testnet".to_owned(),
+                generate_local_signer(
+                    "https://soroban-testnet.stellar.org".parse()?,
+                    ConfigProtocol::Stellar,
+                )?,
+            );
+
+            let _ignored = local_signers
+                .protocols
+                .insert("stellar".to_owned(), local_config);
+        }
         let relayer = self
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
@@ -394,6 +433,20 @@ fn generate_local_signer(
                     account_id,
                     public_key: encode(&account_id),
                     secret_key: encode(&signing_key),
+                }),
+            })
+        }
+
+        ConfigProtocol::Stellar => {
+            let keypair = StellarKeypair::random().unwrap();
+            let public_key = keypair.public_key();
+            let secret_key = keypair.secret_key().unwrap();
+
+            Ok(ClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Stellar(stellar_protocol::Credentials {
+                    public_key,
+                    secret_key,
                 }),
             })
         }
