@@ -13,14 +13,15 @@ pub mod transport;
 pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
-use protocol::{icp, near, starknet, Protocol};
+use protocol::{icp, near, starknet, stellar, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 type MaybeNear = Option<near::NearTransport<'static>>;
 type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
+type MaybeStellar = Option<stellar::StellarTransport<'static>>;
 
-pub type LocalTransports = Both<MaybeNear, Both<MaybeStarknet, MaybeIcp>>;
+pub type LocalTransports = Both<MaybeNear, Both<MaybeStarknet, Both<MaybeIcp, MaybeStellar>>>;
 
 pub type AnyTransport = Both<LocalTransports, relayer::RelayerTransport>;
 
@@ -161,11 +162,53 @@ impl Client<AnyTransport> {
             }
         }
 
+        let mut stellar_transport = None;
+
+        'skipped: {
+            if let Some(stellar_config) = config.signer.local.protocols.get("stellar") {
+                let Some(e) = config.params.get("stellar") else {
+                    eyre::bail!("missing config specification for `{}` signer", "stellar");
+                };
+
+                if !matches!(e.signer, ClientSelectedSigner::Local) {
+                    break 'skipped;
+                }
+
+                let mut config = stellar::StellarConfig {
+                    networks: Default::default(),
+                };
+
+                for (network, signer) in &stellar_config.signers {
+                    let Credentials::Stellar(credentials) = &signer.credentials else {
+                        eyre::bail!(
+                            "expected Stellar credentials but got {:?}",
+                            signer.credentials
+                        )
+                    };
+
+                    let _ignored = config.networks.insert(
+                        network.clone().into(),
+                        stellar::NetworkConfig {
+                            network: network.clone().into(),
+                            rpc_url: signer.rpc_url.clone(),
+                            public_key: credentials.public_key.clone(),
+                            secret_key: credentials.secret_key.clone(),
+                        },
+                    );
+                }
+
+                stellar_transport = Some(stellar::StellarTransport::new(&config));
+            }
+        }
+
         let all_transports = Both {
             left: near_transport,
             right: Both {
                 left: starknet_transport,
-                right: icp_transport,
+                right: Both {
+                    left: icp_transport,
+                    right: stellar_transport,
+                },
             },
         };
 

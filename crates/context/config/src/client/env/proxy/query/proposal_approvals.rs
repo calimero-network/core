@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal, Val};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
@@ -11,8 +15,11 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::ICProposalWithApprovals;
+use crate::repr::ReprTransmute;
+use crate::stellar::StellarProposalWithApprovals;
 use crate::types::ProposalId;
 use crate::{ProposalWithApprovals, Repr};
 
@@ -98,5 +105,50 @@ impl Method<Icp> for ProposalApprovalsRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, ICProposalWithApprovals)?;
         Ok(decoded.into())
+    }
+}
+
+impl Method<Stellar> for ProposalApprovalsRequest {
+    type Returns = ProposalWithApprovals;
+
+    const METHOD: &'static str = "get_confirmations_count";
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let proposal_id_raw: [u8; 32] = self
+            .proposal_id
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert proposal id to raw bytes: {}", e))?;
+        let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env);
+
+        let args = (proposal_id_val,);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        // Handle None case first since it's an Option
+        if sc_val == ScVal::Void {
+            return Err(eyre::eyre!("Proposal not found"));
+        }
+
+        let env = Env::default();
+        let val: Val = sc_val
+            .try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert ScVal to Val: {:?}", e))?;
+
+        let stellar_proposal: StellarProposalWithApprovals =
+            val.try_into_val(&env).map_err(|e| {
+                eyre::eyre!("Failed to convert to StellarProposalWithApprovals: {:?}", e)
+            })?;
+
+        // Use the From implementation to convert
+        Ok(ProposalWithApprovals::from(stellar_proposal))
     }
 }

@@ -1,7 +1,11 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
+use std::io::Cursor;
 use std::mem;
 
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet::core::types::Felt;
 
@@ -11,8 +15,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextIdentity, ProposalId};
 
 #[derive(Clone, Debug, Serialize)]
@@ -119,5 +124,50 @@ impl Method<Icp> for ProposalApproversRequest {
                 Vec<ContextIdentity>,
             >(identities))
         }
+    }
+}
+
+impl Method<Stellar> for ProposalApproversRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "proposal_approvers";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let proposal_id_raw: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+        let proposal_id_val: BytesN<32> = proposal_id_raw.into_val(&env);
+
+        let args = (proposal_id_val,);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        // Handle None case
+        if sc_val == ScVal::Void {
+            return Ok(Vec::new()); // Return empty vec if no approvers
+        }
+
+        let env = Env::default();
+        let approvers: soroban_sdk::Vec<BytesN<32>> = sc_val
+            .try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert to approvers: {:?}", e))?;
+
+        // Convert each BytesN<32> to ContextIdentity
+        approvers
+            .iter()
+            .map(|bytes| {
+                bytes
+                    .to_array()
+                    .rt()
+                    .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
+            })
+            .collect()
     }
 }

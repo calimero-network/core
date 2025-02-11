@@ -1,7 +1,11 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use core::mem;
+use std::io::Cursor;
 
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
@@ -12,8 +16,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -124,5 +129,43 @@ impl Method<Icp> for MembersRequest {
         };
 
         Ok(members)
+    }
+}
+
+impl Method<Stellar> for MembersRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "members";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id_val: BytesN<32> = context_id.into_val(&env);
+
+        let offset_val: u32 = self.offset as u32;
+        let length_val: u32 = self.length as u32;
+
+        let args = (context_id_val, offset_val, length_val);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let env = Env::default();
+        let members: soroban_sdk::Vec<BytesN<32>> = sc_val
+            .try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert to Vec<BytesN<32>>: {:?}", e))?;
+
+        Ok(members
+            .iter()
+            .map(|id| id.to_array().rt().expect("infallible conversion"))
+            .collect())
     }
 }

@@ -1,5 +1,10 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
+use std::io::Cursor;
+
 use candid::{Decode, Encode, Principal};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, TryFromVal};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
@@ -8,8 +13,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::ContextId;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -75,5 +81,36 @@ impl Method<Icp> for ProxyContractRequest {
         let value: Principal = Decode!(&response, Principal)?;
         let value_as_string = value.to_text();
         Ok(value_as_string)
+    }
+}
+
+impl Method<Stellar> for ProxyContractRequest {
+    type Returns = String;
+
+    const METHOD: &'static str = "proxy_contract";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let context_raw: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_val: BytesN<32> = context_raw.into_val(&env);
+
+        let args = (context_val,);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let env = Env::default();
+        let address = Address::try_from_val(&env, &sc_val)
+            .map_err(|e| eyre::eyre!("Failed to convert to address: {:?}", e))?;
+
+        Ok(address.to_string().to_string())
     }
 }

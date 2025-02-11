@@ -1,5 +1,10 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal};
 use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{
@@ -9,8 +14,9 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -95,5 +101,39 @@ impl Method<Icp> for FetchNonceRequest {
         let decoded = Decode!(&response, Option<u64>)?;
 
         Ok(decoded)
+    }
+}
+
+impl Method<Stellar> for FetchNonceRequest {
+    type Returns = Option<u64>;
+
+    const METHOD: &'static str = "fetch_nonce";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id_val: BytesN<32> = context_id.into_val(&env);
+
+        let member_id: [u8; 32] = self.member_id.rt().expect("infallible conversion");
+        let member_id_val: BytesN<32> = member_id.into_val(&env);
+
+        let args = (context_id_val, member_id_val);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let nonce: u64 = sc_val
+            .try_into()
+            .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
+
+        Ok(Some(nonce))
     }
 }
