@@ -9,7 +9,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - 'crates/**'
-      - .github/workflows/rust_binaries_release.yml
+      - .github/workflows/release.yml
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
@@ -72,8 +72,13 @@ jobs:
               echo "Master release for this version already exists"
               echo "release_required=false" >> $GITHUB_OUTPUT
             else
-              echo "New master release required"
-              echo "release_required=true" >> $GITHUB_OUTPUT
+              if [ "$version" == "0.3.1" ]; then
+                echo "Version 0.3.1 already exists in a legacy release format, skipping"
+                echo "release_required=false" >> $GITHUB_OUTPUT
+              else
+                echo "New master release required"
+                echo "release_required=true" >> $GITHUB_OUTPUT
+              fi
             fi
 
             echo "build_required=true" >> $GITHUB_OUTPUT
@@ -242,6 +247,7 @@ jobs:
           file: artifacts/*
           file_glob: true
           tag: ${{ needs.prepare.outputs.version }}
+          release_name: ${{ needs.prepare.outputs.version }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
           overwrite: ${{ needs.prepare.outputs.overwrite_release }}
           target_commit: ${{ needs.prepare.outputs.target_commit }}
