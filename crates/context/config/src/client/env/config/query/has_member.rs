@@ -1,5 +1,10 @@
-use candid::{Decode, Encode};
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
+use std::io::Cursor;
+
+use candid::Decode;
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{BytesN, Env, IntoVal};
 use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
@@ -7,8 +12,8 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::icp::repr::ICRepr;
-use crate::repr::Repr;
+use crate::client::protocol::stellar::Stellar;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -80,15 +85,58 @@ impl Method<Icp> for HasMemberRequest {
     const METHOD: &'static str = "has_member";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let context_id = ICRepr::new(*self.context_id);
-        let identity = ICRepr::new(*self.identity);
-        let payload = (context_id, identity);
+        let mut encoded = Vec::new();
 
-        Encode!(&payload).map_err(Into::into)
+        let context_raw: [u8; 32] = self
+            .context_id
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert context id to raw bytes: {}", e))?;
+        encoded.extend_from_slice(&context_raw);
+
+        let member_raw: [u8; 32] = self
+            .identity
+            .rt()
+            .map_err(|e| eyre::eyre!("cannot convert identity to raw bytes: {}", e))?;
+        encoded.extend_from_slice(&member_raw);
+
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let value = Decode!(&response, Self::Returns)?;
         Ok(value)
+    }
+}
+
+impl Method<Stellar> for HasMemberRequest {
+    type Returns = bool;
+
+    const METHOD: &'static str = "has_member";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let context_id_bytes: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id: BytesN<32> = context_id_bytes.into_val(&env);
+        let identity_bytes: [u8; 32] = self.identity.rt().expect("infallible conversion");
+        let identity: BytesN<32> = identity_bytes.into_val(&env);
+
+        let args = (context_id, identity);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        let result: bool = sc_val
+            .try_into()
+            .map_err(|e| eyre::eyre!("Failed to convert to bool: {:?}", e))?;
+
+        Ok(result)
     }
 }

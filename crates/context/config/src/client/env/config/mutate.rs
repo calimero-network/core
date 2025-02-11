@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 
 use ed25519_dalek::{Signer, SigningKey};
+use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::{BytesN, Env};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -10,13 +12,19 @@ use crate::client::env::{utils, Method};
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
+use crate::stellar::stellar_types::{
+    StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
+};
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
+
+use crate::stellar::stellar_types::FromWithEnv;
 
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
@@ -159,6 +167,39 @@ impl<'a> Method<Icp> for Mutate<'a> {
                 eyre::bail!("unexpected response {:?}", e)
             }
         }
+    }
+}
+
+impl<'a> Method<Stellar> for Mutate<'a> {
+    type Returns = ();
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let signer_sk = SigningKey::from_bytes(&self.signing_key);
+
+        let signer_id: [u8; 32] = signer_sk.verifying_key().rt()?;
+        let signer_id = BytesN::from_array(&env, &signer_id);
+
+        let request = StellarRequest::new(
+            signer_id,
+            StellarRequestKind::from_with_env(self.kind, &env),
+            self.nonce,
+        );
+
+        let signed_request_payload = StellarSignedRequestPayload::Context(request);
+
+        let signed_request =
+            StellarSignedRequest::new(&env, signed_request_payload, |b| Ok(signer_sk.sign(b)))
+                .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
+
+        let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
+
+        Ok(bytes)
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        Ok(())
     }
 }
 
