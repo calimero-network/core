@@ -165,13 +165,7 @@ impl Method<Stellar> for MembersRequest {
 
         Ok(members
             .iter()
-            .map(|id| {
-                ContextIdentity::from_bytes(|dest| {
-                    dest.copy_from_slice(&id.to_array());
-                    Ok(32)
-                })
-                .expect("infallible conversion")
-            })
+            .map(|id| id.to_array().rt().expect("infallible conversion"))
             .collect())
     }
 }
