@@ -1,3 +1,4 @@
+use alias::ContextAliasCommand;
 use calimero_primitives::context::Context;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
@@ -6,7 +7,7 @@ use eyre::Result as EyreResult;
 use crate::cli::context::create::CreateCommand;
 use crate::cli::context::delete::DeleteCommand;
 use crate::cli::context::get::GetCommand;
-use crate::cli::context::identity::IdentityCommand;
+use crate::cli::context::identity::ContextIdentityCommand;
 use crate::cli::context::invite::InviteCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
@@ -15,6 +16,7 @@ use crate::cli::context::watch::WatchCommand;
 use crate::cli::Environment;
 use crate::output::Report;
 
+mod alias;
 pub mod create;
 mod delete;
 mod get;
@@ -60,7 +62,8 @@ pub enum ContextSubCommands {
     #[command(alias = "ws")]
     Watch(WatchCommand),
     Update(UpdateCommand),
-    Identity(IdentityCommand),
+    Identity(ContextIdentityCommand),
+    Alias(ContextAliasCommand),
 }
 
 impl Report for Context {
@@ -83,6 +86,7 @@ impl ContextCommand {
             ContextSubCommands::Watch(watch) => watch.run(environment).await,
             ContextSubCommands::Update(update) => update.run(environment).await,
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
+            ContextSubCommands::Alias(alias) => alias.run(environment).await,
         }
     }
 }
