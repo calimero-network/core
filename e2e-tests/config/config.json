@@ -10,6 +10,15 @@
   },
   "protocolSandboxes": [
     {
+      "protocol": "stellar",
+      "config": {
+        "contextConfigContractId": "CAJILUSW4QELARDDO7DJESSR66KEHT3BK5EBU564LSHEA2NEVKQ4XOG3",
+        "rpcUrl": "http://127.0.0.1:8000/soroban/rpc",
+        "publicKey": "GDH4WC7TJOXOKHGAZP3WAXA37MWKOFOKODGZ4UYQTCP3YCCKAXICMRYQ",
+        "secretKey": "SBYRRYSWE2WMV63RBZP64RL6HQQ342EIUIHNO3BKYYTFS4ZOAYSTDZY3"
+      }
+    },
+    {
       "protocol": "near",
       "config": {
         "contextConfigContract": "./contracts/near/context-config/res/calimero_context_config_near.wasm",

@@ -92,6 +92,50 @@ jobs:
           ./deploy_devnet.sh
           cd ../../..
 
+      - name: Deploy Stellar local devnet
+        id: deploy_stellar
+        run: |
+          set -e
+          
+          # Deploy contract and capture output
+          cd ./contracts/stellar/context-config
+          chmod +x ./deploy_devnet_env.sh
+          output=$(./deploy_devnet_env.sh)
+          
+          # Verify we got all required values
+          if ! echo "$output" | grep -q "Contract ID:"; then
+            echo "Error: Contract ID not found in output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "Account address:"; then
+            echo "Error: Account address not found in output"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "Secret key:"; then
+            echo "Error: Secret key not found in output"
+            exit 1
+          fi
+          
+          # Extract values
+          CONTRACT_ID=$(echo "$output" | grep "Contract ID:" | cut -d' ' -f3)
+          ACCOUNT_ADDRESS=$(echo "$output" | grep "Account address:" | cut -d' ' -f3)
+          SECRET_KEY=$(echo "$output" | grep "Secret key:" | cut -d' ' -f3)
+          
+          # Update config
+          cd ../../../e2e-tests/config
+          if ! jq --arg contractId "$CONTRACT_ID" \
+                  --arg publicKey "$ACCOUNT_ADDRESS" \
+                  --arg secretKey "$SECRET_KEY" \
+                  '.protocolSandboxes[2].config.contextConfigContractId = $contractId |
+                   .protocolSandboxes[2].config.publicKey = $publicKey |
+                   .protocolSandboxes[2].config.secretKey = $secretKey' \
+                  config.json > config.json.tmp; then
+            echo "Error: Failed to update config.json"
+            exit 1
+          fi
+          mv config.json.tmp config.json
+          cd ../../..
+
       - name: Run e2e tests
         env:
           NO_COLOR: '1'

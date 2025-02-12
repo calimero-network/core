@@ -80,7 +80,7 @@ impl<'a> StellarTransport<'a> {
             let keypair: Keypair = Keypair::from_secret(&network_config.secret_key).unwrap();
 
             let options: Options = Options {
-                allow_http: None,
+                allow_http: Some(true),
                 timeout: Some(1000),
                 headers: None,
             };
@@ -260,6 +260,8 @@ impl Network {
             .simulate_transaction(transaction.clone(), None)
             .await;
 
+        println!("simulation_result: {:?}", simulation_result);
+
         if let Err(err) = simulation_result {
             return Err(StellarError::Custom {
                 operation: ErrorOperation::Mutate,
@@ -282,13 +284,15 @@ impl Network {
                 });
             }
         };
-
+        println!("signed_tx: {:?}", signed_tx);
         let result = match signed_tx {
             Some(tx) => match self.client.send_transaction(tx).await {
                 Ok(response) => {
                     let hash = response.base.hash;
                     let status = response.base.status;
                     let start = Instant::now();
+
+                    println!("response {:?}", response.error_result);
 
                     if matches!(
                         status,
@@ -300,6 +304,7 @@ impl Network {
                                     break Some(info.returnValue)
                                 }
                                 Ok(GetTransactionResponse::Failed(f)) => {
+                                    println!("failed: {:?}", f);
                                     return Err(StellarError::Custom {
                                         operation: ErrorOperation::Mutate,
                                         reason: format!("Transaction failed: {:?}", f),
@@ -312,6 +317,7 @@ impl Network {
                             }
                         }
                     } else {
+                        println!("status: {:?}", status);
                         Some(None)
                     }
                 }
@@ -329,7 +335,7 @@ impl Network {
                 })
             }
         };
-
+        println!("result: {:?}", result);
         match result.flatten() {
             Some(sc_val) => match sc_val {
                 ScVal::Void => Ok(vec![]),
