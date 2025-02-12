@@ -39,8 +39,8 @@ jobs:
 
       - name: Build contracts
         run: |
-          ./contracts/near/context-config/build.sh
-          ./contracts/near/context-proxy/build.sh
+          ./contracts/stellar/context-config/build.sh
+          ./contracts/stellar/context-proxy/build.sh
 
       - name: Build binaries
         run: |
