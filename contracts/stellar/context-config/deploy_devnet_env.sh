@@ -4,8 +4,8 @@ set -e
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Install stellar CLI
-cargo install --locked stellar-cli@22.2.0 --features opt
+# # Install stellar CLI
+# cargo install --locked stellar-cli@22.2.0 --features opt
 
 # Start Stellar Quickstart container
 docker run --rm -d -p 8000:8000 \
