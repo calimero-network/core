@@ -30,9 +30,6 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true # due to candid-extractor
 
-      - name: Install dfx
-        uses: dfinity/setup-dfx@main
-
       - name: Build apps
         run: |
           ./apps/kv-store/build.sh

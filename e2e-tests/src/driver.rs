@@ -82,14 +82,6 @@ impl Driver {
     pub async fn run(&self) -> EyreResult<()> {
         self.environment.init().await?;
 
-        let filters: Option<HashSet<Protocol>> =
-            self.environment.protocol_filters.as_ref().map(|filters| {
-                filters
-                    .iter()
-                    .filter_map(|s| Protocol::from_str(s))
-                    .collect()
-            });
-
         let mut sandbox_environments: Vec<ProtocolSandboxEnvironment> = Vec::default();
         for protocol_sandbox in &self.config.protocol_sandboxes {
             let protocol_name = match protocol_sandbox {
