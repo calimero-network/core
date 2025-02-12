@@ -16,9 +16,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{
-    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
-};
+use soroban_sdk::{log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
 
 // Import the context contract
 mod context_contract {
