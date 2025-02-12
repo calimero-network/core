@@ -1,4 +1,4 @@
-name: End-to-end tests
+name: Stellar Devnet
 
 on:
   push:
