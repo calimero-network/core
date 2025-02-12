@@ -1,5 +1,9 @@
+use std::io::Cursor;
+
 use candid::{Decode, Encode};
 use serde::Serialize;
+use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
+use soroban_sdk::{Bytes, Env, TryIntoVal};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet_crypto::Felt;
 
@@ -8,6 +12,7 @@ use crate::client::env::Method;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 
 #[derive(Clone, Debug, Serialize)]
@@ -98,5 +103,42 @@ impl Method<Icp> for ContextVariableRequest {
         // The response will be an Option<Vec<u8>>
         let decoded = Decode!(&response, Vec<u8>)?;
         Ok(decoded)
+    }
+}
+
+impl Method<Stellar> for ContextVariableRequest {
+    type Returns = Vec<u8>;
+
+    const METHOD: &'static str = "get_context_value";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+
+        let key_val: Bytes = Bytes::from_slice(&env, &self.key);
+
+        let args = (key_val,);
+
+        let xdr = args.to_xdr(&env);
+        Ok(xdr.to_alloc_vec())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let cursor = Cursor::new(response);
+        let mut limited = Limited::new(cursor, Limits::none());
+
+        let sc_val =
+            ScVal::read_xdr(&mut limited).map_err(|e| eyre::eyre!("Failed to read XDR: {}", e))?;
+
+        // Handle None case
+        if sc_val == ScVal::Void {
+            return Ok(Vec::new()); // Return empty vec if no value found
+        }
+
+        let env = Env::default();
+        let value: Bytes = sc_val
+            .try_into_val(&env)
+            .map_err(|e| eyre::eyre!("Failed to convert to Bytes: {:?}", e))?;
+
+        Ok(value.to_alloc_vec())
     }
 }

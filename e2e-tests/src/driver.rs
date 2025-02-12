@@ -96,19 +96,20 @@ impl Driver {
         }
 
         let mut report = TestRunReport::new();
+        let mero = self.setup_mero(&sandbox_environments).await?;
         for sandbox in &sandbox_environments {
             self.environment
                 .output_writer
                 .write_header(&format!("Running protocol {}", sandbox.name()), 1);
 
-            let mero = self.setup_mero(sandbox).await?;
             report = self.run_scenarios(&mero, report, sandbox.name()).await?;
-            self.stop_merods(&mero.ds).await;
 
             self.environment
                 .output_writer
                 .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
         }
+
+        self.stop_merods(&mero.ds).await;
 
         if let Err(e) = report.result() {
             self.environment
@@ -126,7 +127,10 @@ impl Driver {
         report.result()
     }
 
-    async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
+    async fn setup_mero(
+        &self,
+        sandbox_environments: &Vec<ProtocolSandboxEnvironment>,
+    ) -> EyreResult<Mero> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
@@ -141,14 +145,17 @@ impl Driver {
                     self.environment.test_id
                 )];
 
-                let node_args = sandbox.node_args(&node_name).await?;
+                let mut node_args = vec![];
+                for sandbox in sandbox_environments {
+                    node_args = sandbox.node_args(&node_name).await?;
+                }
 
                 let config_args = config_args.iter().chain(node_args.iter());
 
                 let merod = Merod::new(
                     node_name,
-                    self.environment.nodes_dir.join(sandbox.name()),
-                    &self.environment.logs_dir.join(sandbox.name()),
+                    self.environment.nodes_dir.clone(),
+                    &self.environment.logs_dir,
                     self.environment.merod_binary.clone(),
                     self.environment.output_writer,
                 );
@@ -173,7 +180,7 @@ impl Driver {
 
         Ok(Mero {
             ctl: Meroctl::new(
-                self.environment.nodes_dir.join(sandbox.name()),
+                self.environment.nodes_dir.clone(),
                 self.environment.meroctl_binary.clone(),
                 self.environment.output_writer,
             ),

@@ -1,5 +1,7 @@
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
+use soroban_sdk::xdr::{FromXdr, ToXdr};
+use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
@@ -9,11 +11,16 @@ use crate::client::env::{utils, Method};
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::stellar::Stellar;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::ICSigned;
 use crate::icp::{ICProposalWithApprovals, ICProxyMutateRequest};
 use crate::repr::ReprTransmute;
+use crate::stellar::stellar_types::{
+    FromWithEnv, StellarSignedRequest, StellarSignedRequestPayload,
+};
+use crate::stellar::{StellarProposalWithApprovals, StellarProxyMutateRequest};
 use crate::types::Signed;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
@@ -143,6 +150,45 @@ impl Method<Icp> for Mutate {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded = Decode!(&response, Option<ICProposalWithApprovals>)?;
         Ok(decoded.map(Into::into))
+    }
+}
+
+impl Method<Stellar> for Mutate {
+    type Returns = Option<ProposalWithApprovals>;
+
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let env = Env::default();
+        let signer_sk = SigningKey::from_bytes(&self.signing_key);
+
+        let payload: StellarProxyMutateRequest =
+            StellarProxyMutateRequest::from_with_env(self.raw_request, &env);
+
+        let signed_request_payload = StellarSignedRequestPayload::Proxy(payload);
+
+        let signed_request =
+            StellarSignedRequest::new(&env, signed_request_payload, |b| Ok(signer_sk.sign(b)))
+                .map_err(|e| eyre::eyre!("Failed to sign request: {:?}", e))?;
+
+        let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
+
+        Ok(bytes)
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        if response.is_empty() {
+            return Ok(None);
+        }
+        let env = Env::default();
+        let env_bytes = Bytes::from_slice(&env, &response);
+
+        let stellar_proposal = StellarProposalWithApprovals::from_xdr(&env, &env_bytes)
+            .map_err(|_| eyre::eyre!("Failed to deserialize response"))?;
+
+        let proposal: ProposalWithApprovals = stellar_proposal.into();
+
+        Ok(Some(proposal))
     }
 }
 
