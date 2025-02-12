@@ -1,4 +1,4 @@
-use calimero_primitives::alias::Kind;
+use calimero_primitives::alias::{Alias, Kind};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
@@ -71,6 +71,32 @@ enum Commands {
         context_id: String,
         /// The identity or alias requesting the update
         public_key: String,
+    },
+    /// Manage context aliases
+    Alias {
+        #[command(subcommand)]
+        command: AliasCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AliasCommands {
+    #[command(about = "Add new alias for a context", alias = "create", alias = "new")]
+    Add {
+        /// Name for the alias
+        name: Alias,
+        /// The context to create an alias for
+        context_id: ContextId,
+    },
+    #[command(about = "Remove a context alias", alias = "delete", alias = "rm")]
+    Remove {
+        /// Name of the alias to remove
+        name: Alias,
+    },
+    #[command(about = "Get the hash attached to a context alias")]
+    Get {
+        /// Name of the alias to look up
+        name: Alias,
     },
 }
 
@@ -256,7 +282,48 @@ impl ContextCommand {
                     .await?;
                 println!("{ind} Updated proxy for context {context_id}");
             }
+            Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
         }
         Ok(())
     }
+}
+
+fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreResult<()> {
+    match command {
+        AliasCommands::Add { name, context_id } => {
+            let mut store = node.store.handle();
+            let key = AliasKey::context(name.clone());
+
+            store.put(&key, &context_id.into())?;
+            println!("{ind} Successfully created alias '{}'", name.cyan());
+        }
+        AliasCommands::Remove { name } => {
+            let mut store = node.store.handle();
+            let key = AliasKey::context(name.clone());
+
+            if store.delete(&key).is_ok() {
+                println!("{ind} Successfully removed alias '{}'", name.cyan());
+            } else {
+                println!("{ind} Alias '{}' not found", name.cyan());
+            }
+        }
+        AliasCommands::Get { name } => {
+            let store = node.store.handle();
+            let key = AliasKey::context(name.clone());
+
+            match store.get(&key)? {
+                Some(hash) => {
+                    println!(
+                        "{ind} Alias '{}' resolves to: {}",
+                        name.cyan(),
+                        hash.to_string().cyan()
+                    );
+                }
+                None => {
+                    println!("{ind} Alias '{}' not found", name.cyan());
+                }
+            }
+        }
+    }
+    Ok(())
 }
