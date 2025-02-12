@@ -1,4 +1,4 @@
-name: e2e-tests-stellar
+name: End-to-end tests (Stellar)
 
 on:
   push:
