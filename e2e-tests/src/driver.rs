@@ -1,9 +1,8 @@
 use core::fmt::Write;
 use core::time::Duration;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::collections::HashSet;
 
 use camino::Utf8PathBuf;
 use eyre::{bail, OptionExt, Result as EyreResult};
@@ -19,10 +18,9 @@ use crate::output::OutputWriter;
 use crate::protocol::icp::IcpSandboxEnvironment;
 use crate::protocol::near::NearSandboxEnvironment;
 use crate::protocol::stellar::StellarSandboxEnvironment;
-use crate::protocol::ProtocolSandboxEnvironment;
+use crate::protocol::{Protocol, ProtocolSandboxEnvironment};
 use crate::steps::TestScenario;
 use crate::TestEnvironment;
-use crate::protocol::Protocol;
 
 pub struct TestContext<'a> {
     pub inviter: String,
@@ -84,10 +82,10 @@ impl Driver {
     pub async fn run(&self) -> EyreResult<()> {
         self.environment.init().await?;
 
-        let filters: Option<HashSet<Protocol>> = self.environment.protocol_filters
-            .as_ref()
-            .map(|filters| {
-                filters.iter()
+        let filters: Option<HashSet<Protocol>> =
+            self.environment.protocol_filters.as_ref().map(|filters| {
+                filters
+                    .iter()
                     .filter_map(|s| Protocol::from_str(s))
                     .collect()
             });
@@ -100,8 +98,13 @@ impl Driver {
                 ProtocolSandboxConfig::Icp(_) => "icp",
             };
 
-            if !self.environment.protocols.is_empty() && 
-               !self.environment.protocols.iter().any(|p| p.to_lowercase() == protocol_name) {
+            if !self.environment.protocols.is_empty()
+                && !self
+                    .environment
+                    .protocols
+                    .iter()
+                    .any(|p| p.to_lowercase() == protocol_name)
+            {
                 continue;
             }
 
