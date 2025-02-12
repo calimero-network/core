@@ -1,7 +1,7 @@
 use core::fmt::Write;
 use core::time::Duration;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use camino::Utf8PathBuf;
@@ -18,7 +18,7 @@ use crate::output::OutputWriter;
 use crate::protocol::icp::IcpSandboxEnvironment;
 use crate::protocol::near::NearSandboxEnvironment;
 use crate::protocol::stellar::StellarSandboxEnvironment;
-use crate::protocol::{Protocol, ProtocolSandboxEnvironment};
+use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
 use crate::TestEnvironment;
 
