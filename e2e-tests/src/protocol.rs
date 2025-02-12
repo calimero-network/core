@@ -30,3 +30,21 @@ impl ProtocolSandboxEnvironment {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Protocol {
+    Stellar,
+    Near,
+    Icp,
+}
+
+impl Protocol {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "stellar" => Some(Self::Stellar),
+            "near" => Some(Self::Near),
+            "icp" => Some(Self::Icp),
+            _ => None,
+        }
+    }
+}
