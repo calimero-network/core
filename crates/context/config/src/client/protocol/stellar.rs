@@ -308,7 +308,7 @@ impl Network {
                                     return Err(StellarError::Custom {
                                         operation: ErrorOperation::Mutate,
                                         reason: format!("Transaction failed: {:?}", f),
-                                    })
+                                    });
                                 }
                                 _ if Instant::now().duration_since(start).as_secs() > 35 => {
                                     break None
