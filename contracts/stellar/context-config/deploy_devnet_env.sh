@@ -11,7 +11,7 @@ cargo install --locked stellar-cli@22.2.0 --features opt
 docker run --rm -d -p 8000:8000 \
     --name stellar \
     stellar/quickstart:testing \
-    --testnet --enable rpc --limits unlimited
+    --local --enable rpc --limits unlimited
 
 # Wait for the container to be ready
 echo "Waiting for Stellar container to be ready..."

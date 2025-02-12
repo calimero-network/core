@@ -12,13 +12,12 @@ use calimero_context_config::stellar::{
 use calimero_context_proxy_stellar::ContextProxyContractClient;
 // Cryptographic imports
 use ed25519_dalek::{Signer, SigningKey};
-use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 // Soroban SDK imports
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    log, symbol_short, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+    log, vec, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 // Import the context contract

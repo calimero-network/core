@@ -90,7 +90,7 @@ impl<'a> StellarTransport<'a> {
             let network = match network_config.network.as_str() {
                 "mainnet" => Networks::public(),
                 "testnet" => Networks::testnet(),
-                _ => Networks::testnet(),
+                _ => Networks::standalone(),
             };
 
             let _ignored = networks.insert(
