@@ -149,7 +149,7 @@ impl ContextCommand {
                         if let Ok(value) = handle.get(&key) {
                             if let Some(hash) = value {
                                 if hash == context_id.into() {
-                                    aliases.push(key.alias().as_str().to_string());
+                                    aliases.push(key.alias().as_str().to_owned());
                                 }
                             }
                         }
@@ -162,7 +162,7 @@ impl ContextCommand {
                         .protocol;
 
                     let alias_list = if aliases.is_empty() {
-                        "None".to_string()
+                        "None".to_owned()
                     } else {
                         aliases.join(", ")
                     };
