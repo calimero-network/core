@@ -71,15 +71,13 @@ jobs:
       - name: Upload Build Artifacts (Binaries)
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
-          path: target/debug/
-          retention-days: 2
-
-      - name: Upload e2e-tests Config
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-tests-config
-          path: e2e-tests/config/config.json
+          name: resources
+          path: |
+            target/debug/meroctl
+            target/debug/merod
+            target/debug/e2e-tests
+            apps/kv-store/res/kv_store.wasm
+            e2e-tests/config/config.json
           retention-days: 2
 
   test:
@@ -96,14 +94,13 @@ jobs:
       - name: Download Binaries
         uses: actions/download-artifact@v4
         with:
-          name: binaries
-          path: target/debug/
-
-      - name: Download e2e-tests Config
-        uses: actions/download-artifact@v4
-        with:
-          name: e2e-tests-config
-          path: e2e-tests/config/
+          name: resources
+          path: |
+            target/debug/meroctl
+            target/debug/merod
+            target/debug/e2e-tests
+            apps/kv-store/res/kv_store.wasm
+            e2e-tests/config/config.json
 
       - name: Setup Protocol-Specific Dependencies
         run: |
@@ -129,10 +126,15 @@ jobs:
             ICP_PORT=${{ needs.build.outputs.ICP_PORT }} ./deploy_devnet.sh
             cd ../../..
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
+            chmod +x ./contracts/stellar/context-config/deploy_devnet_env.sh
+            chmod +x e2e-tests/config/config.json
+
             ./contracts/stellar/context-config/deploy_devnet_env.sh > env_output.txt
+            
             CONTRACT_ID=$(grep "Contract ID:" env_output.txt | awk '{print $3}')
             ACCOUNT_ADDRESS=$(grep "Account address:" env_output.txt | awk '{print $3}')
             SECRET_KEY=$(grep "Secret key:" env_output.txt | awk '{print $3}')
+            
             jq --arg contractId "$CONTRACT_ID" --arg publicKey "$ACCOUNT_ADDRESS" --arg secretKey "$SECRET_KEY" \
               '.protocolSandboxes[2].config.contextConfigContractId = $contractId |
                .protocolSandboxes[2].config.publicKey = $publicKey |
@@ -147,6 +149,10 @@ jobs:
           ICP_PORT: ${{ needs.build.outputs.ICP_PORT }}
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
+          chmod +x ./target/debug/e2e-tests
+          chmod +x ./target/debug/merod
+          chmod +x ./target/debug/meroctl
+
           ./target/debug/e2e-tests \
             --input-dir ./e2e-tests/config \
             --output-dir ./e2e-tests/corpus \
