@@ -16,11 +16,6 @@ jobs:
   build:
     name: Build Apps & Binaries
     runs-on: ubuntu-latest
-    outputs:
-      SWARM_PORT: ${{ steps.prepare_e2e_tests_config.outputs.SWARM_PORT }}
-      SERVER_PORT: ${{ steps.prepare_e2e_tests_config.outputs.SERVER_PORT }}
-      ICP_PORT: ${{ steps.prepare_e2e_tests_config.outputs.ICP_PORT }}
-      SWARM_HOST: ${{ steps.prepare_e2e_tests_config.outputs.SWARM_HOST }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,35 +33,6 @@ jobs:
         run: |
           ./apps/kv-store/build.sh
           cargo build -p meroctl -p merod -p e2e-tests
-
-      - name: Prepare e2e-tests Config
-        id: prepare_e2e_tests_config
-        run: |
-          random_numbers=()
-          while [ ${#random_numbers[@]} -lt 3 ]; do
-            num=$((RANDOM%37001 + 3000))
-            if [[ ! " ${random_numbers[@]} " =~ " ${num} " ]]; then
-              random_numbers+=($num)
-            fi
-          done
-          SWARM_PORT="${random_numbers[0]}"
-          SERVER_PORT="${random_numbers[1]}"
-          ICP_PORT="${random_numbers[2]}"
-          SWARM_HOST=$(hostname -I | awk '{print $1}')
-          echo "SWARM_PORT=$SWARM_PORT" >> $GITHUB_OUTPUT
-          echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
-          echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
-          echo "SWARM_HOST=$SWARM_HOST" >> $GITHUB_OUTPUT
-
-          jq --arg swarmPort "$SWARM_PORT" \
-             --arg serverPort "$SERVER_PORT" \
-             --arg icpPort "$ICP_PORT" \
-             --arg swarmHost "$SWARM_HOST" \
-             '.network.swarmHost = $swarmHost |
-              .network.startSwarmPort = ($swarmPort | tonumber) |
-              .network.startServerPort = ($serverPort | tonumber) |
-              .protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
-             e2e-tests/config/config.json > e2e-tests/config/config.tmp && mv e2e-tests/config/config.tmp e2e-tests/config/config.json
 
       - name: Upload Build Artifacts (Binaries)
         uses: actions/upload-artifact@v4
@@ -110,6 +76,41 @@ jobs:
             curl -fsSL https://sdk.dfinity.org/install.sh | bash
           fi
 
+      - name: Generate ports
+        id: generate_ports
+        run: |
+          # Generate unique random numbers
+          random_numbers=()
+          while [ ${#random_numbers[@]} -lt 3 ]; do
+            num=$((RANDOM%37001 + 3000))
+            if [[ ! " ${random_numbers[@]} " =~ " ${num} " ]]; then
+              random_numbers+=($num)
+            fi
+          done
+
+          echo "Random numbers: ${random_numbers[@]}"
+          
+          SWARM_PORT="${random_numbers[0]}"
+          SERVER_PORT="${random_numbers[1]}"
+          ICP_PORT="${random_numbers[2]}"
+          SWARM_HOST="127.0.0.1"
+
+          echo "SWARM_PORT=$SWARM_PORT" >> $GITHUB_OUTPUT
+          echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
+          echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
+          echo "SWARM_HOST=$SWARM_HOST" >> $GITHUB_OUTPUT
+
+          # Update config.json
+          jq --arg swarmPort "$SWARM_PORT" \
+            --arg serverPort "$SERVER_PORT" \
+            --arg swarmHost "$SWARM_HOST" \
+            '.network.swarmHost = ($swarmHost) |
+            .network.startSwarmPort = ($swarmPort | tonumber) |
+            .network.startServerPort = ($serverPort | tonumber)' \
+            e2e-tests/config/config.json > updated_config.json
+
+          mv updated_config.json e2e-tests/config/config.json
+      
       - name: Build Contracts (if needed)
         run: |
           if [[ "${{ matrix.protocol }}" == "near" ]]; then
@@ -124,7 +125,7 @@ jobs:
         run: |
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
             cd ./contracts/icp/context-config
-            ICP_PORT=${{ needs.build.outputs.ICP_PORT }} ./deploy_devnet.sh
+            ICP_PORT=${{ steps.generate_ports.outputs.ICP_PORT }} ./deploy_devnet.sh
             cd ../../..
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
             chmod +x ./contracts/stellar/context-config/deploy_devnet_env.sh
@@ -143,12 +144,13 @@ jobs:
               e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
           fi
 
+
+
       - name: Run e2e Tests
         env:
           NO_COLOR: '1'
-          SWARM_HOST: ${{ needs.build.outputs.SWARM_HOST }}
-          ICP_PORT: ${{ needs.build.outputs.ICP_PORT }}
         run: |
+          export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
           echo "Running e2e tests for ${{ matrix.protocol }}"
           chmod +x ./target/debug/e2e-tests
           chmod +x ./target/debug/merod
