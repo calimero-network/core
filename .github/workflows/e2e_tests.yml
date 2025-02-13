@@ -42,10 +42,10 @@ jobs:
         run: |
           cargo build -p meroctl -p merod -p e2e-tests
 
-      - name: Prepare e2e-tests config
+      - name: Generate ports
         id: prepare_e2e_tests_config
         run: |
-          # Generate 4 unique random numbers
+          # Generate unique random numbers
           random_numbers=()
           while [ ${#random_numbers[@]} -lt 3 ]; do
             num=$((RANDOM%37001 + 3000))
@@ -54,7 +54,6 @@ jobs:
             fi
           done
 
-          # Export random numbers to environment variables
           SWARM_PORT="${random_numbers[0]}"
           SERVER_PORT="${random_numbers[1]}"
           ICP_PORT="${random_numbers[2]}"
@@ -64,19 +63,6 @@ jobs:
           echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
           echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
           echo "SWARM_HOST=$SWARM_HOST" >> $GITHUB_OUTPUT
-
-          # Update JSON file with jq
-          jq --arg swarmPort "$SWARM_PORT" \
-              --arg serverPort "$SERVER_PORT" \
-              --arg icpPort "$ICP_PORT" \
-              --arg swarmHost "$SWARM_HOST" \
-              '.network.swarmHost = ($swarmHost) |
-              .network.startSwarmPort = ($swarmPort | tonumber) |
-              .network.startServerPort = ($serverPort | tonumber) |
-              .protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"
-              ' e2e-tests/config/config.json > updated_config.json
-
-          mv updated_config.json e2e-tests/config/config.json
 
   
   near:
@@ -182,6 +168,17 @@ jobs:
 
       - name: Install dfx
         uses: dfinity/setup-dfx@main
+
+      - name: Update config.json
+        env:
+          ICP_PORT: ${{ needs.build.outputs.ICP_PORT }}
+        run: |
+          jq --arg icpPort "$ICP_PORT" \
+             '.protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
+             e2e-tests/config/config.json > updated_config.json
+          mv updated_config.json e2e-tests/config/config.json
+          echo "Updated config.json with ICP_PORT=$ICP_PORT"
+          cat e2e-tests/config/config.json
 
       - name: Deploy ICP local devnet
         env:
