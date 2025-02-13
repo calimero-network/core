@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod application;
 pub mod blobs;
 pub mod common;
