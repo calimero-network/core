@@ -96,6 +96,14 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
 
+      - name: Build apps
+        run: |
+          ./apps/kv-store/build.sh
+
+      - name: Build binaries
+        run: |
+          cargo build -p meroctl -p merod -p e2e-tests
+
       - name: Build contracts
         run: |
           ./contracts/near/context-config/build.sh
@@ -163,6 +171,14 @@ jobs:
         with:
           cache-on-failure: true
           cache-all-crates: true
+
+      - name: Build apps
+        run: |
+          ./apps/kv-store/build.sh
+
+      - name: Build binaries
+        run: |
+          cargo build -p meroctl -p merod -p e2e-tests
 
       - name: Install dfx
         uses: dfinity/setup-dfx@main
