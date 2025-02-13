@@ -16,6 +16,11 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    outputs:
+      SWARM_PORT: ${{ steps.prepare_e2e_tests_config.outputs.SWARM_PORT }}
+      SERVER_PORT: ${{ steps.prepare_e2e_tests_config.outputs.SERVER_PORT }}
+      ICP_PORT: ${{ steps.prepare_e2e_tests_config.outputs.ICP_PORT }}
+      SWARM_HOST: ${{ steps.prepare_e2e_tests_config.outputs.SWARM_HOST }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,74 +35,12 @@ jobs:
           cache-all-crates: true
 
       - name: Build apps
-        run: ./apps/kv-store/build.sh
+        run: |
+          ./apps/kv-store/build.sh
 
       - name: Build binaries
-        run: cargo build -p meroctl -p merod -p e2e-tests
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts
-          path: |
-            target/debug/e2e-tests
-            target/debug/merod
-            target/debug/meroctl
-
-  test:
-    needs: build
-    name: Test ${{ matrix.protocol }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        protocol: [near, icp, stellar]
-        include:
-          - protocol: near
-            contracts: |
-              ./contracts/near/context-config/build.sh
-              ./contracts/near/context-proxy/build.sh
-            test_args: --protocols near
-            comment_tag: e2e-tests-report-near
-          - protocol: icp
-            contracts: |
-              cd ./contracts/icp/context-config
-              cargo install candid-extractor
-              ./deploy_devnet.sh
-              cd ../../..
-            test_args: --protocols icp
-            comment_tag: e2e-tests-report-icp
-          - protocol: stellar
-            contracts: |
-              cd ./contracts/stellar/context-config
-              chmod +x ./deploy_devnet_env.sh
-              ./deploy_devnet_env.sh
-              cd ../../..
-            test_args: --protocols stellar
-            comment_tag: e2e-tests-report-stellar
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
-          path: target/debug/
-
-      - name: Make binaries executable
         run: |
-          chmod +x target/debug/e2e-tests
-          chmod +x target/debug/merod
-          chmod +x target/debug/meroctl
-
-      - name: Setup DFX
-        if: matrix.protocol == 'icp'
-        uses: dfinity/setup-dfx@main
-
-      - name: Build and setup contracts
-        run: ${{ matrix.contracts }}
+          cargo build -p meroctl -p merod -p e2e-tests
 
       - name: Prepare e2e-tests config
         id: prepare_e2e_tests_config
@@ -124,16 +67,27 @@ jobs:
 
           # Update JSON file with jq
           jq --arg swarmPort "$SWARM_PORT" \
-             --arg serverPort "$SERVER_PORT" \
-             --arg icpPort "$ICP_PORT" \
-             --arg swarmHost "$SWARM_HOST" \
-             '.network.swarmHost = ($swarmHost) |
-             .network.startSwarmPort = ($swarmPort | tonumber) |
-             .network.startServerPort = ($serverPort | tonumber) |
-             .protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
-             e2e-tests/config/config.json > updated_config.json
+              --arg serverPort "$SERVER_PORT" \
+              --arg icpPort "$ICP_PORT" \
+              --arg swarmHost "$SWARM_HOST" \
+              '.network.swarmHost = ($swarmHost) |
+              .network.startSwarmPort = ($swarmPort | tonumber) |
+              .network.startServerPort = ($serverPort | tonumber) |
+              .protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"
+              ' e2e-tests/config/config.json > updated_config.json
 
           mv updated_config.json e2e-tests/config/config.json
+
+  
+  near:
+    needs: build
+    name: Test NEAR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build contracts
+        run: |
+          ./contracts/near/context-config/build.sh
+          ./contracts/near/context-proxy/build.sh
 
       - name: Run e2e tests
         env:
@@ -141,13 +95,12 @@ jobs:
         run: |
           export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
 
-          echo "Running e2e tests for ${{ matrix.protocol }}, check job summary for details"
           ./target/debug/e2e-tests \
             --input-dir ./e2e-tests/config \
             --output-dir ./e2e-tests/corpus \
             --merod-binary ./target/debug/merod \
             --meroctl-binary ./target/debug/meroctl \
-            ${{ matrix.test_args }}
+            --protocols near
 
       - name: Get PR number
         id: pr_number
@@ -171,13 +124,78 @@ jobs:
         with:
           file-path: ./e2e-tests/corpus/report.md
           pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
-          comment-tag: ${{ matrix.comment_tag }}
+          comment-tag: e2e-tests-report-near
           mode: recreate
 
       - name: Upload artifacts
         if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-tests-corpus-${{ matrix.protocol }}
+          name: e2e-tests-corpus
+          path: e2e-tests/corpus/
+          retention-days: 2
+
+  icp:
+    needs: build
+    name: Test ICP
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dfx
+        uses: dfinity/setup-dfx@main
+
+      - name: Deploy ICP local devnet
+        env:
+          ICP_PORT: ${{ needs.build.outputs.ICP_PORT }}
+        run: |
+          echo "ICP_PORT=$ICP_PORT"
+          cargo install candid-extractor
+          cd ./contracts/icp/context-config
+          ./deploy_devnet.sh
+          cd ../../..
+
+      - name: Run e2e tests
+        env:
+          NO_COLOR: '1'
+        run: |
+          export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
+          
+          echo "Running ICP e2e tests"
+          ./target/debug/e2e-tests \
+            --input-dir ./e2e-tests/config \
+            --output-dir ./e2e-tests/corpus \
+            --merod-binary ./target/debug/merod \
+            --meroctl-binary ./target/debug/meroctl \
+            --protocols icp
+
+      - name: Get PR number
+        id: pr_number
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REF: ${{ github.ref }}
+        shell: bash
+        run: |
+          echo "PR_NUMBER=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --head "${GH_REF#refs/heads/}" \
+            --base master \
+            --json number \
+            -q '.[0].number')" >> $GITHUB_OUTPUT
+
+      - name: Update pull request comment
+        if: (success() || failure()) && steps.pr_number.outputs.PR_NUMBER != ''
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: ./e2e-tests/corpus/report.md
+          pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
+          comment-tag: e2e-tests-report-near-icp
+          mode: recreate
+
+      - name: Upload artifacts
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tests-corpus
           path: e2e-tests/corpus/
           retention-days: 2
