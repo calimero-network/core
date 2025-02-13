@@ -14,18 +14,18 @@ on:
 
 jobs:
   build:
-    name: Build Binaries
+    name: Build Apps & Binaries
     runs-on: ubuntu-latest
     outputs:
       SWARM_PORT: ${{ steps.prepare_e2e_tests_config.outputs.SWARM_PORT }}
       SERVER_PORT: ${{ steps.prepare_e2e_tests_config.outputs.SERVER_PORT }}
       ICP_PORT: ${{ steps.prepare_e2e_tests_config.outputs.ICP_PORT }}
-      SWARM_HOST: ${{ steps.get_host.outputs.SWARM_HOST }}
+      SWARM_HOST: ${{ steps.prepare_e2e_tests_config.outputs.SWARM_HOST }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust & Cache
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
@@ -39,25 +39,47 @@ jobs:
           ./apps/kv-store/build.sh
           cargo build -p meroctl -p merod -p e2e-tests
 
-      - name: Generate Ports
+      - name: Prepare e2e-tests Config
         id: prepare_e2e_tests_config
         run: |
-          SWARM_PORT=$((RANDOM % 37001 + 3000))
-          SERVER_PORT=$((RANDOM % 37001 + 3000))
-          ICP_PORT=$((RANDOM % 37001 + 3000))
+          random_numbers=()
+          while [ ${#random_numbers[@]} -lt 3 ]; do
+            num=$((RANDOM%37001 + 3000))
+            if [[ ! " ${random_numbers[@]} " =~ " ${num} " ]]; then
+              random_numbers+=($num)
+            fi
+          done
+          SWARM_PORT="${random_numbers[0]}"
+          SERVER_PORT="${random_numbers[1]}"
+          ICP_PORT="${random_numbers[2]}"
+          SWARM_HOST=$(hostname -I | awk '{print $1}')
           echo "SWARM_PORT=$SWARM_PORT" >> $GITHUB_OUTPUT
           echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
           echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
+          echo "SWARM_HOST=$SWARM_HOST" >> $GITHUB_OUTPUT
 
-      - name: Get Host IP
-        id: get_host
-        run: echo "SWARM_HOST=$(hostname -I | awk '{print $1}')" >> $GITHUB_OUTPUT
+          jq --arg swarmPort "$SWARM_PORT" \
+             --arg serverPort "$SERVER_PORT" \
+             --arg icpPort "$ICP_PORT" \
+             --arg swarmHost "$SWARM_HOST" \
+             '.network.swarmHost = $swarmHost |
+              .network.startSwarmPort = ($swarmPort | tonumber) |
+              .network.startServerPort = ($serverPort | tonumber) |
+              .protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
+             e2e-tests/config/config.json > e2e-tests/config/config.tmp && mv e2e-tests/config/config.tmp e2e-tests/config/config.json
 
-      - name: Upload Build Artifacts
+      - name: Upload Build Artifacts (Binaries)
         uses: actions/upload-artifact@v4
         with:
           name: binaries
           path: target/debug/
+          retention-days: 2
+
+      - name: Upload e2e-tests Config
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tests-config
+          path: e2e-tests/config/config.json
           retention-days: 2
 
   test:
@@ -71,18 +93,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download Build Artifacts
+      - name: Download Binaries
         uses: actions/download-artifact@v4
         with:
           name: binaries
           path: target/debug/
 
+      - name: Download e2e-tests Config
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-tests-config
+          path: e2e-tests/config/
+
       - name: Setup Protocol-Specific Dependencies
         run: |
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
-            echo "Setting up ICP"
             cargo install candid-extractor
-            echo "Installing dfx..."
             curl -fsSL https://sdk.dfinity.org/install.sh | bash
           fi
 
