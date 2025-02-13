@@ -81,7 +81,7 @@ async fn add_context_alias(
     alias: Alias,
     context: ContextId,
 ) -> EyreResult<()> {
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/alias")?;
+    let url = multiaddr_to_url(multiaddr, "admin-api/dev/add-alias")?;
     let request = CreateIdentityAliasRequest {
         alias,
         context_id: None,
@@ -107,7 +107,7 @@ async fn remove_context_alias(
     keypair: &Keypair,
     alias: Alias,
 ) -> EyreResult<()> {
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/alias")?;
+    let url = multiaddr_to_url(multiaddr, "admin-api/dev/remove-alias")?;
     let request = GetIdentityAliasRequest {
         alias,
         context_id: None,
@@ -132,7 +132,7 @@ async fn get_context_alias(
     keypair: &Keypair,
     alias: Alias,
 ) -> EyreResult<()> {
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/alias")?;
+    let url = multiaddr_to_url(multiaddr, "admin-api/dev/get-alias")?;
     let request = GetIdentityAliasRequest {
         alias,
         context_id: None,

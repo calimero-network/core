@@ -220,7 +220,7 @@ async fn add_identity_alias(
         .await?
         .into();
 
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/alias")?;
+    let url = multiaddr_to_url(multiaddr, "admin-api/dev/add-alias")?;
     let request = CreateIdentityAliasRequest {
         alias,
         context_id: Some(context_id),
@@ -252,7 +252,7 @@ async fn remove_identity_alias(
         .await?
         .into();
 
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/alias")?;
+    let url = multiaddr_to_url(multiaddr, "admin-api/dev/remove-alias")?;
     let request = GetIdentityAliasRequest {
         alias,
         context_id: Some(context_id),
@@ -283,7 +283,7 @@ async fn get_identity_alias(
         .await?
         .into();
 
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/alias")?;
+    let url = multiaddr_to_url(multiaddr, "admin-api/dev/get-alias")?;
     let request = GetIdentityAliasRequest {
         alias,
         context_id: Some(context_id),
