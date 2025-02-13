@@ -187,18 +187,20 @@ jobs:
         env:
           ICP_PORT: ${{ needs.build.outputs.ICP_PORT }}
         run: |
+          echo "ICP_PORT=$ICP_PORT"
           cargo install candid-extractor
           cd ./contracts/icp/context-config
-          ./deploy_devnet.sh
+          ICP_PORT=$ICP_PORT ./deploy_devnet.sh
           cd ../../..
 
       - name: Run e2e tests
         env:
           NO_COLOR: '1'
+          ICP_PORT: ${{ needs.build.outputs.ICP_PORT }}
         run: |
           export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
           
-          echo "Running ICP e2e tests"
+          echo "Running ICP e2e tests with port $ICP_PORT"
           ./target/debug/e2e-tests \
             --input-dir ./e2e-tests/config \
             --output-dir ./e2e-tests/corpus \
@@ -236,5 +238,63 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-tests-corpus
+          path: e2e-tests/corpus/
+          retention-days: 2
+
+  stellar:
+    needs: build
+    name: Test Stellar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Build apps
+        run: |
+          ./apps/kv-store/build.sh
+
+      - name: Build binaries
+        run: |
+          cargo build -p meroctl -p merod -p e2e-tests
+
+      - name: Build contracts
+        run: |
+          ./contracts/stellar/context-config/build.sh
+          ./contracts/stellar/context-proxy/build.sh
+
+      - name: Deploy Stellar local devnet
+        run: |
+          cd ./contracts/stellar/context-config
+          ./deploy_devnet_env.sh
+          cd ../../..
+
+      - name: Run e2e tests
+        env:
+          NO_COLOR: '1'
+        run: |
+          export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
+          
+          echo "Running Stellar e2e tests"
+          ./target/debug/e2e-tests \
+            --input-dir ./e2e-tests/config \
+            --output-dir ./e2e-tests/corpus \
+            --merod-binary ./target/debug/merod \
+            --meroctl-binary ./target/debug/meroctl \
+            --protocols stellar
+
+      - name: Upload artifacts
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tests-corpus-stellar
           path: e2e-tests/corpus/
           retention-days: 2
