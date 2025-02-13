@@ -10,7 +10,7 @@ on:
       - 'contracts/**'
       - 'crates/**'
       - 'e2e-tests/**'
-      - '.github/workflows/e2e_tests.yml'
+      - '.github/workflows/e2e_tests_stellar.yml'
 
 jobs:
   test:
