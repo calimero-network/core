@@ -69,12 +69,6 @@ jobs:
           chmod +x apps/kv-store/res/kv_store.wasm
           chmod +x e2e-tests/config/config.json
 
-      - name: Setup Protocol-Specific Dependencies
-        run: |
-          if [[ "${{ matrix.protocol }}" == "icp" ]]; then
-            cargo install candid-extractor
-          fi
-
       - name: Generate ports
         id: generate_ports
         run: |
@@ -119,10 +113,15 @@ jobs:
             ./contracts/stellar/context-config/build.sh
             ./contracts/stellar/context-proxy/build.sh
           fi
+      
+      - name: Install dfx
+        if: matrix.protocol == 'icp'
+        uses: dfinity/setup-dfx@main
 
       - name: Deploy Local Devnet (if needed)
         run: |
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
+            cargo install candid-extractor
             cd ./contracts/icp/context-config
             ICP_PORT=${{ steps.generate_ports.outputs.ICP_PORT }} ./deploy_devnet.sh
             cd ../../..
