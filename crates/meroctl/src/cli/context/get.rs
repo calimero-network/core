@@ -36,12 +36,6 @@ pub enum GetSubcommand {
 
     #[command(about = "Get storage information")]
     Storage,
-
-    #[command(about = "Get identities")]
-    Identities {
-        #[arg(long, help = "Show only owned identities")]
-        owned: bool,
-    },
 }
 
 impl Report for GetContextResponse {
@@ -121,17 +115,6 @@ impl GetCommand {
                 )
                 .await
             }
-            GetSubcommand::Identities { owned } => {
-                self.get_identities(
-                    environment,
-                    multiaddr,
-                    &client,
-                    &config.identity,
-                    owned,
-                    &context_id,
-                )
-                .await
-            }
         }
     }
 
@@ -191,35 +174,6 @@ impl GetCommand {
             &format!("admin-api/dev/contexts/{}/storage", context_id),
         )?;
         make_request::<_, GetContextStorageResponse>(
-            environment,
-            client,
-            url,
-            None::<()>,
-            keypair,
-            RequestType::Get,
-        )
-        .await
-    }
-
-    async fn get_identities(
-        &self,
-        environment: &Environment,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-        owned: bool,
-        context_id: &ContextId,
-    ) -> EyreResult<()> {
-        let endpoint = if owned {
-            format!(
-                "admin-api/dev/contexts/{}/identities-owned",
-                self.context_id
-            )
-        } else {
-            format!("admin-api/dev/contexts/{}/identities", context_id)
-        };
-        let url = multiaddr_to_url(multiaddr, &endpoint)?;
-        make_request::<_, GetContextIdentitiesResponse>(
             environment,
             client,
             url,

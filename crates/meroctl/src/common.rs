@@ -206,7 +206,7 @@ pub(crate) async fn resolve_identifier(
         multiaddr_to_url(fetch_multiaddr(config)?, "admin-api/dev/get-alias")?,
         Some(request),
         &config.identity,
-        RequestType::Get,
+        RequestType::Post,
     )
     .await?;
 
