@@ -84,6 +84,18 @@ jobs:
     name: Test NEAR
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+
       - name: Build contracts
         run: |
           ./contracts/near/context-config/build.sh
@@ -140,6 +152,18 @@ jobs:
     name: Test ICP
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+
       - name: Install dfx
         uses: dfinity/setup-dfx@main
 
@@ -147,7 +171,6 @@ jobs:
         env:
           ICP_PORT: ${{ needs.build.outputs.ICP_PORT }}
         run: |
-          echo "ICP_PORT=$ICP_PORT"
           cargo install candid-extractor
           cd ./contracts/icp/context-config
           ./deploy_devnet.sh
