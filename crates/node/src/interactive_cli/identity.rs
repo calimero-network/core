@@ -47,7 +47,7 @@ enum AliasSubcommands {
         identity: String,
         /// Optional context ID (required for identity aliases)
         #[arg(long, short)]
-        context_id: String,
+        context: String,
     },
     /// Remove an alias
     #[command(about = "Remove an alias", alias = "delete", alias = "rm")]
@@ -56,7 +56,7 @@ enum AliasSubcommands {
         name: Alias,
         /// Optional context ID (required for identity aliases)
         #[arg(long, short)]
-        context_id: String,
+        context: String,
     },
     #[command(about = "Get the hash attached to an alias")]
     Get {
@@ -64,7 +64,7 @@ enum AliasSubcommands {
         name: Alias,
         /// Optional context ID (required for identity aliases)
         #[arg(long, short)]
-        context_id: String,
+        context: String,
     },
 }
 
@@ -167,9 +167,9 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
         AliasSubcommands::Add {
             name,
             identity,
-            context_id,
+            context,
         } => {
-            let context_id = resolve_identifier(node, &context_id, Kind::Context, None)?.into();
+            let context_id = resolve_identifier(node, &context, Kind::Context, None)?.into();
 
             let identity_hash =
                 resolve_identifier(node, &identity, Kind::Identity, Some(context_id))?;
@@ -180,8 +180,8 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             store.put(&key, &identity_hash)?;
             println!("{ind} Successfully created alias '{}'", name.cyan());
         }
-        AliasSubcommands::Remove { name, context_id } => {
-            let context_id = resolve_identifier(node, &context_id, Kind::Context, None)?.into();
+        AliasSubcommands::Remove { name, context } => {
+            let context_id = resolve_identifier(node, &context, Kind::Context, None)?.into();
 
             let mut store = node.store.handle();
             let key = AliasKey::identity(context_id, name.clone());
@@ -192,8 +192,8 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                 println!("{ind} Alias '{}' not found", name.cyan());
             }
         }
-        AliasSubcommands::Get { name, context_id } => {
-            let context_id = resolve_identifier(node, &context_id, Kind::Context, None)?.into();
+        AliasSubcommands::Get { name, context } => {
+            let context_id = resolve_identifier(node, &context, Kind::Context, None)?.into();
 
             let store = node.store.handle();
             let key = AliasKey::identity(context_id, name.clone());
