@@ -119,11 +119,14 @@ jobs:
         uses: dfinity/setup-dfx@main
 
       - name: Deploy Local Devnet (if needed)
+        env:
+          ICP_PORT: ${{ steps.generate_ports.outputs.ICP_PORT }}
         run: |
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
+            echo "ICP_PORT=$ICP_PORT"
             cargo install candid-extractor
             cd ./contracts/icp/context-config
-            ICP_PORT=${{ steps.generate_ports.outputs.ICP_PORT }} ./deploy_devnet.sh
+            ./deploy_devnet.sh
             cd ../../..
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
             chmod +x ./contracts/stellar/context-config/deploy_devnet_env.sh
