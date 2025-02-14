@@ -111,6 +111,10 @@ jobs:
             ./contracts/stellar/context-proxy/build.sh
           fi
       
+      - name: Install dfx
+        if: matrix.protocol == 'icp'
+        uses: dfinity/setup-dfx@main
+
       - name: Cache candid-extractor
         id: cache-candid
         if: matrix.protocol == 'icp'
