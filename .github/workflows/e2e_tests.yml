@@ -227,11 +227,9 @@ jobs:
           # Ensure the table header is written only once
           echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |" >> combined_report.md
 
-          # Loop through all reports and extract only the test results
           for report in $REPORT_FILES; do
-            tail -n +5 "$report" | grep "^|" >> combined_report.md
+            grep "^| " "$report" | grep -v "Protocol/Step" >> combined_report.md
           done
-
 
       - name: Get PR number
         id: pr_number
