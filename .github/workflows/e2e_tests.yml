@@ -128,6 +128,10 @@ jobs:
             cd ./contracts/icp/context-config
             ./deploy_devnet.sh
             cd ../../..
+
+            jq --arg icpPort "$ICP_PORT" \
+              '.protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
+              e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
             chmod +x ./contracts/stellar/context-config/deploy_devnet_env.sh
             chmod +x e2e-tests/config/config.json
@@ -141,7 +145,7 @@ jobs:
             jq --arg contractId "$CONTRACT_ID" --arg publicKey "$ACCOUNT_ADDRESS" --arg secretKey "$SECRET_KEY" \
               '.protocolSandboxes[2].config.contextConfigContractId = $contractId |
                .protocolSandboxes[2].config.publicKey = $publicKey |
-               .protocolSandboxes[2].config.secretKey = $secretKey' \
+               .protocolSandboxes[2].config.secretKey = $secretKey |
               e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
           fi
 
