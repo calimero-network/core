@@ -25,6 +25,15 @@
         "publicKey": "e3a22f0dbbde552188995641e1fa48cab2e06b94d24462281dace13d02",
         "secretKey": "c9a8e56920efd1c7b6694dce6ce871b661ae3922d5045d4a9f04e131eaa34164"
       }
+    },
+    {
+      "protocol": "stellar",
+      "config": {
+        "contextConfigContractId": "CBLAUS2QL542DAFE2FH7PS4EI2QQ64IFKS27UJCGLZ2IY46ECQULD2SL",
+        "rpcUrl": "http://127.0.0.1:8000/soroban/rpc",
+        "publicKey": "GD3G7WKBQOQGKXWNVGAAQHJPSQEDYOAN7VP2IZTC6CKKUMQ62L4E5WLY",
+        "secretKey": "SD3M4GVODVCEBOSCDTP2RCT7YXQJPH35CDSEBQHMCZXUZCALKMKG5MOT"
+      }
     }
   ]
 }

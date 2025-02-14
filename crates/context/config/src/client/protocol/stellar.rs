@@ -80,7 +80,7 @@ impl<'a> StellarTransport<'a> {
             let keypair: Keypair = Keypair::from_secret(&network_config.secret_key).unwrap();
 
             let options: Options = Options {
-                allow_http: None,
+                allow_http: Some(true),
                 timeout: Some(1000),
                 headers: None,
             };
@@ -90,7 +90,7 @@ impl<'a> StellarTransport<'a> {
             let network = match network_config.network.as_str() {
                 "mainnet" => Networks::public(),
                 "testnet" => Networks::testnet(),
-                _ => Networks::testnet(),
+                _ => Networks::standalone(),
             };
 
             let _ignored = networks.insert(
@@ -260,6 +260,8 @@ impl Network {
             .simulate_transaction(transaction.clone(), None)
             .await;
 
+        println!("simulation_result: {:?}", simulation_result);
+
         if let Err(err) = simulation_result {
             return Err(StellarError::Custom {
                 operation: ErrorOperation::Mutate,
@@ -290,6 +292,8 @@ impl Network {
                     let status = response.base.status;
                     let start = Instant::now();
 
+                    println!("response {:?}", response.error_result);
+
                     if matches!(
                         status,
                         SendTransactionStatus::Pending | SendTransactionStatus::Success
@@ -300,10 +304,11 @@ impl Network {
                                     break Some(info.returnValue)
                                 }
                                 Ok(GetTransactionResponse::Failed(f)) => {
+                                    println!("failed: {:?}", f);
                                     return Err(StellarError::Custom {
                                         operation: ErrorOperation::Mutate,
                                         reason: format!("Transaction failed: {:?}", f),
-                                    })
+                                    });
                                 }
                                 _ if Instant::now().duration_since(start).as_secs() > 35 => {
                                     break None
@@ -312,6 +317,7 @@ impl Network {
                             }
                         }
                     } else {
+                        println!("status: {:?}", status);
                         Some(None)
                     }
                 }
@@ -329,7 +335,7 @@ impl Network {
                 })
             }
         };
-
+        println!("result: {:?}", result);
         match result.flatten() {
             Some(sc_val) => match sc_val {
                 ScVal::Void => Ok(vec![]),
