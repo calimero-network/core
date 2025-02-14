@@ -217,22 +217,19 @@ jobs:
           echo "" >> combined_report.md
 
           # Find all report.md files
-          REPORT_FILES=$(find reports/ -name "report.md" 2>/dev/null)
+          REPORT_FILES=$(find reports/ -name "report.md" 2>/dev/null | sort)
 
-          # Extract only the scenario header (skip duplicate headers)
+          # Extract only the first "Scenario" header
           FIRST_REPORT=$(echo "$REPORT_FILES" | head -n 1)
-          SCENARIO_HEADER=$(grep -m 1 "### Scenario:" "$FIRST_REPORT")
-
-          # Add only the first scenario header
-          echo "$SCENARIO_HEADER" >> combined_report.md
+          grep -m 1 "^### Scenario:" "$FIRST_REPORT" >> combined_report.md
           echo "" >> combined_report.md
 
-          # Add the table header (without "Protocol/Step" repetition)
+          # Ensure the table header is written only once
           echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |" >> combined_report.md
 
-          # Append only the protocol result rows from each report
+          # Loop through all reports and extract only the test results
           for report in $REPORT_FILES; do
-            grep "^|.*|" "$report" | grep -v "Protocol/Step" >> combined_report.md
+            tail -n +5 "$report" | grep "^|" >> combined_report.md
           done
 
 
