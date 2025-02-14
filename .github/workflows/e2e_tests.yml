@@ -146,6 +146,7 @@ jobs:
           fi
 
       - name: Run e2e Tests
+        id: e2e-tests
         env:
           NO_COLOR: '1'
         continue-on-error: true
@@ -169,6 +170,31 @@ jobs:
           name: e2e-tests-${{ matrix.protocol }}
           path: e2e-tests/corpus/
           retention-days: 2
+      
+      - name: Get PR number
+        id: pr_number
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REF: ${{ github.ref }}
+        shell: bash
+        run: |
+          echo "PR_NUMBER=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --head "${GH_REF#refs/heads/}" \
+            --base master \
+            --json number \
+            -q '.[0].number')" >> $GITHUB_OUTPUT
+      
+      - name: Update pull request comment
+        if: (success() || failure()) && steps.pr_number.outputs.PR_NUMBER != ''
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          file-path: ./e2e-tests/corpus/report.md
+          pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
+          comment-tag: e2e-tests-report-${{ matrix.protocol }}
+          mode: recreate
 
       - name: Fail on Test Failures
         shell: bash
