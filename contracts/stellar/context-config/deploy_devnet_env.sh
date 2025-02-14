@@ -4,8 +4,33 @@ set -e
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Install stellar CLI
-cargo install --locked stellar-cli@22.2.0 --features opt
+# Check if stellar CLI is already installed
+if ! command -v stellar &> /dev/null; then
+    echo "Installing stellar CLI..."
+    
+    # Detect OS and architecture
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m)
+    
+    # Map architecture names
+    case $ARCH in
+        x86_64)
+            ARCH="amd64"
+            ;;
+        aarch64|arm64)
+            ARCH="arm64"
+            ;;
+    esac
+    
+    # Set binary name based on OS
+    BINARY_NAME="stellar-cli-${OS}-${ARCH}"
+    
+    wget "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
+    chmod +x "${BINARY_NAME}"
+    sudo mv "${BINARY_NAME}" /usr/local/bin/stellar
+else
+    echo "stellar is already installed"
+fi
 
 # Start Stellar Quickstart container
 docker run --rm -d -p 8000:8000 \

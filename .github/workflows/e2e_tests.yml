@@ -43,7 +43,6 @@ jobs:
             target/debug/merod
             target/debug/e2e-tests
             apps/kv-store/res/kv_store.wasm
-            e2e-tests/config/config.json
           retention-days: 2
 
   test:
@@ -66,8 +65,6 @@ jobs:
       - name: Set Permissions
         run: |
           chmod +x target/debug/e2e-tests target/debug/merod target/debug/meroctl
-          chmod +x apps/kv-store/res/kv_store.wasm
-          chmod +x e2e-tests/config/config.json
 
       - name: Generate ports
         id: generate_ports
@@ -114,9 +111,18 @@ jobs:
             ./contracts/stellar/context-proxy/build.sh
           fi
       
-      - name: Install dfx
+      - name: Cache candid-extractor
+        id: cache-candid
         if: matrix.protocol == 'icp'
-        uses: dfinity/setup-dfx@main
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin/candid-extractor
+          key: ${{ runner.os }}-candid-extractor
+
+      - name: Install candid-extractor
+        id: install-candid
+        if: steps.cache-candid.outputs.cache-hit != 'true' && matrix.protocol == 'icp'
+        run: cargo install candid-extractor
 
       - name: Deploy Local Devnet (if needed)
         env:
@@ -124,7 +130,6 @@ jobs:
         run: |
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
             echo "ICP_PORT=$ICP_PORT"
-            cargo install candid-extractor
             cd ./contracts/icp/context-config
             ./deploy_devnet.sh
             cd ../../..
@@ -135,7 +140,6 @@ jobs:
 
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
             chmod +x ./contracts/stellar/context-config/deploy_devnet_env.sh
-            chmod +x e2e-tests/config/config.json
 
             ./contracts/stellar/context-config/deploy_devnet_env.sh > env_output.txt
             
@@ -160,9 +164,6 @@ jobs:
         run: |
           export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
           echo "Running e2e tests for ${{ matrix.protocol }}"
-          chmod +x ./target/debug/e2e-tests
-          chmod +x ./target/debug/merod
-          chmod +x ./target/debug/meroctl
 
           ./target/debug/e2e-tests \
             --input-dir ./e2e-tests/config \
@@ -195,7 +196,6 @@ jobs:
             -q '.[0].number')" >> $GITHUB_OUTPUT
       
       - name: Update pull request comment
-        if: (success() || failure()) && steps.pr_number.outputs.PR_NUMBER != ''
         uses: thollander/actions-comment-pull-request@v3
         with:
           file-path: ./e2e-tests/corpus/report.md
