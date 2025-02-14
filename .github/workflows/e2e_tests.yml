@@ -182,10 +182,45 @@ jobs:
           name: e2e-tests-${{ matrix.protocol }}
           path: e2e-tests/corpus/
           retention-days: 2
-      
+
+      - name: Fail on Test Failures
+        shell: bash
+        if: |
+          steps.e2e-tests.outcome == 'failure'
+        run: exit 1
+
+      - name: Upload test report
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-report-${{ matrix.protocol }}
+          path: e2e-tests/corpus/report.md
+          retention-days: 1
+
+  comment:
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download all reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-test-report-*
+          merge-multiple: true
+
+      - name: Combine reports
+        run: |
+          # Get the header from the first report
+          echo "## E2E Test Results" > combined_report.md
+          head -n 3 */report.md | head -n 3 >> combined_report.md
+          
+          # Get only the protocol lines from each report
+          for report in */report.md; do
+            grep "^|.*|" "$report" | grep -v "Protocol/Step" >> combined_report.md
+          done
+
       - name: Get PR number
         id: pr_number
-        if: success() || failure()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REF: ${{ github.ref }}
@@ -202,13 +237,7 @@ jobs:
       - name: Update pull request comment
         uses: thollander/actions-comment-pull-request@v3
         with:
-          file-path: ./e2e-tests/corpus/report.md
+          file-path: ./combined_report.md
           pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
-          comment-tag: e2e-tests-report-${{ matrix.protocol }}
+          comment-tag: e2e-tests-report
           mode: recreate
-
-      - name: Fail on Test Failures
-        shell: bash
-        if: |
-          steps.e2e-tests.outcome == 'failure'
-        run: exit 1
