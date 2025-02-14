@@ -1,3 +1,0 @@
-rpc_url = "http://localhost:8000/soroban/rpc"
-rpc_headers = []
-network_passphrase = "Standalone Network ; February 2017"
