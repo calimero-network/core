@@ -52,8 +52,8 @@ After building the Stellar contracts, deploy the Stellar devnet:
 ```
 
 In case of Stellar, you will need to set the values shown in the output of the
-deploy_devnet.sh script in the config file after deploying the devnet:
-Replace the following values in the config file under `stellar` section:
+deploy_devnet.sh script in the config file after deploying the devnet: Replace
+the following values in the config file under `stellar` section:
 `e2e-tests/config/config.json`:
 
 - `contextConfigContractId` with the value of `CONTRACT_ID`

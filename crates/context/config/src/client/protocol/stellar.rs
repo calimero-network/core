@@ -284,7 +284,7 @@ impl Network {
                 });
             }
         };
-        println!("signed_tx: {:?}", signed_tx);
+
         let result = match signed_tx {
             Some(tx) => match self.client.send_transaction(tx).await {
                 Ok(response) => {
