@@ -219,23 +219,16 @@ jobs:
           # Find all report.md files
           REPORT_FILES=$(find reports/ -name "report.md" 2>/dev/null)
 
-          # Debugging step - list found report files
-          echo "Found reports:"
-          echo "$REPORT_FILES"
-
-          # If no reports are found, fail gracefully
-          if [[ -z "$REPORT_FILES" ]]; then
-            echo "Error: No report.md files found!" >&2
-            exit 1
-          fi
-
-          # Extract the header from the first report found
+          # Extract only the scenario header (skip duplicate headers)
           FIRST_REPORT=$(echo "$REPORT_FILES" | head -n 1)
-          head -n 3 "$FIRST_REPORT" >> combined_report.md
+          SCENARIO_HEADER=$(grep -m 1 "### Scenario:" "$FIRST_REPORT")
 
+          # Add only the first scenario header
+          echo "$SCENARIO_HEADER" >> combined_report.md
           echo "" >> combined_report.md
+
+          # Add the table header (without "Protocol/Step" repetition)
           echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |" >> combined_report.md
-          echo "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |" >> combined_report.md
 
           # Append only the protocol result rows from each report
           for report in $REPORT_FILES; do
