@@ -9,25 +9,35 @@ if ! command -v stellar &> /dev/null; then
     echo "Installing stellar CLI..."
     
     # Detect OS and architecture
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    OS=$(uname -s)
     ARCH=$(uname -m)
     
-    # Map architecture names
-    case $ARCH in
-        x86_64)
-            ARCH="amd64"
+    # Map OS and architecture to release file names
+    case "$OS-$ARCH" in
+        "Darwin-arm64"|"Darwin-aarch64")
+            BINARY_NAME="stellar-cli-22.2.0-aarch64-apple-darwin.tar.gz"
             ;;
-        aarch64|arm64)
-            ARCH="arm64"
+        "Darwin-x86_64")
+            BINARY_NAME="stellar-cli-22.2.0-x86_64-apple-darwin.tar.gz"
+            ;;
+        "Linux-x86_64")
+            BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
+            ;;
+        "Linux-aarch64"|"Linux-arm64")
+            BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
+            ;;
+        *)
+            echo "Unsupported platform: $OS-$ARCH"
+            exit 1
             ;;
     esac
     
-    # Set binary name based on OS
-    BINARY_NAME="stellar-cli-${OS}-${ARCH}"
-    
+    echo "Downloading $BINARY_NAME..."
     wget "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
-    chmod +x "${BINARY_NAME}"
-    sudo mv "${BINARY_NAME}" /usr/local/bin/stellar
+    tar xzf "${BINARY_NAME}"
+    chmod +x stellar
+    sudo mv stellar /usr/local/bin/
+    rm "${BINARY_NAME}"
 else
     echo "stellar is already installed"
 fi
