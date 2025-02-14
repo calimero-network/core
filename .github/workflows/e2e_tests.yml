@@ -215,20 +215,15 @@ jobs:
           
           echo "## E2E Test Results" > combined_report.md
           echo "" >> combined_report.md
-
-          # Find all report.md files
-          REPORT_FILES=$(find reports/ -name "report.md" 2>/dev/null | sort)
-
-          # Extract only the first "Scenario" header
-          FIRST_REPORT=$(echo "$REPORT_FILES" | head -n 1)
-          grep -m 1 "^### Scenario:" "$FIRST_REPORT" >> combined_report.md
+          echo "### Scenario: kv-store" >> combined_report.md
           echo "" >> combined_report.md
-
-          # Ensure the table header is written only once
+          
+          # Add table header
           echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |" >> combined_report.md
-
-          for report in $REPORT_FILES; do
-            grep "^| " "$report" | grep -v "Protocol/Step" >> combined_report.md
+          
+          # Process each report file and extract only the protocol row
+          for report in $(find reports/ -name "report.md" 2>/dev/null | sort); do
+            grep "^|" "$report" | grep -v "Protocol/Step" | grep -v ":---" >> combined_report.md
           done
 
       - name: Get PR number
