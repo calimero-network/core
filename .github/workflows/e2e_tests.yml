@@ -212,10 +212,10 @@ jobs:
         run: |
           # Get the header from the first report
           echo "## E2E Test Results" > combined_report.md
-          head -n 3 */report.md | head -n 3 >> combined_report.md
+          head -n 3 e2e-tests/corpus/report.md | head -n 3 >> combined_report.md
           
           # Get only the protocol lines from each report
-          for report in */report.md; do
+          for report in e2e-test-report-*/e2e-tests/corpus/report.md; do
             grep "^|.*|" "$report" | grep -v "Protocol/Step" >> combined_report.md
           done
 
