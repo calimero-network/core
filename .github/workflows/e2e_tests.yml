@@ -207,27 +207,31 @@ jobs:
         with:
           pattern: e2e-test-report-*
           merge-multiple: true
+          path: reports/
 
       - name: Combine reports
         run: |
+          mkdir -p reports # Ensure directory exists
+          
           echo "## E2E Test Results" > combined_report.md
           echo "" >> combined_report.md
 
           # Find all report.md files
-          REPORT_FILES=$(find reports/ -name "report.md")
+          REPORT_FILES=$(find reports/ -name "report.md" 2>/dev/null)
 
           # Debugging step - list found report files
           echo "Found reports:"
           echo "$REPORT_FILES"
 
-          # Extract the header from the first report found
-          FIRST_REPORT=$(echo "$REPORT_FILES" | head -n 1)
-          if [[ -f "$FIRST_REPORT" ]]; then
-            head -n 3 "$FIRST_REPORT" >> combined_report.md
-          else
+          # If no reports are found, fail gracefully
+          if [[ -z "$REPORT_FILES" ]]; then
             echo "Error: No report.md files found!" >&2
             exit 1
           fi
+
+          # Extract the header from the first report found
+          FIRST_REPORT=$(echo "$REPORT_FILES" | head -n 1)
+          head -n 3 "$FIRST_REPORT" >> combined_report.md
 
           echo "" >> combined_report.md
           echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |" >> combined_report.md
@@ -237,6 +241,7 @@ jobs:
           for report in $REPORT_FILES; do
             grep "^|.*|" "$report" | grep -v "Protocol/Step" >> combined_report.md
           done
+
 
       - name: Get PR number
         id: pr_number
