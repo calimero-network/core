@@ -142,8 +142,6 @@ jobs:
               e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
           fi
 
-
-
       - name: Run e2e Tests
         env:
           NO_COLOR: '1'
@@ -161,7 +159,8 @@ jobs:
             --meroctl-binary ./target/debug/meroctl \
             --protocols ${{ matrix.protocol }}
 
-      - name: Upload Test Artifacts
+      - name: Upload artifacts
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-tests-${{ matrix.protocol }}
