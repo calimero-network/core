@@ -210,12 +210,31 @@ jobs:
 
       - name: Combine reports
         run: |
-          # Get the header from the first report
           echo "## E2E Test Results" > combined_report.md
-          head -n 3 e2e-tests/corpus/report.md | head -n 3 >> combined_report.md
-          
-          # Get only the protocol lines from each report
-          for report in e2e-test-report-*/e2e-tests/corpus/report.md; do
+          echo "" >> combined_report.md
+
+          # Find all report.md files
+          REPORT_FILES=$(find reports/ -name "report.md")
+
+          # Debugging step - list found report files
+          echo "Found reports:"
+          echo "$REPORT_FILES"
+
+          # Extract the header from the first report found
+          FIRST_REPORT=$(echo "$REPORT_FILES" | head -n 1)
+          if [[ -f "$FIRST_REPORT" ]]; then
+            head -n 3 "$FIRST_REPORT" >> combined_report.md
+          else
+            echo "Error: No report.md files found!" >&2
+            exit 1
+          fi
+
+          echo "" >> combined_report.md
+          echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |" >> combined_report.md
+          echo "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |" >> combined_report.md
+
+          # Append only the protocol result rows from each report
+          for report in $REPORT_FILES; do
             grep "^|.*|" "$report" | grep -v "Protocol/Step" >> combined_report.md
           done
 
