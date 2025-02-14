@@ -68,7 +68,7 @@ impl Meroctl {
                 ],
             )
             .await?;
-        println!("json: {:?}", json);
+
         let data = self.remove_value_from_object(json, "data")?;
         let context_id = self.get_string_from_object(&data, "contextId")?;
         let member_public_key = self.get_string_from_object(&data, "memberPublicKey")?;

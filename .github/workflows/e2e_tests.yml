@@ -143,9 +143,9 @@ jobs:
               e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
-            chmod +x ./contracts/stellar/context-config/deploy_devnet_env.sh
+            chmod +x ./contracts/stellar/context-config/deploy_devnet.sh
 
-            ./contracts/stellar/context-config/deploy_devnet_env.sh > env_output.txt
+            ./contracts/stellar/context-config/deploy_devnet.sh > env_output.txt
             
             CONTRACT_ID=$(grep "Contract ID:" env_output.txt | awk '{print $3}')
             ACCOUNT_ADDRESS=$(grep "Account address:" env_output.txt | awk '{print $3}')

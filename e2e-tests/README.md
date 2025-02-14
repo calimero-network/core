@@ -48,11 +48,11 @@ STELLAR setup:
 After building the Stellar contracts, deploy the Stellar devnet:
 
 ```bash
-./contracts/stellar/context-config/deploy_devnet_env.sh
+./contracts/stellar/context-config/deploy_devnet.sh
 ```
 
 In case of Stellar, you will need to set the values shown in the output of the
-deploy_devnet_env.sh script in the config file after deploying the devnet:
+deploy_devnet.sh script in the config file after deploying the devnet:
 Replace the following values in the config file under `stellar` section:
 `e2e-tests/config/config.json`:
 
