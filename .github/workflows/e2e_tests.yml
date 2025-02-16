@@ -134,9 +134,9 @@ jobs:
         run: |
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
             echo "ICP_PORT=$ICP_PORT"
-            cd ./contracts/icp/context-config
+            pushd ./contracts/icp/context-config
             ./deploy_devnet.sh
-            cd ../../..
+            popd
 
             jq --arg icpPort "$ICP_PORT" \
               '.protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
@@ -219,7 +219,7 @@ jobs:
             echo "### Scenario: kv-store"
             echo
             echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |"
-            echo "| :--- | :---: | :---: | :---: | :---: |"
+            echo "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
 
             # Debug: List all report files
             echo "Found report files:" >> /dev/stderr

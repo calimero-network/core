@@ -2,7 +2,7 @@
 set -e
 
 # Get the directory where the script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$(dirname "$0")"
 
 # Check if stellar CLI is already installed
 if ! command -v stellar &> /dev/null; then
@@ -32,12 +32,13 @@ if ! command -v stellar &> /dev/null; then
             ;;
     esac
     
-    echo "Downloading $BINARY_NAME..."
-    wget "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
-    tar xzf "${BINARY_NAME}"
+    TMPDIR=$(mktemp -d)
+    echo "Downloading $BINARY_NAME to $TMPDIR..."
+    wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
+    tar xzf "${TMPDIR}/${BINARY_NAME}"
     chmod +x stellar
     sudo mv stellar /usr/local/bin/
-    rm "${BINARY_NAME}"
+    rm -rf "$TMPDIR"
 else
     echo "stellar is already installed"
 fi
@@ -87,7 +88,7 @@ echo "Secret key: $SECRET_KEY"
 
 # Deploy the contract and capture the contract ID
 CONTRACT_ID=$(stellar contract deploy \
-    --wasm "$SCRIPT_DIR/res/calimero_context_config_stellar.wasm" \
+    --wasm "./res/calimero_context_config_stellar.wasm" \
     --source local \
     --network local \
     -- \
@@ -102,5 +103,5 @@ stellar contract invoke \
     --network local \
     -- \
     set_proxy_code \
-    --proxy-wasm-file-path "$SCRIPT_DIR/../context-proxy/res/calimero_context_proxy_stellar.wasm" \
+    --proxy-wasm-file-path "../context-proxy/res/calimero_context_proxy_stellar.wasm" \
     --owner "$ACCOUNT_ADDRESS"

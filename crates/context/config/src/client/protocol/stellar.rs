@@ -260,8 +260,6 @@ impl Network {
             .simulate_transaction(transaction.clone(), None)
             .await;
 
-        println!("simulation_result: {:?}", simulation_result);
-
         if let Err(err) = simulation_result {
             return Err(StellarError::Custom {
                 operation: ErrorOperation::Mutate,
@@ -292,8 +290,6 @@ impl Network {
                     let status = response.base.status;
                     let start = Instant::now();
 
-                    println!("response {:?}", response.error_result);
-
                     if matches!(
                         status,
                         SendTransactionStatus::Pending | SendTransactionStatus::Success
@@ -304,7 +300,6 @@ impl Network {
                                     break Some(info.returnValue)
                                 }
                                 Ok(GetTransactionResponse::Failed(f)) => {
-                                    println!("failed: {:?}", f);
                                     return Err(StellarError::Custom {
                                         operation: ErrorOperation::Mutate,
                                         reason: format!("Transaction failed: {:?}", f),
@@ -317,7 +312,6 @@ impl Network {
                             }
                         }
                     } else {
-                        println!("status: {:?}", status);
                         Some(None)
                     }
                 }
@@ -335,7 +329,6 @@ impl Network {
                 })
             }
         };
-        println!("result: {:?}", result);
         match result.flatten() {
             Some(sc_val) => match sc_val {
                 ScVal::Void => Ok(vec![]),
