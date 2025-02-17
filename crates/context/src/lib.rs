@@ -20,6 +20,7 @@ use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
+use calimero_primitives::alias::{Alias, Kind};
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{
@@ -28,7 +29,7 @@ use calimero_primitives::context::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
+    Alias as AliasKey, ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
     ContextMeta as ContextMetaKey, ContextState as ContextStateKey, FromKeyParts, Key,
 };
@@ -1490,5 +1491,23 @@ impl ContextManager {
 
     pub async fn get_peers_count(&self) -> usize {
         self.network_client.peer_count().await
+    }
+
+    pub fn create_key_from_alias(
+        &self,
+        kind: Kind,
+        alias: Alias,
+        context_id: Option<ContextId>,
+    ) -> EyreResult<AliasKey> {
+        match kind {
+            Kind::Context => Ok(AliasKey::context(alias)),
+            Kind::Identity => {
+                let context_id = context_id.ok_or_else(|| {
+                    eyre::eyre!("Context ID is required for resolving identity aliases")
+                })?;
+                Ok(AliasKey::identity(context_id, alias))
+            }
+            Kind::Application => Ok(AliasKey::application(alias)),
+        }
     }
 }

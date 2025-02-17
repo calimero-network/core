@@ -4,7 +4,6 @@ use calimero_primitives::alias::{Alias, Kind};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::Alias as AliasKey;
 use eyre::{eyre, Result as EyreResult};
 
 use crate::Node;
@@ -32,15 +31,9 @@ pub fn resolve_identifier(
     let alias = Alias::from_str(input)?;
     let store = node.store.handle();
 
-    let key = match kind {
-        Kind::Context => AliasKey::context(alias),
-        Kind::Identity => {
-            let context_id = context_id
-                .ok_or_else(|| eyre!("Context ID is required for resolving identity aliases"))?;
-            AliasKey::identity(context_id, alias)
-        }
-        Kind::Application => AliasKey::application(alias),
-    };
+    let key = node
+        .ctx_manager
+        .create_key_from_alias(kind, alias, context_id)?;
 
     store
         .get(&key)?

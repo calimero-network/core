@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::alias::Kind;
 use calimero_server_primitives::admin::{CreateIdentityAliasRequest, CreateIdentityAliasResponse};
-use calimero_store::key::Alias;
 use reqwest::StatusCode;
 
 use crate::admin::service::{ApiError, ApiResponse};
@@ -16,30 +14,27 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let mut store = state.store.handle();
 
-    let key = match payload.kind {
-        Kind::Context => Alias::context(payload.alias),
-        Kind::Identity => match payload.context_id {
-            Some(context_id) => Alias::identity(context_id, payload.alias),
-            None => {
-                return ApiError {
-                    status_code: StatusCode::BAD_REQUEST,
-                    message: "context_id is required for identity aliases".into(),
-                }
-                .into_response()
+    if let Ok(key) =
+        state
+            .ctx_manager
+            .create_key_from_alias(payload.kind, payload.alias, payload.context_id)
+    {
+        return match store.put(&key, &payload.hash) {
+            Ok(_) => ApiResponse {
+                payload: CreateIdentityAliasResponse::new(),
             }
-        },
-        Kind::Application => Alias::application(payload.alias),
-    };
-
-    match store.put(&key, &payload.hash) {
-        Ok(_) => ApiResponse {
-            payload: CreateIdentityAliasResponse::new(),
+            .into_response(),
+            Err(err) => ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Failed to store alias: {}", err),
+            }
+            .into_response(),
+        };
+    } else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "context_id is required for identity aliases".into(),
         }
-        .into_response(),
-        Err(err) => ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to store alias: {}", err),
-        }
-        .into_response(),
+        .into_response();
     }
 }
