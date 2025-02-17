@@ -1,4 +1,11 @@
+use std::str::FromStr;
+
 use calimero_config::ConfigFile;
+use calimero_primitives::alias::{Alias, Kind};
+use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
+use calimero_server_primitives::admin::{GetIdentityAliasRequest, GetIdentityAliasResponse};
 use camino::Utf8Path;
 use chrono::Utc;
 use eyre::{bail, eyre, Result as EyreResult};
@@ -9,7 +16,8 @@ use reqwest::{Client, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::cli::ApiError;
+use crate::cli::{ApiError, Environment};
+use crate::output::Report;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
@@ -147,4 +155,60 @@ pub enum RequestType {
     Get,
     Post,
     Delete,
+}
+
+pub(crate) async fn make_request<I, O>(
+    environment: &Environment,
+    client: &Client,
+    url: Url,
+    request: Option<I>,
+    keypair: &Keypair,
+    request_type: RequestType,
+) -> EyreResult<()>
+where
+    I: Serialize,
+    O: DeserializeOwned + Report + Serialize,
+{
+    let response = do_request::<I, O>(client, url, request, keypair, request_type).await?;
+    environment.output.write(&response);
+    Ok(())
+}
+
+pub(crate) async fn resolve_identifier(
+    config: &ConfigFile,
+    input: &str,
+    kind: Kind,
+    context_id: Option<ContextId>,
+) -> EyreResult<Hash> {
+    let direct_result = match kind {
+        Kind::Context => ContextId::from_str(input)
+            .map(|context_id| context_id.into())
+            .map_err(|_| eyre!("ContextId parsing failed")),
+        Kind::Identity => PublicKey::from_str(input)
+            .map(|public_key| public_key.into())
+            .map_err(|_| eyre!("PublicKey parsing failed")),
+        Kind::Application => return Err(eyre!("Application kind not supported")),
+    };
+
+    if let Ok(hash) = direct_result {
+        return Ok(hash);
+    }
+
+    let alias = Alias::from_str(input)?;
+    let request = GetIdentityAliasRequest {
+        alias,
+        context_id,
+        kind,
+    };
+
+    let response: GetIdentityAliasResponse = do_request(
+        &Client::new(),
+        multiaddr_to_url(fetch_multiaddr(config)?, "admin-api/dev/get-alias")?,
+        Some(request),
+        &config.identity,
+        RequestType::Post,
+    )
+    .await?;
+
+    Ok(response.data.hash)
 }

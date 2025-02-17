@@ -1,3 +1,4 @@
+use calimero_primitives::alias::Kind;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
@@ -10,7 +11,7 @@ use eyre::{bail, Result as EyreResult};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
-use crate::common::{do_request, load_config, multiaddr_to_url, RequestType};
+use crate::common::{do_request, load_config, multiaddr_to_url, resolve_identifier, RequestType};
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
@@ -25,8 +26,8 @@ pub const EXAMPLES: &str = r"
     EXAMPLES
 ))]
 pub struct CallCommand {
-    #[arg(value_name = "CONTEXT_ID", help = "ContextId of the context")]
-    pub context_id: ContextId,
+    #[arg(value_name = "CONTEXT_ID", help = "ContextId or alias of the context")]
+    pub context: String,
 
     #[arg(value_name = "METHOD", help = "Method to fetch details")]
     pub method: String,
@@ -34,8 +35,8 @@ pub struct CallCommand {
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
     pub args: Option<Value>,
 
-    #[arg(long = "as", help = "Public key of the executor")]
-    pub executor: PublicKey,
+    #[arg(long = "as", help = "PublicKey or alias of the executor")]
+    pub executor: String,
 
     #[arg(
         long,
@@ -84,6 +85,15 @@ impl CallCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
+        let context_id: ContextId = resolve_identifier(&config, &self.context, Kind::Context, None)
+            .await?
+            .into();
+
+        let executor: PublicKey =
+            resolve_identifier(&config, &self.executor, Kind::Identity, Some(context_id))
+                .await?
+                .into();
+
         let Some(multiaddr) = config.network.server.listen.first() else {
             bail!("No address.")
         };
@@ -91,10 +101,10 @@ impl CallCommand {
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
         let payload = RequestPayload::Execute(ExecuteRequest::new(
-            self.context_id,
+            context_id,
             self.method,
             self.args.unwrap_or(json!({})),
-            self.executor,
+            executor,
         ));
 
         let request = Request::new(

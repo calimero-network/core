@@ -196,9 +196,9 @@ impl StartBootstrapCommand {
         );
 
         let invite_command = InviteCommand {
-            context_id,
-            inviter_id: inviter_public_key,
-            invitee_id: invitee_private_key.public_key(),
+            context_id: context_id.to_string(),
+            inviter_id: inviter_public_key.to_string(),
+            invitee_id: invitee_private_key.public_key().to_string(),
         };
         let invitation_payload = invite_command.invite(invitor_environment).await?;
 
@@ -305,6 +305,7 @@ impl StartBootstrapCommand {
             None,
             &config.identity,
             protocol,
+            None,
         )
         .await?;
 

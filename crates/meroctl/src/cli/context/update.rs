@@ -1,3 +1,4 @@
+use calimero_primitives::alias::Kind;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -17,14 +18,20 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_identifier, RequestType,
+};
 use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Update app in context")]
 pub struct UpdateCommand {
-    #[clap(long, short = 'c', help = "ContextId where to install the application")]
-    context_id: ContextId,
+    #[clap(
+        long,
+        short = 'c',
+        help = "ContextId or alias where to install the application"
+    )]
+    context_id: String,
 
     #[clap(
         long,
@@ -65,14 +72,19 @@ impl UpdateCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
+        let context_id: ContextId =
+            resolve_identifier(&config, &self.context_id, Kind::Context, None)
+                .await?
+                .into();
+
         match self {
             Self {
-                context_id,
                 application_id: Some(application_id),
                 path: None,
                 metadata: None,
                 watch: false,
                 executor: executor_public_key,
+                ..
             } => {
                 update_context_application(
                     environment,
@@ -86,7 +98,6 @@ impl UpdateCommand {
                 .await?;
             }
             Self {
-                context_id,
                 application_id: None,
                 path: Some(path),
                 metadata,

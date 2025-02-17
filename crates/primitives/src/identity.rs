@@ -106,6 +106,18 @@ impl Deref for PublicKey {
     }
 }
 
+impl From<PublicKey> for Hash {
+    fn from(key: PublicKey) -> Self {
+        key.0
+    }
+}
+
+impl From<Hash> for PublicKey {
+    fn from(key: Hash) -> Self {
+        Self(key)
+    }
+}
+
 impl PublicKey {
     #[must_use]
     pub fn as_str(&self) -> &str {

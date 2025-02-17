@@ -19,6 +19,7 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::handlers::did::delete_did_handler;
+use super::handlers::identity::{create_identity_alias, delete_identity_alias, get_identity_alias};
 use super::handlers::proposals::{
     get_context_storage_entries_handler, get_context_value_handler,
     get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler,
@@ -139,6 +140,9 @@ pub(crate) fn setup(
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .route("/peers", get(get_peers_count_handler))
+        .route("/add-alias", post(create_identity_alias::handler))
+        .route("/get-alias", post(get_identity_alias::handler))
+        .route("/remove-alias", post(delete_identity_alias::handler))
         .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
 
@@ -248,6 +252,9 @@ pub(crate) fn setup(
             get(get_proposal_handler),
         )
         .route("/dev/peers", get(get_peers_count_handler))
+        .route("/dev/add-alias", post(create_identity_alias::handler))
+        .route("/dev/get-alias", post(get_identity_alias::handler))
+        .route("/dev/remove-alias", post(delete_identity_alias::handler))
         .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()

@@ -1,3 +1,4 @@
+use calimero_primitives::alias::{Alias, Kind};
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
@@ -432,6 +433,65 @@ impl GenerateContextIdentityResponse {
                 private_key,
             },
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateIdentityAliasRequest {
+    pub alias: Alias,
+    pub context_id: Option<ContextId>,
+    pub kind: Kind,
+    pub hash: Hash,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetIdentityAliasRequest {
+    pub alias: Alias,
+    pub context_id: Option<ContextId>,
+    pub kind: Kind,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateIdentityAliasResponse {
+    pub data: Empty,
+}
+
+impl CreateIdentityAliasResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteIdentityAliasResponse {
+    pub data: Empty,
+}
+
+impl DeleteIdentityAliasResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetIdentityAliasResponse {
+    pub data: GetIdentityAliasResponseData,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetIdentityAliasResponseData {
+    pub hash: Hash,
+}
+
+impl GetIdentityAliasResponseData {
+    pub const fn new(hash: Hash) -> Self {
+        Self { hash }
     }
 }
 

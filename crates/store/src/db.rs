@@ -23,6 +23,7 @@ pub enum Column {
     State,
     Blobs,
     Application,
+    Alias,
     Generic,
 }
 

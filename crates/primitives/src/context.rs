@@ -33,6 +33,18 @@ impl Deref for ContextId {
     }
 }
 
+impl From<ContextId> for Hash {
+    fn from(key: ContextId) -> Self {
+        key.0
+    }
+}
+
+impl From<Hash> for ContextId {
+    fn from(key: Hash) -> Self {
+        Self(key)
+    }
+}
+
 impl ContextId {
     #[must_use]
     pub fn as_str(&self) -> &str {
