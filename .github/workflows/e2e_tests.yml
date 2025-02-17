@@ -154,39 +154,36 @@ jobs:
 
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
 
-              echo "Installing stellar CLI..."
-              
-              # Detect OS and architecture
-              OS=$(uname -s)
-              ARCH=$(uname -m)
-              
-              # Map OS and architecture to release file names
-              case "$OS-$ARCH" in
-                  "Linux-x86_64")
-                      BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
-                      ;;
-                  "Linux-aarch64"|"Linux-arm64")
-                      BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
-                      ;;
-                  *)
-                      echo "Unsupported platform: $OS-$ARCH"
-                      exit 1
-                      ;;
-              esac
-              
-              TMPDIR=$(mktemp -d)
-              wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
-              tar xzf "${TMPDIR}/${BINARY_NAME}" -C "$TMPDIR"
-              
-              mkdir -p "$HOME/.local/bin"
-              chmod +x "$TMPDIR/stellar"
-              mv "$TMPDIR/stellar" "$HOME/.local/bin/"
-              rm -rf "$TMPDIR"
-              
-              export PATH="$HOME/.local/bin:$PATH"
-            else
-              echo "stellar is already installed"
-            fi
+            echo "Installing stellar CLI..."
+            
+            # Detect OS and architecture
+            OS=$(uname -s)
+            ARCH=$(uname -m)
+            
+            # Map OS and architecture to release file names
+            case "$OS-$ARCH" in
+                "Linux-x86_64")
+                    BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
+                    ;;
+                "Linux-aarch64"|"Linux-arm64")
+                    BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
+                    ;;
+                *)
+                    echo "Unsupported platform: $OS-$ARCH"
+                    exit 1
+                    ;;
+            esac
+            
+            TMPDIR=$(mktemp -d)
+            wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
+            tar xzf "${TMPDIR}/${BINARY_NAME}" -C "$TMPDIR"
+            
+            mkdir -p "$HOME/.local/bin"
+            chmod +x "$TMPDIR/stellar"
+            mv "$TMPDIR/stellar" "$HOME/.local/bin/"
+            rm -rf "$TMPDIR"
+            
+            export PATH="$HOME/.local/bin:$PATH"
 
             chmod +x ./contracts/stellar/context-config/deploy_devnet.sh
 
