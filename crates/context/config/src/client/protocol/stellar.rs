@@ -80,7 +80,7 @@ impl<'a> StellarTransport<'a> {
             let keypair: Keypair = Keypair::from_secret(&network_config.secret_key).unwrap();
 
             let options: Options = Options {
-                allow_http: None,
+                allow_http: Some(true),
                 timeout: Some(1000),
                 headers: None,
             };
@@ -90,7 +90,7 @@ impl<'a> StellarTransport<'a> {
             let network = match network_config.network.as_str() {
                 "mainnet" => Networks::public(),
                 "testnet" => Networks::testnet(),
-                _ => Networks::testnet(),
+                _ => Networks::standalone(),
             };
 
             let _ignored = networks.insert(
@@ -303,7 +303,7 @@ impl Network {
                                     return Err(StellarError::Custom {
                                         operation: ErrorOperation::Mutate,
                                         reason: format!("Transaction failed: {:?}", f),
-                                    })
+                                    });
                                 }
                                 _ if Instant::now().duration_since(start).as_secs() > 35 => {
                                     break None
@@ -329,7 +329,6 @@ impl Network {
                 })
             }
         };
-
         match result.flatten() {
             Some(sc_val) => match sc_val {
                 ScVal::Void => Ok(vec![]),

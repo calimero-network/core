@@ -17,6 +17,7 @@ use crate::merod::Merod;
 use crate::output::OutputWriter;
 use crate::protocol::icp::IcpSandboxEnvironment;
 use crate::protocol::near::NearSandboxEnvironment;
+use crate::protocol::stellar::StellarSandboxEnvironment;
 use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
 use crate::TestEnvironment;
@@ -83,7 +84,26 @@ impl Driver {
 
         let mut sandbox_environments: Vec<ProtocolSandboxEnvironment> = Vec::default();
         for protocol_sandbox in &self.config.protocol_sandboxes {
+            let protocol_name = match protocol_sandbox {
+                ProtocolSandboxConfig::Stellar(_) => "stellar",
+                ProtocolSandboxConfig::Near(_) => "near",
+                ProtocolSandboxConfig::Icp(_) => "icp",
+            };
+
+            if !self
+                .environment
+                .protocols
+                .iter()
+                .any(|p| p.to_lowercase() == protocol_name)
+            {
+                continue;
+            }
+
             match protocol_sandbox {
+                ProtocolSandboxConfig::Stellar(config) => {
+                    let stellar = StellarSandboxEnvironment::init(config.clone())?;
+                    sandbox_environments.push(ProtocolSandboxEnvironment::Stellar(stellar));
+                }
                 ProtocolSandboxConfig::Near(config) => {
                     let near = NearSandboxEnvironment::init(config.clone()).await?;
                     sandbox_environments.push(ProtocolSandboxEnvironment::Near(near));

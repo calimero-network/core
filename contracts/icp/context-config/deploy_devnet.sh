@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ex
+set -e
 
 # Function to generate a new identity and return its principal
 generate_identity() {
