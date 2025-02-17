@@ -110,29 +110,61 @@ jobs:
             ./contracts/stellar/context-config/build.sh
             ./contracts/stellar/context-proxy/build.sh
           fi
-      
-      - name: Install dfx
-        if: matrix.protocol == 'icp'
-        uses: dfinity/setup-dfx@main
-
-      - name: Cache candid-extractor
-        id: cache-candid
-        if: matrix.protocol == 'icp'
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/bin/candid-extractor
-          key: ${{ runner.os }}-candid-extractor
-
-      - name: Install candid-extractor
-        id: install-candid
-        if: steps.cache-candid.outputs.cache-hit != 'true' && matrix.protocol == 'icp'
-        run: cargo install candid-extractor
 
       - name: Deploy Local Devnet (if needed)
         env:
           ICP_PORT: ${{ steps.generate_ports.outputs.ICP_PORT }}
         run: |
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
+            TMPDIR=$(mktemp -d)
+            VERSION="0.1.5"
+            
+            # Download prebuilt binary based on platform
+            case "$(uname -s)-$(uname -m)" in
+              "Linux-x86_64")
+                BINARY="candid-extractor-x86_64-unknown-linux-gnu.tar.gz"
+                ;;
+              "Darwin-x86_64")
+                BINARY="candid-extractor-x86_64-apple-darwin.tar.gz"
+                ;;
+              *)
+                echo "Unsupported platform"
+                exit 1
+                ;;
+            esac
+            
+            wget -P "$TMPDIR" "https://github.com/dfinity/candid-extractor/releases/download/${VERSION}/${BINARY}"
+            tar xzf "$TMPDIR/$BINARY" -C "$TMPDIR"
+            mkdir -p ~/.cargo/bin
+            mv "$TMPDIR/candid-extractor" ~/.cargo/bin/
+            rm -rf "$TMPDIR"
+
+            TMPDIR=$(mktemp -d)
+            VERSION="0.24.3"
+            
+            # Download prebuilt binary based on platform
+            case "$(uname -s)-$(uname -m)" in
+              "Linux-x86_64")
+                BINARY="dfx-${VERSION}-x86_64-linux.tar.gz"
+                ;;
+              "Darwin-x86_64")
+                BINARY="dfx-${VERSION}-x86_64-darwin.tar.gz"
+                ;;
+              *)
+                echo "Unsupported platform"
+                exit 1
+                ;;
+            esac
+            
+            wget -P "$TMPDIR" "https://github.com/dfinity/sdk/releases/download/${VERSION}/${BINARY}"
+            tar xzf "$TMPDIR/$BINARY" -C "$TMPDIR"
+            mkdir -p ~/.local/bin
+            mv "$TMPDIR/dfx" ~/.local/bin/
+            rm -rf "$TMPDIR"
+            
+            # Add to PATH
+            export PATH="$HOME/.local/bin:$PATH"
+
             echo "ICP_PORT=$ICP_PORT"
             pushd ./contracts/icp/context-config
             ./deploy_devnet.sh
@@ -143,6 +175,41 @@ jobs:
               e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
+
+              echo "Installing stellar CLI..."
+              
+              # Detect OS and architecture
+              OS=$(uname -s)
+              ARCH=$(uname -m)
+              
+              # Map OS and architecture to release file names
+              case "$OS-$ARCH" in
+                  "Linux-x86_64")
+                      BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
+                      ;;
+                  "Linux-aarch64"|"Linux-arm64")
+                      BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
+                      ;;
+                  *)
+                      echo "Unsupported platform: $OS-$ARCH"
+                      exit 1
+                      ;;
+              esac
+              
+              TMPDIR=$(mktemp -d)
+              wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
+              tar xzf "${TMPDIR}/${BINARY_NAME}" -C "$TMPDIR"
+              
+              mkdir -p "$HOME/.local/bin"
+              chmod +x "$TMPDIR/stellar"
+              mv "$TMPDIR/stellar" "$HOME/.local/bin/"
+              rm -rf "$TMPDIR"
+              
+              export PATH="$HOME/.local/bin:$PATH"
+            else
+              echo "stellar is already installed"
+            fi
+
             chmod +x ./contracts/stellar/context-config/deploy_devnet.sh
 
             ./contracts/stellar/context-config/deploy_devnet.sh > env_output.txt

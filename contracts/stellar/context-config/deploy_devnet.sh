@@ -4,43 +4,21 @@ set -e
 # Get the directory where the script is located
 cd "$(dirname "$0")"
 
-# Check if stellar CLI is already installed
+# Check if required dependencies are installed
 if ! command -v stellar &> /dev/null; then
-    echo "Installing stellar CLI..."
-    
-    # Detect OS and architecture
-    OS=$(uname -s)
-    ARCH=$(uname -m)
-    
-    # Map OS and architecture to release file names
-    case "$OS-$ARCH" in
-        "Darwin-arm64"|"Darwin-aarch64")
-            BINARY_NAME="stellar-cli-22.2.0-aarch64-apple-darwin.tar.gz"
-            ;;
-        "Darwin-x86_64")
-            BINARY_NAME="stellar-cli-22.2.0-x86_64-apple-darwin.tar.gz"
-            ;;
-        "Linux-x86_64")
-            BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
-            ;;
-        "Linux-aarch64"|"Linux-arm64")
-            BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
-            ;;
-        *)
-            echo "Unsupported platform: $OS-$ARCH"
-            exit 1
-            ;;
-    esac
-    
-    TMPDIR=$(mktemp -d)
-    echo "Downloading $BINARY_NAME to $TMPDIR..."
-    wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
-    tar xzf "${TMPDIR}/${BINARY_NAME}"
-    chmod +x stellar
-    sudo mv stellar /usr/local/bin/
-    rm -rf "$TMPDIR"
-else
-    echo "stellar is already installed"
+    echo "Error: stellar CLI is not installed"
+    exit 1
+fi
+
+if ! command -v docker &> /dev/null; then
+    echo "Error: docker is not installed"
+    exit 1
+fi
+
+# Check if Docker daemon is running
+if ! docker info >/dev/null 2>&1; then
+    echo "Error: Docker daemon is not running"
+    exit 1
 fi
 
 # Start Stellar Quickstart container
@@ -82,9 +60,7 @@ stellar network add local \
 # Generate and fund keys
 stellar keys generate local --network local --fund
 ACCOUNT_ADDRESS=$(stellar keys address local)
-echo "Account address: $ACCOUNT_ADDRESS"
 SECRET_KEY=$(stellar keys show local)
-echo "Secret key: $SECRET_KEY"
 
 # Deploy the contract and capture the contract ID
 CONTRACT_ID=$(stellar contract deploy \
@@ -94,7 +70,6 @@ CONTRACT_ID=$(stellar contract deploy \
     -- \
     --owner "$ACCOUNT_ADDRESS" \
     --ledger_id CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | tail -n 1)
-echo "Contract ID: $CONTRACT_ID"
 
 # Invoke the contract to set proxy code
 stellar contract invoke \
@@ -105,3 +80,16 @@ stellar contract invoke \
     set_proxy_code \
     --proxy-wasm-file-path "../context-proxy/res/calimero_context_proxy_stellar.wasm" \
     --owner "$ACCOUNT_ADDRESS"
+
+# Update the config.json file with the new values
+jq --arg contractId "$CONTRACT_ID" \
+   --arg publicKey "$ACCOUNT_ADDRESS" \
+   --arg secretKey "$SECRET_KEY" \
+  '.protocolSandboxes[2].config.contextConfigContractId = $contractId |
+   .protocolSandboxes[2].config.publicKey = $publicKey |
+   .protocolSandboxes[2].config.secretKey = $secretKey' \
+  ../../e2e-tests/config/config.json > tmp.json && mv tmp.json ../../e2e-tests/config/config.json
+
+echo "Contract ID: $CONTRACT_ID"
+echo "Account address: $ACCOUNT_ADDRESS"
+echo "Secret key: $SECRET_KEY"

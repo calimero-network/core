@@ -90,12 +90,11 @@ impl Driver {
                 ProtocolSandboxConfig::Icp(_) => "icp",
             };
 
-            if !self.environment.protocols.is_empty()
-                && !self
-                    .environment
-                    .protocols
-                    .iter()
-                    .any(|p| p.to_lowercase() == protocol_name)
+            if !self
+                .environment
+                .protocols
+                .iter()
+                .any(|p| p.to_lowercase() == protocol_name)
             {
                 continue;
             }
