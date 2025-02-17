@@ -295,7 +295,6 @@ jobs:
             --base master \
             --json number \
             -q '.[0].number')" >> $GITHUB_OUTPUT
-      
       - name: Update pull request comment
         uses: thollander/actions-comment-pull-request@v3
         with:
