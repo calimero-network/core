@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.2] - 2025-02-17
+## [0.4.0] - 2025-02-17
 
 - Added Stellar integration
 - Added support for aliases which can replace hash based IDs
