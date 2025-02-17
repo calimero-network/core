@@ -18,6 +18,7 @@ pub struct Kind;
 impl KeyComponent for Kind {
     type LEN = U1;
 }
+
 #[derive(Clone, Copy, Debug)]
 pub struct Scope;
 

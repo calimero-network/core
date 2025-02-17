@@ -27,7 +27,7 @@ pub const EXAMPLES: &str = r"
 ))]
 pub struct CallCommand {
     #[arg(value_name = "CONTEXT_ID", help = "ContextId or alias of the context")]
-    pub context_id: String,
+    pub context: String,
 
     #[arg(value_name = "METHOD", help = "Method to fetch details")]
     pub method: String,
@@ -85,10 +85,9 @@ impl CallCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
-        let context_id: ContextId =
-            resolve_identifier(&config, &self.context_id, Kind::Context, None)
-                .await?
-                .into();
+        let context_id: ContextId = resolve_identifier(&config, &self.context, Kind::Context, None)
+            .await?
+            .into();
 
         let executor: PublicKey =
             resolve_identifier(&config, &self.executor, Kind::Identity, Some(context_id))
