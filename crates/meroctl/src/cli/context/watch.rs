@@ -1,25 +1,22 @@
-use calimero_primitives::alias::Kind;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::ws::{Request, RequestPayload, Response, SubscribeRequest};
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
-use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_identifier};
+use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias};
 use crate::output::{InfoLine, Report};
 
 #[derive(Debug, Parser)]
 #[command(about = "Watch events from a context")]
 pub struct WatchCommand {
     /// ContextId to stream events from
-    #[arg(
-        value_name = "CONTEXT_ID",
-        help = "ContextId or alias to stream events from"
-    )]
-    pub context_id: String,
+    #[arg(value_name = "CONTEXT", help = "Context to stream events from")]
+    pub context: Alias<ContextId>,
 }
 
 impl Report for Response {
@@ -33,12 +30,15 @@ impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
-        let context_id: ContextId =
-            resolve_identifier(&config, &self.context_id, Kind::Context, None)
-                .await?
-                .into();
+        let multiaddr = fetch_multiaddr(&config)?;
 
-        let mut url = multiaddr_to_url(fetch_multiaddr(&config)?, "ws")?;
+        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
+
+        let mut url = multiaddr_to_url(multiaddr, "ws")?;
         url.set_scheme("ws")
             .map_err(|()| eyre::eyre!("Failed to set URL scheme"))?;
 
@@ -60,10 +60,9 @@ impl WatchCommand {
         let subscribe_msg = serde_json::to_string(&request)?;
         write.send(WsMessage::Text(subscribe_msg)).await?;
 
-        environment.output.write(&InfoLine(&format!(
-            "Subscribed to context {}",
-            self.context_id
-        )));
+        environment
+            .output
+            .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
         environment
             .output
             .write(&InfoLine("Streaming events (press Ctrl+C to stop):"));

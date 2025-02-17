@@ -1,18 +1,18 @@
-use calimero_primitives::alias::Kind;
+use calimero_primitives::alias::Alias;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use owo_colors::OwoColorize;
 
-use crate::interactive_cli::commons::resolve_identifier;
 use crate::Node;
 
 /// View the raw state of contexts
-#[derive(Clone, Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub struct StateCommand {
-    /// The context ID to view the state for
-    context_id: Option<String>,
+    /// The context to view the state for
+    context: Option<Alias<ContextId>>,
 }
 
 impl StateCommand {
@@ -20,10 +20,10 @@ impl StateCommand {
         let ind = ">>".blue();
 
         let context_id = self
-            .context_id
-            .map(|context_inner| resolve_identifier(node, &context_inner, Kind::Context, None))
+            .context
+            .map(|context| node.ctx_manager.resolve_alias(context, None))
             .transpose()?
-            .map(|hash| hash.into());
+            .ok_or_eyre("unable to resolve")?;
 
         let handle = node.store.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;

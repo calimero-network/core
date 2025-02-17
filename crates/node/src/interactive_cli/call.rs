@@ -1,24 +1,26 @@
-use calimero_primitives::alias::Kind;
+use calimero_primitives::alias::Alias;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use clap::Parser;
+use eyre::OptionExt;
 use owo_colors::OwoColorize;
 use serde_json::{json, Value};
 
-use super::commons::resolve_identifier;
 use crate::Node;
 
 /// Call a method on a context
 #[derive(Debug, Parser)]
 pub struct CallCommand {
-    /// The context ID to call the method on
-    context_id: String,
+    /// The context to call the method on
+    context: Alias<ContextId>,
     /// The method to call
     method: String,
     /// JSON arguments to pass to the method
     #[clap(long, value_parser = serde_value)]
     args: Option<Value>,
-    /// The public key of the executor
+    /// The identity of the executor
     #[clap(long = "as")]
-    executor: String,
+    executor: Alias<PublicKey>,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -29,13 +31,18 @@ impl CallCommand {
     pub async fn run(self, node: &mut Node) -> eyre::Result<()> {
         let ind = ">>".blue();
 
-        let context_id = resolve_identifier(node, &self.context_id, Kind::Context, None)?.into();
+        let context_id = node
+            .ctx_manager
+            .resolve_alias(self.context, None)?
+            .ok_or_eyre("unable to resolve")?;
 
-        let executor =
-            resolve_identifier(node, &self.executor, Kind::Identity, Some(context_id))?.into();
+        let executor = node
+            .ctx_manager
+            .resolve_alias(self.executor, Some(context_id))?
+            .ok_or_eyre("unable to resolve")?;
 
         let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
-            println!("{} context not found: {}", ind, self.context_id);
+            println!("{} context not found: {}", ind, context_id);
             return Ok(());
         };
 

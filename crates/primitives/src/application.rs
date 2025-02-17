@@ -32,6 +32,18 @@ impl Deref for ApplicationId {
     }
 }
 
+impl From<ApplicationId> for Hash {
+    fn from(key: ApplicationId) -> Self {
+        key.0
+    }
+}
+
+impl From<Hash> for ApplicationId {
+    fn from(key: Hash) -> Self {
+        Self(key)
+    }
+}
+
 impl ApplicationId {
     #[must_use]
     pub fn as_str(&self) -> &str {

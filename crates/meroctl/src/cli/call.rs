@@ -1,54 +1,47 @@
-use calimero_primitives::alias::Kind;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
     ExecuteRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
 };
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use color_eyre::owo_colors::OwoColorize;
 use const_format::concatcp;
-use eyre::{bail, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
-use crate::common::{do_request, load_config, multiaddr_to_url, resolve_identifier, RequestType};
+use crate::common::{
+    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
+};
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
   # Execute a RPC method call
-  $ meroctl -- --node-name node1 call <CONTEXT_ID> <METHOD>
+  $ meroctl -- --node-name node1 call <CONTEXT> <METHOD>
 ";
 
 #[derive(Debug, Parser)]
-#[command(about = "Executing read and write RPC calls")]
+#[command(about = "Call a method on a context")]
 #[command(after_help = concatcp!(
     "Examples:",
     EXAMPLES
 ))]
 pub struct CallCommand {
-    #[arg(value_name = "CONTEXT_ID", help = "ContextId or alias of the context")]
-    pub context: String,
+    #[arg(value_name = "CONTEXT", help = "The context to call the method on")]
+    pub context: Alias<ContextId>,
 
-    #[arg(value_name = "METHOD", help = "Method to fetch details")]
+    #[arg(value_name = "METHOD", help = "The method to call")]
     pub method: String,
 
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
     pub args: Option<Value>,
 
-    #[arg(long = "as", help = "PublicKey or alias of the executor")]
-    pub executor: String,
+    #[arg(long = "as", help = "The identity of the executor")]
+    pub executor: Alias<PublicKey>,
 
-    #[arg(
-        long,
-        default_value = "dontcare",
-        help = "Id of the JsonRpc execute call"
-    )]
+    #[arg(long, default_value = "dontcare", help = "Id of the JsonRpc call")]
     pub id: Option<String>,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-pub enum CallType {
-    Execute,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -85,18 +78,19 @@ impl CallCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
-        let context_id: ContextId = resolve_identifier(&config, &self.context, Kind::Context, None)
+        let multiaddr = fetch_multiaddr(&config)?;
+
+        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
             .await?
-            .into();
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
 
-        let executor: PublicKey =
-            resolve_identifier(&config, &self.executor, Kind::Identity, Some(context_id))
-                .await?
-                .into();
-
-        let Some(multiaddr) = config.network.server.listen.first() else {
-            bail!("No address.")
-        };
+        let executor = resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 

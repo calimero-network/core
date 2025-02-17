@@ -2,93 +2,141 @@
 #[path = "tests/alias.rs"]
 mod tests;
 
-use std::fmt::{self};
+use std::fmt;
+use std::marker::PhantomData;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{de, ser, Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct Alias(String);
+use crate::application::ApplicationId;
+use crate::context::ContextId;
+use crate::identity::PublicKey;
 
-#[derive(Clone, Debug, Error)]
-#[error("Invalid alias: {0}")]
-pub struct InvalidAlias(String);
+const MAX_LENGTH: usize = 50;
+const _: [(); { (usize::BITS - MAX_LENGTH.leading_zeros()) > 8 } as usize] = [
+    /* MAX_LENGTH must be a 8-bit number */
+];
 
-impl Alias {
-    const MAX_LENGTH: usize = 50;
+pub trait ScopedAlias {
+    type Scope;
+}
 
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+impl ScopedAlias for ContextId {
+    type Scope = ();
+}
+
+impl ScopedAlias for PublicKey {
+    type Scope = ContextId;
+}
+
+impl ScopedAlias for ApplicationId {
+    type Scope = ();
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Alias<T> {
+    str: [u8; MAX_LENGTH],
+    len: u8,
+    _pd: PhantomData<T>,
+}
+
+impl<T> Copy for Alias<T> {}
+impl<T> Clone for Alias<T> {
+    fn clone(&self) -> Self {
+        *self
     }
 }
 
-impl FromStr for Alias {
+#[derive(Copy, Clone, Debug, Error)]
+#[error("invalid alias: {0}")]
+pub enum InvalidAlias {
+    #[error("exceeds maximum length of {} characters", MAX_LENGTH)]
+    TooLong,
+}
+
+impl<T> Alias<T> {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        let bytes = &self.str[..self.len as usize];
+        unsafe { std::str::from_utf8_unchecked(bytes) }
+    }
+}
+
+impl<T> AsRef<str> for Alias<T> {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<T> FromStr for Alias<T> {
     type Err = InvalidAlias;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.to_owned().try_into().map_err(|_| {
-            InvalidAlias(format!(
-                "alias exceeds maximum length of {} characters",
-                Self::MAX_LENGTH
-            ))
+        if s.len() > MAX_LENGTH {
+            return Err(InvalidAlias::TooLong);
+        }
+
+        let mut str = [0; MAX_LENGTH];
+        str[..s.len()].copy_from_slice(s.as_bytes());
+
+        Ok(Self {
+            str,
+            // safety: we guarantee this is 8-bit, where MAX_LENGTH is defined
+            len: s.len() as u8,
+            _pd: PhantomData,
         })
     }
 }
 
-impl fmt::Display for Alias {
+impl<T> fmt::Display for Alias<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
 
-impl From<Alias> for String {
-    fn from(alias: Alias) -> Self {
-        alias.0
+impl<T> Serialize for Alias<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: ser::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
     }
 }
 
-impl TryFrom<String> for Alias {
-    type Error = InvalidAlias;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        (value.len() <= Self::MAX_LENGTH)
-            .then(|| Self(value))
-            .ok_or(InvalidAlias(format!(
-                "alias exceeds maximum length of {} characters",
-                Self::MAX_LENGTH
-            )))
-    }
-}
-impl<'de> Deserialize<'de> for Alias {
+impl<'de, T> Deserialize<'de> for Alias<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: de::Deserializer<'de>,
     {
-        let encoded = String::deserialize(deserializer)?;
-        encoded.try_into().map_err(|_| {
-            serde::de::Error::custom(format!(
-                "alias exceeds maximum length of {} characters",
-                Self::MAX_LENGTH
-            ))
-        })
-    }
-}
+        struct AliasVisitor<T>(PhantomData<T>);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Kind {
-    Context,
-    Identity,
-    Application,
-}
+        impl<T> de::Visitor<'_> for AliasVisitor<T> {
+            type Value = Alias<T>;
 
-impl fmt::Display for Kind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Kind::Context => write!(f, "context"),
-            Kind::Identity => write!(f, "identity"),
-            Kind::Application => write!(f, "application"),
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "an alias of at most {} characters", MAX_LENGTH)
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Alias::from_str(v).map_err(de::Error::custom)
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let Ok(s) = std::str::from_utf8(v) else {
+                    return Err(de::Error::invalid_value(de::Unexpected::Bytes(v), &self));
+                };
+
+                Alias::from_str(s).map_err(de::Error::custom)
+            }
         }
+
+        deserializer.deserialize_str(AliasVisitor(PhantomData))
     }
 }

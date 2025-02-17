@@ -1,18 +1,15 @@
-use calimero_primitives::alias::{Alias, Kind};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key::{
-    Alias as AliasKey, ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey,
-};
+use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
 use clap::{Parser, Subcommand, ValueEnum};
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::interactive_cli::commons::resolve_identifier;
 use crate::Node;
 
 /// Manage contexts
@@ -47,8 +44,8 @@ enum Commands {
     Ls,
     /// Create a context
     Create {
-        /// The application ID to create the context with
-        application_id: ApplicationId,
+        /// The application to create the context with
+        application: Alias<ApplicationId>,
         /// The initialization parameters for the context
         params: Option<Value>,
         /// The seed for the context (to derive a deterministic context ID)
@@ -60,12 +57,13 @@ enum Commands {
     },
     /// Invite a user to a context
     Invite {
-        /// The context ID or alias to invite the user to
-        context_id: String,
-        /// The ID or alias of the inviter
-        inviter_id: String,
-        /// The ID or alias of the invitee
-        invitee_id: String,
+        /// The context to invite the user to
+        context: Alias<ContextId>,
+        /// The identity inviting the other
+        #[clap(long = "as")]
+        inviter: Alias<PublicKey>,
+        /// The identity being invited
+        invitee_id: PublicKey,
     },
     /// Join a context
     Join {
@@ -76,20 +74,21 @@ enum Commands {
     },
     /// Leave a context
     Leave {
-        /// The context ID or alias to leave
-        context_id: String,
+        /// The context to leave
+        context: Alias<ContextId>,
     },
     /// Delete a context
     Delete {
-        /// The context ID or alias to delete
-        context_id: String,
+        /// The context to delete
+        context: Alias<ContextId>,
     },
     /// Update the proxy for a context
     UpdateProxy {
-        /// The context ID or alias to update the proxy for
-        context_id: String,
-        /// The identity or alias requesting the update
-        public_key: String,
+        /// The context to update the proxy for
+        context: Alias<ContextId>,
+        #[clap(long = "as")]
+        /// The identity requesting the update
+        identity: Alias<PublicKey>,
     },
     /// Manage context aliases
     Alias {
@@ -100,22 +99,22 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum AliasCommands {
-    #[command(about = "Add new alias for a context", alias = "create", alias = "new")]
+    #[command(about = "Add new alias for a context", aliases = ["new", "create"])]
     Add {
         /// Name for the alias
-        name: Alias,
+        alias: Alias<ContextId>,
         /// The context to create an alias for
         context_id: ContextId,
     },
-    #[command(about = "Remove a context alias", alias = "delete", alias = "rm")]
+    #[command(about = "Remove a context alias", aliases = ["rm", "del", "delete"])]
     Remove {
         /// Name of the alias to remove
-        name: Alias,
+        context: Alias<ContextId>,
     },
     #[command(about = "Get the hash attached to a context alias")]
     Get {
         /// Name of the alias to look up
-        name: Alias,
+        context: Alias<ContextId>,
     },
 }
 
@@ -128,7 +127,7 @@ impl ContextCommand {
         match self.command {
             Commands::Ls => {
                 println!(
-                    "{ind} {c1:44} | {c2:44} | {c3:44} | Protocol | Aliases",
+                    "{ind} {c1:44} | {c2:44} | {c3:44} | Protocol",
                     c1 = "Context ID",
                     c2 = "Application ID",
                     c3 = "Root Hash"
@@ -140,40 +139,17 @@ impl ContextCommand {
                     let (k, v) = (k?, v?);
                     let context_id = k.context_id();
 
-                    // Get aliases for this context
-                    let mut alias_iter = handle.iter::<AliasKey>()?;
-                    let mut aliases = Vec::new();
-
-                    for key_result in alias_iter.keys() {
-                        let key = key_result?;
-                        if let Ok(value) = handle.get(&key) {
-                            if let Some(hash) = value {
-                                if hash == context_id.into() {
-                                    aliases.push(key.alias().as_str().to_owned());
-                                }
-                            }
-                        }
-                    }
-
                     // Get the config for this context
-                    let protocol = handle
+                    let config = handle
                         .get(&ContextConfigKey::new(context_id))?
-                        .expect("Context config must exist with protocol")
-                        .protocol;
-
-                    let alias_list = if aliases.is_empty() {
-                        "None".to_owned()
-                    } else {
-                        aliases.join(", ")
-                    };
+                        .expect("Context config must exist with protocol");
 
                     let entry = format!(
-                        "{c1:44} | {c2:44} | {c3:44} | {c4:8} | {c5}",
+                        "{c1:44} | {c2:44} | {c3:44} | {c4:8}",
                         c1 = context_id,
                         c2 = v.application.application_id(),
                         c3 = Hash::from(v.root_hash),
-                        c4 = protocol,
-                        c5 = alias_list
+                        c4 = config.protocol,
                     );
                     for line in entry.lines() {
                         println!("{ind} {}", line.cyan());
@@ -199,10 +175,12 @@ impl ContextCommand {
                     );
                 }
             }
-            Commands::Leave { context_id } => {
-                let resolved_context =
-                    ContextId::from(resolve_identifier(node, &context_id, Kind::Context, None)?);
-                if node.ctx_manager.delete_context(&resolved_context).await? {
+            Commands::Leave { context } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve")?;
+                if node.ctx_manager.delete_context(&context_id).await? {
                     println!("{ind} Successfully deleted context {context_id}");
                 } else {
                     println!("{ind} Failed to delete context {context_id}");
@@ -210,11 +188,16 @@ impl ContextCommand {
                 println!("{ind} Left context {context_id}");
             }
             Commands::Create {
-                application_id,
+                application,
                 params,
                 context_seed,
                 protocol,
             } => {
+                let application_id = node
+                    .ctx_manager
+                    .resolve_alias(application, None)?
+                    .ok_or_eyre("unable to resolve")?;
+
                 let (tx, rx) = oneshot::channel();
 
                 node.ctx_manager.create_context(
@@ -244,28 +227,22 @@ impl ContextCommand {
                 });
             }
             Commands::Invite {
-                context_id,
-                inviter_id,
+                context,
+                inviter,
                 invitee_id,
             } => {
-                let resolved_context =
-                    ContextId::from(resolve_identifier(node, &context_id, Kind::Context, None)?);
-                let resolved_inviter = PublicKey::from(resolve_identifier(
-                    node,
-                    &inviter_id,
-                    Kind::Identity,
-                    Some(resolved_context),
-                )?);
-                let resolved_invitee = PublicKey::from(resolve_identifier(
-                    node,
-                    &invitee_id,
-                    Kind::Identity,
-                    Some(resolved_context),
-                )?);
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve")?;
+                let inviter_id = node
+                    .ctx_manager
+                    .resolve_alias(inviter, None)?
+                    .ok_or_eyre("unable to resolve")?;
 
                 if let Some(invitation_payload) = node
                     .ctx_manager
-                    .invite_to_context(resolved_context, resolved_inviter, resolved_invitee)
+                    .invite_to_context(context_id, inviter_id, invitee_id)
                     .await?
                 {
                     println!("{ind} Invited {} to context {}", invitee_id, context_id);
@@ -277,27 +254,27 @@ impl ContextCommand {
                     );
                 }
             }
-            Commands::Delete { context_id } => {
-                let resolved_context =
-                    ContextId::from(resolve_identifier(node, &context_id, Kind::Context, None)?);
-                let _ = node.ctx_manager.delete_context(&resolved_context).await?;
+            Commands::Delete { context } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve")?;
+
+                let _ = node.ctx_manager.delete_context(&context_id).await?;
                 println!("{ind} Deleted context {context_id}");
             }
-            Commands::UpdateProxy {
-                context_id,
-                public_key,
-            } => {
-                let resolved_context =
-                    ContextId::from(resolve_identifier(node, &context_id, Kind::Context, None)?);
-                let resolved_public_key = PublicKey::from(resolve_identifier(
-                    node,
-                    &public_key,
-                    Kind::Identity,
-                    Some(resolved_context),
-                )?);
+            Commands::UpdateProxy { context, identity } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve")?;
+                let public_key = node
+                    .ctx_manager
+                    .resolve_alias(identity, Some(context_id))?
+                    .ok_or_eyre("unable to resolve")?;
 
                 node.ctx_manager
-                    .update_context_proxy(resolved_context, resolved_public_key)
+                    .update_context_proxy(context_id, public_key)
                     .await?;
                 println!("{ind} Updated proxy for context {context_id}");
             }
@@ -309,40 +286,28 @@ impl ContextCommand {
 
 fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreResult<()> {
     match command {
-        AliasCommands::Add { name, context_id } => {
-            let mut store = node.store.handle();
-            let key = AliasKey::context(name.clone());
-
-            store.put(&key, &context_id.into())?;
-            println!("{ind} Successfully created alias '{}'", name.cyan());
+        AliasCommands::Add { alias, context_id } => {
+            node.ctx_manager.create_alias(alias, None, context_id)?;
+            println!("{ind} Successfully created alias '{}'", alias.cyan());
         }
-        AliasCommands::Remove { name } => {
-            let mut store = node.store.handle();
-            let key = AliasKey::context(name.clone());
-
-            if store.delete(&key).is_ok() {
-                println!("{ind} Successfully removed alias '{}'", name.cyan());
-            } else {
-                println!("{ind} Alias '{}' not found", name.cyan());
-            }
+        AliasCommands::Remove { context: alias } => {
+            node.ctx_manager.delete_alias(alias, None)?;
+            println!("{ind} Successfully removed alias '{}'", alias.cyan());
         }
-        AliasCommands::Get { name } => {
-            let store = node.store.handle();
-            let key = AliasKey::context(name.clone());
+        AliasCommands::Get { context: alias } => {
+            let Some(context) = node.ctx_manager.lookup_alias(alias, None)? else {
+                println!("{ind} Alias '{}' not found", alias.cyan());
 
-            match store.get(&key)? {
-                Some(hash) => {
-                    println!(
-                        "{ind} Alias '{}' resolves to: {}",
-                        name.cyan(),
-                        hash.to_string().cyan()
-                    );
-                }
-                None => {
-                    println!("{ind} Alias '{}' not found", name.cyan());
-                }
-            }
+                return Ok(());
+            };
+
+            println!(
+                "{ind} Alias '{}' resolves to: {}",
+                alias.cyan(),
+                context.to_string().cyan()
+            );
         }
     }
+
     Ok(())
 }
