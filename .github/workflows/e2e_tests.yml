@@ -110,6 +110,10 @@ jobs:
             ./contracts/stellar/context-config/build.sh
             ./contracts/stellar/context-proxy/build.sh
           fi
+      
+      - name: Install dfx
+        if: matrix.protocol == 'icp'
+        uses: dfinity/setup-dfx@main
 
       - name: Deploy Local Devnet (if needed)
         env:
@@ -138,33 +142,7 @@ jobs:
             mkdir -p ~/.cargo/bin
             mv "$TMPDIR/candid-extractor" ~/.cargo/bin/
             rm -rf "$TMPDIR"
-
-            TMPDIR=$(mktemp -d)
-            VERSION="0.24.3"
             
-            # Download prebuilt binary based on platform
-            case "$(uname -s)-$(uname -m)" in
-              "Linux-x86_64")
-                BINARY="dfx-${VERSION}-x86_64-linux.tar.gz"
-                ;;
-              "Darwin-x86_64")
-                BINARY="dfx-${VERSION}-x86_64-darwin.tar.gz"
-                ;;
-              *)
-                echo "Unsupported platform"
-                exit 1
-                ;;
-            esac
-            
-            wget -P "$TMPDIR" "https://github.com/dfinity/sdk/releases/download/${VERSION}/${BINARY}"
-            tar xzf "$TMPDIR/$BINARY" -C "$TMPDIR"
-            mkdir -p ~/.local/bin
-            mv "$TMPDIR/dfx" ~/.local/bin/
-            rm -rf "$TMPDIR"
-            
-            # Add to PATH
-            export PATH="$HOME/.local/bin:$PATH"
-
             echo "ICP_PORT=$ICP_PORT"
             pushd ./contracts/icp/context-config
             ./deploy_devnet.sh
