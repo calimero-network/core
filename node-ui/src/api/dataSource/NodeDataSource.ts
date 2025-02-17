@@ -651,7 +651,7 @@ export class NodeDataSource implements NodeApi {
     }
 
     return await this.client.get<ContextIdentitiesResponse>(
-      `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
+      `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities-owned`,
       headers,
     );
   }
