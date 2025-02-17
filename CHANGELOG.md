@@ -7,6 +7,8 @@
 - Minor fixes on admin dashboard
 - Optimized e2e tests
 - Optimized release process
+- Unified release artifacts into single Github Release
+- Extracted install scripts to `install-sh` repository
 
 ## [0.3.1] - 2025-01-29
 
