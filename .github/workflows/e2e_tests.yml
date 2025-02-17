@@ -139,9 +139,12 @@ jobs:
             
             wget -P "$TMPDIR" "https://github.com/dfinity/candid-extractor/releases/download/${VERSION}/${BINARY}"
             tar xzf "$TMPDIR/$BINARY" -C "$TMPDIR"
-            mkdir -p ~/.cargo/bin
-            mv "$TMPDIR/candid-extractor" ~/.cargo/bin/
+            mkdir -p "$HOME/.local/bin"
+            mv "$TMPDIR/candid-extractor" "$HOME/.local/bin/"
             rm -rf "$TMPDIR"
+            
+            # Add to PATH if not already there
+            export PATH="$HOME/.local/bin:$PATH"
             
             echo "ICP_PORT=$ICP_PORT"
             pushd ./contracts/icp/context-config
