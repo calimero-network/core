@@ -4,11 +4,13 @@
 )]
 
 use std::collections::hash_map::{Entry, HashMap};
-use std::collections::HashSet;
 
+use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseFuture};
 use client::NetworkClient;
 use config::NetworkConfig;
+use events::Libp2pEvent;
 use eyre::{bail, eyre, Result as EyreResult};
+use futures_util::StreamExt;
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
 use libp2p::futures::prelude::*;
 use libp2p::gossipsub::{
@@ -32,7 +34,7 @@ use libp2p::yamux::Config as YamuxConfig;
 use libp2p::{PeerId, StreamProtocol, SwarmBuilder};
 use libp2p_stream::{Behaviour as StreamBehaviour, IncomingStreams};
 use multiaddr::{Multiaddr, Protocol};
-use stream::Stream;
+use stream::{Stream, CALIMERO_STREAM_PROTOCOL};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, Duration};
 use tokio::{select, spawn};
@@ -156,7 +158,7 @@ fn init(
         .behaviour()
         .stream
         .new_control()
-        .accept(stream::CALIMERO_STREAM_PROTOCOL)
+        .accept(CALIMERO_STREAM_PROTOCOL)
     {
         Ok(incoming_streams) => incoming_streams,
         Err(err) => {
@@ -192,8 +194,6 @@ pub(crate) struct EventLoop {
     discovery: Discovery,
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<Option<()>>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<Option<()>>>>,
-    pending_start_providing: HashMap<QueryId, oneshot::Sender<()>>,
-    pending_get_providers: HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>,
 }
 
 #[allow(
@@ -216,8 +216,6 @@ impl EventLoop {
             discovery,
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
-            pending_start_providing: HashMap::default(),
-            pending_get_providers: HashMap::default(),
         }
     }
 
@@ -350,74 +348,290 @@ impl EventLoop {
 
                 drop(sender.send(Ok(id)));
             }
-            Command::StartProviding { key, sender } => {
-                let query_id = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .start_providing(key.into_bytes().into())
-                    .expect("No store error.");
-                drop(self.pending_start_providing.insert(query_id, sender));
-            }
-            Command::GetProviders { key, sender } => {
-                let query_id = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .get_providers(key.into_bytes().into());
-                drop(self.pending_get_providers.insert(query_id, sender));
-            }
         }
     }
 }
 
 #[derive(Debug)]
 enum Command {
+    // done
     ListenOn {
         addr: Multiaddr,
         sender: oneshot::Sender<EyreResult<()>>,
     },
+    // done
     Dial {
         peer_addr: Multiaddr,
         sender: oneshot::Sender<EyreResult<Option<()>>>,
     },
+    // done
     Bootstrap {
         sender: oneshot::Sender<EyreResult<Option<()>>>,
     },
+    // done
     Subscribe {
         topic: IdentTopic,
         sender: oneshot::Sender<EyreResult<IdentTopic>>,
     },
+    // done
     Unsubscribe {
         topic: IdentTopic,
         sender: oneshot::Sender<EyreResult<IdentTopic>>,
     },
+    // done
     OpenStream {
         peer_id: PeerId,
         sender: oneshot::Sender<EyreResult<Stream>>,
     },
+    // done
     PeerCount {
         sender: oneshot::Sender<usize>,
     },
+    // done
     MeshPeerCount {
         topic: TopicHash,
         sender: oneshot::Sender<usize>,
     },
+    // done
     MeshPeers {
         topic: TopicHash,
         sender: oneshot::Sender<Vec<PeerId>>,
     },
+    // done
     Publish {
         topic: TopicHash,
         data: Vec<u8>,
         sender: oneshot::Sender<EyreResult<MessageId>>,
     },
-    StartProviding {
-        key: String,
-        sender: oneshot::Sender<()>,
-    },
-    GetProviders {
-        key: String,
-        sender: oneshot::Sender<HashSet<PeerId>>,
-    },
+}
+
+impl Actor for EventLoop {
+    type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Context<Self>) {
+        // add stream
+        let b = self.swarm.map(|e| Libp2pEvent { event: e });
+        ctx.add_stream(b);
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("EyreResult<()>")]
+struct ListenOn(Multiaddr);
+
+impl Handler<ListenOn> for EventLoop {
+    type Result = EyreResult<()>;
+
+    fn handle(&mut self, ListenOn(addr): ListenOn, _ctx: &mut Context<Self>) -> EyreResult<()> {
+        match self.swarm.listen_on(addr) {
+            Ok(_) => Ok(()),
+            Err(e) => bail!(e),
+        }
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("EyreResult<Option<()>>")]
+struct Bootstrap;
+
+impl Handler<Bootstrap> for EventLoop {
+    type Result = ResponseFuture<EyreResult<Option<()>>>;
+
+    fn handle(
+        &mut self,
+        _msg: Bootstrap,
+        _ctx: &mut Context<Self>,
+    ) -> ResponseFuture<EyreResult<Option<()>>> {
+        let (sender, receiver) = oneshot::channel();
+
+        match self.swarm.behaviour_mut().kad.bootstrap() {
+            Ok(query_id) => {
+                drop(self.pending_bootstrap.insert(query_id, sender));
+            }
+            Err(err) => {
+                return Box::pin(async move { Err(eyre!(err)) });
+            }
+        }
+
+        Box::pin(async move { receiver.await.expect("Sender not to be dropped.") })
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("EyreResult<Option<()>>")]
+struct Dial(Multiaddr);
+
+impl Handler<Dial> for EventLoop {
+    type Result = ResponseFuture<EyreResult<Option<()>>>;
+
+    fn handle(
+        &mut self,
+        Dial(mut peer_addr): Dial,
+        _ctx: &mut Context<Self>,
+    ) -> ResponseFuture<EyreResult<Option<()>>> {
+        let Some(Protocol::P2p(peer_id)) = peer_addr.pop() else {
+            return Box::pin(async move { Err(eyre!("No peer ID in address: {}", peer_addr)) });
+        };
+
+        let (sender, receiver) = oneshot::channel();
+
+        match self.pending_dial.entry(peer_id) {
+            Entry::Occupied(_) => {
+                return Box::pin(async { Ok(None) });
+            }
+            Entry::Vacant(entry) => {
+                let _ = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .add_address(&peer_id, peer_addr.clone());
+
+                match self.swarm.dial(peer_addr) {
+                    Ok(()) => {
+                        let _ = entry.insert(sender);
+                    }
+                    Err(e) => {
+                        return Box::pin(async move { Err(eyre!(e)) });
+                    }
+                }
+            }
+        }
+
+        Box::pin(async move { receiver.await.expect("Sender not to be dropped.") })
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("EyreResult<IdentTopic>")]
+struct Subscribe(IdentTopic);
+
+impl Handler<Subscribe> for EventLoop {
+    type Result = EyreResult<IdentTopic>;
+
+    fn handle(
+        &mut self,
+        Subscribe(topic): Subscribe,
+        _ctx: &mut Context<Self>,
+    ) -> EyreResult<IdentTopic> {
+        match self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
+            Ok(_) => Ok(topic),
+            Err(e) => bail!(e),
+        }
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("EyreResult<IdentTopic>")]
+struct Unsubscribe(IdentTopic);
+
+impl Handler<Unsubscribe> for EventLoop {
+    type Result = EyreResult<IdentTopic>;
+
+    fn handle(
+        &mut self,
+        Unsubscribe(topic): Unsubscribe,
+        _ctx: &mut Context<Self>,
+    ) -> EyreResult<IdentTopic> {
+        match self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
+            Ok(_) => Ok(topic),
+            Err(e) => bail!(e),
+        }
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("EyreResult<MessageId>")]
+struct Publish {
+    topic: TopicHash,
+    data: Vec<u8>,
+}
+
+impl Handler<Publish> for EventLoop {
+    type Result = EyreResult<MessageId>;
+
+    fn handle(
+        &mut self,
+        Publish { topic, data }: Publish,
+        _ctx: &mut Context<Self>,
+    ) -> EyreResult<MessageId> {
+        match self.swarm.behaviour_mut().gossipsub.publish(topic, data) {
+            Ok(id) => Ok(id),
+            Err(err) => bail!(err),
+        }
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype(result = "EyreResult<Stream>")]
+struct OpenStream(PeerId);
+
+impl Handler<OpenStream> for EventLoop {
+    type Result = ResponseFuture<EyreResult<Stream>>;
+
+    fn handle(
+        &mut self,
+        OpenStream(peer_id): OpenStream,
+        _ctx: &mut Context<Self>,
+    ) -> Self::Result {
+        let mut stream_control = self.swarm.behaviour().stream.new_control();
+
+        Box::pin(async move {
+            let stream = match stream_control
+                .open_stream(peer_id, CALIMERO_STREAM_PROTOCOL)
+                .await
+            {
+                Ok(stream) => stream,
+                Err(err) => {
+                    bail!("Failed to open stream: {:?}", err);
+                }
+            };
+
+            Ok(Stream::new(stream))
+        })
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("usize")]
+struct PeerCount;
+
+impl Handler<PeerCount> for EventLoop {
+    type Result = usize;
+
+    fn handle(&mut self, _msg: PeerCount, _ctx: &mut Context<Self>) -> usize {
+        self.swarm.connected_peers().count()
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("usize")]
+struct MeshPeerCount(TopicHash);
+
+impl Handler<MeshPeerCount> for EventLoop {
+    type Result = usize;
+
+    fn handle(&mut self, MeshPeerCount(topic): MeshPeerCount, _ctx: &mut Context<Self>) -> usize {
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .mesh_peers(&topic)
+            .count()
+    }
+}
+
+#[derive(Message, Debug)]
+#[rtype("Vec<PeerId>")]
+struct MeshPeers(TopicHash);
+
+impl Handler<MeshPeers> for EventLoop {
+    type Result = Vec<PeerId>;
+
+    fn handle(&mut self, MeshPeers(topic): MeshPeers, _ctx: &mut Context<Self>) -> Vec<PeerId> {
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .mesh_peers(&topic)
+            .copied()
+            .collect()
+    }
 }

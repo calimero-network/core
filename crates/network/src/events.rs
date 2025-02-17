@@ -3,6 +3,7 @@
     reason = "Needed for lints that don't follow expect"
 )]
 
+use actix::StreamHandler;
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
 use multiaddr::Protocol;
@@ -23,6 +24,28 @@ mod rendezvous;
 
 pub trait EventHandler<E> {
     async fn handle(&mut self, event: E);
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Libp2pEvent {
+    pub event: SwarmEvent<BehaviourEvent>,
+}
+
+impl From<SwarmEvent<BehaviourEvent>> for Libp2pEvent {
+    fn from(event: SwarmEvent<BehaviourEvent>) -> Self {
+        Libp2pEvent { event }
+    }
+}
+
+impl StreamHandler<Libp2pEvent> for EventLoop {
+    fn handle(&mut self, item: Libp2pEvent, ctx: &mut Context<EventLoop>) {
+        println!("PING");
+    }
+
+    fn finished(&mut self, ctx: &mut Self::Context) {
+        println!("finished");
+    }
 }
 
 #[allow(
