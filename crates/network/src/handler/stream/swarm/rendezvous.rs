@@ -6,7 +6,7 @@ use super::{EventHandler, EventLoop};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
 
 impl EventHandler<Event> for EventLoop {
-    async fn handle(&mut self, event: Event) {
+    fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "rendezvous".yellow(), event);
 
         match event {

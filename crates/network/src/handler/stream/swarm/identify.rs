@@ -5,7 +5,7 @@ use tracing::{debug, error};
 use super::{EventHandler, EventLoop};
 
 impl EventHandler<Event> for EventLoop {
-    async fn handle(&mut self, event: Event) {
+    fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "identify".yellow(), event);
 
         if let Event::Received { peer_id, info } = event {

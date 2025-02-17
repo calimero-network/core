@@ -6,7 +6,7 @@ use super::*;
 use crate::stream::MAX_MESSAGE_SIZE;
 
 #[test]
-fn test_my_frame_encoding_decoding() {
+fn test_encoding_decoding() {
     let request = Message {
         data: "Hello".bytes().collect(),
     };

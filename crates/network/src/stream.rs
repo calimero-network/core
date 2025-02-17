@@ -15,7 +15,6 @@ use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
 use super::EventLoop;
 use crate::stream::codec::MessageCodec;
-use crate::types::NetworkEvent;
 
 mod codec;
 
@@ -80,14 +79,14 @@ impl<'a> FuturesSink<Message<'a>> for Stream {
     reason = "Currently needed due to code structure"
 )]
 impl EventLoop {
-    pub(crate) async fn handle_incoming_stream(&mut self, (peer, stream): (PeerId, P2pStream)) {
-        self.event_sender
-            .send(NetworkEvent::StreamOpened {
-                peer_id: peer,
-                stream: Box::new(Stream::new(stream)),
-            })
-            .await
-            .expect("Failed to send stream opened event");
+    pub(crate) fn handle_incoming_stream(&mut self, (peer, stream): (PeerId, P2pStream)) {
+        // self.event_sender
+        //     .send(NetworkEvent::StreamOpened {
+        //         peer_id: peer,
+        //         stream: Box::new(Stream::new(stream)),
+        //     })
+        //     .await
+        //     .expect("Failed to send stream opened event");
     }
 
     pub(crate) async fn open_stream(&mut self, peer_id: PeerId) -> EyreResult<Stream> {

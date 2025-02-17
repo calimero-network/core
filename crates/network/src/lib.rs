@@ -2,18 +2,21 @@
     clippy::allow_attributes,
     reason = "Needed for lints that don't follow expect"
 )]
+use std::collections::hash_map::HashMap;
+use std::ops::DerefMut;
+use std::ptr;
 
-use std::collections::hash_map::{Entry, HashMap};
-use std::collections::HashSet;
-
+use actix::{Actor, Addr, AsyncContext, Context, Running};
+use calimero_utils_actix::spawn_actor;
 use client::NetworkClient;
 use config::NetworkConfig;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, Result as EyreResult};
+use futures_util::future::OptionFuture;
+use futures_util::StreamExt;
+use handler::stream::FromStreamInner;
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
-use libp2p::futures::prelude::*;
 use libp2p::gossipsub::{
-    Behaviour as GossipsubBehaviour, Config as GossipsubConfig, IdentTopic, MessageAuthenticity,
-    MessageId, TopicHash,
+    Behaviour as GossipsubBehaviour, Config as GossipsubConfig, MessageAuthenticity,
 };
 use libp2p::identify::{Behaviour as IdentifyBehaviour, Config as IdentifyConfig};
 use libp2p::kad::store::MemoryStore;
@@ -25,18 +28,19 @@ use libp2p::ping::Behaviour as PingBehaviour;
 use libp2p::relay::client::Behaviour as RelayBehaviour;
 use libp2p::rendezvous::client::Behaviour as RendezvousBehaviour;
 use libp2p::swarm::behaviour::toggle::Toggle;
-use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
+use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::tcp::Config as TcpConfig;
 use libp2p::tls::Config as TlsConfig;
 use libp2p::yamux::Config as YamuxConfig;
 use libp2p::{PeerId, StreamProtocol, SwarmBuilder};
 use libp2p_stream::{Behaviour as StreamBehaviour, IncomingStreams};
-use multiaddr::{Multiaddr, Protocol};
-use stream::Stream;
+use mock::NodeManagerMock;
+use multiaddr::Protocol;
+use stream::CALIMERO_STREAM_PROTOCOL;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, Duration};
 use tokio::{select, spawn};
-use tracing::{debug, trace, warn};
+use tracing::warn;
 
 use crate::discovery::Discovery;
 use crate::types::NetworkEvent;
@@ -44,9 +48,11 @@ use crate::types::NetworkEvent;
 pub mod client;
 pub mod config;
 mod discovery;
-mod events;
+mod handler;
 pub mod stream;
 pub mod types;
+
+mod mock;
 
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/kad/1.0.0");
@@ -156,7 +162,7 @@ fn init(
         .behaviour()
         .stream
         .new_control()
-        .accept(stream::CALIMERO_STREAM_PROTOCOL)
+        .accept(CALIMERO_STREAM_PROTOCOL)
     {
         Ok(incoming_streams) => incoming_streams,
         Err(err) => {
@@ -168,7 +174,7 @@ fn init(
     let (event_sender, event_receiver) = mpsc::channel(32);
 
     let client = NetworkClient {
-        sender: command_sender,
+        _sender: command_sender,
     };
 
     let discovery = Discovery::new(&config.discovery.rendezvous, &config.discovery.relay);
@@ -185,15 +191,14 @@ fn init(
 }
 
 pub(crate) struct EventLoop {
-    swarm: Swarm<Behaviour>,
-    incoming_streams: IncomingStreams,
+    swarm: Box<Swarm<Behaviour>>,
+    incoming_streams: Box<IncomingStreams>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<NetworkEvent>,
+    node_manager: Addr<NodeManagerMock>,
     discovery: Discovery,
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<Option<()>>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<Option<()>>>>,
-    pending_start_providing: HashMap<QueryId, oneshot::Sender<()>>,
-    pending_get_providers: HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>,
 }
 
 #[allow(
@@ -209,15 +214,14 @@ impl EventLoop {
         discovery: Discovery,
     ) -> Self {
         Self {
-            swarm,
-            incoming_streams,
+            swarm: Box::new(swarm),
+            incoming_streams: Box::new(incoming_streams),
             command_receiver,
             event_sender,
+            node_manager: NodeManagerMock::start_default(),
             discovery,
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
-            pending_start_providing: HashMap::default(),
-            pending_get_providers: HashMap::default(),
         }
     }
 
@@ -228,196 +232,39 @@ impl EventLoop {
         #[expect(clippy::redundant_pub_crate, reason = "Needed for Tokio code")]
         loop {
             select! {
-                event = self.swarm.next() => {
-                    self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await;
-                },
-                incoming_stream = self.incoming_streams.next() => {
-                    self.handle_incoming_stream(incoming_stream.expect("Incoming streams to be infinite.")).await;
-                },
-                command = self.command_receiver.recv() => {
-                    let Some(c) = command else { break };
-                    self.handle_command(c).await;
-                }
+                // event = self.swarm.next() => {
+                //     self.handle_swarm_event(event.expect("Swarm stream to be infinite."));
+                // },
+                // incoming_stream = self.incoming_streams.next() => {
+                //     self.handle_incoming_stream(incoming_stream.expect("Incoming streams to be infinite."));
+                // },
+                // command = self.command_receiver.recv() => {
+                //     let Some(c) = command else { break };
+                //     self.handle_command(c).await;
+                // }
                 _ = rendezvous_discover_tick.tick() => self.broadcast_rendezvous_discoveries(),
-            }
-        }
-    }
-
-    // TODO: Consider splitting this long function into multiple parts.
-    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
-    async fn handle_command(&mut self, command: Command) {
-        match command {
-            Command::ListenOn { addr, sender } => {
-                drop(match self.swarm.listen_on(addr) {
-                    Ok(_) => sender.send(Ok(())),
-                    Err(e) => sender.send(Err(eyre!(e))),
-                });
-            }
-            Command::Bootstrap { sender } => match self.swarm.behaviour_mut().kad.bootstrap() {
-                Ok(query_id) => {
-                    drop(self.pending_bootstrap.insert(query_id, sender));
-                }
-                Err(err) => sender
-                    .send(Err(eyre!(err)))
-                    .expect("Receiver not to be dropped."),
-            },
-            Command::Dial {
-                mut peer_addr,
-                sender,
-            } => {
-                let Some(Protocol::P2p(peer_id)) = peer_addr.pop() else {
-                    drop(sender.send(Err(eyre!(format!("No peer ID in address: {}", peer_addr)))));
-                    return;
-                };
-
-                match self.pending_dial.entry(peer_id) {
-                    Entry::Occupied(_) => {
-                        drop(sender.send(Ok(None)));
-                    }
-                    Entry::Vacant(entry) => {
-                        let _ = self
-                            .swarm
-                            .behaviour_mut()
-                            .kad
-                            .add_address(&peer_id, peer_addr.clone());
-
-                        match self.swarm.dial(peer_addr) {
-                            Ok(()) => {
-                                let _ = entry.insert(sender);
-                            }
-                            Err(e) => {
-                                drop(sender.send(Err(eyre!(e))));
-                            }
-                        }
-                    }
-                }
-            }
-            Command::Subscribe { topic, sender } => {
-                if let Err(err) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
-                    drop(sender.send(Err(eyre!(err))));
-                    return;
-                }
-
-                drop(sender.send(Ok(topic)));
-            }
-            Command::Unsubscribe { topic, sender } => {
-                if let Err(err) = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
-                    drop(sender.send(Err(eyre!(err))));
-                    return;
-                }
-
-                drop(sender.send(Ok(topic)));
-            }
-            Command::OpenStream { peer_id, sender } => {
-                drop(sender.send(self.open_stream(peer_id).await.map_err(Into::into)));
-            }
-            Command::PeerCount { sender } => {
-                let _ignore = sender.send(self.swarm.connected_peers().count());
-            }
-            Command::MeshPeers { topic, sender } => {
-                drop(
-                    sender.send(
-                        self.swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .mesh_peers(&topic)
-                            .copied()
-                            .collect(),
-                    ),
-                );
-            }
-            Command::MeshPeerCount { topic, sender } => {
-                let _ignore = sender.send(
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .mesh_peers(&topic)
-                        .count(),
-                );
-            }
-            Command::Publish {
-                topic,
-                data,
-                sender,
-            } => {
-                let id = match self.swarm.behaviour_mut().gossipsub.publish(topic, data) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        drop(sender.send(Err(eyre!(err))));
-                        return;
-                    }
-                };
-
-                drop(sender.send(Ok(id)));
-            }
-            Command::StartProviding { key, sender } => {
-                let query_id = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .start_providing(key.into_bytes().into())
-                    .expect("No store error.");
-                drop(self.pending_start_providing.insert(query_id, sender));
-            }
-            Command::GetProviders { key, sender } => {
-                let query_id = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .get_providers(key.into_bytes().into());
-                drop(self.pending_get_providers.insert(query_id, sender));
             }
         }
     }
 }
 
 #[derive(Debug)]
-enum Command {
-    ListenOn {
-        addr: Multiaddr,
-        sender: oneshot::Sender<EyreResult<()>>,
-    },
-    Dial {
-        peer_addr: Multiaddr,
-        sender: oneshot::Sender<EyreResult<Option<()>>>,
-    },
-    Bootstrap {
-        sender: oneshot::Sender<EyreResult<Option<()>>>,
-    },
-    Subscribe {
-        topic: IdentTopic,
-        sender: oneshot::Sender<EyreResult<IdentTopic>>,
-    },
-    Unsubscribe {
-        topic: IdentTopic,
-        sender: oneshot::Sender<EyreResult<IdentTopic>>,
-    },
-    OpenStream {
-        peer_id: PeerId,
-        sender: oneshot::Sender<EyreResult<Stream>>,
-    },
-    PeerCount {
-        sender: oneshot::Sender<usize>,
-    },
-    MeshPeerCount {
-        topic: TopicHash,
-        sender: oneshot::Sender<usize>,
-    },
-    MeshPeers {
-        topic: TopicHash,
-        sender: oneshot::Sender<Vec<PeerId>>,
-    },
-    Publish {
-        topic: TopicHash,
-        data: Vec<u8>,
-        sender: oneshot::Sender<EyreResult<MessageId>>,
-    },
-    StartProviding {
-        key: String,
-        sender: oneshot::Sender<()>,
-    },
-    GetProviders {
-        key: String,
-        sender: oneshot::Sender<HashSet<PeerId>>,
-    },
+struct Command;
+
+impl Actor for EventLoop {
+    type Context = Context<Self>;
+
+    fn start(mut self) -> Addr<Self>
+    where
+        Self: Actor<Context = Context<Self>>,
+    {
+        spawn_actor!(self @ EventLoop => {
+            .swarm as FromSwarm
+        })
+    }
+
+    fn stopping(&mut self, _ctx: &mut Self::Context) -> Running {
+        println!("stopping the network manager");
+        Running::Stop
+    }
 }

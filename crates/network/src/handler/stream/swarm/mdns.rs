@@ -6,7 +6,7 @@ use super::{EventHandler, EventLoop, RelayedMultiaddr};
 use crate::discovery::state::PeerDiscoveryMechanism;
 
 impl EventHandler<Event> for EventLoop {
-    async fn handle(&mut self, event: Event) {
+    fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "mdns".yellow(), event);
 
         if let Event::Discovered(peers) = event {

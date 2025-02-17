@@ -1,16 +1,14 @@
-#![allow(
-    clippy::allow_attributes,
-    reason = "Needed for lints that don't follow expect"
-)]
-
+use actix::{Message, StreamHandler};
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
+use libp2p::swarm::SwarmEvent;
+use libp2p::{Multiaddr, PeerId};
 use multiaddr::Protocol;
-use tracing::error;
+use tracing::{debug, trace, warn};
 
-use super::*;
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
 use crate::types::NetworkEvent;
+use crate::{BehaviourEvent, EventLoop};
 
 mod dcutr;
 mod gossipsub;
@@ -22,28 +20,37 @@ mod relay;
 mod rendezvous;
 
 pub trait EventHandler<E> {
-    async fn handle(&mut self, event: E);
+    fn handle(&mut self, event: E);
 }
 
-#[allow(
-    clippy::multiple_inherent_impl,
-    reason = "Currently necessary due to code structure"
-)]
-impl EventLoop {
-    // TODO: Consider splitting this long function into multiple parts.
-    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
-    pub(super) async fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
+impl From<SwarmEvent<BehaviourEvent>> for FromSwarm {
+    fn from(event: SwarmEvent<BehaviourEvent>) -> Self {
+        FromSwarm(event)
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct FromSwarm(SwarmEvent<BehaviourEvent>);
+
+impl StreamHandler<FromSwarm> for EventLoop {
+    fn started(&mut self, _ctx: &mut Self::Context) {
+        println!("started receiving swarm messages");
+    }
+
+    #[expect(clippy::too_many_lines, reason = "Enum with many variants")]
+    fn handle(&mut self, FromSwarm(event): FromSwarm, _ctx: &mut Self::Context) {
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match event {
             SwarmEvent::Behaviour(event) => match event {
-                BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event).await,
-                BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event).await,
-                BehaviourEvent::Identify(event) => EventHandler::handle(self, event).await,
-                BehaviourEvent::Kad(event) => EventHandler::handle(self, event).await,
-                BehaviourEvent::Mdns(event) => EventHandler::handle(self, event).await,
-                BehaviourEvent::Ping(event) => EventHandler::handle(self, event).await,
-                BehaviourEvent::Relay(event) => EventHandler::handle(self, event).await,
-                BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event),
+                BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event),
+                BehaviourEvent::Identify(event) => EventHandler::handle(self, event),
+                BehaviourEvent::Kad(event) => EventHandler::handle(self, event),
+                BehaviourEvent::Mdns(event) => EventHandler::handle(self, event),
+                BehaviourEvent::Ping(event) => EventHandler::handle(self, event),
+                BehaviourEvent::Relay(event) => EventHandler::handle(self, event),
+                BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event),
                 BehaviourEvent::Stream(()) => {}
             },
             SwarmEvent::NewListenAddr {
@@ -51,16 +58,10 @@ impl EventLoop {
                 address,
             } => {
                 let local_peer_id = *self.swarm.local_peer_id();
-                if let Err(err) = self
-                    .event_sender
-                    .send(NetworkEvent::ListeningOn {
-                        listener_id,
-                        address: address.with(Protocol::P2p(local_peer_id)),
-                    })
-                    .await
-                {
-                    error!("Failed to send listening on event: {:?}", err);
-                }
+                self.node_manager.do_send(NetworkEvent::ListeningOn {
+                    listener_id,
+                    address: address.with(Protocol::P2p(local_peer_id)),
+                })
             }
             SwarmEvent::IncomingConnection {
                 connection_id,
@@ -172,6 +173,10 @@ impl EventLoop {
             }
             unhandled => warn!("Unhandled event: {:?}", unhandled),
         }
+    }
+
+    fn finished(&mut self, _ctx: &mut Self::Context) {
+        println!("finished receiving swarm messages");
     }
 }
 

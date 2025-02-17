@@ -5,7 +5,7 @@ use tracing::debug;
 use super::{EventHandler, EventLoop};
 
 impl EventHandler<Event> for EventLoop {
-    async fn handle(&mut self, event: Event) {
+    fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "relay".yellow(), event);
     }
 }
