@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::hash::Hash;
-use calimero_server_primitives::admin::{AliasKind, LookupAliasResponse, LookupAliasResponseData};
+use calimero_server_primitives::admin::{LookupAliasResponse, LookupAliasResponseData};
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use reqwest::StatusCode;
 use serde::Serialize;
@@ -13,13 +13,13 @@ use serde::Serialize;
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
 
-pub async fn handler<T: Aliasable<Scope: StoreScopeCompat>>(
+pub async fn handler<T>(
     Extension(state): Extension<Arc<AdminState>>,
     plain_alias: Option<Path<Alias<T>>>,
     scoped_alias: Option<Path<(T::Scope, Alias<T>)>>,
 ) -> impl IntoResponse
 where
-    T: AliasKind + From<Hash> + Serialize,
+    T: Aliasable<Scope: StoreScopeCompat> + Serialize + From<Hash>,
 {
     let Some((alias, scope)) = plain_alias
         .map(|Path(alias)| (alias, None))

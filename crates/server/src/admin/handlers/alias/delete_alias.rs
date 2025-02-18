@@ -11,11 +11,14 @@ use reqwest::StatusCode;
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
 
-pub async fn handler<T: Aliasable<Scope: StoreScopeCompat>>(
+pub async fn handler<T>(
     Extension(state): Extension<Arc<AdminState>>,
     plain_alias: Option<Path<Alias<T>>>,
     scoped_alias: Option<Path<(T::Scope, Alias<T>)>>,
-) -> impl IntoResponse {
+) -> impl IntoResponse
+where
+    T: Aliasable<Scope: StoreScopeCompat>,
+{
     let Some((alias, scope)) = plain_alias
         .map(|Path(alias)| (alias, None))
         .or_else(|| scoped_alias.map(|Path((scope, alias))| (alias, Some(scope))))

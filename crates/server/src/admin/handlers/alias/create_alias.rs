@@ -11,13 +11,13 @@ use reqwest::StatusCode;
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
 
-pub async fn handler<T: Aliasable<Scope: StoreScopeCompat>>(
+pub async fn handler<T>(
     Extension(state): Extension<Arc<AdminState>>,
     scope: Option<Path<T::Scope>>,
     Json(CreateAliasRequest { alias, value }): Json<CreateAliasRequest<T>>,
 ) -> impl IntoResponse
 where
-    T: AliasKind + Into<Hash>,
+    T: Aliasable<Scope: StoreScopeCompat> + AliasKind + Into<Hash>,
 {
     let scope = scope.map(|Path(scope)| scope);
 
