@@ -10,8 +10,8 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    create_alias, delete_alias, fetch_multiaddr, load_config, make_request, multiaddr_to_url,
-    resolve_alias, RequestType,
+    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, make_request,
+    multiaddr_to_url, resolve_alias, RequestType,
 };
 
 #[derive(Debug, Parser)]
@@ -141,7 +141,7 @@ impl ContextIdentityAliasCommand {
                 let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
 
                 let res =
-                    delete_alias(multiaddr, &config.identity, identity, Some(*context_id)).await?;
+                    lookup_alias(multiaddr, &config.identity, identity, Some(*context_id)).await?;
 
                 environment.output.write(&res);
             }
