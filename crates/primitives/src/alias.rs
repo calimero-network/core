@@ -34,7 +34,7 @@ impl ScopedAlias for ApplicationId {
     type Scope = ();
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct Alias<T> {
     str: [u8; MAX_LENGTH],
     len: u8,
@@ -92,6 +92,12 @@ impl<T> FromStr for Alias<T> {
 impl<T> fmt::Display for Alias<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
+    }
+}
+
+impl<T> fmt::Debug for Alias<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Alias").field(&self.as_str()).finish()
     }
 }
 
