@@ -1,22 +1,18 @@
-use calimero_config::ConfigFile;
-use calimero_primitives::alias::{Alias, Kind};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::hash::Hash;
-use calimero_server_primitives::admin::{
-    CreateIdentityAliasRequest, CreateIdentityAliasResponse, DeleteIdentityAliasResponse,
-    GetContextIdentitiesResponse, GetIdentityAliasRequest, GetIdentityAliasResponse,
-};
+use calimero_primitives::identity::PublicKey;
+use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_identifier, RequestType,
+    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, make_request,
+    multiaddr_to_url, resolve_alias, RequestType,
 };
-use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context identities")]
@@ -27,10 +23,10 @@ pub struct ContextIdentityCommand {
 
 #[derive(Debug, Parser)]
 pub enum ContextIdentitySubcommand {
-    #[command(about = "List identities in a context")]
+    #[command(about = "List identities in a context", alias = "ls")]
     List {
-        #[arg(long, short, help = "Context ID or alias")]
-        context: String,
+        #[arg(help = "The context whose identities we're listin")]
+        context: Alias<ContextId>,
         #[arg(long, help = "Show only owned identities")]
         owned: bool,
     },
@@ -46,57 +42,38 @@ pub struct ContextIdentityAliasCommand {
 
 #[derive(Debug, Parser)]
 pub enum ContextIdentityAliasSubcommand {
-    #[command(about = "Add new alias for an identity in a context", alias = "new")]
+    #[command(about = "Add new alias for an identity in a context", aliases = ["new", "create"])]
     Add {
-        #[arg(help = "Alias name")]
-        name: Alias,
+        #[arg(help = "Name for the alias")]
+        name: Alias<PublicKey>,
 
-        #[arg(help = "Identity hash")]
-        identity: Hash,
+        #[arg(help = "The identity to create an alias for")]
+        identity: PublicKey,
 
-        #[arg(long, short, help = "Context ID or alias")]
-        context: String,
+        #[arg(long, short, help = "The context that the identity is a member of")]
+        context: Alias<ContextId>,
     },
 
     #[command(
         about = "Remove an identity alias from a context",
-        alias = "delete",
-        alias = "rm"
+        aliases = ["rm", "del", "delete"]
     )]
     Remove {
-        #[arg(help = "Alias name")]
-        name: Alias,
+        #[arg(help = "Name of the alias to remove")]
+        identity: Alias<PublicKey>,
 
-        #[arg(long, short, help = "Context ID or alias")]
-        context: String,
+        #[arg(long, short, help = "The context that the identity is a member of")]
+        context: Alias<ContextId>,
     },
 
-    #[command(about = "Get the hash attached to an identity alias in a context")]
+    #[command(about = "Resolve the alias to a context identity")]
     Get {
-        #[arg(help = "Alias name")]
-        name: Alias,
+        #[arg(help = "Name of the alias to look up")]
+        identity: Alias<PublicKey>,
 
-        #[arg(long, short, help = "Context ID or alias")]
-        context: String,
+        #[arg(long, short, help = "The context that the identity is a member of")]
+        context: Alias<ContextId>,
     },
-}
-
-impl Report for CreateIdentityAliasResponse {
-    fn report(&self) {
-        println!("Successfully created alias");
-    }
-}
-
-impl Report for DeleteIdentityAliasResponse {
-    fn report(&self) {
-        println!("Successfully deleted alias");
-    }
-}
-
-impl Report for GetIdentityAliasResponse {
-    fn report(&self) {
-        println!("Identity hash: {}", self.data.hash);
-    }
 }
 
 impl ContextIdentityCommand {
@@ -112,9 +89,8 @@ impl ContextIdentityCommand {
                     &multiaddr,
                     &client,
                     &config.identity,
-                    &context,
+                    context,
                     owned,
-                    &config,
                 )
                 .await
             }
@@ -127,7 +103,6 @@ impl ContextIdentityAliasCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let multiaddr = fetch_multiaddr(&config)?;
-        let client = Client::new();
 
         match self.command {
             ContextIdentityAliasSubcommand::Add {
@@ -135,43 +110,44 @@ impl ContextIdentityAliasCommand {
                 identity,
                 context,
             } => {
-                add_identity_alias(
-                    environment,
-                    &multiaddr,
-                    &client,
+                let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
+
+                let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
+
+                let res = create_alias(
+                    multiaddr,
                     &config.identity,
                     name,
+                    Some(*context_id),
                     identity,
-                    &context,
-                    &config,
                 )
-                .await
+                .await?;
+
+                environment.output.write(&res);
             }
-            ContextIdentityAliasSubcommand::Remove { name, context } => {
-                remove_identity_alias(
-                    environment,
-                    &multiaddr,
-                    &client,
-                    &config.identity,
-                    name,
-                    &context,
-                    &config,
-                )
-                .await
+            ContextIdentityAliasSubcommand::Remove { identity, context } => {
+                let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
+
+                let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
+
+                let res =
+                    delete_alias(multiaddr, &config.identity, identity, Some(*context_id)).await?;
+
+                environment.output.write(&res);
             }
-            ContextIdentityAliasSubcommand::Get { name, context } => {
-                get_identity_alias(
-                    environment,
-                    &multiaddr,
-                    &client,
-                    &config.identity,
-                    name,
-                    &context,
-                    &config,
-                )
-                .await
+            ContextIdentityAliasSubcommand::Get { identity, context } => {
+                let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
+
+                let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
+
+                let res =
+                    lookup_alias(multiaddr, &config.identity, identity, Some(*context_id)).await?;
+
+                environment.output.write(&res);
             }
         }
+
+        Ok(())
     }
 }
 
@@ -180,13 +156,14 @@ async fn list_identities(
     multiaddr: &Multiaddr,
     client: &Client,
     keypair: &Keypair,
-    context: &str,
+    context: Alias<ContextId>,
     owned: bool,
-    config: &ConfigFile,
 ) -> EyreResult<()> {
-    let context_id: ContextId = resolve_identifier(config, context, Kind::Context, None)
+    let context_id = resolve_alias(multiaddr, keypair, context, None)
         .await?
-        .into();
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve alias")?;
 
     let endpoint = if owned {
         format!("admin-api/dev/contexts/{}/identities-owned", context_id)
@@ -202,101 +179,6 @@ async fn list_identities(
         None::<()>,
         keypair,
         RequestType::Get,
-    )
-    .await
-}
-
-async fn add_identity_alias(
-    environment: &Environment,
-    multiaddr: &Multiaddr,
-    client: &Client,
-    keypair: &Keypair,
-    alias: Alias,
-    identity: Hash,
-    context: &str,
-    config: &ConfigFile,
-) -> EyreResult<()> {
-    let context_id = resolve_identifier(config, context, Kind::Context, None)
-        .await?
-        .into();
-
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/add-alias")?;
-    let request = CreateIdentityAliasRequest {
-        alias,
-        context_id: Some(context_id),
-        kind: Kind::Identity,
-        hash: identity,
-    };
-
-    make_request::<CreateIdentityAliasRequest, CreateIdentityAliasResponse>(
-        environment,
-        client,
-        url,
-        Some(request),
-        keypair,
-        RequestType::Post,
-    )
-    .await
-}
-
-async fn remove_identity_alias(
-    environment: &Environment,
-    multiaddr: &Multiaddr,
-    client: &Client,
-    keypair: &Keypair,
-    alias: Alias,
-    context: &str,
-    config: &ConfigFile,
-) -> EyreResult<()> {
-    let context_id = resolve_identifier(config, context, Kind::Context, None)
-        .await?
-        .into();
-
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/remove-alias")?;
-    let request = GetIdentityAliasRequest {
-        alias,
-        context_id: Some(context_id),
-        kind: Kind::Identity,
-    };
-
-    make_request::<GetIdentityAliasRequest, DeleteIdentityAliasResponse>(
-        environment,
-        client,
-        url,
-        Some(request),
-        keypair,
-        RequestType::Post,
-    )
-    .await
-}
-
-async fn get_identity_alias(
-    environment: &Environment,
-    multiaddr: &Multiaddr,
-    client: &Client,
-    keypair: &Keypair,
-    alias: Alias,
-    context: &str,
-    config: &ConfigFile,
-) -> EyreResult<()> {
-    let context_id = resolve_identifier(config, context, Kind::Context, None)
-        .await?
-        .into();
-
-    let url = multiaddr_to_url(multiaddr, "admin-api/dev/get-alias")?;
-    let request = GetIdentityAliasRequest {
-        alias,
-        context_id: Some(context_id),
-        kind: Kind::Identity,
-    };
-
-    make_request::<GetIdentityAliasRequest, GetIdentityAliasResponse>(
-        environment,
-        client,
-        url,
-        Some(request),
-        keypair,
-        RequestType::Post,
     )
     .await
 }

@@ -1,18 +1,17 @@
-use calimero_primitives::alias::Kind;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use libp2p::gossipsub::TopicHash;
 use owo_colors::OwoColorize;
 
-use crate::interactive_cli::commons::resolve_identifier;
 use crate::Node;
 
 /// List the peers in the network
-#[derive(Clone, Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub struct PeersCommand {
-    /// The context ID to list the peers for
-    context_id: Option<String>,
+    /// The context to list the peers for
+    context: Option<Alias<ContextId>>,
 }
 
 impl PeersCommand {
@@ -23,11 +22,11 @@ impl PeersCommand {
             node.network_client.peer_count().await.cyan()
         );
 
-        let context_id: Option<ContextId> = self
-            .context_id
-            .map(|context_inner| resolve_identifier(node, &context_inner, Kind::Context, None))
+        let context_id = self
+            .context
+            .map(|context| node.ctx_manager.resolve_alias(context, None))
             .transpose()?
-            .map(|hash| hash.into());
+            .ok_or_eyre("unable to resolve")?;
 
         if let Some(context_id) = context_id {
             let topic = TopicHash::from_raw(context_id);

@@ -196,9 +196,9 @@ impl StartBootstrapCommand {
         );
 
         let invite_command = InviteCommand {
-            context_id: context_id.to_string(),
-            inviter_id: inviter_public_key.to_string(),
-            invitee_id: invitee_private_key.public_key().to_string(),
+            context: context_id.as_str().parse()?,
+            inviter: inviter_public_key.as_str().parse()?,
+            invitee_id: invitee_private_key.public_key(),
         };
         let invitation_payload = invite_command.invite(invitor_environment).await?;
 

@@ -1,11 +1,11 @@
-use calimero_primitives::alias::{Alias, Kind};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    CreateContextRequest, CreateContextResponse, CreateIdentityAliasRequest,
-    CreateIdentityAliasResponse, GetApplicationResponse, InstallApplicationResponse,
+    CreateAliasRequest, CreateAliasResponse, CreateContextIdentityAlias, CreateContextRequest,
+    CreateContextResponse, GetApplicationResponse, InstallApplicationResponse,
     InstallDevApplicationRequest, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
 };
@@ -65,8 +65,8 @@ pub struct CreateCommand {
     #[clap(long, value_name = "PROTOCOL")]
     protocol: String,
 
-    #[clap(long = "as", help = "Create an alias for context identity")]
-    identity: Option<Alias>,
+    #[clap(long = "as", help = "Create an alias for the context identity")]
+    identity: Option<Alias<PublicKey>>,
 }
 
 impl Report for CreateContextResponse {
@@ -173,7 +173,7 @@ pub async fn create_context(
     params: Option<String>,
     keypair: &Keypair,
     protocol: String,
-    identity: Option<Alias>,
+    identity: Option<Alias<PublicKey>>,
 ) -> EyreResult<(ContextId, PublicKey)> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
@@ -193,16 +193,22 @@ pub async fn create_context(
     environment.output.write(&response);
 
     if let Some(alias) = identity {
-        let alias_request = CreateIdentityAliasRequest {
+        let alias_request = CreateAliasRequest {
             alias,
-            context_id: Some(response.data.context_id),
-            kind: Kind::Identity,
-            hash: response.data.member_public_key.into(),
+            value: CreateContextIdentityAlias {
+                identity: response.data.member_public_key,
+            },
         };
 
-        let alias_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/add-alias")?;
+        let alias_url = multiaddr_to_url(
+            base_multiaddr,
+            &format!(
+                "admin-api/dev/alias/create/identity/{}",
+                response.data.context_id
+            ),
+        )?;
 
-        let alias_response: CreateIdentityAliasResponse = do_request(
+        let alias_response: CreateAliasResponse = do_request(
             client,
             alias_url,
             Some(alias_request),

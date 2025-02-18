@@ -296,7 +296,6 @@ mem_forget = "deny"
 multiple_inherent_impl = "deny"
 #panic = "deny" TODO: Enable as soon as possible
 rc_mutex = "deny"
-renamed_function_params = "deny"
 try_err = "deny"
 #unwrap_used = "deny" TODO: Enable as soon as possible
 wildcard_enum_match_arm = "deny"

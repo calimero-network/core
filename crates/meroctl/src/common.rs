@@ -1,11 +1,15 @@
+use std::fmt;
 use std::str::FromStr;
 
 use calimero_config::ConfigFile;
-use calimero_primitives::alias::{Alias, Kind};
+use calimero_primitives::alias::{Alias, ScopedAlias};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{GetIdentityAliasRequest, GetIdentityAliasResponse};
+use calimero_server_primitives::admin::{
+    AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias,
+    CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, LookupAliasResponse,
+};
 use camino::Utf8Path;
 use chrono::Utc;
 use eyre::{bail, eyre, Result as EyreResult};
@@ -174,41 +178,226 @@ where
     Ok(())
 }
 
-pub(crate) async fn resolve_identifier(
-    config: &ConfigFile,
-    input: &str,
-    kind: Kind,
-    context_id: Option<ContextId>,
-) -> EyreResult<Hash> {
-    let direct_result = match kind {
-        Kind::Context => ContextId::from_str(input)
-            .map(|context_id| context_id.into())
-            .map_err(|_| eyre!("ContextId parsing failed")),
-        Kind::Identity => PublicKey::from_str(input)
-            .map(|public_key| public_key.into())
-            .map_err(|_| eyre!("PublicKey parsing failed")),
-        Kind::Application => return Err(eyre!("Application kind not supported")),
-    };
+pub(crate) trait UrlFragment: ScopedAlias + AliasKind {
+    const KIND: &'static str;
 
-    if let Ok(hash) = direct_result {
-        return Ok(hash);
+    fn create(self) -> Self::Value;
+
+    fn scoped(scope: &Self::Scope) -> Option<&str>;
+}
+
+impl UrlFragment for ContextId {
+    const KIND: &'static str = "context";
+
+    fn create(self) -> Self::Value {
+        CreateContextIdAlias { context_id: self }
     }
 
-    let alias = Alias::from_str(input)?;
-    let request = GetIdentityAliasRequest {
+    fn scoped(_: &Self::Scope) -> Option<&str> {
+        None
+    }
+}
+
+impl UrlFragment for PublicKey {
+    const KIND: &'static str = "identity";
+
+    fn create(self) -> Self::Value {
+        CreateContextIdentityAlias { identity: self }
+    }
+
+    fn scoped(context: &Self::Scope) -> Option<&str> {
+        Some(context.as_str())
+    }
+}
+
+impl UrlFragment for ApplicationId {
+    const KIND: &'static str = "application";
+
+    fn create(self) -> Self::Value {
+        CreateApplicationIdAlias {
+            application_id: self,
+        }
+    }
+
+    fn scoped(_: &Self::Scope) -> Option<&str> {
+        None
+    }
+}
+
+impl Report for CreateAliasResponse {
+    fn report(&self) {
+        println!("alias created");
+    }
+}
+
+pub(crate) async fn create_alias<T>(
+    multiaddr: &Multiaddr,
+    keypair: &Keypair,
+    alias: Alias<T>,
+    scope: Option<T::Scope>,
+    value: T,
+) -> EyreResult<CreateAliasResponse>
+where
+    T: ScopedAlias + UrlFragment + Serialize,
+    T::Value: Serialize,
+{
+    let prefix = "admin-api/dev/alias/create";
+
+    let kind = T::KIND;
+
+    let scope = scope
+        .as_ref()
+        .and_then(T::scoped)
+        .map_or_else(Default::default, |scope| format!("/{}", scope));
+
+    let body = CreateAliasRequest {
         alias,
-        context_id,
-        kind,
+        value: value.create(),
     };
 
-    let response: GetIdentityAliasResponse = do_request(
+    let response: CreateAliasResponse = do_request(
         &Client::new(),
-        multiaddr_to_url(fetch_multiaddr(config)?, "admin-api/dev/get-alias")?,
-        Some(request),
-        &config.identity,
+        multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}{scope}"))?,
+        Some(body),
+        keypair,
         RequestType::Post,
     )
     .await?;
 
-    Ok(response.data.hash)
+    Ok(response)
+}
+
+impl Report for DeleteAliasResponse {
+    fn report(&self) {
+        println!("alias deleted");
+    }
+}
+
+pub(crate) async fn delete_alias<T>(
+    multiaddr: &Multiaddr,
+    keypair: &Keypair,
+    alias: Alias<T>,
+    scope: Option<T::Scope>,
+) -> EyreResult<DeleteAliasResponse>
+where
+    T: ScopedAlias + UrlFragment,
+{
+    let prefix = "admin-api/dev/alias/delete";
+
+    let kind = T::KIND;
+
+    let scope = scope
+        .as_ref()
+        .and_then(T::scoped)
+        .map_or_else(Default::default, |scope| format!("{}/", scope));
+
+    let response: DeleteAliasResponse = do_request(
+        &Client::new(),
+        multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}/{scope}{alias}"))?,
+        None::<()>,
+        keypair,
+        RequestType::Post,
+    )
+    .await?;
+
+    Ok(response)
+}
+
+pub(crate) async fn lookup_alias<T>(
+    multiaddr: &Multiaddr,
+    keypair: &Keypair,
+    alias: Alias<T>,
+    scope: Option<T::Scope>,
+) -> EyreResult<LookupAliasResponse<T>>
+where
+    T: ScopedAlias + UrlFragment + DeserializeOwned,
+{
+    let prefix = "admin-api/dev/alias/lookup";
+
+    let kind = T::KIND;
+
+    let scope = scope
+        .as_ref()
+        .and_then(T::scoped)
+        .map_or_else(Default::default, |scope| format!("{}/", scope));
+
+    let response = do_request(
+        &Client::new(),
+        multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}/{scope}{alias}"))?,
+        None::<()>,
+        keypair,
+        RequestType::Post,
+    )
+    .await?;
+
+    Ok(response)
+}
+
+impl<T: fmt::Display> Report for LookupAliasResponse<T> {
+    fn report(&self) {
+        match &self.data.value {
+            Some(value) => println!("aliased to {}", value),
+            None => println!("alias not found"),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ResolveResponse<T> {
+    alias: Alias<T>,
+    value: Option<ResolveResponseValue<T>>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "data")]
+enum ResolveResponseValue<T> {
+    Lookup(LookupAliasResponse<T>),
+    Parsed(T),
+}
+
+impl<T> ResolveResponse<T> {
+    pub fn value(&self) -> Option<&T> {
+        match self.value.as_ref()? {
+            ResolveResponseValue::Lookup(value) => value.data.value.as_ref(),
+            ResolveResponseValue::Parsed(value) => Some(value),
+        }
+    }
+}
+
+impl<T: fmt::Display> Report for ResolveResponse<T> {
+    fn report(&self) {
+        println!("{}", self.alias);
+        match &self.value {
+            Some(ResolveResponseValue::Lookup(value)) => value.report(),
+            Some(ResolveResponseValue::Parsed(value)) => println!("parses to {}", value),
+            None => println!("could not be reolved"),
+        }
+    }
+}
+
+pub(crate) async fn resolve_alias<T>(
+    multiaddr: &Multiaddr,
+    keypair: &Keypair,
+    alias: Alias<T>,
+    scope: Option<T::Scope>,
+) -> EyreResult<ResolveResponse<T>>
+where
+    T: ScopedAlias + UrlFragment + FromStr + DeserializeOwned,
+{
+    let value = lookup_alias(multiaddr, keypair, alias, scope).await?;
+
+    if value.data.value.is_some() {
+        return Ok(ResolveResponse {
+            alias,
+            value: Some(ResolveResponseValue::Lookup(value)),
+        });
+    }
+
+    let value = alias
+        .as_str()
+        .parse()
+        .ok()
+        .map(ResolveResponseValue::Parsed);
+
+    Ok(ResolveResponse { alias, value })
 }

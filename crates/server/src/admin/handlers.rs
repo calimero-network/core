@@ -1,4 +1,5 @@
 pub mod add_client_key;
+pub mod alias;
 pub mod applications;
 pub mod challenge;
 pub mod context;

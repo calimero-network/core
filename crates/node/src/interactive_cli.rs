@@ -6,7 +6,6 @@
 
 mod applications;
 pub mod call;
-pub mod commons;
 pub mod context;
 pub mod identity;
 pub mod peers;

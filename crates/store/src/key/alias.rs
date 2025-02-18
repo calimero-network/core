@@ -1,12 +1,17 @@
 use std::convert::Infallible;
+use std::ops::Deref;
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::alias::{Alias as AliasPrimitive, Kind as KindPrimitive};
+use calimero_primitives::alias::{Alias as AliasPrimitive, ScopedAlias};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use generic_array::sequence::Concat;
 use generic_array::typenum::{U1, U32, U50};
 use generic_array::GenericArray;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use super::component::KeyComponent;
 use super::{AsKeyParts, FromKeyParts, Key};
@@ -37,57 +42,168 @@ impl KeyComponent for Name {
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct Alias(Key<(Kind, Scope, Name)>);
 
+pub trait Aliasable: ScopedAlias {
+    #[doc(hidden)]
+    const KIND: u8;
+}
+
+#[doc(hidden)]
+pub trait ScopeIsh {
+    fn as_scope(&self) -> [u8; 32];
+    fn from_scope(scope: [u8; 32]) -> Self;
+    fn is_default() -> bool {
+        false
+    }
+}
+
+impl<T> ScopeIsh for T
+where
+    T: From<[u8; 32]> + Deref<Target = [u8; 32]>,
+{
+    fn as_scope(&self) -> [u8; 32] {
+        **self
+    }
+
+    fn from_scope(scope: [u8; 32]) -> Self {
+        scope.into()
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DefaultScope;
+
+impl ScopeIsh for DefaultScope {
+    fn as_scope(&self) -> [u8; 32] {
+        [0; 32]
+    }
+
+    fn from_scope(_: [u8; 32]) -> Self {
+        Self
+    }
+
+    fn is_default() -> bool {
+        true
+    }
+}
+
+pub trait StoreScopeCompat {
+    type Scope: ScopeIsh;
+
+    fn from_primitives_scope(self) -> Self::Scope;
+    fn into_primitives_scope(scope: Self::Scope) -> Self;
+}
+
+impl<T: Aliasable + ScopeIsh> StoreScopeCompat for T {
+    type Scope = T;
+
+    fn from_primitives_scope(self) -> T {
+        self
+    }
+
+    fn into_primitives_scope(scope: T) -> T {
+        scope
+    }
+}
+
+impl StoreScopeCompat for () {
+    type Scope = DefaultScope;
+
+    fn from_primitives_scope(self) -> DefaultScope {
+        DefaultScope
+    }
+
+    fn into_primitives_scope(_: DefaultScope) -> () {
+        ()
+    }
+}
+
+impl Aliasable for ContextId {
+    const KIND: u8 = 1;
+}
+
+impl Aliasable for PublicKey {
+    const KIND: u8 = 2;
+}
+
+impl Aliasable for ApplicationId {
+    const KIND: u8 = 3;
+}
+
 impl Alias {
-    fn create_key(kind: KindPrimitive, scope: [u8; 32], alias: AliasPrimitive) -> Self {
-        let kind: u8 = match kind {
-            KindPrimitive::Context => 1,
-            KindPrimitive::Identity => 2,
-            KindPrimitive::Application => 3,
-        };
-        let kind_array = GenericArray::<u8, U1>::from([kind]);
-        let scope_array = GenericArray::<u8, U32>::from(scope);
-        let mut alias_array = GenericArray::<u8, U50>::default();
-        let alias_str = alias.as_str();
-        alias_array[..alias_str.len()].copy_from_slice(alias_str.as_bytes());
+    fn create_key<T: Aliasable>(scope: [u8; 32], alias: [u8; 50]) -> Self {
+        let scope = GenericArray::from(scope);
+        let alias = GenericArray::from(alias);
 
-        Self(Key(kind_array.concat(scope_array).concat(alias_array)))
+        let key = Key(GenericArray::from([T::KIND]).concat(scope).concat(alias));
+
+        Self(key)
     }
 
-    pub fn context(alias: AliasPrimitive) -> Self {
-        Self::create_key(KindPrimitive::Context, [0u8; 32], alias)
-    }
-
-    pub fn application(alias: AliasPrimitive) -> Self {
-        Self::create_key(KindPrimitive::Application, [0u8; 32], alias)
-    }
-
-    pub fn identity(context_id: ContextId, alias: AliasPrimitive) -> Self {
-        Self::create_key(KindPrimitive::Identity, *context_id, alias)
-    }
-
-    pub fn kind(&self) -> KindPrimitive {
-        match AsRef::<[_; 83]>::as_ref(&self.0)[0] {
-            1 => KindPrimitive::Context,
-            2 => KindPrimitive::Identity,
-            3 => KindPrimitive::Application,
-            _ => panic!("invalid kind"),
+    fn scoped<T: Aliasable<Scope: StoreScopeCompat>>(
+        scope: Option<T::Scope>,
+        strict: bool,
+    ) -> Option<[u8; 32]> {
+        match scope {
+            Some(scope) => Some(scope.from_primitives_scope().as_scope()),
+            None if <T::Scope as StoreScopeCompat>::Scope::is_default() || !strict => {
+                Some(DefaultScope.as_scope())
+            }
+            None => None,
         }
     }
 
-    pub fn scope(&self) -> [u8; 32] {
-        let mut scope = [0; 32];
-        scope.copy_from_slice(&AsRef::<[_; 83]>::as_ref(&self.0)[1..33]);
-        scope
+    pub fn new<T: Aliasable<Scope: StoreScopeCompat>>(
+        scope: Option<T::Scope>,
+        alias: AliasPrimitive<T>,
+    ) -> Option<Self> {
+        let scope = Self::scoped::<T>(scope, true)?;
+
+        let alias_str = alias.as_str();
+        let mut alias = [0; 50];
+        alias[..alias_str.len()].copy_from_slice(alias_str.as_bytes());
+
+        Some(Self::create_key::<T>(scope, alias))
     }
 
-    pub fn alias(&self) -> AliasPrimitive {
-        let mut alias = [0; 50];
-        alias.copy_from_slice(&AsRef::<[_; 83]>::as_ref(&self.0)[33..]);
+    #[doc(hidden)]
+    pub fn new_unchecked<T: Aliasable<Scope: StoreScopeCompat>>(
+        scope: Option<T::Scope>,
+        alias: [u8; 50],
+    ) -> Self {
+        let scope = Self::scoped::<T>(scope, false).expect("unreachable");
 
-        String::from_utf8(alias.to_vec())
-            .expect("valid utf-8")
-            .try_into()
-            .expect("alias length already validated during construction")
+        Self::create_key::<T>(scope, alias)
+    }
+
+    pub fn scope<T: Aliasable<Scope: StoreScopeCompat>>(&self) -> Option<T::Scope> {
+        let bytes = self.0.as_bytes();
+
+        (bytes[0] == PublicKey::KIND).then_some(())?;
+
+        let mut scope = [0; 32];
+        scope.copy_from_slice(&bytes[1..33]);
+
+        let scope = <T::Scope as StoreScopeCompat>::Scope::from_scope(scope);
+
+        Some(T::Scope::into_primitives_scope(scope))
+    }
+
+    /// Returns the alias if the kind matches the expected kind.
+    ///
+    /// This also returns `None` if the alias is not valid.
+    pub fn alias<T: Aliasable>(&self) -> Option<AliasPrimitive<T>> {
+        let bytes = self.0.as_bytes();
+
+        (bytes[0] == T::KIND).then_some(())?;
+
+        let bytes = &bytes[33..];
+
+        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+
+        let name = std::str::from_utf8(&bytes[..len]).ok()?;
+
+        name.parse().ok()
     }
 }
 

@@ -1,18 +1,19 @@
-use calimero_primitives::alias::Kind;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_server::admin::handlers::proposals::{
     GetNumberOfActiveProposalsResponse, GetNumberOfProposalApprovalsResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
 use clap::{Parser, ValueEnum};
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_identifier, RequestType,
+    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
 };
 use crate::output::Report;
 
@@ -22,11 +23,11 @@ pub struct GetCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
 
-    #[arg(value_name = "CONTEXT_ID", help = "context_id of the context")]
-    pub context_id: String,
+    #[arg(value_name = "CONTEXT", help = "Context for which to query")]
+    pub context: Alias<ContextId>,
 
     #[arg(value_name = "PROPOSAL_ID", help = "proposal_id of the proposal")]
-    pub proposal_id: String,
+    pub proposal_id: Hash,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -78,10 +79,11 @@ impl GetCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
-        let context_id: ContextId =
-            resolve_identifier(&config, &self.context_id, Kind::Context, None)
-                .await?
-                .into();
+        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
 
         match &self.method {
             GetRequest::NumProposalApprovals => {
