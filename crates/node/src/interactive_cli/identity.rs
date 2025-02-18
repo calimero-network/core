@@ -189,17 +189,31 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             );
         }
         AliasSubcommands::List { context } => {
-            println!("{ind} {c1:44} | {c2}", c1 = "Context ID", c2 = "Alias");
+            println!(
+                "{ind} {c1:44} | {c2:44} | {c3}",
+                c1 = "Context ID",
+                c2 = "Identity",
+                c3 = "Alias",
+            );
 
             let context_id = context
                 .map(|context| node.ctx_manager.resolve_alias(context, None))
                 .transpose()?
                 .flatten();
 
-            for (alias, context) in node.ctx_manager.list_aliases::<PublicKey>(context_id)? {
+            for (alias, identity, scope) in
+                node.ctx_manager.list_aliases::<PublicKey>(context_id)?
+            {
+                let context = scope.as_ref().map_or("---", |s| s.as_str());
+
                 println!(
                     "{ind} {}",
-                    format_args!("{c1:44} | {c2}", c1 = context.cyan(), c2 = alias.cyan())
+                    format_args!(
+                        "{c1:44} | {c2:44} | {c3}",
+                        c1 = context.cyan(),
+                        c2 = identity.cyan(),
+                        c3 = alias.cyan(),
+                    )
                 );
             }
         }

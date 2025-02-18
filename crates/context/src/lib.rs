@@ -1564,7 +1564,10 @@ impl ContextManager {
         Ok(alias.as_str().parse().ok())
     }
 
-    pub fn list_aliases<T>(&self, scope: Option<T::Scope>) -> EyreResult<Vec<(Alias<T>, T)>>
+    pub fn list_aliases<T>(
+        &self,
+        scope: Option<T::Scope>,
+    ) -> EyreResult<Vec<(Alias<T>, T, Option<T::Scope>)>>
     where
         T: Aliasable + From<Hash>,
         T::Scope: Copy + PartialEq + StoreScopeCompat,
@@ -1600,7 +1603,7 @@ impl ContextManager {
                 continue;
             };
 
-            aliases.push((alias, v.into()));
+            aliases.push((alias, v.into(), k.scope::<T>()));
         }
 
         Ok(aliases)

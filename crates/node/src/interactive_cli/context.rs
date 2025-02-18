@@ -312,12 +312,12 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
             );
         }
         AliasCommands::List => {
-            println!("{ind} {c1:44} | Alias", c1 = "Context ID",);
+            println!("{ind} {c1:44} | {c2}", c1 = "Context ID", c2 = "Alias");
 
-            for (alias, context) in node.ctx_manager.list_aliases::<ContextId>(None)? {
+            for (alias, context, _scope) in node.ctx_manager.list_aliases::<ContextId>(None)? {
                 println!(
                     "{ind} {}",
-                    format_args!("{c1:44} | {c2}", c1 = context.cyan(), c2 = alias.cyan(),)
+                    format_args!("{c1:44} | {c2}", c1 = context.cyan(), c2 = alias.cyan())
                 );
             }
         }
