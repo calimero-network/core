@@ -197,7 +197,11 @@ impl Alias {
 
         (bytes[0] == T::KIND).then_some(())?;
 
-        let name = std::str::from_utf8(&bytes[33..]).ok()?;
+        let bytes = &bytes[33..];
+
+        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+
+        let name = std::str::from_utf8(&bytes[..len]).ok()?;
 
         name.parse().ok()
     }
