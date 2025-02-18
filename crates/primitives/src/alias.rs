@@ -49,7 +49,7 @@ impl<T> Clone for Alias<T> {
 }
 
 #[derive(Copy, Clone, Debug, Error)]
-#[error("invalid alias: {0}")]
+#[error("invalid alias: {}")]
 pub enum InvalidAlias {
     #[error("exceeds maximum length of {} characters", MAX_LENGTH)]
     TooLong,

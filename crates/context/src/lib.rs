@@ -1597,7 +1597,7 @@ impl ContextManager {
             }
 
             let Some(alias) = k.alias() else {
-                eyre::bail!("invalid alias: {:?}", k);
+                continue;
             };
 
             aliases.push((alias, v.into()));

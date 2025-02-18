@@ -41,7 +41,8 @@ impl Protocol {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// List contexts
-    Ls,
+    #[clap(alias = "ls")]
+    List,
     /// Create a context
     Create {
         /// The application to create the context with
@@ -125,7 +126,7 @@ impl ContextCommand {
         let ind = ">>".blue();
 
         match self.command {
-            Commands::Ls => {
+            Commands::List => {
                 println!(
                     "{ind} {c1:44} | {c2:44} | {c3:44} | Protocol",
                     c1 = "Context ID",
@@ -151,6 +152,7 @@ impl ContextCommand {
                         c3 = Hash::from(v.root_hash),
                         c4 = config.protocol,
                     );
+
                     for line in entry.lines() {
                         println!("{ind} {}", line.cyan());
                     }
