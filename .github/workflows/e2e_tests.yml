@@ -295,11 +295,11 @@ jobs:
             --repo ${{ github.repository }} \
             --state open \
             --head "${GH_REF#refs/heads/}" \
-            --base master \
             --json number \
             -q '.[0].number')" >> $GITHUB_OUTPUT
       - name: Update pull request comment
         uses: thollander/actions-comment-pull-request@v3
+        if: steps.pr_number.outputs.PR_NUMBER != ''
         with:
           file-path: ./combined_report.md
           pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
