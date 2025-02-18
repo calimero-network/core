@@ -31,7 +31,6 @@ url = { workspace = true, features = ["serde"] }
 
 calimero-config.workspace = true
 calimero-primitives.workspace = true
-calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-server-primitives.workspace = true
 
 [lints]

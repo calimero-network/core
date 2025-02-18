@@ -1,7 +1,7 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_server::admin::handlers::proposals::{
+use calimero_server_primitives::admin::{
     GetNumberOfActiveProposalsResponse, GetNumberOfProposalApprovalsResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };

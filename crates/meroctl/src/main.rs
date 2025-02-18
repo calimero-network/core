@@ -1,6 +1,5 @@
 use std::process::ExitCode;
 
-use calimero_server as _;
 use clap::Parser;
 
 use crate::cli::RootCommand;

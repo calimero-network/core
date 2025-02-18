@@ -1,3 +1,6 @@
+use calimero_context_config::repr::Repr;
+use calimero_context_config::types::{ContextIdentity, ContextStorageEntry};
+use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
@@ -764,4 +767,72 @@ impl NodeChallengeMessage {
             timestamp,
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProposalsResponse {
+    pub data: Vec<Proposal>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProposalResponse {
+    pub data: Proposal,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProxyContractResponse {
+    pub data: String,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProposalsRequest {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextValueRequest {
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Copy, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextStorageEntriesRequest {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextValueResponse {
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextStorageEntriesResponse {
+    pub data: Vec<ContextStorageEntry>,
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetNumberOfActiveProposalsResponse {
+    pub data: u16,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetProposalApproversResponse {
+    pub data: Vec<Repr<ContextIdentity>>,
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetNumberOfProposalApprovalsResponse {
+    pub data: ProposalWithApprovals,
 }
