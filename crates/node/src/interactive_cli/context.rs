@@ -117,6 +117,8 @@ enum AliasCommands {
         /// Name of the alias to look up
         context: Alias<ContextId>,
     },
+    #[command(about = "List all context aliases", alias = "ls")]
+    List,
 }
 
 impl ContextCommand {
@@ -308,6 +310,16 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
                 alias.cyan(),
                 context.to_string().cyan()
             );
+        }
+        AliasCommands::List => {
+            println!("{ind} {c1:44} | Alias", c1 = "Context ID",);
+
+            for (alias, context) in node.ctx_manager.list_aliases::<ContextId>(None)? {
+                println!(
+                    "{ind} {}",
+                    format_args!("{c1:44} | {c2}", c1 = context.cyan(), c2 = alias.cyan(),)
+                );
+            }
         }
     }
 

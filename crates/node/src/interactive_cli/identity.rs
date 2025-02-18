@@ -67,6 +67,11 @@ enum AliasSubcommands {
         #[arg(long, short)]
         context: Alias<ContextId>,
     },
+    #[command(about = "List context identity aliases", alias = "ls")]
+    List {
+        /// The context whose aliases we're listing
+        context: Option<Alias<ContextId>>,
+    },
 }
 
 impl IdentityCommand {
@@ -182,6 +187,21 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                 identity.cyan(),
                 identity_id.cyan()
             );
+        }
+        AliasSubcommands::List { context } => {
+            println!("{ind} {c1:44} | {c2}", c1 = "Context ID", c2 = "Alias");
+
+            let context_id = context
+                .map(|context| node.ctx_manager.resolve_alias(context, None))
+                .transpose()?
+                .flatten();
+
+            for (alias, context) in node.ctx_manager.list_aliases::<PublicKey>(context_id)? {
+                println!(
+                    "{ind} {}",
+                    format_args!("{c1:44} | {c2}", c1 = context.cyan(), c2 = alias.cyan())
+                );
+            }
         }
     }
     Ok(())
