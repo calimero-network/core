@@ -15,24 +15,24 @@ pub struct ContextAliasCommand {
 
 #[derive(Debug, Parser)]
 pub enum ContextAliasSubcommand {
-    #[command(about = "Add new alias for a context", alias = "create")]
+    #[command(about = "Add new alias for a context", aliases = ["new", "create"])]
     Add {
-        #[arg(help = "Alias name")]
+        #[arg(help = "Name for the alias")]
         alias: Alias<ContextId>,
 
-        #[arg(help = "Context hash")]
+        #[arg(help = "The context to create an alias for")]
         context_id: ContextId,
     },
 
-    #[command(about = "Remove a context alias", alias = "delete", alias = "rm")]
+    #[command(about = "Remove a context alias", aliases = ["rm", "del", "delete"])]
     Remove {
-        #[arg(help = "Alias name")]
+        #[arg(help = "Name of the alias to remove")]
         alias: Alias<ContextId>,
     },
 
-    #[command(about = "Get the hash attached to a context alias")]
+    #[command(about = "Resolve the alias to a context")]
     Get {
-        #[arg(help = "Alias name")]
+        #[arg(help = "Name of the alias to look up")]
         alias: Alias<ContextId>,
     },
 }

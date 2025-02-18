@@ -111,7 +111,7 @@ enum AliasCommands {
         /// Name of the alias to remove
         context: Alias<ContextId>,
     },
-    #[command(about = "Get the hash attached to a context alias")]
+    #[command(about = "Resolve the alias to a context")]
     Get {
         /// Name of the alias to look up
         context: Alias<ContextId>,

@@ -50,7 +50,7 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "The identity to create an alias for")]
         identity: PublicKey,
 
-        #[arg(long, short, help = "The context ID that the identity is a member of")]
+        #[arg(long, short, help = "The context that the identity is a member of")]
         context: Alias<ContextId>,
     },
 
@@ -62,16 +62,16 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "Name of the alias to remove")]
         identity: Alias<PublicKey>,
 
-        #[arg(long, short, help = "The context ID that the identity is a member of")]
+        #[arg(long, short, help = "The context that the identity is a member of")]
         context: Alias<ContextId>,
     },
 
-    #[command(about = "Get the hash attached to an identity alias in a context")]
+    #[command(about = "Resolve the alias to a context identity")]
     Get {
         #[arg(help = "Name of the alias to look up")]
         identity: Alias<PublicKey>,
 
-        #[arg(long, short, help = "The context ID that the identity is a member of")]
+        #[arg(long, short, help = "The context that the identity is a member of")]
         context: Alias<ContextId>,
     },
 }
