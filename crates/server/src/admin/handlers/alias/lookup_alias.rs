@@ -15,13 +15,18 @@ use crate::AdminState;
 
 pub async fn handler<T: Aliasable<Scope: StoreScopeCompat>>(
     Extension(state): Extension<Arc<AdminState>>,
-    scope: Option<Path<T::Scope>>,
-    Path(alias): Path<Alias<T>>,
+    plain_alias: Option<Path<Alias<T>>>,
+    scoped_alias: Option<Path<(T::Scope, Alias<T>)>>,
 ) -> impl IntoResponse
 where
     T: AliasKind + From<Hash> + Serialize,
 {
-    let scope = scope.map(|Path(scope)| scope);
+    let Some((alias, scope)) = plain_alias
+        .map(|Path(alias)| (alias, None))
+        .or_else(|| scoped_alias.map(|Path((scope, alias))| (alias, Some(scope))))
+    else {
+        return (StatusCode::BAD_REQUEST, "invalid path params").into_response();
+    };
 
     match state.ctx_manager.lookup_alias(alias, scope) {
         Ok(value) => ApiResponse {
