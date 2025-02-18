@@ -1,6 +1,7 @@
 use crate::entry::{Codec, Entry};
 use crate::key::AsKeyParts;
 
+mod alias;
 mod application;
 mod blobs;
 mod context;

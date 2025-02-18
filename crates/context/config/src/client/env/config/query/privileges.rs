@@ -21,7 +21,7 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::StellarCapability;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 

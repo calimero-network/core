@@ -23,6 +23,7 @@ pub const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
 pub const DEFAULT_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_PORT);
 
+/// Spin up a relay for external client interactions
 #[derive(Debug, Parser)]
 pub struct RelayCommand {
     /// Sets the address to listen on [default: 0.0.0.0:63529]

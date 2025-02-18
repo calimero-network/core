@@ -80,7 +80,7 @@ impl Meroctl {
         &self,
         node_name: &str,
         context_id: &str,
-        inviteer_public_key: &str,
+        inviter_public_key: &str,
         invitee_public_key: &str,
     ) -> EyreResult<String> {
         let json = self
@@ -90,8 +90,9 @@ impl Meroctl {
                     "context",
                     "invite",
                     context_id,
-                    inviteer_public_key,
                     invitee_public_key,
+                    "--as",
+                    inviter_public_key,
                 ],
             )
             .await?;

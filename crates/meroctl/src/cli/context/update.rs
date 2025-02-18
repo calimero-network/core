@@ -1,3 +1,4 @@
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -7,7 +8,7 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use notify::event::ModifyKind;
@@ -17,14 +18,16 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
+};
 use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Update app in context")]
 pub struct UpdateCommand {
-    #[clap(long, short = 'c', help = "ContextId where to install the application")]
-    context_id: ContextId,
+    #[clap(long, short = 'c', help = "Context to update")]
+    context: Alias<ContextId>,
 
     #[clap(
         long,
@@ -56,7 +59,7 @@ pub struct UpdateCommand {
     watch: bool,
 
     #[arg(long = "as", help = "Public key of the executor")]
-    pub executor: PublicKey,
+    pub executor: Alias<PublicKey>,
 }
 
 impl UpdateCommand {
@@ -65,14 +68,25 @@ impl UpdateCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
+        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
+
+        let executor_id = resolve_alias(multiaddr, &config.identity, self.executor, None)
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
+
         match self {
             Self {
-                context_id,
                 application_id: Some(application_id),
                 path: None,
                 metadata: None,
                 watch: false,
-                executor: executor_public_key,
+                ..
             } => {
                 update_context_application(
                     environment,
@@ -81,16 +95,14 @@ impl UpdateCommand {
                     context_id,
                     application_id,
                     &config.identity,
-                    executor_public_key,
+                    executor_id,
                 )
                 .await?;
             }
             Self {
-                context_id,
                 application_id: None,
                 path: Some(path),
                 metadata,
-                executor: executor_public_key,
                 ..
             } => {
                 let metadata = metadata.map(String::into_bytes);
@@ -112,7 +124,7 @@ impl UpdateCommand {
                     context_id,
                     application_id,
                     &config.identity,
-                    executor_public_key,
+                    executor_id,
                 )
                 .await?;
 
@@ -125,7 +137,7 @@ impl UpdateCommand {
                         path,
                         metadata,
                         &config.identity,
-                        executor_public_key,
+                        executor_id,
                     )
                     .await?;
                 }

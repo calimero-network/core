@@ -1,3 +1,4 @@
+use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
 use eyre::Result as EyreResult;
@@ -11,7 +12,7 @@ use crate::output::Report;
 #[command(about = "Fetch application details")]
 pub struct GetCommand {
     #[arg(value_name = "APP_ID", help = "application_id of the application")]
-    pub app_id: String,
+    pub app_id: ApplicationId,
 }
 
 #[derive(ValueEnum, Debug, Clone)]

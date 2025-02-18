@@ -1,10 +1,12 @@
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    CreateContextRequest, CreateContextResponse, GetApplicationResponse,
-    InstallApplicationResponse, InstallDevApplicationRequest, UpdateContextApplicationRequest,
+    CreateAliasRequest, CreateAliasResponse, CreateContextIdentityAlias, CreateContextRequest,
+    CreateContextResponse, GetApplicationResponse, InstallApplicationResponse,
+    InstallDevApplicationRequest, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
 };
 use camino::Utf8PathBuf;
@@ -62,6 +64,9 @@ pub struct CreateCommand {
 
     #[clap(long, value_name = "PROTOCOL")]
     protocol: String,
+
+    #[clap(long = "as", help = "Create an alias for the context identity")]
+    identity: Option<Alias<PublicKey>>,
 }
 
 impl Report for CreateContextResponse {
@@ -91,6 +96,7 @@ impl CreateCommand {
                 metadata: None,
                 params,
                 protocol,
+                identity,
             } => {
                 let _ = create_context(
                     environment,
@@ -101,6 +107,7 @@ impl CreateCommand {
                     params,
                     &config.identity,
                     protocol,
+                    identity,
                 )
                 .await?;
             }
@@ -111,6 +118,7 @@ impl CreateCommand {
                 metadata,
                 params,
                 protocol,
+                identity,
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
@@ -133,6 +141,7 @@ impl CreateCommand {
                     params,
                     &config.identity,
                     protocol,
+                    identity,
                 )
                 .await?;
 
@@ -164,6 +173,7 @@ pub async fn create_context(
     params: Option<String>,
     keypair: &Keypair,
     protocol: String,
+    identity: Option<Alias<PublicKey>>,
 ) -> EyreResult<(ContextId, PublicKey)> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
@@ -181,6 +191,34 @@ pub async fn create_context(
         do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
+
+    if let Some(alias) = identity {
+        let alias_request = CreateAliasRequest {
+            alias,
+            value: CreateContextIdentityAlias {
+                identity: response.data.member_public_key,
+            },
+        };
+
+        let alias_url = multiaddr_to_url(
+            base_multiaddr,
+            &format!(
+                "admin-api/dev/alias/create/identity/{}",
+                response.data.context_id
+            ),
+        )?;
+
+        let alias_response: CreateAliasResponse = do_request(
+            client,
+            alias_url,
+            Some(alias_request),
+            keypair,
+            RequestType::Post,
+        )
+        .await?;
+
+        environment.output.write(&alias_response);
+    }
 
     Ok((response.data.context_id, response.data.member_public_key))
 }

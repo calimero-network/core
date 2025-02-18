@@ -57,7 +57,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Call(call) => call.run(node).await?,
         SubCommand::Context(context) => context.run(node).await?,
         SubCommand::Identity(identity) => identity.run(node)?,
-        SubCommand::Peers(peers) => peers.run(node.network_client.clone().into()).await?,
+        SubCommand::Peers(peers) => peers.run(node).await?,
         SubCommand::State(state) => state.run(node)?,
         // SubCommand::Store(store) => store.run(node)?,
     }

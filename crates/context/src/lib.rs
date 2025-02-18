@@ -3,6 +3,7 @@
 use core::error::Error;
 use std::collections::HashSet;
 use std::io::Error as IoError;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -20,6 +21,7 @@ use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{
@@ -28,9 +30,10 @@ use calimero_primitives::context::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
+    Alias as AliasKey, Aliasable, ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
     ContextMeta as ContextMetaKey, ContextState as ContextStateKey, FromKeyParts, Key,
+    StoreScopeCompat,
 };
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::types::{
@@ -811,6 +814,7 @@ impl ContextManager {
                 ids.push(k.public_key());
             }
         }
+
         Ok(ids)
     }
 
@@ -1490,5 +1494,118 @@ impl ContextManager {
 
     pub async fn get_peers_count(&self) -> usize {
         self.network_client.peer_count().await
+    }
+
+    pub fn create_alias<T>(
+        &self,
+        alias: Alias<T>,
+        scope: Option<T::Scope>,
+        value: T,
+    ) -> EyreResult<()>
+    where
+        T: Aliasable<Scope: StoreScopeCompat> + Into<Hash>,
+    {
+        let mut handle = self.store.handle();
+
+        let alias_key =
+            AliasKey::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
+
+        if handle.has(&alias_key)? {
+            bail!("alias already exists");
+        }
+
+        handle.put(&alias_key, &value.into())?;
+
+        Ok(())
+    }
+
+    pub fn delete_alias<T>(&self, alias: Alias<T>, scope: Option<T::Scope>) -> EyreResult<()>
+    where
+        T: Aliasable<Scope: StoreScopeCompat>,
+    {
+        let mut handle = self.store.handle();
+
+        let alias_key =
+            AliasKey::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
+
+        handle.delete(&alias_key)?;
+
+        Ok(())
+    }
+
+    pub fn lookup_alias<T>(&self, alias: Alias<T>, scope: Option<T::Scope>) -> EyreResult<Option<T>>
+    where
+        T: Aliasable<Scope: StoreScopeCompat> + From<Hash>,
+    {
+        let handle = self.store.handle();
+
+        let alias_key =
+            AliasKey::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
+
+        let Some(value) = handle.get(&alias_key)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(value.into()))
+    }
+
+    pub fn resolve_alias<T>(
+        &self,
+        alias: Alias<T>,
+        scope: Option<T::Scope>,
+    ) -> EyreResult<Option<T>>
+    where
+        T: Aliasable<Scope: StoreScopeCompat> + From<Hash> + FromStr<Err: Into<eyre::Report>>,
+    {
+        if let Some(value) = self.lookup_alias(alias, scope)? {
+            return Ok(Some(value));
+        }
+
+        Ok(alias.as_str().parse().ok())
+    }
+
+    pub fn list_aliases<T>(
+        &self,
+        scope: Option<T::Scope>,
+    ) -> EyreResult<Vec<(Alias<T>, T, Option<T::Scope>)>>
+    where
+        T: Aliasable + From<Hash>,
+        T::Scope: Copy + PartialEq + StoreScopeCompat,
+    {
+        let handle = self.store.handle();
+
+        let mut iter = handle.iter::<AliasKey>()?;
+
+        let first = scope
+            .map(|scope| {
+                iter.seek(AliasKey::new_unchecked::<T>(Some(scope), [0; 50]))
+                    .transpose()
+                    .map(|k| (k, iter.read()))
+            })
+            .flatten();
+
+        let mut aliases = vec![];
+
+        for (k, v) in first.into_iter().chain(iter.entries()) {
+            let (k, v) = (k?, v?);
+
+            if let Some(expected_scope) = &scope {
+                let Some(found_scope) = k.scope::<T>() else {
+                    eyre::bail!("scope mismatch: {:?}", k);
+                };
+
+                if &found_scope != expected_scope {
+                    break;
+                }
+            }
+
+            let Some(alias) = k.alias() else {
+                continue;
+            };
+
+            aliases.push((alias, v.into(), k.scope::<T>()));
+        }
+
+        Ok(aliases)
     }
 }

@@ -237,6 +237,7 @@ mod serde_bytes {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(transparent)]
         struct Container<'a>(#[serde(borrow)] Cow<'a, str>);
 
         let encoded = Container::deserialize(deserializer)?;

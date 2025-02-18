@@ -1,3 +1,4 @@
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
@@ -432,6 +433,102 @@ impl GenerateContextIdentityResponse {
                 private_key,
             },
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CreateAliasRequest<T: AliasKind> {
+    pub alias: Alias<T>,
+    #[serde(flatten)]
+    pub value: T::Value,
+}
+
+pub trait AliasKind {
+    type Value;
+
+    fn from_value(data: Self::Value) -> Self;
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateContextIdAlias {
+    pub context_id: ContextId,
+}
+
+impl AliasKind for ContextId {
+    type Value = CreateContextIdAlias;
+
+    fn from_value(data: Self::Value) -> Self {
+        data.context_id
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct CreateContextIdentityAlias {
+    pub identity: PublicKey,
+}
+
+impl AliasKind for PublicKey {
+    type Value = CreateContextIdentityAlias;
+
+    fn from_value(data: Self::Value) -> Self {
+        data.identity
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateApplicationIdAlias {
+    pub application_id: ApplicationId,
+}
+
+impl AliasKind for ApplicationId {
+    type Value = CreateApplicationIdAlias;
+
+    fn from_value(data: Self::Value) -> Self {
+        data.application_id
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAliasResponse {
+    pub data: Empty,
+}
+
+impl CreateAliasResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAliasResponse {
+    pub data: Empty,
+}
+
+impl DeleteAliasResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupAliasResponse<T> {
+    pub data: LookupAliasResponseData<T>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupAliasResponseData<T> {
+    pub value: Option<T>,
+}
+
+impl<T> LookupAliasResponseData<T> {
+    pub const fn new(value: Option<T>) -> Self {
+        Self { value }
     }
 }
 

@@ -1,17 +1,20 @@
+use calimero_primitives::alias::Alias;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_server::admin::handlers::proposals::{
     GetNumberOfActiveProposalsResponse, GetNumberOfProposalApprovalsResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
 use clap::{Parser, ValueEnum};
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
+};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -20,11 +23,11 @@ pub struct GetCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
 
-    #[arg(value_name = "CONTEXT_ID", help = "context_id of the context")]
-    pub context_id: String,
+    #[arg(value_name = "CONTEXT", help = "Context for which to query")]
+    pub context: Alias<ContextId>,
 
     #[arg(value_name = "PROPOSAL_ID", help = "proposal_id of the proposal")]
-    pub proposal_id: String,
+    pub proposal_id: Hash,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -76,6 +79,12 @@ impl GetCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
+        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
+
         match &self.method {
             GetRequest::NumProposalApprovals => {
                 self.get_number_of_proposal_approvals(
@@ -83,6 +92,7 @@ impl GetCommand {
                     multiaddr,
                     &client,
                     &config.identity,
+                    context_id,
                 )
                 .await
             }
@@ -92,20 +102,39 @@ impl GetCommand {
                     multiaddr,
                     &client,
                     &config.identity,
+                    context_id,
                 )
                 .await
             }
             GetRequest::Proposal => {
-                self.get_proposal(environment, multiaddr, &client, &config.identity)
-                    .await
+                self.get_proposal(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    context_id,
+                )
+                .await
             }
             GetRequest::Proposals => {
-                self.get_proposals(environment, multiaddr, &client, &config.identity)
-                    .await
+                self.get_proposals(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    context_id,
+                )
+                .await
             }
             GetRequest::ProposalApprovers => {
-                self.get_proposal_approvers(environment, multiaddr, &client, &config.identity)
-                    .await
+                self.get_proposal_approvers(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    context_id,
+                )
+                .await
             }
         }
     }
@@ -116,16 +145,24 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: ContextId,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
-                self.context_id, self.proposal_id
+                context_id, self.proposal_id
             ),
         )?;
-        self.make_request::<GetNumberOfProposalApprovalsResponse>(environment, client, url, keypair)
-            .await
+        make_request::<_, GetNumberOfProposalApprovalsResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 
     async fn get_number_of_active_proposals(
@@ -134,13 +171,21 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: ContextId,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
-            &format!("admin-api/dev/contexts/{}/proposals/count", self.context_id),
+            &format!("admin-api/dev/contexts/{}/proposals/count", context_id),
         )?;
-        self.make_request::<GetNumberOfActiveProposalsResponse>(environment, client, url, keypair)
-            .await
+        make_request::<_, GetNumberOfActiveProposalsResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 
     async fn get_proposal_approvers(
@@ -149,16 +194,24 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: ContextId,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
-                self.context_id, self.proposal_id
+                context_id, self.proposal_id
             ),
         )?;
-        self.make_request::<GetProposalApproversResponse>(environment, client, url, keypair)
-            .await
+        make_request::<_, GetProposalApproversResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 
     async fn get_proposals(
@@ -167,13 +220,21 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: ContextId,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
-            &format!("admin-api/dev/contexts/{}/proposals", self.context_id),
+            &format!("admin-api/dev/contexts/{}/proposals", context_id),
         )?;
-        self.make_request::<GetProposalsResponse>(environment, client, url, keypair)
-            .await
+        make_request::<_, GetProposalsResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 
     async fn get_proposal(
@@ -182,33 +243,23 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
+        context_id: ContextId,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}",
-                self.context_id, self.proposal_id
+                context_id, self.proposal_id
             ),
         )?;
-        self.make_request::<GetProposalResponse>(environment, client, url, keypair)
-            .await
-    }
-
-    async fn make_request<O>(
-        &self,
-        environment: &Environment,
-        client: &Client,
-        url: reqwest::Url,
-        keypair: &Keypair,
-    ) -> EyreResult<()>
-    where
-        O: DeserializeOwned + Report + Serialize,
-    {
-        let response =
-            do_request::<(), O>(client, url, None::<()>, keypair, RequestType::Get).await?;
-
-        environment.output.write(&response);
-
-        Ok(())
+        make_request::<_, GetProposalResponse>(
+            environment,
+            client,
+            url,
+            None::<()>,
+            keypair,
+            RequestType::Get,
+        )
+        .await
     }
 }

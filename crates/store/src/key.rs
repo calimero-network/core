@@ -13,12 +13,14 @@ use generic_array::{GenericArray, IntoArrayLength};
 use crate::db::Column;
 use crate::slice::Slice;
 
+mod alias;
 mod application;
 mod blobs;
 mod component;
 mod context;
 mod generic;
 
+pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
 pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState};
