@@ -72,13 +72,8 @@ jobs:
               echo "Master release for this version already exists"
               echo "release_required=false" >> $GITHUB_OUTPUT
             else
-              if [ "$version" == "0.3.1" ]; then
-                echo "Version 0.3.1 already exists in a legacy release format, skipping"
-                echo "release_required=false" >> $GITHUB_OUTPUT
-              else
-                echo "New master release required"
-                echo "release_required=true" >> $GITHUB_OUTPUT
-              fi
+              echo "New master release required"
+              echo "release_required=true" >> $GITHUB_OUTPUT
             fi
 
             echo "build_required=true" >> $GITHUB_OUTPUT

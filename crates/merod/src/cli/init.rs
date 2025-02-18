@@ -302,7 +302,7 @@ impl InitCommand {
                     protocol: "stellar".into(),
                     contract_id: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY"
                         .parse()?,
-                    signer: ClientSelectedSigner::Local,
+                    signer: ClientSelectedSigner::Relayer,
                 },
             );
 
@@ -330,6 +330,7 @@ impl InitCommand {
                 .protocols
                 .insert("stellar".to_owned(), local_config);
         }
+
         let relayer = self
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
