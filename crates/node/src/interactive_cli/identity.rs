@@ -18,7 +18,8 @@ pub struct IdentityCommand {
 #[derive(Debug, Subcommand)]
 enum IdentitySubcommands {
     /// List identities in a context
-    Ls {
+    #[clap(alias = "ls")]
+    List {
         /// The context whose identities we're listing
         context: Alias<ContextId>,
     },
@@ -73,7 +74,7 @@ impl IdentityCommand {
         let ind = ">>".blue();
 
         match self.subcommand {
-            IdentitySubcommands::Ls { context } => {
+            IdentitySubcommands::List { context } => {
                 list_identities(node, context, &ind.to_string())?;
             }
             IdentitySubcommands::New => {

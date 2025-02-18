@@ -23,9 +23,9 @@ pub struct ContextIdentityCommand {
 
 #[derive(Debug, Parser)]
 pub enum ContextIdentitySubcommand {
-    #[command(about = "List identities in a context")]
+    #[command(about = "List identities in a context", alias = "ls")]
     List {
-        #[arg(long, short, help = "The context whose identities we're listin")]
+        #[arg(help = "The context whose identities we're listin")]
         context: Alias<ContextId>,
         #[arg(long, help = "Show only owned identities")]
         owned: bool,
