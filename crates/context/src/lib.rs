@@ -1557,8 +1557,10 @@ impl ContextManager {
     where
         T: Aliasable<Scope: StoreScopeCompat> + From<Hash> + FromStr<Err: Into<eyre::Report>>,
     {
-        if let Some(value) = self.lookup_alias(alias, scope)? {
-            return Ok(Some(value));
+        if let Ok(potential_alias) = self.lookup_alias(alias, scope) {
+            if let Some(value) = potential_alias {
+                return Ok(Some(value));
+            }
         }
 
         Ok(alias.as_str().parse().ok())
