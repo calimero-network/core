@@ -1381,6 +1381,7 @@ dependencies = [
 name = "calimero-server-primitives"
 version = "0.1.0"
 dependencies = [
+ "calimero-context-config",
  "calimero-node-primitives",
  "calimero-primitives",
  "camino",
@@ -5187,7 +5188,6 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-config",
  "calimero-primitives",
- "calimero-server",
  "calimero-server-primitives",
  "camino",
  "chrono",

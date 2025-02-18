@@ -4,11 +4,15 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ContextIdentity, ContextStorageEntry, ProposalId};
-use calimero_context_config::{Proposal as ProposalConfig, ProposalWithApprovals};
+use calimero_context_config::types::ProposalId;
 use calimero_primitives::context::ContextId;
+use calimero_server_primitives::admin::{
+    GetContextStorageEntriesRequest, GetContextStorageEntriesResponse, GetContextValueRequest,
+    GetContextValueResponse, GetNumberOfActiveProposalsResponse,
+    GetNumberOfProposalApprovalsResponse, GetProposalApproversResponse, GetProposalResponse,
+    GetProposalsRequest, GetProposalsResponse, GetProxyContractResponse,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -23,129 +27,6 @@ pub enum ActionType {
     SetNumApprovals,
     SetActiveProposalsLimit,
     SetContextValue,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Action {
-    ExternalFunctionCall(ExternalFunctionCall),
-    Transfer(Transfer),
-    SetNumApprovals(SetNumApprovals),
-    SetActiveProposalsLimit(SetActiveProposalsLimit),
-    SetContextValue(SetContextValue),
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExternalFunctionCall {
-    pub(crate) receiver_id: Repr<ContextIdentity>,
-    pub(crate) method_name: String,
-    pub(crate) args: Value,
-    pub(crate) deposit: String,
-    pub(crate) gas: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Transfer {
-    pub(crate) amount: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetNumApprovals {
-    pub(crate) num_of_approvals: u32,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct SetActiveProposalsLimit {
-    pub(crate) active_proposals_limit: u32,
-}
-
-// Use generics to allow any type for `value` in `SetContextValue`
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetContextValue {
-    pub(crate) key: String,
-    pub(crate) value: Value,
-}
-
-// Define Proposal struct
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Proposal {
-    pub id: String,
-    pub author: Repr<ContextIdentity>,
-    pub(crate) actions: Vec<Action>,
-    pub title: String,
-    pub description: String,
-    pub(crate) created_at: String,
-}
-
-// Define Members struct
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Members {
-    pub public_key: String,
-}
-
-// Define Message struct
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Message {
-    pub public_key: String,
-}
-
-//ENDPOINTS
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalsResponse {
-    pub data: Vec<ProposalConfig>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalResponse {
-    pub data: ProposalConfig,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProxyContractResponse {
-    pub data: String,
-}
-
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalsRequest {
-    pub offset: usize,
-    pub limit: usize,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextValueRequest {
-    pub key: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Copy, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextStorageEntriesRequest {
-    pub offset: usize,
-    pub limit: usize,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextValueResponse {
-    pub data: Vec<u8>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextStorageEntriesResponse {
-    pub data: Vec<ContextStorageEntry>,
 }
 
 pub async fn get_proposals_handler(
@@ -242,12 +123,6 @@ pub async fn get_context_storage_entries_handler(
     }
 }
 
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetNumberOfActiveProposalsResponse {
-    pub data: u16,
-}
-
 // TODO - proxy missing function to fetch number of all
 pub async fn get_number_of_active_proposals_handler(
     Path(context_id): Path<ContextId>,
@@ -266,12 +141,6 @@ pub async fn get_number_of_active_proposals_handler(
         .into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
-}
-
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetNumberOfProposalApprovalsResponse {
-    pub data: ProposalWithApprovals,
 }
 
 pub async fn get_number_of_proposal_approvals_handler(
@@ -294,12 +163,6 @@ pub async fn get_number_of_proposal_approvals_handler(
         .into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetProposalApproversResponse {
-    pub data: Vec<Repr<ContextIdentity>>,
 }
 
 // return list of users who approved

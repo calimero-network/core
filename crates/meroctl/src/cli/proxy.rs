@@ -1,9 +1,7 @@
-use calimero_server::admin::handlers::proposals::Proposal;
 use clap::{Parser, Subcommand};
 use eyre::Result as EyreResult;
 
 use super::Environment;
-use crate::output::Report;
 
 mod get;
 use get::GetCommand;
@@ -18,15 +16,6 @@ pub struct ProxyCommand {
 #[derive(Debug, Subcommand)]
 pub enum ProxySubCommands {
     Get(GetCommand),
-}
-
-impl Report for Proposal {
-    fn report(&self) {
-        println!("{}", self.id);
-        println!("{:#?}", self.author);
-        println!("{}", self.title);
-        println!("{}", self.description);
-    }
 }
 
 impl ProxyCommand {

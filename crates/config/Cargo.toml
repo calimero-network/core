@@ -18,7 +18,7 @@ serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
 
 calimero-context.workspace = true
-calimero-server = { workspace = true, features = ["admin"] }
+calimero-server = { workspace = true, features = ["admin", "jsonrpc", "websocket"] }
 calimero-network.workspace = true
 
 [lints]
