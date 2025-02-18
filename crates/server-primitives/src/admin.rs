@@ -437,7 +437,6 @@ impl GenerateContextIdentityResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CreateAliasRequest<T: AliasKind> {
     pub alias: Alias<T>,
     #[serde(flatten)]
@@ -451,6 +450,7 @@ pub trait AliasKind {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateContextIdAlias {
     pub context_id: ContextId,
 }
@@ -477,6 +477,7 @@ impl AliasKind for PublicKey {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateApplicationIdAlias {
     pub application_id: ApplicationId,
 }
