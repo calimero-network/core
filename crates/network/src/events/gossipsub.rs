@@ -45,6 +45,7 @@ impl EventHandler<Event> for EventLoop {
                 }
             }
             Event::GossipsubNotSupported { .. } => {}
+            Event::SlowPeer { .. } => {}
         }
     }
 }

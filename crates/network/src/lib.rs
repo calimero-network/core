@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use client::NetworkClient;
 use config::NetworkConfig;
 use eyre::{bail, eyre, Result as EyreResult};
+use libp2p::autonat::v2::client::{Behaviour as AutonatBehaviour, Config as AutonatConfig};
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
 use libp2p::futures::prelude::*;
 use libp2p::gossipsub::{
@@ -32,6 +33,7 @@ use libp2p::yamux::Config as YamuxConfig;
 use libp2p::{PeerId, StreamProtocol, SwarmBuilder};
 use libp2p_stream::{Behaviour as StreamBehaviour, IncomingStreams};
 use multiaddr::{Multiaddr, Protocol};
+use rand::rngs::OsRng;
 use stream::Stream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, Duration};
@@ -62,6 +64,7 @@ struct Behaviour {
     rendezvous: RendezvousBehaviour,
     relay: RelayBehaviour,
     stream: StreamBehaviour,
+    autonat: AutonatBehaviour,
 }
 
 pub async fn run(
@@ -122,8 +125,7 @@ fn init(
                 .and_then(|()| MdnsBehaviour::new(MdnsConfig::default(), peer_id).ok())
                 .into(),
             kad: {
-                let mut kad_config = KadConfig::default();
-                let _ = kad_config.set_protocol_names(vec![CALIMERO_KAD_PROTO_NAME]);
+                let kad_config = KadConfig::new(CALIMERO_KAD_PROTO_NAME);
 
                 let mut kad =
                     KadBehaviour::with_config(peer_id, MemoryStore::new(peer_id), kad_config);
@@ -148,6 +150,7 @@ fn init(
             relay: relay_behaviour,
             rendezvous: RendezvousBehaviour::new(key.clone()),
             stream: StreamBehaviour::new(),
+            autonat: AutonatBehaviour::new(OsRng, AutonatConfig::default()),
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30)))
         .build();
@@ -301,8 +304,8 @@ impl EventLoop {
                 drop(sender.send(Ok(topic)));
             }
             Command::Unsubscribe { topic, sender } => {
-                if let Err(err) = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
-                    drop(sender.send(Err(eyre!(err))));
+                if !self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
+                    drop(sender.send(Err(eyre!("Unsuscribe failed."))));
                     return;
                 }
 

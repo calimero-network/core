@@ -8,7 +8,7 @@ impl EventHandler<Event> for EventLoop {
     async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "identify".yellow(), event);
 
-        if let Event::Received { peer_id, info } = event {
+        if let Event::Received { peer_id, info, .. } = event {
             self.discovery
                 .state
                 .update_peer_protocols(&peer_id, &info.protocols);

@@ -12,6 +12,7 @@ use super::*;
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
 use crate::types::NetworkEvent;
 
+mod autonat;
 mod dcutr;
 mod gossipsub;
 mod identify;
@@ -45,6 +46,7 @@ impl EventLoop {
                 BehaviourEvent::Relay(event) => EventHandler::handle(self, event).await,
                 BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event).await,
                 BehaviourEvent::Stream(()) => {}
+                BehaviourEvent::Autonat(event) => EventHandler::handle(self, event).await,
             },
             SwarmEvent::NewListenAddr {
                 listener_id,
