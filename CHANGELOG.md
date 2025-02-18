@@ -1,6 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2025-02-17
+
+- Added Stellar integration
+- Added support for aliases which can replace hash based IDs
+- Minor fixes on admin dashboard
+- Optimized e2e tests
+- Optimized release process
+- Unified release artifacts into single Github Release
+- Extracted install scripts to `install-sh` repository
 
 ## [0.3.1] - 2025-01-29
 
