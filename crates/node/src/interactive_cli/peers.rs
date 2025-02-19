@@ -1,7 +1,7 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::Result as EyreResult;
 use libp2p::gossipsub::TopicHash;
 use owo_colors::OwoColorize;
 
@@ -26,7 +26,7 @@ impl PeersCommand {
             .context
             .map(|context| node.ctx_manager.resolve_alias(context, None))
             .transpose()?
-            .ok_or_eyre("unable to resolve")?;
+            .flatten();
 
         if let Some(context_id) = context_id {
             let topic = TopicHash::from_raw(context_id);

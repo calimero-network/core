@@ -241,7 +241,7 @@ impl ContextCommand {
                     .ok_or_eyre("unable to resolve")?;
                 let inviter_id = node
                     .ctx_manager
-                    .resolve_alias(inviter, None)?
+                    .resolve_alias(inviter, Some(context_id))?
                     .ok_or_eyre("unable to resolve")?;
 
                 if let Some(invitation_payload) = node
