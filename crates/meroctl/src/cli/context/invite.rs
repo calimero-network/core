@@ -36,7 +36,7 @@ impl Report for InviteToContextResponse {
     fn report(&self) {
         match self.data {
             Some(ref payload) => {
-                println!("{:?}", payload)
+                println!("Invitation payload: {}", payload)
             }
             None => println!("No invitation payload"),
         }
