@@ -28,8 +28,8 @@ impl Report for JoinContextResponse {
     fn report(&self) {
         match self.data {
             Some(ref payload) => {
-                print!("context_id {}", payload.context_id);
-                print!("member_public_key: {}", payload.member_public_key);
+                println!("context_id {}", payload.context_id);
+                println!("member_public_key: {}", payload.member_public_key);
             }
             None => todo!(),
         }
