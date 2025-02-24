@@ -1,0 +1,22 @@
+[package]
+name = "calimero-utils-actix"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+actix.workspace = true
+futures-util.workspace = true
+paste.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+actix.workspace = true
+eyre.workspace = true
+tokio = { workspace = true, features = ["macros"] }
+tokio-stream = { workspace = true, features = ["time"] }
+
+[lints]
+workspace = true

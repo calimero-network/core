@@ -28,6 +28,7 @@ members = [
     "./crates/storage-macros",
     "./crates/store",
     "./crates/store/blobs",
+    "./crates/utils/actix",
 
     "./apps/kv-store",
     "./apps/only-peers",
@@ -51,6 +52,7 @@ members = [
 ]
 
 [workspace.dependencies]
+actix = "0.13.5"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
 axum = "0.7.4"
@@ -101,6 +103,7 @@ notify = "6.1.1"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
 parking_lot = "0.12.3"
+paste = "1.0.15"
 prettyplease = "0.2.17"
 proc-macro2 = "1.0"
 quote = "1.0.37"
@@ -134,6 +137,7 @@ tokio = "1.35.1"
 tokio-test = "0.4.4"
 tokio-tungstenite = "0.24.0"
 tokio-util = "0.7.11"
+tokio-stream = "0.1.17"
 toml = "0.8.9"
 toml_edit = "0.22.14"
 tower = "0.4.13"
@@ -175,6 +179,7 @@ calimero-storage-macros = { path = "./crates/storage-macros" }
 calimero-store = { path = "./crates/store" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
+calimero-utils-actix = { path = "./crates/utils/actix" }
 
 kv-store = { path = "./apps/kv-store" }
 only-peers = { path = "./apps/only-peers" }
