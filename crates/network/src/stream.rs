@@ -1,21 +1,13 @@
-#![allow(
-    clippy::allow_attributes,
-    reason = "Needed for lints that don't follow expect"
-)]
-
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use eyre::{bail, Result as EyreResult};
 use futures_util::{Sink as FuturesSink, SinkExt, Stream as FuturesStream, StreamExt};
-use libp2p::{PeerId, Stream as P2pStream, StreamProtocol};
+use libp2p::{Stream as P2pStream, StreamProtocol};
 use tokio::io::BufStream;
 use tokio_util::codec::Framed;
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
-use super::EventLoop;
 use crate::stream::codec::MessageCodec;
-use crate::types::NetworkEvent;
 
 mod codec;
 
@@ -65,46 +57,5 @@ impl<'a> FuturesSink<Message<'a>> for Stream {
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_close_unpin(cx)
-    }
-}
-
-// TODO: The &mut self usages are needed for reasons not yet apparent, despite
-// TODO: not actually making any self-modifications. If removed, they cause
-// TODO: errors about Send compatibility.
-#[expect(
-    clippy::needless_pass_by_ref_mut,
-    reason = "TODO: This should be refactored"
-)]
-#[allow(
-    clippy::multiple_inherent_impl,
-    reason = "Currently needed due to code structure"
-)]
-impl EventLoop {
-    pub(crate) async fn handle_incoming_stream(&mut self, (peer, stream): (PeerId, P2pStream)) {
-        self.event_sender
-            .send(NetworkEvent::StreamOpened {
-                peer_id: peer,
-                stream: Box::new(Stream::new(stream)),
-            })
-            .await
-            .expect("Failed to send stream opened event");
-    }
-
-    pub(crate) async fn open_stream(&mut self, peer_id: PeerId) -> EyreResult<Stream> {
-        let stream = match self
-            .swarm
-            .behaviour()
-            .stream
-            .new_control()
-            .open_stream(peer_id, CALIMERO_STREAM_PROTOCOL)
-            .await
-        {
-            Ok(stream) => stream,
-            Err(err) => {
-                bail!("Failed to open stream: {:?}", err);
-            }
-        };
-
-        Ok(Stream::new(stream))
     }
 }

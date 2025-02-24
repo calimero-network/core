@@ -3,7 +3,18 @@ name: End-to-end tests
 on:
   push:
     branches:
-      - '**'
+      - master
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'contracts/**'
+      - 'crates/**'
+      - 'e2e-tests/**'
+      - '.github/workflows/e2e_tests.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - master
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -47,7 +58,7 @@ jobs:
 
   test:
     needs: build
-    name: "Test ${{ matrix.protocol }}"
+    name: 'Test ${{ matrix.protocol }}'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -100,7 +111,7 @@ jobs:
             e2e-tests/config/config.json > updated_config.json
 
           mv updated_config.json e2e-tests/config/config.json
-      
+
       - name: Build Contracts (if needed)
         run: |
           if [[ "${{ matrix.protocol }}" == "near" ]]; then
@@ -110,7 +121,7 @@ jobs:
             ./contracts/stellar/context-config/build.sh
             ./contracts/stellar/context-proxy/build.sh
           fi
-      
+
       - name: Install dfx
         if: matrix.protocol == 'icp'
         uses: dfinity/setup-dfx@main
@@ -122,7 +133,7 @@ jobs:
           if [[ "${{ matrix.protocol }}" == "icp" ]]; then
             TMPDIR=$(mktemp -d)
             VERSION="0.1.5"
-            
+
             # Download prebuilt binary based on platform
             case "$(uname -s)-$(uname -m)" in
               "Linux-x86_64")
@@ -136,16 +147,16 @@ jobs:
                 exit 1
                 ;;
             esac
-            
+
             wget -P "$TMPDIR" "https://github.com/dfinity/candid-extractor/releases/download/${VERSION}/${BINARY}"
             tar xzf "$TMPDIR/$BINARY" -C "$TMPDIR"
             mkdir -p "$HOME/.local/bin"
             mv "$TMPDIR/candid-extractor" "$HOME/.local/bin/"
             rm -rf "$TMPDIR"
-            
+
             # Add to PATH if not already there
             export PATH="$HOME/.local/bin:$PATH"
-            
+
             echo "ICP_PORT=$ICP_PORT"
             pushd ./contracts/icp/context-config
             ./deploy_devnet.sh
@@ -158,11 +169,11 @@ jobs:
           elif [[ "${{ matrix.protocol }}" == "stellar" ]]; then
 
             echo "Installing stellar CLI..."
-            
+
             # Detect OS and architecture
             OS=$(uname -s)
             ARCH=$(uname -m)
-            
+
             # Map OS and architecture to release file names
             case "$OS-$ARCH" in
                 "Linux-x86_64")
@@ -176,26 +187,26 @@ jobs:
                     exit 1
                     ;;
             esac
-            
+
             TMPDIR=$(mktemp -d)
             wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
             tar xzf "${TMPDIR}/${BINARY_NAME}" -C "$TMPDIR"
-            
+
             mkdir -p "$HOME/.local/bin"
             chmod +x "$TMPDIR/stellar"
             mv "$TMPDIR/stellar" "$HOME/.local/bin/"
             rm -rf "$TMPDIR"
-            
+
             export PATH="$HOME/.local/bin:$PATH"
 
             chmod +x ./contracts/stellar/context-config/deploy_devnet.sh
 
             ./contracts/stellar/context-config/deploy_devnet.sh > env_output.txt
-            
+
             CONTRACT_ID=$(grep "Contract ID:" env_output.txt | awk '{print $3}')
             ACCOUNT_ADDRESS=$(grep "Account address:" env_output.txt | awk '{print $3}')
             SECRET_KEY=$(grep "Secret key:" env_output.txt | awk '{print $3}')
-            
+
             jq --arg contractId "$CONTRACT_ID" \
                --arg publicKey "$ACCOUNT_ADDRESS" \
                --arg secretKey "$SECRET_KEY" \
@@ -257,7 +268,7 @@ jobs:
       - name: Combine reports
         run: |
           mkdir -p reports
-          
+
           {
             echo "# E2E Test Results"
             echo

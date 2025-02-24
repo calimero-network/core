@@ -2,10 +2,10 @@ use libp2p::identify::Event;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
-use super::{EventHandler, EventLoop};
+use super::{EventHandler, NetworkManager};
 
-impl EventHandler<Event> for EventLoop {
-    async fn handle(&mut self, event: Event) {
+impl EventHandler<Event> for NetworkManager {
+    fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "identify".yellow(), event);
 
         if let Event::Received { peer_id, info } = event {

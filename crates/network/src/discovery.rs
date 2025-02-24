@@ -4,7 +4,7 @@ use libp2p::PeerId;
 use multiaddr::Protocol;
 use tracing::{debug, error};
 
-use super::EventLoop;
+use super::NetworkManager;
 use crate::config::{RelayConfig, RendezvousConfig};
 use crate::discovery::state::{
     DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
@@ -29,40 +29,7 @@ impl Discovery {
     }
 }
 
-impl EventLoop {
-    // Sends rendezvous discovery requests to all rendezvous peers which are not throttled.
-    // If rendezvous peer is not connected, it will be dialed which will trigger the discovery during identify exchange.
-    pub(crate) fn broadcast_rendezvous_discoveries(&mut self) {
-        #[expect(clippy::needless_collect, reason = "Necessary here; false positive")]
-        for peer_id in self
-            .discovery
-            .state
-            .get_rendezvous_peer_ids()
-            .collect::<Vec<_>>()
-        {
-            let Some(peer_info) = self.discovery.state.get_peer_info(&peer_id) else {
-                error!(%peer_id, "Failed to lookup peer info");
-                continue;
-            };
-
-            if peer_info
-                .is_rendezvous_discover_throttled(self.discovery.rendezvous_config.discovery_rpm)
-            {
-                continue;
-            }
-
-            if !self.swarm.is_connected(&peer_id) {
-                for addr in peer_info.addrs().cloned() {
-                    if let Err(err) = self.swarm.dial(addr) {
-                        error!(%err, "Failed to dial rendezvous peer");
-                    }
-                }
-            } else if let Err(err) = self.rendezvous_discover(&peer_id) {
-                error!(%err, "Failed to perform rendezvous discover");
-            }
-        }
-    }
-
+impl NetworkManager {
     // Sends rendezvous discovery request to the rendezvous peer if not throttled.
     // This function expectes that the rendezvous peer is already connected.
     pub(crate) fn rendezvous_discover(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {

@@ -1245,8 +1245,10 @@ dependencies = [
 name = "calimero-network"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "bytes 1.9.0",
  "calimero-primitives",
+ "calimero-utils-actix",
  "eyre",
  "futures-util",
  "libp2p",
@@ -1256,6 +1258,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tokio 1.41.1",
+ "tokio-stream",
  "tokio-test",
  "tokio-util 0.7.12",
  "tracing",

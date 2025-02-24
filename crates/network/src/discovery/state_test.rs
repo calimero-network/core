@@ -122,13 +122,13 @@ fn test_is_rendezvous_discovery_throttled() {
     assert!(!peer_info.is_rendezvous_discover_throttled(1.0));
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
-        last_discovery_at: Some(Instant::now() - Duration::from_secs(30)),
+        last_discovery_at: Some(Instant::now().checked_sub(Duration::from_secs(30)).unwrap()),
         ..Default::default()
     });
     assert!(peer_info.is_rendezvous_discover_throttled(1.0));
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
-        last_discovery_at: Some(Instant::now() - Duration::from_secs(61)),
+        last_discovery_at: Some(Instant::now().checked_sub(Duration::from_secs(61)).unwrap()),
         ..Default::default()
     });
     assert!(!peer_info.is_rendezvous_discover_throttled(1.0));

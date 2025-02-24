@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[path = "../tests/stream/codec.rs"]
+#[path = "codec_test.rs"]
 mod tests;
 
 use core::slice;
