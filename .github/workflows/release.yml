@@ -66,12 +66,6 @@ jobs:
 
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
 
-          if gh release view "$version_candidate" --repo ${{ github.repository }} >/dev/null 2>&1; then
-            echo "works"
-          else
-            echo "doesn't work"
-          fi
-
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
             version="$version_candidate"
             echo "Master version: $version"
