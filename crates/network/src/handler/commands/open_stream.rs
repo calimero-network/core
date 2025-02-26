@@ -6,7 +6,7 @@ use crate::stream::{Stream, CALIMERO_STREAM_PROTOCOL};
 use crate::NetworkManager;
 
 #[derive(Message, Clone, Copy, Debug)]
-#[rtype(result = "EyreResult<Stream>")]
+#[rtype("EyreResult<Stream>")]
 pub struct OpenStream(PeerId);
 
 impl From<PeerId> for OpenStream {

@@ -1,33 +1,32 @@
-use actix::{Message, StreamHandler};
+use actix::StreamHandler;
 use libp2p::{PeerId, Stream as P2pStream};
+use tracing::debug;
 
 use crate::stream::Stream;
 use crate::types::NetworkEvent;
 use crate::NetworkManager;
 
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct FromIncoming((PeerId, P2pStream));
+pub struct FromIncoming(PeerId, P2pStream);
 
 impl From<(PeerId, P2pStream)> for FromIncoming {
-    fn from(peer_stream: (PeerId, P2pStream)) -> Self {
-        Self(peer_stream)
+    fn from((id, stream): (PeerId, P2pStream)) -> Self {
+        Self(id, stream)
     }
 }
 
 impl StreamHandler<FromIncoming> for NetworkManager {
     fn started(&mut self, _ctx: &mut Self::Context) {
-        println!("started receiving swarm messages");
+        debug!("started receiving incoming connections");
     }
 
-    fn handle(&mut self, FromIncoming(incoming_stream): FromIncoming, _ctx: &mut Self::Context) {
+    fn handle(&mut self, FromIncoming(peer_id, stream): FromIncoming, _ctx: &mut Self::Context) {
         self.event_recipient.do_send(NetworkEvent::StreamOpened {
-            peer_id: incoming_stream.0,
-            stream: Box::new(Stream::new(incoming_stream.1)),
+            peer_id,
+            stream: Box::new(Stream::new(stream)),
         });
     }
 
     fn finished(&mut self, _ctx: &mut Self::Context) {
-        println!("finished receiving swarm messages");
+        debug!("finished receiving incoming connections");
     }
 }

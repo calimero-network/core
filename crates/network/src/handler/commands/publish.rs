@@ -1,5 +1,5 @@
 use actix::{Context, Handler, Message};
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 use libp2p::gossipsub::{MessageId, TopicHash};
 
 use crate::NetworkManager;
@@ -25,9 +25,10 @@ impl Handler<Publish> for NetworkManager {
         Publish { topic, data }: Publish,
         _ctx: &mut Context<Self>,
     ) -> EyreResult<MessageId> {
-        match self.swarm.behaviour_mut().gossipsub.publish(topic, data) {
-            Ok(id) => Ok(id),
-            Err(err) => bail!(err),
-        }
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(topic, data)
+            .map_err(Into::into)
     }
 }

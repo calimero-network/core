@@ -1,5 +1,4 @@
-use gossipsub::Event;
-use libp2p::gossipsub;
+use libp2p::gossipsub::Event;
 use owo_colors::OwoColorize;
 use tracing::debug;
 

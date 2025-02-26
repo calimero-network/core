@@ -1,18 +1,23 @@
-use actix::{Message, StreamHandler};
-use tracing::error;
+use actix::StreamHandler;
+use tokio::time::Instant;
+use tracing::{debug, error};
 
 use crate::NetworkManager;
 
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct FromTick;
+pub struct RendezvousTick;
 
-impl StreamHandler<FromTick> for NetworkManager {
+impl From<Instant> for RendezvousTick {
+    fn from(_: Instant) -> Self {
+        Self
+    }
+}
+
+impl StreamHandler<RendezvousTick> for NetworkManager {
     fn started(&mut self, _ctx: &mut Self::Context) {
-        println!("started receiving swarm messages");
+        debug!("started rendezvous tick stream");
     }
 
-    fn handle(&mut self, _tick: FromTick, _ctx: &mut Self::Context) {
+    fn handle(&mut self, _tick: RendezvousTick, _ctx: &mut Self::Context) {
         #[expect(clippy::needless_collect, reason = "Necessary here; false positive")]
         for peer_id in self
             .discovery
@@ -44,6 +49,6 @@ impl StreamHandler<FromTick> for NetworkManager {
     }
 
     fn finished(&mut self, _ctx: &mut Self::Context) {
-        println!("finished receiving swarm messages");
+        debug!("finished rendezvous tick stream");
     }
 }

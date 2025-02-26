@@ -36,7 +36,7 @@ impl Handler<Dial> for NetworkManager {
                 return Box::pin(async { Ok(None) });
             }
             Entry::Vacant(entry) => {
-                let _ = self
+                let _ignored = self
                     .swarm
                     .behaviour_mut()
                     .kad
@@ -44,15 +44,15 @@ impl Handler<Dial> for NetworkManager {
 
                 match self.swarm.dial(peer_addr) {
                     Ok(()) => {
-                        let _ = entry.insert(sender);
+                        let _ignored = entry.insert(sender);
                     }
                     Err(e) => {
-                        return Box::pin(async move { Err(eyre!(e)) });
+                        return Box::pin(async { Err(eyre!(e)) });
                     }
                 }
             }
         }
 
-        Box::pin(async move { receiver.await.expect("Sender not to be dropped.") })
+        Box::pin(async { receiver.await.expect("Sender not to be dropped.") })
     }
 }

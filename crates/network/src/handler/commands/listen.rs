@@ -1,5 +1,5 @@
 use actix::{Context, Handler, Message};
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 use multiaddr::Multiaddr;
 
 use crate::NetworkManager;
@@ -17,9 +17,8 @@ impl Handler<ListenOn> for NetworkManager {
     type Result = EyreResult<()>;
 
     fn handle(&mut self, ListenOn(addr): ListenOn, _ctx: &mut Context<Self>) -> EyreResult<()> {
-        match self.swarm.listen_on(addr) {
-            Ok(_) => Ok(()),
-            Err(e) => bail!(e),
-        }
+        let _ignored = self.swarm.listen_on(addr)?;
+
+        Ok(())
     }
 }

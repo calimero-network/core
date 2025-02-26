@@ -1,9 +1,9 @@
-use actix::{Message, StreamHandler};
+use actix::StreamHandler;
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{Multiaddr, PeerId};
-use multiaddr::Protocol;
+use libp2p::PeerId;
+use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, trace, warn};
 
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
@@ -29,13 +29,11 @@ impl From<SwarmEvent<BehaviourEvent>> for FromSwarm {
     }
 }
 
-#[derive(Message)]
-#[rtype(result = "()")]
 pub struct FromSwarm(SwarmEvent<BehaviourEvent>);
 
 impl StreamHandler<FromSwarm> for NetworkManager {
     fn started(&mut self, _ctx: &mut Self::Context) {
-        println!("started receiving swarm messages");
+        debug!("started receiving swarm messages");
     }
 
     #[expect(clippy::too_many_lines, reason = "Enum with many variants")]
@@ -85,7 +83,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         .add_peer_addr(peer_id, endpoint.get_remote_address());
 
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        drop(sender.send(Ok(Some(()))));
+                        let _ignored = sender.send(Ok(Some(())));
                     }
                 }
             }
@@ -121,7 +119,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 debug!(?peer_id, %error, "Outgoing connection error");
                 if let Some(peer_id) = peer_id {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        drop(sender.send(Err(eyre!(error))));
+                        let _ignored = sender.send(Err(eyre!(error)));
                     }
                 }
             }
@@ -176,7 +174,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
     }
 
     fn finished(&mut self, _ctx: &mut Self::Context) {
-        println!("finished receiving swarm messages");
+        debug!("finished receiving swarm messages");
     }
 }
 

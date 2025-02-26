@@ -5,14 +5,14 @@
 
 use std::collections::hash_map::HashMap;
 
-use actix::{Actor, Addr, Context, Recipient, Running, StreamHandler};
+use actix::{Actor, Addr, AsyncContext, Context, Recipient};
 use calimero_utils_actix::spawn_actor;
 use client::NetworkClient;
 use config::NetworkConfig;
 use eyre::{bail, Result as EyreResult};
 use futures_util::StreamExt;
 use handler::stream::incoming::FromIncoming;
-use handler::stream::rendezvous::FromTick;
+use handler::stream::rendezvous::RendezvousTick;
 use handler::stream::swarm::FromSwarm;
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
 use libp2p::gossipsub::{
@@ -85,7 +85,7 @@ pub async fn run(
         client.listen_on(addr.clone()).await?;
     }
 
-    drop(client.bootstrap().await);
+    client.bootstrap().await?;
 
     Ok((client, event_receiver))
 }
@@ -196,10 +196,7 @@ impl NetworkManager {
 impl Actor for NetworkManager {
     type Context = Context<Self>;
 
-    fn start(mut self) -> Addr<Self>
-    where
-        Self: Actor<Context = Context<Self>>,
-    {
+    fn start(mut self) -> Addr<Self> {
         spawn_actor!(self @ NetworkManager => {
             .swarm as FromSwarm
         })
@@ -214,27 +211,19 @@ impl Actor for NetworkManager {
             .accept(CALIMERO_STREAM_PROTOCOL)
         {
             Ok(incoming_streams) => {
-                let _inoming_streams_handle = <Self as StreamHandler<FromIncoming>>::add_stream(
-                    incoming_streams.map(FromIncoming::from),
-                    ctx,
-                );
+                let _inoming_streams_handle =
+                    ctx.add_stream(incoming_streams.map(FromIncoming::from));
             }
             Err(err) => {
                 error!("Failed to setup control for stream protocol: {:?}", err);
             }
         };
 
-        let _ping_handle = <Self as StreamHandler<FromTick>>::add_stream(
+        let _ping_handle = ctx.add_stream(
             IntervalStream::new(interval(
                 self.discovery.rendezvous_config.discovery_interval,
             ))
-            .map(|_| FromTick),
-            ctx,
+            .map(RendezvousTick::from),
         );
-    }
-
-    fn stopping(&mut self, _ctx: &mut Self::Context) -> Running {
-        println!("stopping the network manager");
-        Running::Stop
     }
 }

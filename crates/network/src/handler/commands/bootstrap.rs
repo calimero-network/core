@@ -20,13 +20,13 @@ impl Handler<Bootstrap> for NetworkManager {
 
         match self.swarm.behaviour_mut().kad.bootstrap() {
             Ok(query_id) => {
-                drop(self.pending_bootstrap.insert(query_id, sender));
+                let _ignored = self.pending_bootstrap.insert(query_id, sender);
             }
             Err(err) => {
-                return Box::pin(async move { Err(eyre!(err)) });
+                return Box::pin(async { Err(eyre!(err)) });
             }
         }
 
-        Box::pin(async move { receiver.await.expect("Sender not to be dropped.") })
+        Box::pin(async { receiver.await.expect("Sender not to be dropped.") })
     }
 }

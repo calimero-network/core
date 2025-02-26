@@ -3,16 +3,16 @@ use eyre::Result as EyreResult;
 use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
 use libp2p::{Multiaddr, PeerId};
 
-use crate::handler::command::bootstrap::Bootstrap;
-use crate::handler::command::dial::Dial;
-use crate::handler::command::listen::ListenOn;
-use crate::handler::command::mesh_peer_count::MeshPeerCount;
-use crate::handler::command::mesh_peers::MeshPeers;
-use crate::handler::command::open_stream::OpenStream;
-use crate::handler::command::peer_count::PeerCount;
-use crate::handler::command::publish::Publish;
-use crate::handler::command::subscribe::Subscribe;
-use crate::handler::command::unsubscribe::Unsubscribe;
+use crate::handler::commands::bootstrap::Bootstrap;
+use crate::handler::commands::dial::Dial;
+use crate::handler::commands::listen::ListenOn;
+use crate::handler::commands::mesh_peer_count::MeshPeerCount;
+use crate::handler::commands::mesh_peers::MeshPeers;
+use crate::handler::commands::open_stream::OpenStream;
+use crate::handler::commands::peer_count::PeerCount;
+use crate::handler::commands::publish::Publish;
+use crate::handler::commands::subscribe::Subscribe;
+use crate::handler::commands::unsubscribe::Unsubscribe;
 use crate::stream::Stream;
 use crate::NetworkManager;
 

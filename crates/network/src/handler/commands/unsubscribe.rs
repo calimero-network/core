@@ -1,5 +1,5 @@
 use actix::{Context, Handler, Message};
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 use libp2p::gossipsub::IdentTopic;
 
 use crate::NetworkManager;
@@ -21,9 +21,8 @@ impl Handler<Unsubscribe> for NetworkManager {
         Unsubscribe(topic): Unsubscribe,
         _ctx: &mut Context<Self>,
     ) -> EyreResult<IdentTopic> {
-        match self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
-            Ok(_) => Ok(topic),
-            Err(e) => bail!(e),
-        }
+        let _ignored = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic)?;
+
+        Ok(topic)
     }
 }

@@ -15,7 +15,7 @@ impl EventHandler<Event> for NetworkManager {
                 ..
             } => {
                 if let Some(sender) = self.pending_bootstrap.remove(&id) {
-                    drop(sender.send(result.map(|_| None).map_err(Into::into)));
+                    let _ignored = sender.send(result.map(|_| None).map_err(Into::into));
                 }
             }
             Event::InboundRequest { .. }

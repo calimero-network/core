@@ -3,7 +3,7 @@ use actix::{Context, Handler, Message};
 use crate::NetworkManager;
 
 #[derive(Message, Clone, Copy, Debug)]
-#[rtype("usize")]
+#[rtype(usize)]
 pub struct PeerCount;
 
 impl Handler<PeerCount> for NetworkManager {

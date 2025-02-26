@@ -4,7 +4,7 @@ use libp2p::gossipsub::TopicHash;
 use crate::NetworkManager;
 
 #[derive(Message, Clone, Debug)]
-#[rtype("usize")]
+#[rtype(usize)]
 pub struct MeshPeerCount(TopicHash);
 
 impl From<TopicHash> for MeshPeerCount {
