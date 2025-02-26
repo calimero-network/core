@@ -2,11 +2,11 @@ use libp2p::mdns::Event;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
-use super::{EventHandler, EventLoop, RelayedMultiaddr};
+use super::{EventHandler, NetworkManager, RelayedMultiaddr};
 use crate::discovery::state::PeerDiscoveryMechanism;
 
-impl EventHandler<Event> for EventLoop {
-    async fn handle(&mut self, event: Event) {
+impl EventHandler<Event> for NetworkManager {
+    fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "mdns".yellow(), event);
 
         if let Event::Discovered(peers) = event {

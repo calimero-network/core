@@ -2,11 +2,11 @@ use libp2p::rendezvous::client::Event;
 use owo_colors::OwoColorize;
 use tracing::{debug, error, info, warn};
 
-use super::{EventHandler, EventLoop};
+use super::{EventHandler, NetworkManager};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
 
-impl EventHandler<Event> for EventLoop {
-    async fn handle(&mut self, event: Event) {
+impl EventHandler<Event> for NetworkManager {
+    fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "rendezvous".yellow(), event);
 
         match event {

@@ -1,4 +1,4 @@
-use std::array::IntoIter;
+use core::array::IntoIter;
 
 use actix::{Actor, Addr, Context, Handler, Message, Response, StreamHandler};
 use futures_util::stream::{self, Iter, Repeat, StreamExt, Take, Zip};
