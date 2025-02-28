@@ -6,14 +6,16 @@ mod macros_tests;
 pub mod __private {
     #![allow(dead_code, unused_imports, reason = "Macros")]
 
+    pub use core::ops::DerefMut;
+    pub use core::ptr;
+    pub use core::task::Poll;
     pub use std::boxed::Box;
-    pub use std::ops::DerefMut;
-    pub use std::ptr;
 
     pub use actix::{AsyncContext, Context, Handler, Message, StreamHandler};
+    pub use futures_util::future::poll_fn;
     pub use futures_util::{pin_mut, FutureExt, Stream, StreamExt};
     pub use paste::paste;
-    pub use tokio::{select, task};
+    pub use tokio::task;
 
     pub use crate::spawn_actor;
 
@@ -126,15 +128,21 @@ macro_rules! spawn_actor {
                     )+)?
                 }
 
-                loop {
-                    paste! {
-                        select! {
-                            biased;
-                            _ = &mut fut => { break },
-                            $($( _ = &mut [<task_ $stream>] => {} )+)?
-                        }
+                poll_fn(|cx| {
+                    if fut.poll_unpin(cx).is_ready() {
+                        return Poll::Ready(());
                     }
-                }
+
+                    paste! {
+                        $($(
+                            let _ignored = [<task_ $stream>].poll_unpin(cx);
+                        )+)?
+                    }
+
+                    Poll::Pending
+                })
+                .fuse()
+                .await
             }
         });
 

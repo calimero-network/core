@@ -37,7 +37,6 @@ use libp2p_stream::Behaviour as StreamBehaviour;
 use mock::EventReceiverMock;
 use multiaddr::Protocol;
 use stream::CALIMERO_STREAM_PROTOCOL;
-use tokio::select;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, Duration};
 use tokio_stream::wrappers::IntervalStream;
