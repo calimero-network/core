@@ -6,6 +6,7 @@ use crate::stream::Stream;
 use crate::types::NetworkEvent;
 use crate::NetworkManager;
 
+#[derive(Debug)]
 pub struct FromIncoming(PeerId, P2pStream);
 
 impl From<(PeerId, P2pStream)> for FromIncoming {

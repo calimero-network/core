@@ -4,6 +4,7 @@ use tracing::{debug, error};
 
 use crate::NetworkManager;
 
+#[derive(Copy, Clone, Debug)]
 pub struct RendezvousTick;
 
 impl From<Instant> for RendezvousTick {

@@ -168,7 +168,11 @@ fn init(
     Ok((event_receiver, event_loop))
 }
 
-pub(crate) struct NetworkManager {
+#[expect(
+    missing_debug_implementations,
+    reason = "Swarm doesn't implement Debug"
+)]
+pub struct NetworkManager {
     swarm: Box<Swarm<Behaviour>>,
     event_recipient: Recipient<NetworkEvent>,
     discovery: Discovery,

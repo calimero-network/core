@@ -29,6 +29,7 @@ impl From<SwarmEvent<BehaviourEvent>> for FromSwarm {
     }
 }
 
+#[derive(Debug)]
 pub struct FromSwarm(SwarmEvent<BehaviourEvent>);
 
 impl StreamHandler<FromSwarm> for NetworkManager {
