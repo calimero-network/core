@@ -6,9 +6,10 @@ use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, trace, warn};
 
+use crate::behaviour::BehaviourEvent;
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
 use crate::types::NetworkEvent;
-use crate::{BehaviourEvent, NetworkManager};
+use crate::NetworkManager;
 
 mod dcutr;
 mod gossipsub;
