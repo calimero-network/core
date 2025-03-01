@@ -12,9 +12,6 @@ use actix::{Actor, Addr, AsyncContext, Context, Recipient};
 use calimero_utils_actix::spawn_actor;
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
-use handler::stream::incoming::FromIncoming;
-use handler::stream::rendezvous::RendezvousTick;
-use handler::stream::swarm::FromSwarm;
 use libp2p::kad::QueryId;
 use libp2p::swarm::Swarm;
 use libp2p::PeerId;
@@ -36,6 +33,9 @@ use behaviour::Behaviour;
 use client::NetworkClient;
 use config::NetworkConfig;
 use discovery::Discovery;
+use handler::stream::incoming::FromIncoming;
+use handler::stream::rendezvous::RendezvousTick;
+use handler::stream::swarm::FromSwarm;
 use mock::EventReceiverMock;
 use stream::CALIMERO_STREAM_PROTOCOL;
 use types::NetworkEvent;
@@ -90,7 +90,7 @@ impl NetworkManager {
 impl Actor for NetworkManager {
     type Context = Context<Self>;
 
-    fn start(mut self) -> Addr<Self> {
+    fn start(self) -> Addr<Self> {
         spawn_actor!(self @ NetworkManager => {
             .swarm as FromSwarm
         })

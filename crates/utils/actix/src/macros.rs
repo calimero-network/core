@@ -58,10 +58,12 @@ macro_rules! spawn_actor {
     ($self:ident @ $actor:ident $(=> {$(.$stream:ident $(as $type:ident)?),+ $(,)?})?) => {{
         use $crate::macros::__private::*;
 
+        let mut this: $actor = $self;
+
         paste! {
             $($(
                 let [<stream_ $stream>] = {
-                    let stream = Box::deref_mut(&mut $self.$stream);
+                    let stream = Box::deref_mut(&mut this.$stream);
                     unsafe { &mut *ptr::from_mut(stream) }
                 };
             )+)?
@@ -71,7 +73,7 @@ macro_rules! spawn_actor {
 
         let addr = ctx.address();
 
-        let mut fut = ctx.into_future($self);
+        let mut fut = ctx.into_future(this);
 
         #[allow(non_local_definitions)]
         impl<T> Handler<FromStreamInner<T>> for $actor

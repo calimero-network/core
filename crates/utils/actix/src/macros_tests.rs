@@ -17,7 +17,7 @@ struct MyActor {
 impl Actor for MyActor {
     type Context = Context<Self>;
 
-    fn start(mut self) -> Addr<Self> {
+    fn start(self) -> Addr<Self> {
         spawn_actor!(self @ MyActor => {
             .stream1,
             .stream2 as Name,
