@@ -48,10 +48,6 @@ pub async fn run(
     let network_manager = network_manager.start();
     let client = NetworkClient::new(network_manager);
 
-    for addr in &config.swarm.listen {
-        client.listen_on(addr.clone()).await?;
-    }
-
     client.bootstrap().await?;
 
     Ok((client, event_receiver))

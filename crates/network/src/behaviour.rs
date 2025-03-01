@@ -45,7 +45,7 @@ impl Behaviour {
             peers
         };
 
-        let swarm = SwarmBuilder::with_existing_identity(config.identity.clone())
+        let mut swarm = SwarmBuilder::with_existing_identity(config.identity.clone())
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -104,6 +104,10 @@ impl Behaviour {
             })?
             .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30)))
             .build();
+
+        for addr in &config.swarm.listen {
+            let _ignored = swarm.listen_on(addr.clone())?;
+        }
 
         Ok(swarm)
     }
