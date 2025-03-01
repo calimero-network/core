@@ -8,8 +8,8 @@
 )]
 use std::collections::hash_map::HashMap;
 
-use actix::{Actor, Addr, AsyncContext, Context, Recipient};
-use calimero_utils_actix::spawn_actor;
+use actix::{Actor, Addr, AsyncContext, Context};
+use calimero_utils_actix::{spawn_actor, LazyRecipient};
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
 use libp2p::kad::QueryId;
@@ -25,7 +25,6 @@ pub mod client;
 pub mod config;
 mod discovery;
 mod handler;
-mod mock;
 pub mod stream;
 pub mod types;
 
@@ -36,14 +35,13 @@ use discovery::Discovery;
 use handler::stream::incoming::FromIncoming;
 use handler::stream::rendezvous::RendezvousTick;
 use handler::stream::swarm::FromSwarm;
-use mock::EventReceiverMock;
 use stream::CALIMERO_STREAM_PROTOCOL;
 use types::NetworkEvent;
 
 pub async fn run(
     config: &NetworkConfig,
 ) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>)> {
-    let network_manager = NetworkManager::new(config)?;
+    let network_manager = NetworkManager::new(config, LazyRecipient::new_uninit())?;
 
     let (_event_sender, event_receiver) = mpsc::channel(32);
 
@@ -65,19 +63,22 @@ pub async fn run(
 )]
 pub struct NetworkManager {
     swarm: Box<Swarm<Behaviour>>,
-    event_recipient: Recipient<NetworkEvent>,
+    event_recipient: LazyRecipient<NetworkEvent>,
     discovery: Discovery,
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<Option<()>>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<Option<()>>>>,
 }
 
 impl NetworkManager {
-    pub fn new(config: &NetworkConfig) -> eyre::Result<Self> {
+    pub fn new(
+        config: &NetworkConfig,
+        event_recipient: LazyRecipient<NetworkEvent>,
+    ) -> eyre::Result<Self> {
         let swarm = Behaviour::build_swarm(config)?;
 
         let this = Self {
             swarm: Box::new(swarm),
-            event_recipient: EventReceiverMock::start_default().recipient(),
+            event_recipient,
             discovery: Discovery::new(&config.discovery.rendezvous, &config.discovery.relay),
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
