@@ -9,7 +9,7 @@
 use std::collections::hash_map::HashMap;
 
 use actix::{Actor, Addr, AsyncContext, Context};
-use calimero_utils_actix::{spawn_actor, LazyRecipient};
+use calimero_utils_actix::{actor, LazyRecipient};
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
 use libp2p::kad::QueryId;
@@ -87,11 +87,9 @@ impl NetworkManager {
 impl Actor for NetworkManager {
     type Context = Context<Self>;
 
-    fn start(self) -> Addr<Self> {
-        spawn_actor!(self @ NetworkManager => {
-            .swarm as FromSwarm
-        })
-    }
+    actor!(NetworkManager => {
+        .swarm as FromSwarm
+    });
 
     fn started(&mut self, ctx: &mut Context<Self>) {
         let mut control = self.swarm.behaviour().stream.new_control();

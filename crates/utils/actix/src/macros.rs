@@ -4,20 +4,26 @@ mod macros_tests;
 
 #[doc(hidden)]
 pub mod __private {
-    #![allow(dead_code, unused_imports, reason = "Macros")]
-
-    pub use core::ops::DerefMut;
+    pub use core::marker::Send;
+    pub use core::ops::{DerefMut, FnOnce};
     pub use core::ptr;
     pub use core::task::Poll;
     pub use std::boxed::Box;
 
-    pub use actix::{AsyncContext, Context, Handler, Message, StreamHandler};
+    pub use actix::dev::channel;
+    use actix::{Actor, Message};
+    pub use actix::{Addr, ArbiterHandle, AsyncContext, Context, Handler, StreamHandler};
     pub use futures_util::future::poll_fn;
-    pub use futures_util::{pin_mut, FutureExt, Stream, StreamExt};
+    use futures_util::Stream;
+    pub use futures_util::{pin_mut, FutureExt, StreamExt};
     pub use paste::paste;
     pub use tokio::task;
 
-    pub use crate::spawn_actor;
+    pub use crate::actor;
+
+    pub trait ActorSpawn: Actor {
+        fn spawn(self, ctx: Self::Context);
+    }
 
     #[derive(Debug, Message)]
     #[rtype("()")]
@@ -45,36 +51,64 @@ pub mod __private {
 }
 
 #[macro_export]
-macro_rules! spawn_actor {
-    (@$type:ident ? $($fn1:ident)::+ : $($fn2:ident)::+) => {
-        $($fn1)::+::<$type, _>
-    };
-    (@? $($fn1:ident)::+ : $($fn2:ident)::+) => {
-        $($fn2)::+
-    };
-    ($self:ident @ Self $($rest:tt),*) => {
+macro_rules! actor {
+    (Self $($rest:tt),*) => {
         compile_error!("`Self` is not allowed")
     };
-    ($self:ident @ $actor:ident $(=> {$(.$stream:ident $(as $type:ident)?),+ $(,)?})?) => {{
-        use $crate::macros::__private::*;
+    ($actor:ty $(=> {$(.$stream:ident $(as $type:ty)?),+ $(,)?})?) => {
+        fn start(self) -> $crate::macros::__private::Addr<Self> {
+            use $crate::macros::__private::*;
 
-        let mut this: $actor = $self;
+            {
+                actor!(@handler $actor);
+                actor!(@spawn $actor { $($(.$stream $(as $type)?)+)? });
+            }
 
-        paste! {
-            $($(
-                let [<stream_ $stream>] = {
-                    let stream = Box::deref_mut(&mut this.$stream);
-                    unsafe { &mut *ptr::from_mut(stream) }
-                };
-            )+)?
+            let ctx = Context::new();
+            let addr = ctx.address();
+            self.spawn(ctx);
+            addr
         }
 
-        let ctx = Context::new();
+        fn create<F>(f: F) -> $crate::macros::__private::Addr<Self>
+        where
+            F: $crate::macros::__private::FnOnce(
+                    &mut $crate::macros::__private::Context<Self>
+                ) -> Self,
+        {
+            use $crate::macros::__private::*;
 
-        let addr = ctx.address();
+            let mut ctx = Context::new();
+            let addr = ctx.address();
+            let this = f(&mut ctx);
+            this.spawn(ctx);
+            addr
+        }
 
-        let mut fut = ctx.into_future(this);
+        fn start_in_arbiter<F>(
+            wrk: &$crate::macros::__private::ArbiterHandle,
+            f: F
+        ) -> $crate::macros::__private::Addr<Self>
+        where
+            F: $crate::macros::__private::FnOnce(
+                    &mut $crate::macros::__private::Context<Self>
+                ) -> Self
+                + $crate::macros::__private::Send + 'static,
+        {
+            use $crate::macros::__private::*;
 
+            let (tx, rx) = channel::channel(16);
+
+            let _ignored = wrk.spawn(async move {
+                let mut ctx = Context::with_receiver(rx);
+                let this = f(&mut ctx);
+                this.spawn(ctx);
+            });
+
+            Addr::new(tx)
+        }
+    };
+    (@handler $actor:ty) => {
         #[allow(non_local_definitions)]
         impl<T> Handler<FromStreamInner<T>> for $actor
         where
@@ -90,12 +124,46 @@ macro_rules! spawn_actor {
                 }
             }
         }
+    };
+    (@spawn $actor:ty { $(.$stream:ident $(as $type:ty)?)* }) => {
+        #[allow(non_local_definitions)]
+        impl ActorSpawn for $actor {
+            fn spawn(self, ctx: Self::Context) {
+                use $crate::macros::__private::*;
+
+                actor!(@spawn_impl self ctx { $(.$stream $(as $type)?)* });
+            }
+        }
+    };
+    (@{$type:ty} ? $($fn1:ident)::+ : $($fn2:ident)::+) => {
+        $($fn1)::+::<$type, _>
+    };
+    (@{} ? $($fn1:ident)::+ : $($fn2:ident)::+) => {
+        $($fn2)::+
+    };
+    (@spawn_impl $self:ident $ctx:ident { $(.$stream:ident $(as $type:ty)?)* }) => {
+        #[allow(unused_mut)]
+        let mut this = $self;
+
+        paste! {
+            $(
+                let [<stream_ $stream>] = {
+                    let stream = Box::deref_mut(&mut this.$stream);
+                    unsafe { &mut *ptr::from_mut(stream) }
+                };
+            )*
+        }
+
+        #[allow(unused_variables)]
+        let addr = $ctx.address();
+
+        let mut fut = $ctx.into_future(this);
 
         let _ignored = task::spawn_local({
             paste! {
-                $($(
+                $(
                     let [<task_ $stream>] = {
-                        let func = spawn_actor!(@ $($type)? ? FromStreamInner::scoped_into : FromStreamInner::scoped_identity);
+                        let func = actor!(@ { $($type)? } ? FromStreamInner::scoped_into : FromStreamInner::scoped_identity);
 
                         addr.do_send(func(FromStreamInner::Started, [<stream_ $stream>]));
 
@@ -118,16 +186,16 @@ macro_rules! spawn_actor {
                             }
                         }
                     };
-                )+)?
+                )*
             }
 
             async move {
                 paste! {
-                    $($(
+                    $(
                         pin_mut!([<task_ $stream>]);
 
                         let mut [<task_ $stream>] = [<task_ $stream>].fuse();
-                    )+)?
+                    )*
                 }
 
                 poll_fn(|cx| {
@@ -136,9 +204,9 @@ macro_rules! spawn_actor {
                     }
 
                     paste! {
-                        $($(
+                        $(
                             let _ignored = [<task_ $stream>].poll_unpin(cx);
-                        )+)?
+                        )*
                     }
 
                     Poll::Pending
@@ -147,7 +215,5 @@ macro_rules! spawn_actor {
                 .await
             }
         });
-
-        addr
-    }};
+    };
 }

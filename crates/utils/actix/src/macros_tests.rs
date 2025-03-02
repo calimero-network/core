@@ -1,11 +1,13 @@
+#![deny(warnings)]
+
 use core::array::IntoIter;
 
-use actix::{Actor, Addr, Context, Handler, Message, Response, StreamHandler};
+use actix::{Actor, Context, Handler, Message, Response, StreamHandler};
 use futures_util::stream::{self, Iter, Repeat, StreamExt, Take, Zip};
 use tokio::time::{self, Instant};
 use tokio_stream::wrappers::IntervalStream;
 
-use crate::spawn_actor;
+use crate::actor;
 
 struct MyActor {
     total: usize,
@@ -17,12 +19,10 @@ struct MyActor {
 impl Actor for MyActor {
     type Context = Context<Self>;
 
-    fn start(self) -> Addr<Self> {
-        spawn_actor!(self @ MyActor => {
-            .stream1,
-            .stream2 as Name,
-        })
-    }
+    actor!(MyActor => {
+        .stream1,
+        .stream2 as Name,
+    });
 }
 
 impl StreamHandler<usize> for MyActor {
