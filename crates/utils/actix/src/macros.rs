@@ -11,6 +11,7 @@ pub mod __private {
     pub use std::boxed::Box;
 
     pub use actix::dev::channel;
+    use actix::dev::ToEnvelope;
     use actix::{Actor, Message};
     pub use actix::{Addr, ArbiterHandle, AsyncContext, Context, Handler, StreamHandler};
     pub use futures_util::future::poll_fn;
@@ -25,12 +26,28 @@ pub mod __private {
         fn spawn(self, ctx: Self::Context);
     }
 
+    #[diagnostic::on_unimplemented(
+        message = "the trait bound `{Self}: StreamHandler<{T}>` is not satisfied"
+    )]
+    pub trait StreamHandlerExt<T>: StreamHandler<T> {}
+
+    impl<T, A> StreamHandlerExt<T> for A where A: StreamHandler<T> {}
+
     #[derive(Debug, Message)]
     #[rtype("()")]
     pub enum FromStreamInner<T> {
         Started,
         Finished,
         Value(T),
+    }
+
+    impl<T: Send> FromStreamInner<T> {
+        pub fn send<A>(self, addr: &Addr<A>)
+        where
+            A: Actor<Context: ToEnvelope<A, Self>> + Handler<Self> + StreamHandlerExt<T>,
+        {
+            addr.do_send(self);
+        }
     }
 
     impl FromStreamInner<()> {
@@ -112,7 +129,7 @@ macro_rules! actor {
         #[allow(non_local_definitions)]
         impl<T> Handler<FromStreamInner<T>> for $actor
         where
-            Self: StreamHandler<T>,
+            Self: StreamHandlerExt<T>,
         {
             type Result = ();
 
@@ -163,9 +180,11 @@ macro_rules! actor {
             paste! {
                 $(
                     let [<task_ $stream>] = {
-                        let func = actor!(@ { $($type)? } ? FromStreamInner::scoped_into : FromStreamInner::scoped_identity);
+                        let msg = actor!(@ { $($type)? } ? FromStreamInner::scoped_into : FromStreamInner::scoped_identity);
 
-                        addr.do_send(func(FromStreamInner::Started, [<stream_ $stream>]));
+                        let send = FromStreamInner::send;
+
+                        send(msg(FromStreamInner::Started, [<stream_ $stream>]), &addr);
 
                         let addr = addr.downgrade();
 
@@ -178,11 +197,11 @@ macro_rules! actor {
                                 };
 
                                 let Some(value) = item else {
-                                    addr.do_send(func(FromStreamInner::Finished, [<stream_ $stream>]));
+                                    send(msg(FromStreamInner::Finished, [<stream_ $stream>]), &addr);
                                     break;
                                 };
 
-                                addr.do_send(func(FromStreamInner::Value(value.into()), [<stream_ $stream>]));
+                                send(msg(FromStreamInner::Value(value.into()), [<stream_ $stream>]), &addr);
                             }
                         }
                     };

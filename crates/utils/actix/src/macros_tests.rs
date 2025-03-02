@@ -1,5 +1,3 @@
-#![deny(warnings)]
-
 use core::array::IntoIter;
 
 use actix::{Actor, Context, Handler, Message, Response, StreamHandler};
@@ -9,20 +7,51 @@ use tokio_stream::wrappers::IntervalStream;
 
 use crate::actor;
 
+mod _scoped {
+    #![deny(
+        warnings,
+        reason = "we want to make sure the macro doesn't unknowingly make assumptions about it's environment"
+    )]
+
+    impl super::Actor for super::NoopActor {
+        type Context = super::Context<Self>;
+
+        super::actor!(super::NoopActor);
+    }
+
+    impl super::Actor for super::OneStreamActor {
+        type Context = super::Context<Self>;
+
+        super::actor!(super::OneStreamActor => { .stream });
+    }
+
+    impl super::Actor for super::MyActor {
+        type Context = super::Context<Self>;
+
+        super:: actor!(super::MyActor => {
+            .stream1,
+            .stream2 as super::Name,
+        });
+    }
+}
+
+struct NoopActor;
+
+struct OneStreamActor {
+    stream: Box<Repeat<usize>>,
+}
+
+impl StreamHandler<usize> for OneStreamActor {
+    fn handle(&mut self, _: usize, _: &mut Context<Self>) {}
+
+    fn finished(&mut self, _ctx: &mut Self::Context) {}
+}
+
 struct MyActor {
     total: usize,
     stream1: Box<Take<Repeat<usize>>>,
     current_name: &'static str,
     stream2: Box<Zip<IntervalStream, Iter<IntoIter<&'static str, 26>>>>,
-}
-
-impl Actor for MyActor {
-    type Context = Context<Self>;
-
-    actor!(MyActor => {
-        .stream1,
-        .stream2 as Name,
-    });
 }
 
 impl StreamHandler<usize> for MyActor {

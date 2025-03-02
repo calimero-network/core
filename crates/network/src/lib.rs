@@ -8,7 +8,7 @@
 )]
 use std::collections::hash_map::HashMap;
 
-use actix::{Actor, Addr, AsyncContext, Context};
+use actix::{Actor, AsyncContext, Context};
 use calimero_utils_actix::{actor, LazyRecipient};
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
