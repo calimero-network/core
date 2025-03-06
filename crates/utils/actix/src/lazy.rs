@@ -166,25 +166,17 @@ where
     Addr<A>: IntoRef<T>,
 {
     fn apply(&self, act: &mut A, ctx: &mut <A as Actor>::Context) {
-        dbg!("apply inner lock");
         let mut inner = self.spin_lock();
 
         for item in inner.queue.drain(..) {
             item.into_envelope().handle(act, ctx);
         }
-
-        drop(inner);
-        dbg!("apply inner unlock");
     }
 
     fn finalize(&self, addr: Addr<A>) {
-        dbg!("close inner lock");
         let mut inner = self.spin_lock();
 
         inner.recvr = Some(addr.into_ref());
-
-        drop(inner);
-        dbg!("close inner unlock");
     }
 }
 
@@ -348,15 +340,13 @@ impl<A: Actor> Lazy<Addr<A>> {
         A::Context: ToEnvelope<A, M> + AsyncContext<A>,
         M: Message<Result: Send> + Send + 'static,
     {
-        dbg!("recipient inner lock");
-        let inner = self.inner.spin_lock();
+        let recvr = {
+            let inner = self.inner.spin_lock();
 
-        let recvr = inner.recvr.as_ref().map(|addr| addr.clone().recipient());
+            inner.recvr.as_ref().map(|addr| addr.clone().recipient())
+        };
 
         let is_ready = recvr.is_some();
-
-        drop(inner);
-        dbg!("recipient inner unlock");
 
         let inner = Arc::new(Mutex::new(LazyInner {
             recvr,
@@ -366,7 +356,6 @@ impl<A: Actor> Lazy<Addr<A>> {
         let store = self.store.clone();
 
         if !is_ready {
-            dbg!("recipient store lock");
             let mut store = store.spin_lock();
 
             store
@@ -374,9 +363,6 @@ impl<A: Actor> Lazy<Addr<A>> {
                 .push_back(AbstractDyn::abstract_resolve::<A, _>(Arc::downgrade(
                     &inner,
                 )));
-
-            drop(store);
-            dbg!("recipient store unlock");
         }
 
         Lazy { inner, store }
@@ -394,20 +380,15 @@ impl<T: Receiver> Lazy<T> {
     {
         let (addr_tx, addr_rx) = oneshot::channel::<Addr<A>>();
 
-        dbg!("init store lock");
         let store = self.store.clone().lock_owned().await;
 
         let (store_tx, store_rx) = oneshot::channel();
 
         let pending_items = stream! {
             for item in store.items.iter() {
-                dbg!("init: apply item");
-
                 let Some(item) = item.downcast_ref::<A>().upgrade() else {
                     continue;
                 };
-
-                dbg!("init: hydrated item");
 
                 yield item;
             }
@@ -424,24 +405,16 @@ impl<T: Receiver> Lazy<T> {
             let mut store = store_rx.await.expect("receive store to complete Lazy init");
 
             while let Some(item) = store.items.pop_front() {
-                dbg!("init: finalize item");
-
                 let Some(item) = item.downcast::<A>().upgrade() else {
                     continue;
                 };
-
-                dbg!("init: close item");
 
                 item.finalize(addr.clone());
             }
 
             if let Some(notify) = &store.event {
-                dbg!("notified");
                 notify.notify_waiters();
             }
-
-            drop(store);
-            dbg!("init store unlock");
         };
 
         let task = apply_pending.then(|_, act, _| finalize.into_actor(act));
@@ -467,52 +440,34 @@ impl<T: Receiver> Lazy<T> {
 
 impl<T: Receiver + Clone> Lazy<T> {
     pub async fn get(&self) -> T {
-        dbg!("get inner lock");
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(recvr) = &inner.recvr {
+                return recvr.clone();
+            }
+        };
+
+        let notify = {
+            let mut store = self.store.lock().await;
+
+            store.event.get_or_insert_default().clone()
+        };
+
+        notify.notified().await;
+
         let inner = self.inner.lock().await;
 
-        if let Some(recvr) = &inner.recvr {
-            return recvr.clone();
-        }
-
-        drop(inner);
-        dbg!("get inner unlock");
-
-        dbg!("get store lock");
-        let mut store = self.store.lock().await;
-
-        let notify = store.event.get_or_insert_default().clone();
-
-        let event = notify.notified();
-
-        drop(store);
-        dbg!("get store unlock");
-
-        event.await;
-
-        dbg!("get lock");
-        let inner = self.inner.lock().await;
-
-        let e = inner
+        inner
             .recvr
             .clone()
-            .expect("received event without being ready");
-
-        drop(inner);
-        dbg!("get unlock");
-
-        e
+            .expect("received event without being ready")
     }
 
     pub fn try_get(&self) -> Option<T> {
-        dbg!("try_get lock");
         let inner = self.inner.spin_lock();
 
-        let e = inner.recvr.clone();
-
-        drop(inner);
-
-        dbg!("try_get unlock");
-        e
+        inner.recvr.clone()
     }
 }
 
@@ -522,14 +477,12 @@ impl<T: Receiver> Lazy<T> {
         M: Message,
         T: Sender<M>,
     {
-        dbg!("send lock");
         let mut inner = self.inner.lock().await;
 
         if let Some(rx) = inner.recvr.as_ref() {
             let tx = rx.send(msg);
 
             drop(inner);
-            dbg!("send unlock");
 
             return tx.await;
         }
@@ -538,10 +491,9 @@ impl<T: Receiver> Lazy<T> {
 
         let envelope = T::pack(msg, Some(tx));
 
-        let _ignored = inner.queue.push_back(envelope);
+        inner.queue.push_back(envelope);
 
         drop(inner);
-        dbg!("send unlock");
 
         rx.await.map_err(|_| MailboxError::Closed)
     }
@@ -551,24 +503,17 @@ impl<T: Receiver> Lazy<T> {
         M: Message,
         T: Sender<M>,
     {
-        dbg!("do_send lock");
         let mut inner = self.inner.spin_lock();
 
         if let Some(rx) = inner.recvr.as_ref() {
             rx.do_send(msg);
-
-            drop(inner);
-            dbg!("do_send unlock");
 
             return;
         }
 
         let envelope = T::pack(msg, None);
 
-        let _ignored = inner.queue.push_back(envelope);
-
-        drop(inner);
-        dbg!("do_send unlock");
+        inner.queue.push_back(envelope);
     }
 
     pub fn try_send<M>(&self, msg: M) -> Result<(), MailboxError>
@@ -576,24 +521,15 @@ impl<T: Receiver> Lazy<T> {
         M: Message,
         T: Sender<M>,
     {
-        dbg!("try_send lock");
         let mut inner = self.inner.spin_lock();
 
         if let Some(rx) = inner.recvr.as_ref() {
-            let x = rx.try_send(msg);
-
-            drop(inner);
-            dbg!("try_send unlock");
-
-            return x.map_err(|_| MailboxError::Closed);
+            return rx.try_send(msg).map_err(|_| MailboxError::Closed);
         }
 
         let envelope = T::pack(msg, None);
 
         inner.queue.push_back(envelope);
-
-        drop(inner);
-        dbg!("try_send unlock");
 
         Ok(())
     }
@@ -605,15 +541,12 @@ trait SpinLock<T> {
 
 impl<T> SpinLock<T> for Mutex<T> {
     fn spin_lock(&self) -> MutexGuard<'_, T> {
-        dbg!("spin_lock enter");
         loop {
             if let Ok(guard) = self.try_lock() {
-                dbg!("spin_lock exit");
                 break guard;
             }
 
             std::hint::spin_loop();
-            dbg!("spin_lock retry");
         }
     }
 }
