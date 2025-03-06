@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+async-stream.workspace = true
 futures-util.workspace = true
 paste.workspace = true
 tokio = { workspace = true, features = ["rt"] }

@@ -1,7 +1,5 @@
-mod addr;
+pub mod lazy;
 #[doc(hidden)]
 pub mod macros;
-mod recipient;
 
-pub use addr::LazyAddr;
-pub use recipient::LazyRecipient;
+pub use lazy::{LazyAddr, LazyRecipient};

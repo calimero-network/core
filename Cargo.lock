@@ -1515,6 +1515,7 @@ name = "calimero-utils-actix"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "async-stream",
  "eyre",
  "futures-util",
  "paste",
