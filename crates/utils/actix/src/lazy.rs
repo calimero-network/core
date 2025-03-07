@@ -181,7 +181,7 @@ where
 }
 
 pub trait ReceiverExt: Receiver + Sized {
-    fn abstract_resolve(_data: Weak<Mutex<LazyInner<Self>>>) -> Option<AbstractDyn> {
+    fn erase(_data: Weak<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
         None
     }
 }
@@ -192,8 +192,8 @@ impl<A> ReceiverExt for Addr<A>
 where
     A: Actor,
 {
-    fn abstract_resolve(data: Weak<Mutex<LazyInner<Self>>>) -> Option<AbstractDyn> {
-        Some(AbstractDyn::abstract_resolve::<A, _>(data))
+    fn erase(data: Weak<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
+        Some(DynErased::erase::<A, _>(data))
     }
 }
 
@@ -202,23 +202,21 @@ where
     reason = "both fields represent the layout of a trait object"
 )]
 #[derive(Clone, Copy, Debug)]
-pub struct AbstractDyn {
-    data: *const u8,
-    meta: *const u8,
+pub struct DynErased {
+    data: *const (),
+    meta: *const (),
 }
 
-unsafe impl Send for AbstractDyn {}
+unsafe impl Send for DynErased {}
 
 const _: () = {
-    // SAFETY: this should ensure the poisiton of the vtable
-    //         matches what we expect in AbstractReceiver
+    // this is a sanity check to ensure the
+    // location of the vtable matches what
+    // we expect in DynErased, technically
+    // this should be consistent since futures
+    // equally rely on the same vtable layout
 
-    use std::mem::{size_of, ManuallyDrop};
-
-    union U<T> {
-        recv: AbstractDyn,
-        data: ManuallyDrop<T>,
-    }
+    use std::mem::size_of;
 
     trait Trait {
         fn method(&self);
@@ -230,24 +228,29 @@ const _: () = {
         fn method(&self) {}
     }
 
+    union U<'a> {
+        erased: DynErased,
+        object: &'a dyn Trait,
+    }
+
     let item = Item;
 
-    let unified = U {
-        #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
-        data: ManuallyDrop::new(&item as &dyn Trait),
+    let unified = U { object: &item };
+
+    let erased = unsafe { unified.erased };
+
+    let size_of_dyn = size_of::<DynErased>() - size_of::<&dyn Trait>();
+    let ptr_is_good = {
+        let ptr = erased.data.cast::<u8>();
+        let cmp = unsafe { ptr.offset_from(&raw const item as _) };
+        cmp as usize
     };
 
-    let recv = unsafe { unified.recv };
-
-    let size_of_dyn = (size_of::<usize>() * 2) - size_of::<&dyn Trait>();
-    let ptr_is_good = unsafe { recv.data.offset_from(&raw const item as _) };
-
-    // if this fails to compile, revisit this
-    [[()][size_of_dyn]][ptr_is_good as usize]
+    [[()][size_of_dyn]][ptr_is_good]
 };
 
-impl AbstractDyn {
-    fn abstract_resolve<A, T>(data: Weak<T>) -> Self
+impl DynErased {
+    fn erase<A, T>(data: Weak<T>) -> Self
     where
         A: Actor,
         T: Resolve<A>,
@@ -265,10 +268,6 @@ impl AbstractDyn {
         // SAFETY: if the constraints above hold, and use of
         //         AbstractDyn is restricted to dyn Resolve<A>
         //         this should be safe
-        // let ptr = self as *const _ as *const Weak<dyn Resolve<A>>;
-        // unsafe { &*ptr }
-        // unsafe { std::mem::transmute::<&AbstractDyn, &Weak<dyn Resolve<A>>>(&self) }
-        // unsafe { std::mem::transmute::<&AbstractDyn, &Weak<dyn Resolve<A>>>(self) }
         unsafe { std::mem::transmute(self) }
     }
 
@@ -287,7 +286,7 @@ pub struct LazyInner<T: Receiver> {
 }
 
 struct LazyStore {
-    items: VecDeque<AbstractDyn>,
+    items: VecDeque</* dyn Resolve<A> */ DynErased>,
     event: Option<Arc<Notify>>,
 }
 
@@ -323,7 +322,7 @@ impl<T: ReceiverExt> Lazy<T> {
 
         let mut items = VecDeque::new();
 
-        if let Some(item) = T::abstract_resolve(Arc::downgrade(&inner)) {
+        if let Some(item) = T::erase(Arc::downgrade(&inner)) {
             items.push_back(item);
         }
 
@@ -360,9 +359,7 @@ impl<A: Actor> Lazy<Addr<A>> {
 
             store
                 .items
-                .push_back(AbstractDyn::abstract_resolve::<A, _>(Arc::downgrade(
-                    &inner,
-                )));
+                .push_back(DynErased::erase::<A, _>(Arc::downgrade(&inner)));
         }
 
         Lazy { inner, store }
