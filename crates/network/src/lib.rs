@@ -7,8 +7,9 @@ use std::collections::hash_map::{Entry, HashMap};
 use std::collections::HashSet;
 
 use client::NetworkClient;
-use config::NetworkConfig;
+use config::{BootstrapNodes, NetworkConfig};
 use eyre::{bail, eyre, Result as EyreResult};
+use libp2p::autonat::{Behaviour as AutonatBehaviour, Config as AutonatConfig};
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
 use libp2p::futures::prelude::*;
 use libp2p::gossipsub::{
@@ -53,6 +54,7 @@ const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/k
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
+    autonat: AutonatBehaviour,
     dcutr: DcutrBehaviour,
     gossipsub: GossipsubBehaviour,
     identify: IdentifyBehaviour,
@@ -100,6 +102,19 @@ fn init(
         peers
     };
 
+    let autonat_bootstrap_peers = {
+        let mut autonat_peers = vec![];
+
+        for mut addr in BootstrapNodes::autonat().list {
+            let Some(Protocol::P2p(peer_id)) = addr.pop() else {
+                bail!("Failed to parse peer id from addr {:?}", addr);
+            };
+
+            autonat_peers.push((addr, peer_id))
+        }
+        autonat_peers
+    };
+
     let swarm = SwarmBuilder::with_existing_identity(config.identity.clone())
         .with_tokio()
         .with_tcp(
@@ -110,6 +125,19 @@ fn init(
         .with_quic()
         .with_relay_client(NoiseConfig::new, YamuxConfig::default)?
         .with_behaviour(|key, relay_behaviour| Behaviour {
+            autonat: {
+                let mut autonat_behaviour = AutonatBehaviour::new(
+                    peer_id,
+                    AutonatConfig {
+                        boot_delay: Duration::from_secs(5),
+                        ..Default::default()
+                    },
+                );
+                for (address, peer) in autonat_bootstrap_peers {
+                    autonat_behaviour.add_server(peer, Some(address));
+                }
+                autonat_behaviour
+            },
             dcutr: DcutrBehaviour::new(peer_id),
             identify: IdentifyBehaviour::new(
                 IdentifyConfig::new(PROTOCOL_VERSION.to_owned(), key.public())
@@ -171,7 +199,11 @@ fn init(
         sender: command_sender,
     };
 
-    let discovery = Discovery::new(&config.discovery.rendezvous, &config.discovery.relay);
+    let discovery = Discovery::new(
+        &config.discovery.rendezvous,
+        &config.discovery.relay,
+        &config.discovery.autonat,
+    );
 
     let event_loop = EventLoop::new(
         swarm,

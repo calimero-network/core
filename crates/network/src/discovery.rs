@@ -5,7 +5,7 @@ use multiaddr::Protocol;
 use tracing::{debug, error};
 
 use super::EventLoop;
-use crate::config::{RelayConfig, RendezvousConfig};
+use crate::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use crate::discovery::state::{
     DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
 };
@@ -17,14 +17,20 @@ pub struct Discovery {
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: RendezvousConfig,
     pub(crate) relay_config: RelayConfig,
+    pub(crate) autonat_config: AutonatConfig,
 }
 
 impl Discovery {
-    pub(crate) fn new(rendezvous_config: &RendezvousConfig, relay_config: &RelayConfig) -> Self {
+    pub(crate) fn new(
+        rendezvous_config: &RendezvousConfig,
+        relay_config: &RelayConfig,
+        autonat_config: &AutonatConfig,
+    ) -> Self {
         Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
             relay_config: relay_config.clone(),
+            autonat_config: autonat_config.clone(),
         }
     }
 }
