@@ -216,7 +216,7 @@ const _: () = {
     use std::mem::{size_of, ManuallyDrop};
 
     union U<T> {
-        recv: ManuallyDrop<AbstractDyn>,
+        recv: AbstractDyn,
         data: ManuallyDrop<T>,
     }
 
@@ -237,7 +237,7 @@ const _: () = {
         data: ManuallyDrop::new(&item as &dyn Trait),
     };
 
-    let recv = unsafe { ManuallyDrop::into_inner(unified.recv) };
+    let recv = unsafe { unified.recv };
 
     let size_of_dyn = (size_of::<usize>() * 2) - size_of::<&dyn Trait>();
     let ptr_is_good = unsafe { recv.data.offset_from(&raw const item as _) };
