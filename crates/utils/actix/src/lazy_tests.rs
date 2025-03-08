@@ -62,7 +62,8 @@ async fn test_addr() {
                 actor
             })
         })
-        .await;
+        .await
+        .expect("already initialized??");
 
     task::yield_now().await;
 
@@ -94,7 +95,8 @@ async fn test_recipient() {
                 actor
             })
         })
-        .await;
+        .await
+        .expect("already initialized??");
 }
 
 #[actix::test]
@@ -106,7 +108,8 @@ async fn bad_initialization() {
         .init(|_unused: PendingMessages<'_, _, PendingHandle>| {
             Counter::create(|_ctx| Counter { value: 0 })
         })
-        .await;
+        .await
+        .expect("already initialized??");
 }
 
 #[actix::test]
@@ -149,7 +152,8 @@ async fn wait_until_ready() {
                 Counter { value: 0 }
             })
         })
-        .await;
+        .await
+        .expect("already initialized??");
 
     task_1.await.unwrap();
     task_2.await.unwrap();

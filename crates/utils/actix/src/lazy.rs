@@ -286,8 +286,9 @@ pub struct LazyInner<T: Receiver> {
 }
 
 struct LazyStore {
-    items: VecDeque</* dyn Resolve<A> */ DynErased>,
+    ready: bool,
     event: Option<Arc<Notify>>,
+    items: VecDeque</* dyn Resolve<A> */ DynErased>,
 }
 
 pub struct Lazy<T: Receiver> {
@@ -326,7 +327,11 @@ impl<T: ReceiverExt> Lazy<T> {
             items.push_back(item);
         }
 
-        let store = Arc::new(Mutex::new(LazyStore { items, event: None }));
+        let store = Arc::new(Mutex::new(LazyStore {
+            ready: false,
+            event: None,
+            items,
+        }));
 
         Self { inner, store }
     }
@@ -367,17 +372,24 @@ impl<A: Actor> Lazy<Addr<A>> {
 }
 
 impl<T: Receiver> Lazy<T> {
-    pub async fn init<A, U, S>(&self, func: impl FnOnce(PendingMessages<'_, A, S>) -> U) -> T
+    pub async fn init<A, U, S>(
+        &self,
+        func: impl FnOnce(PendingMessages<'_, A, S>) -> U,
+    ) -> Option<T>
     where
         A: Actor<Context: AsyncContext<A>>,
-        U: IntoRef<Addr<A>> + 'static,
+        U: IntoRef<Addr<A>>,
         T::Item: IntoEnvelope<A>,
         Addr<A>: IntoRef<T>,
         S: PendingGuard,
     {
-        let (addr_tx, addr_rx) = oneshot::channel::<Addr<A>>();
-
         let store = self.store.clone().lock_owned().await;
+
+        if store.ready {
+            return None;
+        }
+
+        let (addr_tx, addr_rx) = oneshot::channel::<Addr<A>>();
 
         let (store_tx, store_rx) = oneshot::channel();
 
@@ -409,7 +421,9 @@ impl<T: Receiver> Lazy<T> {
                 item.finalize(addr.clone());
             }
 
-            if let Some(notify) = &store.event {
+            store.ready = true;
+
+            if let Some(notify) = store.event.take() {
                 notify.notify_waiters();
             }
         };
@@ -431,40 +445,46 @@ impl<T: Receiver> Lazy<T> {
             .ok()
             .expect("send addr to complete Lazy init");
 
-        addr.into_ref()
+        Some(addr.into_ref())
     }
 }
 
 impl<T: Receiver + Clone> Lazy<T> {
-    pub async fn get(&self) -> T {
-        {
-            let inner = self.inner.lock().await;
-
-            if let Some(recvr) = &inner.recvr {
-                return recvr.clone();
-            }
-        };
-
-        let notify = {
-            let mut store = self.store.lock().await;
-
-            store.event.get_or_insert_default().clone()
-        };
-
-        notify.notified().await;
-
+    async fn async_get(&self) -> Option<T> {
         let inner = self.inner.lock().await;
 
-        inner
-            .recvr
-            .clone()
-            .expect("received event without being ready")
+        inner.recvr.clone()
     }
 
     pub fn try_get(&self) -> Option<T> {
         let inner = self.inner.spin_lock();
 
         inner.recvr.clone()
+    }
+
+    pub async fn get(&self) -> T {
+        if let Some(recvr) = self.async_get().await {
+            return recvr;
+        }
+
+        let notify = {
+            let mut store = self.store.lock().await;
+
+            if store.ready {
+                return self
+                    .async_get()
+                    .await
+                    .expect("ready store without receiver");
+            }
+
+            store.event.get_or_insert_default().clone()
+        };
+
+        notify.notified().await;
+
+        self.async_get()
+            .await
+            .expect("received notification without receiver")
     }
 }
 
@@ -579,7 +599,8 @@ mod private {
 use private::PendingGuard;
 
 /// Call `.process(ctx)`
-enum PendingHandle {}
+#[derive(Copy, Clone, Debug)]
+pub enum PendingHandle {}
 
 impl PendingGuard for PendingHandle {}
 
