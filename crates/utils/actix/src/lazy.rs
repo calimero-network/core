@@ -248,7 +248,7 @@ const _: () = {
 };
 
 impl DynErased {
-    fn erase<A, T>(data: Weak<T>) -> Self
+    const fn erase<A, T>(data: Weak<T>) -> Self
     where
         A: Actor,
         T: Resolve<A>,
@@ -262,14 +262,14 @@ impl DynErased {
         unsafe { std::mem::transmute(data) }
     }
 
-    fn downcast_ref<A: Actor>(&self) -> &Weak<dyn Resolve<A>> {
+    const fn downcast_ref<A: Actor>(&self) -> &Weak<dyn Resolve<A>> {
         // SAFETY: if the constraints above hold, and use of
         //         AbstractDyn is restricted to dyn Resolve<A>
         //         this should be safe
         unsafe { std::mem::transmute(self) }
     }
 
-    fn downcast<A: Actor>(self) -> Weak<dyn Resolve<A>> {
+    const fn downcast<A: Actor>(self) -> Weak<dyn Resolve<A>> {
         // SAFETY: if the constraints above hold, and use of
         //         AbstractDyn is restricted to dyn Resolve<A>
         //         this should be safe
