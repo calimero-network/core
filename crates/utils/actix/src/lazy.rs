@@ -371,7 +371,7 @@ impl<T: Receiver + 'static> Lazy<T> {
             .is_empty()
             .then(|| self.inner.clone() as Arc<dyn Resolve<A>>);
 
-        let pending_items = stream! {
+        let pending_items = stream!({
             if let Some(inner) = maybe_inner {
                 yield inner;
             }
@@ -389,7 +389,7 @@ impl<T: Receiver + 'static> Lazy<T> {
             if let Some(notify) = store.event.take() {
                 notify.notify_waiters();
             }
-        };
+        });
 
         let apply_pending = wrap_stream(pending_items)
             .map(|item, act, ctx| item.resolve(act, ctx))
