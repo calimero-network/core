@@ -12,7 +12,7 @@ use actix::fut::wrap_stream;
 use actix::prelude::{
     Actor, Addr, AsyncContext, Handler, MailboxError, Message, Recipient, SendError,
 };
-use actix::{ActorFutureExt, ActorStreamExt, Context, WrapFuture};
+use actix::{ActorStreamExt, Context};
 use async_stream::stream;
 use tokio::sync::{oneshot, Mutex, MutexGuard, Notify};
 
@@ -51,8 +51,10 @@ where
     }
 }
 
-pub trait Receiver {
+pub trait Receiver: Sized {
     type Item;
+
+    fn erase(data: &Arc<Mutex<LazyInner<Self>>>) -> Option<DynErased>;
 }
 
 impl<M> Receiver for Recipient<M>
@@ -60,13 +62,21 @@ where
     M: Message<Result: Send> + Send,
 {
     type Item = (M, Option<oneshot::Sender<M::Result>>);
+
+    fn erase(_data: &Arc<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
+        None
+    }
 }
 
 impl<A> Receiver for Addr<A>
 where
-    A: Actor,
+    A: Actor<Context: AsyncContext<A>>,
 {
     type Item = Envelope<A>;
+
+    fn erase(data: &Arc<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
+        Some(DynErased::erase::<A, _>(Arc::downgrade(data)))
+    }
 }
 
 pub trait IntoEnvelope<A: Actor> {
@@ -152,46 +162,23 @@ where
 }
 
 trait Resolve<A: Actor> {
-    fn apply(&self, act: &mut A, ctx: &mut A::Context);
-
-    fn finalize(&self, addr: Addr<A>);
+    fn resolve(&self, act: &mut A, ctx: &mut A::Context);
 }
 
 impl<A, T> Resolve<A> for Mutex<LazyInner<T>>
 where
-    A: Actor,
+    A: Actor<Context: AsyncContext<A>>,
     T: Receiver<Item: IntoEnvelope<A>>,
     Addr<A>: IntoRef<T>,
 {
-    fn apply(&self, act: &mut A, ctx: &mut <A as Actor>::Context) {
+    fn resolve(&self, act: &mut A, ctx: &mut A::Context) {
         let mut inner = self.spin_lock();
 
         for item in inner.queue.drain(..) {
             item.into_envelope().handle(act, ctx);
         }
-    }
 
-    fn finalize(&self, addr: Addr<A>) {
-        let mut inner = self.spin_lock();
-
-        inner.recvr = Some(addr.into_ref());
-    }
-}
-
-pub trait ReceiverExt: Receiver + Sized {
-    fn erase(_data: Weak<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
-        None
-    }
-}
-
-impl<M> ReceiverExt for Recipient<M> where M: Message<Result: Send> + Send {}
-
-impl<A> ReceiverExt for Addr<A>
-where
-    A: Actor,
-{
-    fn erase(data: Weak<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
-        Some(DynErased::erase::<A, _>(data))
+        inner.recvr = Some(ctx.address().into_ref());
     }
 }
 
@@ -254,19 +241,12 @@ impl DynErased {
         T: Resolve<A> + 'static,
     {
         #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
-        let data = data as Weak<dyn Resolve<A>>;
+        let data = data as Weak<dyn Resolve<A> + 'static>;
 
         // SAFETY: if the constraints above hold, and use of
         //         AbstractDyn is restricted to dyn Resolve<A>
         //         this should be safe
         unsafe { std::mem::transmute(data) }
-    }
-
-    const fn downcast_ref<A: Actor>(&self) -> &Weak<dyn Resolve<A>> {
-        // SAFETY: if the constraints above hold, and use of
-        //         AbstractDyn is restricted to dyn Resolve<A>
-        //         this should be safe
-        unsafe { std::mem::transmute(self) }
     }
 
     const fn downcast<A: Actor>(self) -> Weak<dyn Resolve<A>> {
@@ -312,7 +292,7 @@ impl<T: Receiver> fmt::Debug for Lazy<T> {
     }
 }
 
-impl<T: ReceiverExt> Lazy<T> {
+impl<T: Receiver> Lazy<T> {
     pub fn new() -> Self {
         let inner = Arc::new(Mutex::new(LazyInner {
             recvr: None,
@@ -321,7 +301,7 @@ impl<T: ReceiverExt> Lazy<T> {
 
         let mut items = VecDeque::new();
 
-        if let Some(item) = T::erase(Arc::downgrade(&inner)) {
+        if let Some(item) = T::erase(&inner) {
             items.push_back(item);
         }
 
@@ -335,11 +315,14 @@ impl<T: ReceiverExt> Lazy<T> {
     }
 }
 
-impl<A: Actor> Lazy<Addr<A>> {
+impl<A> Lazy<Addr<A>>
+where
+    A: Actor<Context: AsyncContext<A>>,
+{
     pub fn recipient<M>(&self) -> Lazy<Recipient<M>>
     where
         A: Handler<M>,
-        A::Context: ToEnvelope<A, M> + AsyncContext<A>,
+        A::Context: ToEnvelope<A, M>,
         M: Message<Result: Send> + Send + 'static,
     {
         let recvr = {
@@ -382,42 +365,23 @@ impl<T: Receiver + 'static> Lazy<T> {
             return None;
         }
 
-        if store.items.is_empty() {
-            store
-                .items
-                .push_back(DynErased::erase::<A, _>(Arc::downgrade(&self.inner)));
-        }
-
-        let (addr_tx, addr_rx) = oneshot::channel::<Addr<A>>();
-
-        let (store_tx, store_rx) = oneshot::channel();
+        #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
+        let maybe_inner = store
+            .items
+            .is_empty()
+            .then(|| self.inner.clone() as Arc<dyn Resolve<A>>);
 
         let pending_items = stream! {
-            for item in store.items.iter() {
-                let Some(item) = item.downcast_ref::<A>().upgrade() else {
-                    continue;
-                };
-
-                yield item;
+            if let Some(inner) = maybe_inner {
+                yield inner;
             }
 
-            store_tx.send(store).ok().expect("send store to complete Lazy init");
-        };
-
-        let apply_pending = wrap_stream(pending_items)
-            .map(|item, act, ctx| item.apply(act, ctx))
-            .finish();
-
-        let finalize = async move {
-            let addr = addr_rx.await.expect("receive addr to complete Lazy init");
-            let mut store = store_rx.await.expect("receive store to complete Lazy init");
-
-            while let Some(item) = store.items.pop_front() {
+            for item in store.items.drain(..) {
                 let Some(item) = item.downcast::<A>().upgrade() else {
                     continue;
                 };
 
-                item.finalize(addr.clone());
+                yield item;
             }
 
             store.ready = true;
@@ -427,18 +391,15 @@ impl<T: Receiver + 'static> Lazy<T> {
             }
         };
 
-        let task = apply_pending.then(|_, act, _| finalize.into_actor(act));
+        let apply_pending = wrap_stream(pending_items)
+            .map(|item, act, ctx| item.resolve(act, ctx))
+            .finish();
 
         let addr = A::create(|ctx| {
-            let _ignored = ctx.spawn(task);
+            let _ignored = ctx.spawn(apply_pending);
 
             factory(ctx)
         });
-
-        addr_tx
-            .send(addr.clone())
-            .ok()
-            .expect("send addr to complete Lazy init");
 
         Some(addr.into_ref())
     }
