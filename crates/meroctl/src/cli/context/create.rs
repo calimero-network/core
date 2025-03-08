@@ -19,9 +19,10 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use reqwest::Client;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
+use regex::Regex;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType, lookup_alias};
 use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
@@ -37,7 +38,7 @@ pub struct CreateCommand {
     #[clap(
         long,
         short = 'p',
-        help = "The parameters to pass to the application initialization function"
+        help = "The parameters to pass to the application initialization function. Supports alias substitution with %alias% syntax"
     )]
     params: Option<String>,
 
@@ -179,12 +180,19 @@ pub async fn create_context(
         bail!("Application is not installed on node.")
     }
 
+    let processed_params = match params {
+        Some(p) if p.contains('%') => {
+            Some(substitute_aliases(environment, client, base_multiaddr, keypair, &p).await?)
+        }
+        p => p,
+    };
+
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
     let request = CreateContextRequest::new(
         protocol,
         application_id,
         context_seed,
-        params.map(String::into_bytes).unwrap_or_default(),
+        processed_params.map(String::into_bytes).unwrap_or_default(),
     );
 
     let response: CreateContextResponse =
@@ -221,6 +229,55 @@ pub async fn create_context(
     }
 
     Ok((response.data.context_id, response.data.member_public_key))
+}
+
+/// Substitutes aliases in the format %alias% with their corresponding public keys
+async fn substitute_aliases(
+    environment: &Environment,
+    client: &Client,
+    base_multiaddr: &Multiaddr,
+    keypair: &Keypair,
+    params: &str,
+) -> EyreResult<String> {
+    let re = Regex::new(r"%([^%]+)%")?;
+    let mut result = params.to_string();
+    
+    for cap in re.captures_iter(params) {
+        if let Some(alias_match) = cap.get(1) {
+            let alias_str = alias_match.as_str();
+            if let Ok(alias) = alias_str.parse::<Alias<PublicKey>>() {
+                match lookup_alias(base_multiaddr.clone(), keypair, alias, None).await {
+                    Ok(response) => {
+                        if let Some(public_key) = response.data.value {
+                            result = result.replace(&format!("%{}%", alias_str), &public_key.to_string());
+                            environment.output.write(&InfoLine(&format!(
+                                "Substituted alias '{}' with public key '{}'",
+                                alias_str, public_key
+                            )));
+                        } else {
+                            environment.output.write(&ErrorLine(&format!(
+                                "Alias '{}' not found, leaving as is",
+                                alias_str
+                            )));
+                        }
+                    }
+                    Err(e) => {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Error looking up alias '{}': {}, leaving as is",
+                            alias_str, e
+                        )));
+                    }
+                }
+            } else {
+                environment.output.write(&ErrorLine(&format!(
+                    "Invalid alias format '{}', leaving as is",
+                    alias_str
+                )));
+            }
+        }
+    }
+    
+    Ok(result)
 }
 
 async fn watch_app_and_update_context(
