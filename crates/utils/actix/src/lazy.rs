@@ -251,7 +251,7 @@ impl DynErased {
     const fn erase<A, T>(data: Weak<T>) -> Self
     where
         A: Actor,
-        T: Resolve<A>,
+        T: Resolve<A> + 'static,
     {
         #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
         let data = data as Weak<dyn Resolve<A>>;
@@ -307,7 +307,7 @@ impl<T: Receiver> fmt::Debug for Lazy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!(
             "Lazy {{ {:x} }}",
-            Arc::as_ptr(&self.store) as usize
+            Arc::as_ptr(&self.store).addr()
         ))
     }
 }
@@ -369,17 +369,23 @@ impl<A: Actor> Lazy<Addr<A>> {
     }
 }
 
-impl<T: Receiver> Lazy<T> {
+impl<T: Receiver + 'static> Lazy<T> {
     pub async fn init<A>(&self, factory: impl FnOnce(&mut A::Context) -> A) -> Option<T>
     where
         A: Actor<Context = Context<A>>,
         T::Item: IntoEnvelope<A>,
         Addr<A>: IntoRef<T>,
     {
-        let store = self.store.clone().lock_owned().await;
+        let mut store = self.store.clone().lock_owned().await;
 
         if store.ready {
             return None;
+        }
+
+        if store.items.is_empty() {
+            store
+                .items
+                .push_back(DynErased::erase::<A, _>(Arc::downgrade(&self.inner)));
         }
 
         let (addr_tx, addr_rx) = oneshot::channel::<Addr<A>>();
