@@ -4,10 +4,7 @@ mod lazy_tests;
 
 use core::fmt;
 use core::future::Future;
-use std::cell::Cell;
 use std::collections::VecDeque;
-use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
 use actix::dev::{Envelope, EnvelopeProxy, ToEnvelope};
@@ -16,7 +13,7 @@ use actix::prelude::{
     Actor, Addr, AsyncContext, Handler, MailboxError, Message, Recipient, SendError,
 };
 use actix::{ActorStreamExt, Context};
-use futures_util::{pending, stream, FutureExt};
+use async_stream::stream;
 use tokio::sync::{oneshot, Mutex, MutexGuard, Notify};
 
 pub type LazyAddr<A> = Lazy<Addr<A>>;
@@ -374,50 +371,24 @@ impl<T: Receiver + 'static> Lazy<T> {
             .is_empty()
             .then(|| self.inner.clone() as Arc<dyn Resolve<A>>);
 
-        let pending_items = {
-            // this can effectively be a thread_local
-            let cell = Rc::new(Cell::new(None));
+        let pending_items = stream! {
+            if let Some(inner) = maybe_inner {
+                yield inner;
+            }
 
-            let task = {
-                let cell = cell.clone();
+            for item in store.items.drain(..) {
+                let Some(item) = item.downcast::<A>().upgrade() else {
+                    continue;
+                };
 
-                async move {
-                    if let Some(inner) = maybe_inner {
-                        cell.set(Some(inner));
-                        pending!();
-                    }
+                yield item;
+            }
 
-                    for item in store.items.drain(..) {
-                        let Some(item) = item.downcast::<A>().upgrade() else {
-                            continue;
-                        };
+            store.ready = true;
 
-                        cell.set(Some(item));
-                        pending!();
-                    }
-
-                    store.ready = true;
-
-                    if let Some(notify) = store.event.take() {
-                        notify.notify_waiters();
-                    }
-                }
-            };
-
-            stream::unfold((task, cell), |(mut task, cell)| async move {
-                loop {
-                    // SAFETY: the task is only polled once, without yielding, which makes this safe
-                    let status = unsafe { Pin::new_unchecked(&mut task) }.now_or_never();
-
-                    if let Some(item) = cell.take() {
-                        return Some((item, (task, cell)));
-                    }
-
-                    if status.is_some() {
-                        break None;
-                    }
-                }
-            })
+            if let Some(notify) = store.event.take() {
+                notify.notify_waiters();
+            }
         };
 
         let apply_pending = wrap_stream(pending_items)

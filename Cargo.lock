@@ -1520,6 +1520,7 @@ dependencies = [
  "futures-util",
  "paste",
  "tokio 1.41.1",
+ "tokio-stream",
 ]
 
 [[package]]
