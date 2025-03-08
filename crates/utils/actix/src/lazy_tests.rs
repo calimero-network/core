@@ -1,4 +1,7 @@
-use actix::{Actor, Context, Handler, Message};
+use actix::fut::wrap_future;
+use actix::{Actor, ActorFutureExt, AsyncContext, Context, Handler, Message, WrapFuture};
+use futures_util::FutureExt;
+use tokio::sync::oneshot;
 use tokio::{task, time};
 
 use crate::{LazyAddr, LazyRecipient};
@@ -39,12 +42,12 @@ impl Handler<GetValue> for Counter {
 async fn test_addr() {
     let addr = LazyAddr::new();
 
+    addr.do_send(Add(3));
+
     let task = task::spawn({
         let addr = addr.clone();
         async move {
-            println!("sending value");
             addr.send(Add(10)).await.unwrap();
-            println!("sent value");
         }
     });
 
@@ -63,48 +66,78 @@ async fn test_addr() {
 
     let value = addr.send(GetValue).await.unwrap();
 
-    assert_eq!(value, 10);
+    assert_eq!(value, 13);
 
     addr.send(Add(55)).await.unwrap();
 
     let value = addr.send(GetValue).await.unwrap();
 
-    assert_eq!(value, 65);
+    assert_eq!(value, 68);
 }
 
 #[actix::test]
 async fn test_recipient() {
-    let addr = LazyRecipient::new();
+    let recipient = LazyRecipient::new();
 
-    addr.do_send(Add(10));
+    recipient.do_send(Add(3));
 
-    let _ignored = addr
-        .init(|_ctx| Counter { value: 0 })
+    let task = task::spawn({
+        let recipient = recipient.clone();
+        async move {
+            recipient.send(Add(10)).await.unwrap();
+        }
+    });
+
+    task::yield_now().await;
+
+    assert!(!task.is_finished());
+
+    let (tx, rx) = oneshot::channel();
+
+    let _ignored = recipient
+        .init(|ctx: &mut Context<_>| {
+            let task = wrap_future::<_, Counter>(async {}).then(|_, act, _ctx| {
+                tx.send(act.value).unwrap();
+                async {}.into_actor(act)
+            });
+
+            let _ignored = ctx.spawn(task);
+
+            Counter { value: 0 }
+        })
         .await
         .expect("already initialized??");
+
+    task::yield_now().await;
+
+    assert!(task.is_finished());
+
+    let value = rx.now_or_never().unwrap().unwrap();
+
+    assert_eq!(value, 13);
 }
 
 #[actix::test]
 async fn wait_until_ready() {
-    let recipient = LazyAddr::<Counter>::new();
+    let addr = LazyAddr::<Counter>::new();
 
     let irrefutable_add = |v| {
         task::spawn({
-            let recipient = recipient.clone();
+            let addr = addr.clone();
             async move {
-                let recipient = recipient.get().await;
+                let addr = addr.get().await;
 
-                recipient.send(Add(v)).await.unwrap();
+                addr.send(Add(v)).await.unwrap();
             }
         })
     };
 
     let conditional_add = |v| {
         task::spawn({
-            let recipient = recipient.clone();
+            let addr = addr.clone();
             async move {
-                if let Some(recipient) = recipient.try_get() {
-                    recipient.do_send(Add(v));
+                if let Some(addr) = addr.try_get() {
+                    addr.do_send(Add(v));
                 }
             }
         })
@@ -115,9 +148,9 @@ async fn wait_until_ready() {
 
     time::sleep(time::Duration::from_secs(1)).await;
 
-    let task_3 = recipient.send(Add(10));
+    let task_3 = addr.send(Add(10));
 
-    let recipient = recipient
+    let addr = addr
         .init(|_ctx| Counter { value: 0 })
         .await
         .expect("already initialized??");
@@ -126,17 +159,17 @@ async fn wait_until_ready() {
     task_2.await.unwrap();
     task_3.await.unwrap();
 
-    let value = recipient.send(GetValue).await.unwrap();
+    let value = addr.send(GetValue).await.unwrap();
 
     assert_eq!(value, 67);
 
-    recipient.send(Add(35)).await.unwrap();
+    addr.send(Add(35)).await.unwrap();
 
     let task_4 = conditional_add(32);
 
     task_4.await.unwrap();
 
-    let value = recipient.send(GetValue).await.unwrap();
+    let value = addr.send(GetValue).await.unwrap();
 
     assert_eq!(value, 134);
 }
