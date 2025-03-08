@@ -1,4 +1,4 @@
-use actix::{Context, Handler, Message, ResponseFuture};
+use actix::{Context, Handler, Message, Response};
 use eyre::{eyre, Result as EyreResult};
 use tokio::sync::oneshot;
 
@@ -9,13 +9,9 @@ use crate::NetworkManager;
 pub struct Bootstrap;
 
 impl Handler<Bootstrap> for NetworkManager {
-    type Result = ResponseFuture<EyreResult<Option<()>>>;
+    type Result = Response<EyreResult<Option<()>>>;
 
-    fn handle(
-        &mut self,
-        _msg: Bootstrap,
-        _ctx: &mut Context<Self>,
-    ) -> ResponseFuture<EyreResult<Option<()>>> {
+    fn handle(&mut self, _msg: Bootstrap, _ctx: &mut Context<Self>) -> Self::Result {
         let (sender, receiver) = oneshot::channel();
 
         match self.swarm.behaviour_mut().kad.bootstrap() {
@@ -23,10 +19,10 @@ impl Handler<Bootstrap> for NetworkManager {
                 let _ignored = self.pending_bootstrap.insert(query_id, sender);
             }
             Err(err) => {
-                return Box::pin(async { Err(eyre!(err)) });
+                return Response::reply(Err(eyre!(err)));
             }
         }
 
-        Box::pin(async { receiver.await.expect("Sender not to be dropped.") })
+        Response::fut(async { receiver.await.expect("Sender not to be dropped.") })
     }
 }

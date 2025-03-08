@@ -1,4 +1,4 @@
-use actix::Addr;
+use calimero_utils_actix::LazyAddr;
 use eyre::Result as EyreResult;
 use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
 use libp2p::{Multiaddr, PeerId};
@@ -19,11 +19,11 @@ use crate::NetworkManager;
 // TODO: Probably just use network_manager addr directly and delete this client.
 #[derive(Clone, Debug)]
 pub struct NetworkClient {
-    network_manager: Addr<NetworkManager>,
+    network_manager: LazyAddr<NetworkManager>,
 }
 
 impl NetworkClient {
-    pub(crate) const fn new(network_manager: Addr<NetworkManager>) -> Self {
+    pub(crate) const fn new(network_manager: LazyAddr<NetworkManager>) -> Self {
         Self { network_manager }
     }
 
