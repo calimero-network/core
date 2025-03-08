@@ -4,17 +4,15 @@ mod lazy_tests;
 
 use core::fmt;
 use core::future::Future;
-use core::pin::Pin;
 use std::collections::VecDeque;
-use std::marker::PhantomData;
 use std::sync::{Arc, Weak};
 
 use actix::dev::{Envelope, EnvelopeProxy, ToEnvelope};
 use actix::fut::wrap_stream;
 use actix::prelude::{
-    Actor, ActorFuture, Addr, AsyncContext, Handler, MailboxError, Message, Recipient, SendError,
+    Actor, Addr, AsyncContext, Handler, MailboxError, Message, Recipient, SendError,
 };
-use actix::{ActorFutureExt, ActorStreamExt, WrapFuture};
+use actix::{ActorFutureExt, ActorStreamExt, Context, WrapFuture};
 use async_stream::stream;
 use tokio::sync::{oneshot, Mutex, MutexGuard, Notify};
 
@@ -372,16 +370,11 @@ impl<A: Actor> Lazy<Addr<A>> {
 }
 
 impl<T: Receiver> Lazy<T> {
-    pub async fn init<A, U, S>(
-        &self,
-        func: impl FnOnce(PendingMessages<'_, A, S>) -> U,
-    ) -> Option<T>
+    pub async fn init<A>(&self, factory: impl FnOnce(&mut A::Context) -> A) -> Option<T>
     where
-        A: Actor<Context: AsyncContext<A>>,
-        U: IntoRef<Addr<A>>,
+        A: Actor<Context = Context<A>>,
         T::Item: IntoEnvelope<A>,
         Addr<A>: IntoRef<T>,
-        S: PendingGuard,
     {
         let store = self.store.clone().lock_owned().await;
 
@@ -430,15 +423,11 @@ impl<T: Receiver> Lazy<T> {
 
         let task = apply_pending.then(|_, act, _| finalize.into_actor(act));
 
-        #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
-        let mut task = Some(Box::pin(task) as Pin<Box<_>>);
+        let addr = A::create(|ctx| {
+            let _ignored = ctx.spawn(task);
 
-        let value = func(PendingMessages {
-            inner: &mut task,
-            _priv: PhantomData,
+            factory(ctx)
         });
-
-        let addr = value.into_ref();
 
         addr_tx
             .send(addr.clone())
@@ -565,51 +554,5 @@ impl<T> SpinLock<T> for Mutex<T> {
 
             std::hint::spin_loop();
         }
-    }
-}
-
-#[must_use = "please call `finish`"]
-pub struct PendingMessages<'a, A: Actor, S: PendingGuard> {
-    inner: &'a mut Option<Pin<Box<dyn ActorFuture<A, Output = ()>>>>,
-    _priv: PhantomData<S>,
-}
-
-impl<A: Actor, S: PendingGuard> Drop for PendingMessages<'_, A, S> {
-    fn drop(&mut self) {
-        assert!(
-            self.inner.take().is_none(),
-            "pending messages were not processed"
-        );
-    }
-}
-
-impl<A: Actor, S: PendingGuard> fmt::Debug for PendingMessages<'_, A, S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PendingMessages").finish()
-    }
-}
-
-mod private {
-    #[diagnostic::on_unimplemented(
-        message = "`PendingMessages` must be consumed by calling `.process(ctx)`"
-    )]
-    pub trait PendingGuard {}
-}
-
-use private::PendingGuard;
-
-/// Call `.process(ctx)`
-#[derive(Copy, Clone, Debug)]
-pub enum PendingHandle {}
-
-impl PendingGuard for PendingHandle {}
-
-impl<A> PendingMessages<'_, A, PendingHandle>
-where
-    A: Actor<Context: AsyncContext<A>>,
-{
-    pub fn process(self, ctx: &mut A::Context) {
-        let inner = self.inner.take().expect("missing `PendingMessages` future");
-        let _ignored = ctx.spawn(inner);
     }
 }

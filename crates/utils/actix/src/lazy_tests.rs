@@ -1,7 +1,6 @@
 use actix::{Actor, Context, Handler, Message};
 use tokio::{task, time};
 
-use super::{PendingHandle, PendingMessages};
 use crate::{LazyAddr, LazyRecipient};
 
 struct Counter {
@@ -40,8 +39,6 @@ impl Handler<GetValue> for Counter {
 async fn test_addr() {
     let addr = LazyAddr::new();
 
-    let actor = Counter { value: 0 };
-
     let task = task::spawn({
         let addr = addr.clone();
         async move {
@@ -56,12 +53,7 @@ async fn test_addr() {
     assert!(!task.is_finished());
 
     let _ignored = addr
-        .init(|pending| {
-            Counter::create(|ctx| {
-                pending.process(ctx);
-                actor
-            })
-        })
+        .init(|_ctx| Counter { value: 0 })
         .await
         .expect("already initialized??");
 
@@ -84,30 +76,10 @@ async fn test_addr() {
 async fn test_recipient() {
     let addr = LazyRecipient::new();
 
-    let actor = Counter { value: 0 };
-
     addr.do_send(Add(10));
 
     let _ignored = addr
-        .init(|pending| {
-            Counter::create(|ctx| {
-                pending.process(ctx);
-                actor
-            })
-        })
-        .await
-        .expect("already initialized??");
-}
-
-#[actix::test]
-#[should_panic = "pending messages were not processed"]
-async fn bad_initialization() {
-    let recipient = LazyAddr::<Counter>::new();
-
-    let _ignored = recipient
-        .init(|_unused: PendingMessages<'_, _, PendingHandle>| {
-            Counter::create(|_ctx| Counter { value: 0 })
-        })
+        .init(|_ctx| Counter { value: 0 })
         .await
         .expect("already initialized??");
 }
@@ -146,12 +118,7 @@ async fn wait_until_ready() {
     let task_3 = recipient.send(Add(10));
 
     let recipient = recipient
-        .init(|pending| {
-            Counter::create(|ctx| {
-                pending.process(ctx);
-                Counter { value: 0 }
-            })
-        })
+        .init(|_ctx| Counter { value: 0 })
         .await
         .expect("already initialized??");
 
