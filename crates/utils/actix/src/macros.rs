@@ -6,6 +6,7 @@ mod macros_tests;
 pub mod __private {
     pub use core::marker::Send;
     pub use core::ops::{DerefMut, FnOnce};
+    pub use core::pin::pin;
     pub use core::ptr;
     pub use core::task::Poll;
     pub use std::boxed::Box;
@@ -16,7 +17,7 @@ pub mod __private {
     pub use actix::{Addr, ArbiterHandle, AsyncContext, Context, Handler, StreamHandler};
     pub use futures_util::future::poll_fn;
     use futures_util::Stream;
-    pub use futures_util::{pin_mut, FutureExt, StreamExt};
+    pub use futures_util::{FutureExt, StreamExt};
     pub use paste::paste;
     pub use tokio::task;
 
@@ -211,9 +212,7 @@ macro_rules! actor {
             async move {
                 paste! {
                     $(
-                        pin_mut!([<task_ $stream>]);
-
-                        let mut [<task_ $stream>] = [<task_ $stream>].fuse();
+                        let mut [<task_ $stream>] = pin!([<task_ $stream>].fuse());
                     )*
                 }
 
