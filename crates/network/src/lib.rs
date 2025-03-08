@@ -9,7 +9,7 @@
 use std::collections::hash_map::HashMap;
 
 use actix::{Actor, AsyncContext, Context};
-use calimero_utils_actix::{actor, LazyAddr, LazyRecipient};
+use calimero_utils_actix::{actor, LazyRecipient};
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
 use libp2p::kad::QueryId;
@@ -43,19 +43,7 @@ pub async fn run(
 ) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>)> {
     let network_manager = NetworkManager::new(config, LazyRecipient::new())?;
 
-    let network_manager_addr = LazyAddr::new();
-
-    let client = NetworkClient::new(network_manager_addr.clone());
-
-    let _ignored = network_manager_addr
-        .init(|pending| {
-            Actor::create(|ctx| {
-                pending.process(ctx);
-                network_manager
-            })
-        })
-        .await
-        .expect("should not already be initialized");
+    let client = NetworkClient::new(network_manager.start());
 
     client.bootstrap().await?;
 
