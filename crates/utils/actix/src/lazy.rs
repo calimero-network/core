@@ -3,7 +3,8 @@
 mod lazy_tests;
 
 use core::future::Future;
-use core::{fmt, mem, ptr};
+use core::{fmt, mem};
+use std::any::TypeId;
 use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 
@@ -57,7 +58,7 @@ type LazyResolver<T> = Mutex<LazyInner<T>>;
 pub trait Receiver: Sized {
     type Item;
 
-    fn erase(data: &Arc<LazyResolver<Self>>) -> Option<DynErased>;
+    fn erase(data: &Arc<LazyResolver<Self>>) -> Option<(TypeId, DynErased)>;
 }
 
 impl<M> Receiver for Recipient<M>
@@ -66,7 +67,7 @@ where
 {
     type Item = (M, Option<oneshot::Sender<M::Result>>);
 
-    fn erase(_data: &Arc<LazyResolver<Self>>) -> Option<DynErased> {
+    fn erase(_data: &Arc<LazyResolver<Self>>) -> Option<(TypeId, DynErased)> {
         None
     }
 }
@@ -77,8 +78,12 @@ where
 {
     type Item = Envelope<A>;
 
-    fn erase(data: &Arc<LazyResolver<Self>>) -> Option<DynErased> {
-        Some(DynErased::erase::<A, _>(Arc::downgrade(data)))
+    fn erase(data: &Arc<LazyResolver<Self>>) -> Option<(TypeId, DynErased)> {
+        let id = TypeId::of::<LazyResolver<Self>>();
+
+        let item = DynErased::erase::<A, _>(Arc::downgrade(data));
+
+        Some((id, item))
     }
 }
 
@@ -237,6 +242,21 @@ const _: () = {
     [[()][size_of_dyn]][ptr_is_good]
 };
 
+// pub struct DynResolve {
+//     resolver: DynResolveInner,
+//     identity: std::any::TypeId,
+// }
+
+// mod dyn_resolve {
+//     // https://github.com/rust-lang/rust/issues/69757
+//     // https://github.com/rust-lang/rust/issues/46139
+//     erase! {
+//         <T, A> => T: Resolve<A>,
+//             where A: Actor + 'static,
+//         Should we only support Weak<T>?
+//     }
+// }
+
 impl DynErased {
     const fn erase<A, T>(data: Weak<T>) -> Self
     where
@@ -276,7 +296,7 @@ pub struct LazyInner<T: Receiver> {
 struct LazyStore {
     ready: bool,
     event: Option<Arc<Notify>>,
-    items: VecDeque</* dyn Resolve<A> */ DynErased>,
+    items: VecDeque<(TypeId, /* dyn Resolve<A> */ DynErased)>,
 }
 
 pub struct Lazy<T: Receiver> {
@@ -345,12 +365,11 @@ where
 
         let mut store = self.store.spin_lock();
 
-        let ptr = ptr::dangling::<LazyResolver<Recipient<M>>>() as *const dyn Resolve<A>;
-        let dud = unsafe { mem::transmute::<*const dyn Resolve<A>, DynErased>(ptr) };
+        let this_id = TypeId::of::<LazyResolver<Recipient<M>>>();
 
         let inner = 'done: {
-            for item in store.items.iter() {
-                if dud.meta == item.meta {
+            for (that_id, item) in store.items.iter() {
+                if this_id == *that_id {
                     if let Some(weak) = item.downcast_ref::<A>().upgrade() {
                         if let Ok(resolver) = weak.downcast_arc::<LazyResolver<Recipient<M>>>() {
                             break 'done resolver;
@@ -367,9 +386,9 @@ where
             }));
 
             if !is_ready {
-                store
-                    .items
-                    .push_back(DynErased::erase::<A, _>(Arc::downgrade(&inner)));
+                let item = DynErased::erase::<A, _>(Arc::downgrade(&inner));
+
+                store.items.push_back((this_id, item));
             }
 
             inner
@@ -406,7 +425,7 @@ impl<T: Receiver + 'static> Lazy<T> {
                 yield inner;
             }
 
-            for item in store.items.drain(..) {
+            for (_id, item) in store.items.drain(..) {
                 let Some(item) = item.downcast::<A>().upgrade() else {
                     continue;
                 };
