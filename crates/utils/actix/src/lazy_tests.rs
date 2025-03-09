@@ -14,6 +14,12 @@ struct Counter {
 
 impl Actor for Counter {
     type Context = Context<Self>;
+
+    fn started(&mut self, _ctx: &mut Self::Context) {
+        // this is here as a sanity check test to ensure
+        // "started" is called before any queued messages
+        assert_eq!(0, self.value);
+    }
 }
 
 #[derive(Debug, Message)]
