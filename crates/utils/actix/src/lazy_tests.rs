@@ -15,10 +15,25 @@ struct Counter {
 impl Actor for Counter {
     type Context = Context<Self>;
 
-    fn started(&mut self, _ctx: &mut Self::Context) {
+    fn started(&mut self, ctx: &mut Self::Context) {
         // this is here as a sanity check test to ensure
         // "started" is called before any queued messages
         assert_eq!(0, self.value);
+
+        // `wait` here will execute before any queued messages
+        let _ignored = ctx.wait(async {}.into_actor(self).then(|_, act, _ctx| {
+            assert_eq!(0, act.value);
+            async {}.into_actor(act)
+        }));
+
+        // `spawn` will execute after all pending actor's messages have
+        // been processed both the ones that were queued before the
+        // actor was initialized and the ones that were sent immediately
+        // after the actor was initialized using the receiver returned by `init`
+        let _ignored = ctx.spawn(async {}.into_actor(self).then(|_, act, _ctx| {
+            assert_ne!(0, act.value);
+            async {}.into_actor(act)
+        }));
     }
 }
 
