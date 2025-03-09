@@ -540,10 +540,7 @@ impl<T: Receiver> Lazy<T> {
 
 impl<T: Receiver> PartialEq for Lazy<T> {
     fn eq(&self, other: &Self) -> bool {
-        #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
-        {
-            (self.inner.as_ref() as *const _) == (other.inner.as_ref() as *const _)
-        }
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
