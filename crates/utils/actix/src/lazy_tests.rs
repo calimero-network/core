@@ -2,7 +2,7 @@ use actix::fut::wrap_future;
 use actix::{Actor, ActorFutureExt, AsyncContext, Context, Handler, Message, WrapFuture};
 use futures_util::FutureExt;
 use tokio::sync::oneshot;
-use tokio::{task, time};
+use tokio::task;
 
 use crate::{LazyAddr, LazyRecipient};
 
@@ -57,7 +57,6 @@ async fn test_addr() {
 
     let _ignored = addr
         .init(|_ctx| Counter { value: 0 })
-        .await
         .expect("already initialized??");
 
     task::yield_now().await;
@@ -105,7 +104,6 @@ async fn test_recipient() {
 
             Counter { value: 0 }
         })
-        .await
         .expect("already initialized??");
 
     task::yield_now().await;
@@ -119,45 +117,40 @@ async fn test_recipient() {
 
 #[actix::test]
 async fn wait_until_ready() {
-    let addr = LazyAddr::<Counter>::new();
+    let addr = LazyAddr::new();
 
     let irrefutable_add = |v| {
-        task::spawn({
-            let addr = addr.clone();
-            async move {
-                let addr = addr.get().await;
+        let addr = addr.clone();
+        async move {
+            let addr = addr.get().await;
 
-                addr.send(Add(v)).await.unwrap();
-            }
-        })
+            addr.send(Add(v)).await.unwrap();
+        }
     };
 
     let conditional_add = |v| {
-        task::spawn({
-            let addr = addr.clone();
-            async move {
-                if let Some(addr) = addr.try_get() {
-                    addr.do_send(Add(v));
-                }
-            }
-        })
+        if let Some(addr) = addr.try_get() {
+            addr.do_send(Add(v));
+        }
     };
 
-    let task_1 = irrefutable_add(57);
-    let task_2 = conditional_add(32);
+    // this should be thrown away
+    conditional_add(32);
 
-    time::sleep(time::Duration::from_secs(1)).await;
+    // this should eventually be processed
+    let task_1 = task::spawn(irrefutable_add(57));
 
-    let task_3 = addr.send(Add(10));
+    // this should be queued to be processed
+    let task_2 = addr.send(Add(10));
 
     let addr = addr
         .init(|_ctx| Counter { value: 0 })
-        .await
         .expect("already initialized??");
 
-    task_1.await.unwrap();
-    task_2.await.unwrap();
-    task_3.await.unwrap();
+    let (task_1, task_2) = tokio::join!(task_1, task_2);
+
+    task_1.unwrap();
+    task_2.unwrap();
 
     let value = addr.send(GetValue).await.unwrap();
 

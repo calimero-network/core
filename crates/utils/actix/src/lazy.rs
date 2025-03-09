@@ -14,7 +14,7 @@ use actix::prelude::{
 };
 use actix::{ActorStreamExt, Context};
 use async_stream::stream;
-use tokio::sync::{oneshot, Mutex, MutexGuard, Notify};
+use tokio::sync::{oneshot, Mutex, MutexGuard, Notify, OwnedMutexGuard};
 
 pub type LazyAddr<A> = Lazy<Addr<A>>;
 pub type LazyRecipient<M> = Lazy<Recipient<M>>;
@@ -353,13 +353,13 @@ where
 }
 
 impl<T: Receiver + 'static> Lazy<T> {
-    pub async fn init<A>(&self, factory: impl FnOnce(&mut A::Context) -> A) -> Option<T>
+    pub fn init<A>(&self, factory: impl FnOnce(&mut A::Context) -> A) -> Option<T>
     where
         A: Actor<Context = Context<A>>,
         T::Item: IntoEnvelope<A>,
         Addr<A>: IntoRef<T>,
     {
-        let mut store = self.store.clone().lock_owned().await;
+        let mut store = self.store.clone().spin_lock_owned();
 
         if store.ready {
             return None;
@@ -391,12 +391,12 @@ impl<T: Receiver + 'static> Lazy<T> {
             }
         });
 
-        let apply_pending = wrap_stream(pending_items)
+        let resolve_pending = wrap_stream(pending_items)
             .map(|item, act, ctx| item.resolve(act, ctx))
             .finish();
 
         let addr = A::create(|ctx| {
-            let _ignored = ctx.spawn(apply_pending);
+            let _ignored = ctx.spawn(resolve_pending);
 
             factory(ctx)
         });
@@ -489,7 +489,7 @@ impl<T: Receiver> Lazy<T> {
         inner.queue.push_back(envelope);
     }
 
-    pub fn try_send<M>(&self, msg: M) -> Result<(), MailboxError>
+    pub fn try_send<M>(&self, msg: M) -> Result<(), SendError<M>>
     where
         M: Message,
         T: Sender<M>,
@@ -497,7 +497,7 @@ impl<T: Receiver> Lazy<T> {
         let mut inner = self.inner.spin_lock();
 
         if let Some(rx) = inner.recvr.as_ref() {
-            return rx.try_send(msg).map_err(|_| MailboxError::Closed);
+            return rx.try_send(msg);
         }
 
         let envelope = T::pack(msg, None);
@@ -510,12 +510,23 @@ impl<T: Receiver> Lazy<T> {
 
 trait SpinLock<T> {
     fn spin_lock(&self) -> MutexGuard<'_, T>;
+    fn spin_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T>;
 }
 
 impl<T> SpinLock<T> for Mutex<T> {
     fn spin_lock(&self) -> MutexGuard<'_, T> {
         loop {
             if let Ok(guard) = self.try_lock() {
+                break guard;
+            }
+
+            std::hint::spin_loop();
+        }
+    }
+
+    fn spin_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
+        loop {
+            if let Ok(guard) = self.clone().try_lock_owned() {
                 break guard;
             }
 
