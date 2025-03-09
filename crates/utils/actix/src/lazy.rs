@@ -2,8 +2,8 @@
 #[path = "lazy_tests.rs"]
 mod lazy_tests;
 
-use core::fmt;
 use core::future::Future;
+use core::{fmt, mem, ptr};
 use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 
@@ -14,6 +14,7 @@ use actix::prelude::{
 };
 use actix::{ActorStreamExt, Context};
 use async_stream::stream;
+use calimero_primitives::reflect::{Reflect, ReflectExt};
 use tokio::sync::{oneshot, Mutex, MutexGuard, Notify, OwnedMutexGuard};
 
 pub type LazyAddr<A> = Lazy<Addr<A>>;
@@ -51,10 +52,12 @@ where
     }
 }
 
+type LazyResolver<T> = Mutex<LazyInner<T>>;
+
 pub trait Receiver: Sized {
     type Item;
 
-    fn erase(data: &Arc<Mutex<LazyInner<Self>>>) -> Option<DynErased>;
+    fn erase(data: &Arc<LazyResolver<Self>>) -> Option<DynErased>;
 }
 
 impl<M> Receiver for Recipient<M>
@@ -63,7 +66,7 @@ where
 {
     type Item = (M, Option<oneshot::Sender<M::Result>>);
 
-    fn erase(_data: &Arc<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
+    fn erase(_data: &Arc<LazyResolver<Self>>) -> Option<DynErased> {
         None
     }
 }
@@ -74,7 +77,7 @@ where
 {
     type Item = Envelope<A>;
 
-    fn erase(data: &Arc<Mutex<LazyInner<Self>>>) -> Option<DynErased> {
+    fn erase(data: &Arc<LazyResolver<Self>>) -> Option<DynErased> {
         Some(DynErased::erase::<A, _>(Arc::downgrade(data)))
     }
 }
@@ -161,7 +164,7 @@ where
     }
 }
 
-trait Resolve<A: Actor> {
+trait Resolve<A: Actor>: Reflect {
     fn resolve(&self, act: &mut A, ctx: &mut A::Context);
 }
 
@@ -246,14 +249,21 @@ impl DynErased {
         // SAFETY: if the constraints above hold, and use of
         //         AbstractDyn is restricted to dyn Resolve<A>
         //         this should be safe
-        unsafe { std::mem::transmute(data) }
+        unsafe { mem::transmute(data) }
+    }
+
+    const fn downcast_ref<A: Actor>(&self) -> &Weak<dyn Resolve<A>> {
+        // SAFETY: if the constraints above hold, and use of
+        //         AbstractDyn is restricted to dyn Resolve<A>
+        //         this should be safe
+        unsafe { mem::transmute(self) }
     }
 
     const fn downcast<A: Actor>(self) -> Weak<dyn Resolve<A>> {
         // SAFETY: if the constraints above hold, and use of
         //         AbstractDyn is restricted to dyn Resolve<A>
         //         this should be safe
-        unsafe { std::mem::transmute(self) }
+        unsafe { mem::transmute(self) }
     }
 }
 
@@ -270,7 +280,7 @@ struct LazyStore {
 }
 
 pub struct Lazy<T: Receiver> {
-    inner: Arc<Mutex<LazyInner<T>>>,
+    inner: Arc<LazyResolver<T>>,
     store: Arc<Mutex<LazyStore>>,
 }
 
@@ -333,22 +343,42 @@ where
 
         let is_ready = recvr.is_some();
 
-        let inner = Arc::new(Mutex::new(LazyInner {
-            recvr,
-            queue: Default::default(),
-        }));
+        let mut store = self.store.spin_lock();
 
-        let store = self.store.clone();
+        let ptr = ptr::dangling::<LazyResolver<Recipient<M>>>() as *const dyn Resolve<A>;
+        let dud = unsafe { mem::transmute::<*const dyn Resolve<A>, DynErased>(ptr) };
 
-        if !is_ready {
-            let mut store = store.spin_lock();
+        let inner = 'done: {
+            for item in store.items.iter() {
+                if dud.meta == item.meta {
+                    if let Some(weak) = item.downcast_ref::<A>().upgrade() {
+                        if let Ok(resolver) = weak.downcast_arc::<LazyResolver<Recipient<M>>>() {
+                            break 'done resolver;
+                        }
+                    }
 
-            store
-                .items
-                .push_back(DynErased::erase::<A, _>(Arc::downgrade(&inner)));
+                    break;
+                }
+            }
+
+            let inner = Arc::new(Mutex::new(LazyInner {
+                recvr,
+                queue: Default::default(),
+            }));
+
+            if !is_ready {
+                store
+                    .items
+                    .push_back(DynErased::erase::<A, _>(Arc::downgrade(&inner)));
+            }
+
+            inner
+        };
+
+        Lazy {
+            inner,
+            store: self.store.clone(),
         }
-
-        Lazy { inner, store }
     }
 }
 

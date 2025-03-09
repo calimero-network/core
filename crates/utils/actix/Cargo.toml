@@ -12,6 +12,7 @@ async-stream.workspace = true
 futures-util.workspace = true
 paste.workspace = true
 tokio = { workspace = true, features = ["rt"] }
+calimero-primitives.workspace = true
 
 [dev-dependencies]
 actix.workspace = true
