@@ -10,6 +10,7 @@ license.workspace = true
 actix.workspace = true
 async-stream.workspace = true
 futures-util.workspace = true
+itertools.workspace = true
 paste.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 calimero-primitives.workspace = true

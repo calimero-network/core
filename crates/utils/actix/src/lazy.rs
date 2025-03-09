@@ -4,7 +4,7 @@ mod lazy_tests;
 
 use core::future::Future;
 use core::{fmt, mem};
-use std::any::TypeId;
+use std::any::{type_name, TypeId};
 use std::collections::VecDeque;
 use std::sync::{Arc, Weak};
 
@@ -16,6 +16,8 @@ use actix::prelude::{
 use actix::{ActorStreamExt, Context};
 use async_stream::stream;
 use calimero_primitives::reflect::{Reflect, ReflectExt};
+use calimero_primitives::utils;
+use itertools::Itertools;
 use tokio::sync::{oneshot, Mutex, MutexGuard, Notify, OwnedMutexGuard};
 
 pub type LazyAddr<A> = Lazy<Addr<A>>;
@@ -315,10 +317,9 @@ impl<T: Receiver> Clone for Lazy<T> {
 
 impl<T: Receiver> fmt::Debug for Lazy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!(
-            "Lazy {{ {:x} }}",
-            Arc::as_ptr(&self.store).addr()
-        ))
+        let path = type_name::<Self>();
+        let path = utils::compact_path(path).format("");
+        write!(f, "{} {{ {:p} }}", path, self.store)
     }
 }
 
