@@ -345,3 +345,29 @@ async fn multiple_recipients() {
         task.unwrap();
     }
 }
+
+#[actix::test]
+async fn partial_eq() {
+    let addr1 = LazyAddr::<Counter>::new();
+    let addr2 = addr1.clone();
+
+    assert_eq!(addr1, addr2);
+
+    let addr3 = LazyAddr::<Counter>::new();
+
+    assert_ne!(addr1, addr3);
+    assert_ne!(addr2, addr3);
+
+    let recipient1 = addr1.recipient::<Add>();
+    let recipient2 = addr1.recipient();
+    let recipient3 = recipient1.clone();
+
+    assert_eq!(recipient1, recipient2);
+    assert_eq!(recipient2, recipient3);
+
+    let recipient4 = LazyRecipient::<Add>::new();
+
+    assert_ne!(recipient1, recipient4);
+    assert_ne!(recipient2, recipient4);
+    assert_ne!(recipient3, recipient4);
+}

@@ -538,6 +538,15 @@ impl<T: Receiver> Lazy<T> {
     }
 }
 
+impl<T: Receiver> PartialEq for Lazy<T> {
+    fn eq(&self, other: &Self) -> bool {
+        #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
+        {
+            (self.inner.as_ref() as *const _) == (other.inner.as_ref() as *const _)
+        }
+    }
+}
+
 trait SpinLock<T> {
     fn spin_lock(&self) -> MutexGuard<'_, T>;
     fn spin_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T>;
