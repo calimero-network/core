@@ -218,3 +218,28 @@ async fn early_poll_completes() {
 
     assert_eq!(value, 5);
 }
+
+#[actix::test]
+async fn pending_is_prioritized() {
+    let addr = LazyAddr::new();
+
+    addr.do_send(Add(2));
+
+    let mut will_send = pin!(addr.send(Add(5)));
+
+    // schedule the message
+    assert_eq!(None, will_send.as_mut().now_or_never());
+
+    let addr = addr
+        .init(|_ctx| Counter { value: 0 })
+        .expect("already initialized??");
+
+    let value = addr.send(GetValue).await.unwrap();
+
+    assert_eq!(value, 7);
+
+    will_send
+        .now_or_never()
+        .expect("we know this is ready")
+        .expect("we know there was no error");
+}

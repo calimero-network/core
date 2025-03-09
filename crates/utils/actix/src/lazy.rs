@@ -426,7 +426,7 @@ impl<T: Receiver + 'static> Lazy<T> {
             .finish();
 
         let addr = A::create(|ctx| {
-            let _ignored = ctx.spawn(resolve_pending);
+            let _ignored = ctx.wait(resolve_pending);
 
             factory(ctx)
         });
