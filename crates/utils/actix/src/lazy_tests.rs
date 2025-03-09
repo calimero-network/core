@@ -1,3 +1,5 @@
+use std::pin::pin;
+
 use actix::fut::wrap_future;
 use actix::{Actor, ActorFutureExt, AsyncContext, Context, Handler, Message, WrapFuture};
 use futures_util::FutureExt;
@@ -140,6 +142,10 @@ async fn wait_until_ready() {
     // this should eventually be processed
     let task_1 = task::spawn(irrefutable_add(57));
 
+    task::yield_now().await;
+
+    assert!(!task_1.is_finished());
+
     // this should be queued to be processed
     let task_2 = addr.send(Add(10));
 
@@ -158,69 +164,57 @@ async fn wait_until_ready() {
 
     addr.send(Add(35)).await.unwrap();
 
-    let task_4 = conditional_add(32);
-
-    task_4.await.unwrap();
+    conditional_add(32);
 
     let value = addr.send(GetValue).await.unwrap();
 
     assert_eq!(value, 134);
 }
 
-// #[actix::test]
-// async fn derive_recipient() {
-//     let recipient = LazyRecipient::<Add>::new();
+#[actix::test]
+async fn early_poll_completes() {
+    let addr = LazyAddr::new();
 
-//     let task = task::spawn({
-//         let recipient = recipient.clone();
-//         async move {
-//             let recipient = recipient.get().await;
+    let mut will_send = pin!(addr.send(Add(5)));
 
-//             recipient.do_send(Add(57));
-//         }
-//     });
+    // quick poll to schedule the message
+    assert_eq!(None, will_send.as_mut().now_or_never());
 
-//     let recipient = recipient
-//         .init(|pending| {
-//             Counter::create(|ctx| {
-//                 pending.process(ctx);
-//                 Counter { value: 0 }
-//             })
-//         })
-//         .await;
+    let mut late_addr = pin!(addr.get());
 
-//     recipient.send(Add(35)).await;
+    // poll, let's schedule a waiter
+    assert_eq!(None, late_addr.as_mut().now_or_never());
 
-//     let value = recipient.send(GetValue).await.unwrap();
+    let live_addr = addr
+        .init(|_ctx| Counter { value: 0 })
+        .expect("already initialized??");
 
-//     assert_eq!(value, 92);
-// }
+    assert_eq!(None, will_send.as_mut().now_or_never());
+    assert_eq!(None, late_addr.as_mut().now_or_never());
 
-// #[actix::test]
-// async fn cloned_any() {
-//     let recipient = LazyRecipient::<Add>::new();
+    task::yield_now().await;
 
-//     let task = task::spawn({
-//         let recipient = recipient.clone();
-//         async move {
-//             let recipient = recipient.get().await;
+    // by now, the message should have been processed
+    will_send
+        .now_or_never()
+        .expect("result should be ready by now")
+        .expect("message must've been handled");
 
-//             recipient.do_send(Add(57));
-//         }
-//     });
+    // by now, the address should be ready
+    let late_addr = late_addr
+        .now_or_never()
+        .expect("addr should be ready by now");
 
-//     let recipient = recipient
-//         .init(|pending| {
-//             Counter::create(|ctx| {
-//                 pending.process(ctx);
-//                 Counter { value: 0 }
-//             })
-//         })
-//         .await;
+    assert_eq!(live_addr, late_addr);
 
-//     recipient.send(Add(35)).await;
+    let ready_addr = addr
+        .get()
+        .now_or_never()
+        .expect("addr should be ready by now");
 
-//     let value = recipient.send(GetValue).await.unwrap();
+    assert_eq!(live_addr, ready_addr);
 
-//     assert_eq!(value, 92);
-// }
+    let value = live_addr.send(GetValue).await.unwrap();
+
+    assert_eq!(value, 5);
+}
