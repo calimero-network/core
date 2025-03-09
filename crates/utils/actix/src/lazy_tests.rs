@@ -243,3 +243,105 @@ async fn pending_is_prioritized() {
         .expect("we know this is ready")
         .expect("we know there was no error");
 }
+
+#[actix::test]
+async fn derive_recipient() {
+    let addr = LazyAddr::new();
+
+    addr.do_send(Add(3));
+
+    let wait_send = task::spawn({
+        let recipient = addr.recipient();
+        async move {
+            let recipient = recipient.get().await;
+
+            recipient.send(Add(57)).await.unwrap();
+        }
+    });
+
+    let queue_send = task::spawn({
+        let recipient = addr.recipient();
+        async move {
+            recipient.send(Add(57)).await.unwrap();
+        }
+    });
+
+    task::yield_now().await;
+
+    assert!(!wait_send.is_finished());
+    assert!(!queue_send.is_finished());
+
+    let addr = addr
+        .init(|_ctx| Counter { value: 0 })
+        .expect("already initialized??");
+
+    task::yield_now().await;
+
+    assert!(!wait_send.is_finished());
+    assert!(queue_send.is_finished());
+
+    task::yield_now().await;
+
+    assert!(wait_send.is_finished());
+
+    let value = addr.send(GetValue).await.unwrap();
+
+    assert_eq!(value, 117);
+}
+
+#[actix::test]
+async fn multiple_recipients() {
+    let addr = LazyAddr::new();
+
+    let recipient = addr.recipient();
+
+    let mut set = task::JoinSet::new();
+
+    for i in 1..=10 {
+        // task1
+        let _ignored = set.spawn({
+            let recipient = addr.recipient();
+            async move {
+                let recipient = recipient.get().await;
+
+                recipient.send(Add(i)).await.unwrap();
+            }
+        });
+
+        // task2
+        let _ignored = set.spawn({
+            let recipient = addr.recipient();
+            async move {
+                recipient.send(Add(i * 100)).await.unwrap();
+            }
+        });
+
+        addr.clone().do_send(Add(i * 10000));
+    }
+
+    // this should allow task2 to schedule it's messages
+    task::yield_now().await;
+
+    let addr = addr
+        .init(|_ctx| Counter { value: 0 })
+        .expect("already initialized??");
+
+    let value = addr.send(GetValue).await.unwrap();
+
+    assert_eq!(value, 55_55_00);
+
+    // this should allow task1 progress
+    task::yield_now().await;
+
+    let value = addr.send(GetValue).await.unwrap();
+
+    assert_eq!(value, 55_55_55);
+
+    let value = recipient.send(GetValue).await.unwrap();
+
+    assert_eq!(value, 55_55_55);
+
+    while let Some(task) = set.join_next().await {
+        task.unwrap();
+    }
+}
