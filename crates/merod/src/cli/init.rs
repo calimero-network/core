@@ -3,6 +3,7 @@ use core::time::Duration;
 use std::collections::BTreeMap;
 use std::fs::{create_dir, create_dir_all};
 
+use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
     SyncConfig,
@@ -10,11 +11,10 @@ use calimero_config::{
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
+    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
 };
 use calimero_context_config::client::protocol::{
     icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
-    stellar as stellar_protocol,
 };
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
@@ -48,6 +48,7 @@ pub enum ConfigProtocol {
     Starknet,
     Icp,
     Stellar,
+    Evm,
 }
 
 /// Initialize node configuration
@@ -331,6 +332,32 @@ impl InitCommand {
                 .insert("stellar".to_owned(), local_config);
         }
 
+        {
+            let _ignored = client_params.insert(
+                "evm".to_owned(),
+                ClientConfigParams {
+                    network: "sepolia".into(),
+                    protocol: "evm".into(),
+                    contract_id: "0x0000000000000000000000000000000000000000".parse()?,
+                    signer: ClientSelectedSigner::Local,
+                },
+            );
+
+            let mut local_config = ClientLocalConfig {
+                signers: Default::default(),
+            };
+
+            let _ignored = local_config.signers.insert(
+                "sepolia".to_owned(),
+                generate_local_signer(
+                    "https://sepolia.infura.io/v3/167f8143e0174d2da4108663ff8e0164".parse()?,
+                    ConfigProtocol::Evm,
+                )?,
+            );
+
+            let _ignored = local_signers.protocols.insert("evm".to_owned(), local_config);
+        }
+
         let relayer = self
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
@@ -445,9 +472,29 @@ fn generate_local_signer(
 
             Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Stellar(stellar_protocol::Credentials {
+                credentials: Credentials::Raw(RawCredentials {
+                    account_id: None,
                     public_key,
                     secret_key,
+                }),
+            })
+        }
+
+        ConfigProtocol::Evm => {
+
+            let secp = PrivateKeySigner::random();
+            let address = secp.address();
+            let public_key = address.into_word();
+            let secret_key = secp.to_bytes();
+            let secret_key_hex = encode(secret_key);
+            let public_key_hex = encode(&public_key);
+
+            Ok(ClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Raw(RawCredentials {
+                    account_id: Some(address.to_string()),
+                    public_key: public_key_hex,
+                    secret_key: secret_key_hex,
                 }),
             })
         }
