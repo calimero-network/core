@@ -53,6 +53,8 @@ members = [
 
 [workspace.dependencies]
 actix = "0.13.5"
+alloy = { version = "0.11.1", features = ["full"] }
+alloy-sol-types = "0.8.22"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
 axum = "0.7.4"
