@@ -27,8 +27,10 @@ impl Test for CallStep {
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
-        let Some(ref context_id) = ctx.context_id else {
-            bail!("Context ID is required for JsonRpcExecuteStep");
+        let mut context_id = if let Some(ref alias) = ctx.context_alias {
+            alias
+        } else {
+            bail!("Context ID or Alias is required for JsonRpcExecuteStep");
         };
 
         let mut public_keys = HashMap::new();
@@ -38,15 +40,24 @@ impl Test for CallStep {
             bail!("Inviter public key is required for JsonRpcExecuteStep");
         }
 
-        if matches!(self.target, CallTarget::AllMembers) {
-            for invitee in &ctx.invitees {
-                if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
-                    drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
+        match self.target {
+            CallTarget::Inviter => {}
+            CallTarget::AllMembers => {
+                if let Some(ref id) = ctx.context_id {
+                    context_id = id;
                 } else {
-                    bail!(
-                        "Public key for invitee '{}' is required for JsonRpcExecuteStep",
-                        invitee
-                    );
+                    bail!("Context ID is required for JsonRpcExecuteStep with AllMembers target");
+                }
+
+                for invitee in &ctx.invitees {
+                    if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
+                        drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
+                    } else {
+                        bail!(
+                            "Public key for invitee '{}' is required for JsonRpcExecuteStep",
+                            invitee
+                        );
+                    }
                 }
             }
         }
