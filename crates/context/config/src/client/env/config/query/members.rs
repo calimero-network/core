@@ -13,6 +13,7 @@ use crate::client::env::config::types::starknet::{
     CallData, StarknetMembers, StarknetMembersRequest,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -167,5 +168,19 @@ impl Method<Stellar> for MembersRequest {
             .iter()
             .map(|id| id.to_array().rt().expect("infallible conversion"))
             .collect())
+    }
+}
+
+impl Method<Evm> for MembersRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "members";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

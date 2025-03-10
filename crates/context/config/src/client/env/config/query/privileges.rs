@@ -15,6 +15,7 @@ use crate::client::env::config::types::starknet::{
     StarknetPrivileges,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -217,5 +218,19 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
                 Ok((signer, capabilities))
             })
             .collect()
+    }
+}
+
+impl<'a> Method<Evm> for PrivilegesRequest<'a> {
+    type Returns = BTreeMap<SignerId, Vec<Capability>>;
+
+    const METHOD: &'static str = "privileges";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

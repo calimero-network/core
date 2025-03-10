@@ -9,6 +9,7 @@ use starknet_crypto::Felt;
 
 use crate::client::env::proxy::starknet::{CallData, ContextVariableKey};
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -140,5 +141,19 @@ impl Method<Stellar> for ContextVariableRequest {
             .map_err(|e| eyre::eyre!("Failed to convert to Bytes: {:?}", e))?;
 
         Ok(value.to_alloc_vec())
+    }
+}
+
+impl Method<Evm> for ContextVariableRequest {
+    type Returns = Vec<u8>;
+
+    const METHOD: &'static str = "get_context_value";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

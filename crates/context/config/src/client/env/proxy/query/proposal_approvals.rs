@@ -12,6 +12,7 @@ use crate::client::env::proxy::types::starknet::{
     StarknetProposalId, StarknetProposalWithApprovals,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -150,5 +151,19 @@ impl Method<Stellar> for ProposalApprovalsRequest {
 
         // Use the From implementation to convert
         Ok(ProposalWithApprovals::from(stellar_proposal))
+    }
+}
+
+impl Method<Evm> for ProposalApprovalsRequest {
+    type Returns = ProposalWithApprovals;
+
+    const METHOD: &'static str = "get_confirmations_count";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

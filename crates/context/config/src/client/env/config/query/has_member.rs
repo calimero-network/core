@@ -9,6 +9,7 @@ use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -138,5 +139,19 @@ impl Method<Stellar> for HasMemberRequest {
             .map_err(|e| eyre::eyre!("Failed to convert to bool: {:?}", e))?;
 
         Ok(result)
+    }
+}
+
+impl Method<Evm> for HasMemberRequest {
+    type Returns = bool;
+
+    const METHOD: &'static str = "has_member";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

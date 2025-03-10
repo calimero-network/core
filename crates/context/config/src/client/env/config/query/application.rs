@@ -10,6 +10,7 @@ use crate::client::env::config::types::starknet::{
     Application as StarknetApplication, CallData, FeltPair,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -147,5 +148,19 @@ impl Method<Stellar> for ApplicationRequest {
         let application: Application<'_> = stellar_application.into();
 
         Ok(application)
+    }
+}
+
+impl Method<Evm> for ApplicationRequest {
+    type Returns = Application<'static>;
+
+    const METHOD: &'static str = "application";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

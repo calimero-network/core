@@ -1,6 +1,8 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
+use alloy::primitives::{B256, U64};
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -11,6 +13,7 @@ use crate::client::env::config::types::starknet::{
     CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -133,6 +136,51 @@ impl Method<Stellar> for FetchNonceRequest {
         let nonce: u64 = sc_val
             .try_into()
             .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
+
+        Ok(Some(nonce))
+    }
+}
+
+impl Method<Evm> for FetchNonceRequest {
+    type Returns = Option<u64>;
+
+    const METHOD: &'static str = "fetchNonce(bytes32,bytes32)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id_val = B256::from_slice(&context_id);
+        let member_id: [u8; 32] = self.member_id.rt().expect("infallible conversion");
+        let member_id_val = B256::from_slice(&member_id);
+
+        Ok(SolValue::abi_encode(&(context_id_val, member_id_val)))
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        // Check if the response is empty
+        if response.is_empty() {
+            return Err(eyre::eyre!(
+                "Empty response from contract. The context might not exist."
+            ));
+        }
+
+        // For a uint64, we expect exactly 32 bytes (padded uint)
+        if response.len() != 32 {
+            return Err(eyre::eyre!(
+                "Invalid response length: expected 32 bytes for uint64, got {} bytes",
+                response.len()
+            ));
+        }
+
+        // In Ethereum ABI, integers are big-endian and right-aligned in 32 bytes
+        // For uint64, we need the last 8 bytes
+        let uint_bytes = &response[24..32];
+
+        // Convert to u64
+        let nonce = u64::from_be_bytes(
+            uint_bytes
+                .try_into()
+                .map_err(|_| eyre::eyre!("Failed to convert bytes to u64"))?,
+        );
 
         Ok(Some(nonce))
     }

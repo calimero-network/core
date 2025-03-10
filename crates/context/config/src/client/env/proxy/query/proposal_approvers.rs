@@ -12,6 +12,7 @@ use starknet::core::types::Felt;
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetApprovers, StarknetProposalId};
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -169,5 +170,19 @@ impl Method<Stellar> for ProposalApproversRequest {
                     .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
             })
             .collect()
+    }
+}
+
+impl Method<Evm> for ProposalApproversRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "proposal_approvers";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

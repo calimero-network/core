@@ -10,6 +10,7 @@ use starknet_crypto::Felt;
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetProposalId};
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -155,5 +156,19 @@ impl Method<Stellar> for ProposalRequest {
 
         // Convert StellarProposal to Proposal using our From impl
         Ok(Some(Proposal::from(proposal)))
+    }
+}
+
+impl Method<Evm> for ProposalRequest {
+    type Returns = Option<Proposal>;
+
+    const METHOD: &'static str = "proposal";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

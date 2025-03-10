@@ -5,6 +5,7 @@ use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal};
 
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -95,5 +96,19 @@ impl Method<Stellar> for ActiveProposalRequest {
             .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
 
         Ok(active_proposals_limit as u16)
+    }
+}
+
+impl Method<Evm> for ActiveProposalRequest {
+    type Returns = u16;
+
+    const METHOD: &'static str = "get_active_proposals_limit";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

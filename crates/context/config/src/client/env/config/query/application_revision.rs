@@ -9,6 +9,7 @@ use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -106,5 +107,19 @@ impl Method<Stellar> for ApplicationRevisionRequest {
             .try_into()
             .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
         Ok(revision)
+    }
+}
+
+impl Method<Evm> for ApplicationRevisionRequest {
+    type Returns = Revision;
+
+    const METHOD: &'static str = "application_revision";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }
