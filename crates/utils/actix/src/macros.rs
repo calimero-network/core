@@ -10,11 +10,12 @@ pub mod __private {
     pub use std::ops::DerefMut;
     pub use std::ptr;
 
-    pub use crate::spawn_actor;
     pub use actix::{AsyncContext, Context, Handler, Message, StreamHandler};
     pub use futures_util::{pin_mut, FutureExt, Stream, StreamExt};
     pub use paste::paste;
     pub use tokio::{select, task};
+
+    pub use crate::spawn_actor;
 
     #[derive(Debug, Message)]
     #[rtype("()")]

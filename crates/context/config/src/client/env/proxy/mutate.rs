@@ -8,6 +8,7 @@ use starknet_crypto::{poseidon_hash_many, Felt};
 
 use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
 use crate::client::env::{utils, Method};
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -189,6 +190,20 @@ impl Method<Stellar> for Mutate {
         let proposal: ProposalWithApprovals = stellar_proposal.into();
 
         Ok(Some(proposal))
+    }
+}
+
+impl Method<Evm> for Mutate {
+    type Returns = Option<ProposalWithApprovals>;
+
+    const METHOD: &'static str = "mutate";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }
 
