@@ -22,7 +22,8 @@ type MaybeIcp = Option<icp::IcpTransport<'static>>;
 type MaybeStellar = Option<stellar::StellarTransport<'static>>;
 type MaybeEvm = Option<evm::EvmTransport<'static>>;
 
-pub type LocalTransports = Both<MaybeNear, Both<MaybeStarknet, Both<MaybeIcp, Both<MaybeStellar, MaybeEvm>>>>;
+pub type LocalTransports =
+    Both<MaybeNear, Both<MaybeStarknet, Both<MaybeIcp, Both<MaybeStellar, MaybeEvm>>>>;
 
 pub type AnyTransport = Both<LocalTransports, relayer::RelayerTransport>;
 
@@ -213,7 +214,7 @@ impl Client<AnyTransport> {
                 if !matches!(e.signer, ClientSelectedSigner::Local) {
                     break 'skipped;
                 }
-                
+
                 let mut config = evm::EvmConfig {
                     networks: Default::default(),
                 };

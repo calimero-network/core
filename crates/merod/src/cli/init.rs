@@ -355,7 +355,9 @@ impl InitCommand {
                 )?,
             );
 
-            let _ignored = local_signers.protocols.insert("evm".to_owned(), local_config);
+            let _ignored = local_signers
+                .protocols
+                .insert("evm".to_owned(), local_config);
         }
 
         let relayer = self
@@ -481,7 +483,6 @@ fn generate_local_signer(
         }
 
         ConfigProtocol::Evm => {
-
             let secp = PrivateKeySigner::random();
             let address = secp.address();
             let public_key = address.into_word();
