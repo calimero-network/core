@@ -182,7 +182,7 @@ impl Network {
         ];
 
         let response: Bytes =
-            client
+            self.client
                 .request("eth_call", params)
                 .await
                 .map_err(|e| EvmError::Custom {
