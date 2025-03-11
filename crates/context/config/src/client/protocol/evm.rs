@@ -228,12 +228,12 @@ impl Network {
         call_data.extend_from_slice(&selector);
         call_data.extend_from_slice(&args);
 
-        let data = TransactionInput {
-            input: Some(Bytes::from(call_data)),
-            data: None,
-        };
-
-        let tx = TransactionRequest::default().to(address).input(data);
+        let tx = TransactionRequest::default()
+            .to(address)
+            .input(TransactionInput {
+                input: Some(Bytes::from(call_data)),
+                data: None,
+            });
 
         let tx_builder = provider
             .send_transaction(tx)
