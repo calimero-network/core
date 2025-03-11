@@ -4,7 +4,7 @@ use actix::fut::wrap_future;
 use actix::{Actor, ActorFutureExt, AsyncContext, Context, Handler, Message, WrapFuture};
 use futures_util::FutureExt;
 use tokio::sync::oneshot;
-use tokio::task;
+use tokio::{join, task, try_join};
 
 use crate::{LazyAddr, LazyRecipient};
 
@@ -26,10 +26,7 @@ impl Actor for Counter {
             async {}.into_actor(act)
         }));
 
-        // `spawn` will execute after all pending actor's messages have
-        // been processed both the ones that were queued before the
-        // actor was initialized and the ones that were sent immediately
-        // after the actor was initialized using the receiver returned by `init`
+        // `spawn` will execute after all pending actor's messages
         let _ignored = ctx.spawn(async {}.into_actor(self).then(|_, act, _ctx| {
             assert_ne!(0, act.value);
             async {}.into_actor(act)
@@ -78,9 +75,10 @@ async fn test_addr() {
 
     assert!(!task.is_finished());
 
-    let _ignored = addr
-        .init(|_ctx| Counter { value: 0 })
-        .expect("already initialized??");
+    let _ignored = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        Counter { value: 0 }
+    });
 
     task::yield_now().await;
 
@@ -116,18 +114,18 @@ async fn test_recipient() {
 
     let (tx, rx) = oneshot::channel();
 
-    let _ignored = recipient
-        .init(|ctx: &mut Context<_>| {
-            let task = wrap_future::<_, Counter>(async {}).then(|_, act, _ctx| {
-                tx.send(act.value).unwrap();
-                async {}.into_actor(act)
-            });
+    let _ignored = Actor::create(|ctx| {
+        assert!(recipient.init(ctx));
 
-            let _ignored = ctx.spawn(task);
+        let task = wrap_future::<_, Counter>(async {}).then(move |_, act, _ctx| {
+            tx.send(act.value).unwrap();
+            async {}.into_actor(act)
+        });
 
-            Counter { value: 0 }
-        })
-        .expect("already initialized??");
+        let _ignored = ctx.spawn(task);
+
+        Counter { value: 0 }
+    });
 
     task::yield_now().await;
 
@@ -170,9 +168,10 @@ async fn wait_until_ready() {
     // this should be queued to be processed
     let task_2 = addr.send(Add(10));
 
-    let addr = addr
-        .init(|_ctx| Counter { value: 0 })
-        .expect("already initialized??");
+    let addr = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        Counter { value: 0 }
+    });
 
     let (task_1, task_2) = tokio::join!(task_1, task_2);
 
@@ -206,9 +205,10 @@ async fn early_poll_completes() {
     // poll, let's schedule a waiter
     assert_eq!(None, late_addr.as_mut().now_or_never());
 
-    let live_addr = addr
-        .init(|_ctx| Counter { value: 0 })
-        .expect("already initialized??");
+    let live_addr = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        Counter { value: 0 }
+    });
 
     assert_eq!(None, will_send.as_mut().now_or_never());
     assert_eq!(None, late_addr.as_mut().now_or_never());
@@ -251,9 +251,10 @@ async fn pending_is_prioritized() {
     // schedule the message
     assert_eq!(None, will_send.as_mut().now_or_never());
 
-    let addr = addr
-        .init(|_ctx| Counter { value: 0 })
-        .expect("already initialized??");
+    let addr = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        Counter { value: 0 }
+    });
 
     let value = addr.send(GetValue).await.unwrap();
 
@@ -292,9 +293,10 @@ async fn derive_recipient() {
     assert!(!wait_send.is_finished());
     assert!(!queue_send.is_finished());
 
-    let addr = addr
-        .init(|_ctx| Counter { value: 0 })
-        .expect("already initialized??");
+    let addr = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        Counter { value: 0 }
+    });
 
     task::yield_now().await;
 
@@ -343,9 +345,10 @@ async fn multiple_recipients() {
     // this should allow task2 to schedule it's messages
     task::yield_now().await;
 
-    let addr = addr
-        .init(|_ctx| Counter { value: 0 })
-        .expect("already initialized??");
+    let addr = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        Counter { value: 0 }
+    });
 
     let value = addr.send(GetValue).await.unwrap();
 
@@ -391,4 +394,111 @@ async fn partial_eq() {
     assert_ne!(recipient1, recipient4);
     assert_ne!(recipient2, recipient4);
     assert_ne!(recipient3, recipient4);
+}
+
+#[actix::test]
+async fn double_init_fails() {
+    let addr = LazyAddr::new();
+
+    let _ignored = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        assert!(!addr.init(ctx));
+
+        Counter { value: 0 }
+    });
+}
+
+#[actix::test]
+async fn conflictive_init_fails() {
+    let addr = LazyAddr::new();
+
+    addr.do_send(Add(2));
+
+    let init = || {
+        let addr = addr.clone();
+
+        async move {
+            let _ignored = Actor::create(|ctx| {
+                assert!(addr.init(ctx), "actor initialization failed");
+
+                Counter { value: 0 }
+            });
+        }
+    };
+
+    let t1 = task::spawn_local(init());
+    let t2 = task::spawn_local(init());
+
+    let (t1_initialized, t2_initialized) = join!(t1, t2);
+
+    t1_initialized.unwrap();
+    let err = t2_initialized.expect_err("second init should fail");
+
+    assert!(
+        err.to_string().contains("actor initialization failed"),
+        "found instead: {err}",
+    );
+
+    addr.send(Add(3)).await.unwrap();
+
+    let value = addr.send(GetValue).await.unwrap();
+
+    assert_eq!(value, 5);
+}
+
+#[actix::test]
+async fn locks_arent_held_across_await_points() {
+    let addr = LazyAddr::new();
+
+    let get_fut = task::spawn({
+        let (addr1, addr2) = (addr.clone(), addr.clone());
+
+        async move {
+            let mut addr1 = pin!(addr1.get());
+            let mut addr2 = pin!(addr2.get());
+
+            assert_eq!(None, addr1.as_mut().now_or_never());
+            assert_eq!(None, addr2.as_mut().now_or_never());
+
+            task::yield_now().await;
+
+            let a = addr1
+                .as_mut()
+                .now_or_never()
+                .expect("addr should be ready by now");
+
+            let b = addr2
+                .as_mut()
+                .now_or_never()
+                .expect("addr should be ready by now");
+
+            assert_eq!(a, b);
+        }
+    });
+
+    let send_fut = task::spawn({
+        let (addr1, addr2) = (addr.clone(), addr.clone());
+
+        async move {
+            try_join!(addr1.send(Add(2)), addr2.send(Add(3))).unwrap();
+        }
+    });
+
+    task::yield_now().await;
+
+    let addr = Actor::create(|ctx| {
+        assert!(addr.init(ctx));
+        Counter { value: 0 }
+    });
+
+    let get_value = addr.send(GetValue);
+
+    task::yield_now().await;
+
+    assert!(get_fut.is_finished());
+    assert!(send_fut.is_finished());
+
+    let value = get_value.await.unwrap();
+
+    assert_eq!(value, 5);
 }

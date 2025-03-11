@@ -6,6 +6,7 @@ use core::future::Future;
 use core::{fmt, mem};
 use std::any::{type_name, TypeId};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use actix::dev::{Envelope, EnvelopeProxy, ToEnvelope};
@@ -296,7 +297,7 @@ pub struct LazyInner<T: Receiver> {
 }
 
 struct LazyStore {
-    ready: bool,
+    state: AtomicBool,
     event: Option<Arc<Notify>>,
     items: VecDeque<(TypeId, /* dyn Resolve<A> */ DynErased)>,
 }
@@ -304,6 +305,20 @@ struct LazyStore {
 pub struct Lazy<T: Receiver> {
     inner: Arc<LazyResolver<T>>,
     store: Arc<Mutex<LazyStore>>,
+}
+
+impl LazyStore {
+    fn is_initialized(&self) -> bool {
+        self.state.load(Ordering::Acquire)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.is_initialized() && self.items.is_empty()
+    }
+
+    fn initialize(&self) -> bool {
+        !self.state.swap(true, Ordering::Acquire)
+    }
 }
 
 impl<T: Receiver> Clone for Lazy<T> {
@@ -337,7 +352,7 @@ impl<T: Receiver> Lazy<T> {
         }
 
         let store = Arc::new(Mutex::new(LazyStore {
-            ready: false,
+            state: AtomicBool::new(false),
             event: None,
             items,
         }));
@@ -403,17 +418,21 @@ where
 }
 
 impl<T: Receiver + 'static> Lazy<T> {
-    pub fn init<A>(&self, factory: impl FnOnce(&mut A::Context) -> A) -> Option<T>
+    pub fn init<A>(&self, ctx: &mut Context<A>) -> bool
     where
         A: Actor<Context = Context<A>>,
         T::Item: IntoEnvelope<A>,
         Addr<A>: IntoRef<T>,
     {
-        let mut store = self.store.clone().spin_lock_owned();
+        {
+            let store = (&raw const *self.store).cast_mut();
+            let store = unsafe { &mut *store };
+            if !store.get_mut().initialize() {
+                return false;
+            }
+        };
 
-        if store.ready {
-            return None;
-        }
+        let mut store = self.store.clone().spin_lock_owned();
 
         #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
         let maybe_inner = store
@@ -434,8 +453,6 @@ impl<T: Receiver + 'static> Lazy<T> {
                 yield item;
             }
 
-            store.ready = true;
-
             if let Some(notify) = store.event.take() {
                 notify.notify_waiters();
             }
@@ -445,13 +462,9 @@ impl<T: Receiver + 'static> Lazy<T> {
             .map(|item, act, ctx| item.resolve(act, ctx))
             .finish();
 
-        let addr = A::create(|ctx| {
-            let _ignored = ctx.wait(resolve_pending);
+        ctx.wait(resolve_pending);
 
-            factory(ctx)
-        });
-
-        Some(addr.into_ref())
+        true
     }
 }
 
@@ -476,7 +489,7 @@ impl<T: Receiver + Clone> Lazy<T> {
         let notify = {
             let mut store = self.store.lock().await;
 
-            if store.ready {
+            if store.is_ready() {
                 return self
                     .async_get()
                     .await
