@@ -1,8 +1,13 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
+use alloy::network::EthereumWallet;
 use alloy::primitives::{keccak256, Address, Bytes};
+use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::client::{ClientBuilder, ReqwestClient};
+use alloy::rpc::types::{TransactionInput, TransactionRequest};
+use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
@@ -68,8 +73,8 @@ pub struct EvmConfig<'a> {
 
 #[derive(Clone, Debug)]
 struct Network {
-    client: String,
-    account_id: String,
+    client: ReqwestClient,
+    rpc_url: String,
     secret_key: String,
 }
 
@@ -84,13 +89,11 @@ impl<'a> EvmTransport<'a> {
         let mut networks = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
-            let client = network_config.rpc_url.clone();
-
             let _ignored = networks.insert(
                 network_id.clone(),
                 Network {
-                    client: client.to_string(),
-                    account_id: network_config.account_id.clone(),
+                    client: ClientBuilder::default().http(network_config.rpc_url.clone()),
+                    rpc_url: network_config.rpc_url.clone().to_string(),
                     secret_key: network_config.access_key.clone(),
                 },
             );
@@ -159,10 +162,6 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, EvmError> {
-        // Create RPC client
-        let client: ReqwestClient = ClientBuilder::default().http(self.client.parse().unwrap());
-
-        // Parse contract address
         let address = contract_id
             .parse::<Address>()
             .map_err(|e| EvmError::Custom {
@@ -170,24 +169,20 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
-        // Create method selector (first 4 bytes of method signature hash)
         let method_selector = &keccak256(method.as_bytes())[..4];
 
-        // Combine method selector with arguments
         let call_data = [method_selector, &args].concat();
 
-        // Create parameters for the RPC call
         let params = vec![
             json!({
                 "to": address,
                 "data": Bytes::from(call_data)
             }),
             json!("latest"),
-        ]; // Added "latest" block parameter
+        ];
 
-        // Send the eth_call and get the response
         let response: String =
-            client
+            self.client
                 .request("eth_call", params)
                 .await
                 .map_err(|e| EvmError::Custom {
@@ -206,7 +201,16 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, EvmError> {
-        let client: ReqwestClient = ClientBuilder::default().http(self.client.parse().unwrap());
+        let signer: PrivateKeySigner = PrivateKeySigner::from_str(&self.secret_key).unwrap();
+        let wallet = EthereumWallet::from(signer);
+
+        let provider =
+            ProviderBuilder::new()
+                .wallet(wallet)
+                .on_http(Url::parse(&self.rpc_url).map_err(|e| EvmError::Custom {
+                    operation: ErrorOperation::Mutate,
+                    reason: e.to_string(),
+                })?);
 
         let address = contract_id
             .parse::<Address>()
@@ -217,7 +221,6 @@ impl Network {
 
         let method_selector = &keccak256(method.as_bytes());
 
-        // The method selector is the first 4 bytes of the hash
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&method_selector[0..4]);
 
@@ -225,29 +228,29 @@ impl Network {
         call_data.extend_from_slice(&selector);
         call_data.extend_from_slice(&args);
 
-        let params = vec![json!({
-            "to": address,
-            "data": Bytes::from(call_data.clone())
-        })];
+        let data = TransactionInput {
+            input: Some(Bytes::from(call_data)),
+            data: None,
+        };
 
-        // Send the transaction and get the transaction hash
-        let tx_hash: String = client
-            .request("eth_sendTransaction", params.clone())
+        let tx = TransactionRequest::default().to(address).input(data);
+
+        let tx_builder = provider
+            .send_transaction(tx)
             .await
-            .map_err(|e| {
-                println!("Error 1: {}", e);
-                EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                }
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: e.to_string(),
             })?;
+        let tx_hash = tx_builder.tx_hash();
+
+        let mut receipt = None;
 
         // Wait for the transaction to be mined
-        let mut receipt = None;
         for _ in 0..30 {
-            // Try for 30 attempts with 2-second intervals
             let receipt_params = vec![json!(tx_hash)];
-            let result: Option<serde_json::Value> = client
+            let result: Option<serde_json::Value> = self
+                .client
                 .request("eth_getTransactionReceipt", receipt_params)
                 .await
                 .map_err(|e| EvmError::Custom {
@@ -263,36 +266,25 @@ impl Network {
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
 
-        // Check if the transaction was successful
-        if let Some(receipt) = receipt {
-            let status = receipt
-                .get("status")
-                .and_then(|s| s.as_str())
-                .unwrap_or("0x0");
-
-            if status == "0x1" {
-                // Transaction was successful
-                return Ok(Vec::new());
-            } else {
-                let call_params = vec![
-                    json!({
-                        "to": address,
-                        "data": Bytes::from(call_data.clone())
-                    }),
-                    json!("latest"),
-                ];
-
-                return Err(EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: "Transaction failed".to_string(),
-                });
-            }
-        } else {
-            // Transaction wasn't mined in time
+        let Some(receipt) = receipt else {
             return Err(EvmError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: "Transaction wasn't mined in time".to_string(),
+                reason: "Transaction wasn't mined within timeout period".to_string(),
             });
+        };
+
+        let status = receipt
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("0x0");
+
+        if status == "0x1" {
+            return Ok(Vec::new());
         }
+
+        Err(EvmError::Custom {
+            operation: ErrorOperation::Mutate,
+            reason: format!("Transaction failed with status: {}.", status),
+        })
     }
 }
