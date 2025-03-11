@@ -185,15 +185,20 @@ impl Method<Evm> for MembersRequest {
         let offset_val: u64 = self.offset as u64;
         let length_val: u64 = self.length as u64;
 
-        Ok(SolValue::abi_encode(&(context_id_val, offset_val, length_val)))
+        Ok(SolValue::abi_encode(&(
+            context_id_val,
+            offset_val,
+            length_val,
+        )))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         // Decode Vec<B256> directly from response
         let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
-      
+
         // Convert each B256 to ContextIdentity
-        Ok(decoded.into_iter()
+        Ok(decoded
+            .into_iter()
             .map(|b| b.rt().expect("infallible conversion"))
             .collect())
     }

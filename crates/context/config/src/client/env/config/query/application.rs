@@ -169,7 +169,7 @@ impl Method<Evm> for ApplicationRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let application: SolApplication = SolValue::abi_decode(&response, false)?;
         let application: Application<'static> = application.into();
-        
+
         Ok(application)
     }
 }

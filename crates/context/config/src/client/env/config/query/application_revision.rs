@@ -126,7 +126,7 @@ impl Method<Evm> for ApplicationRevisionRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let revision: u64 = SolValue::abi_decode(&response, false)?;
-        
+
         Ok(revision)
     }
 }

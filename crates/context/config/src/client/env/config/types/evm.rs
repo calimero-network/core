@@ -84,7 +84,9 @@ impl From<SolApplication> for Application<'static> {
             blob: sol_app.blob.rt().expect("infallible conversion"),
             size: sol_app.size,
             source: ApplicationSource(std::borrow::Cow::Owned(sol_app.source)),
-            metadata: ApplicationMetadata(Repr::new(std::borrow::Cow::Owned(sol_app.metadata.to_vec()))),
+            metadata: ApplicationMetadata(Repr::new(std::borrow::Cow::Owned(
+                sol_app.metadata.to_vec(),
+            ))),
         }
     }
 }

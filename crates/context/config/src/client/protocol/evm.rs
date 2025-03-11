@@ -195,8 +195,6 @@ impl Network {
                     reason: format!("Failed to execute eth_call: {}", e),
                 })?;
 
-        
-
         Ok(response.to_vec())
     }
 
