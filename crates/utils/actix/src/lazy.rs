@@ -7,7 +7,8 @@ use core::{fmt, mem};
 use std::any::{type_name, TypeId};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, LazyLock, Weak};
+use std::thread;
 
 use actix::dev::{Envelope, EnvelopeProxy, ToEnvelope};
 use actix::fut::wrap_stream;
@@ -577,29 +578,63 @@ impl<T: Receiver> PartialEq for Lazy<T> {
     }
 }
 
+impl<T: Receiver> Eq for Lazy<T> {}
+
+impl<T: Receiver> From<T> for Lazy<T> {
+    fn from(recvr: T) -> Self {
+        let inner = Arc::new(Mutex::new(LazyInner {
+            recvr: Some(recvr),
+            queue: Default::default(),
+        }));
+
+        let store = Arc::new(Mutex::new(LazyStore {
+            state: AtomicBool::new(false),
+            event: None,
+            items: Default::default(),
+        }));
+
+        Self { inner, store }
+    }
+}
+
 trait SpinLock<T> {
     fn spin_lock(&self) -> MutexGuard<'_, T>;
     fn spin_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T>;
 }
 
+static AVAILABLE_PARALLELISM: LazyLock<usize> =
+    LazyLock::new(|| thread::available_parallelism().map_or(4, |t| t.get()));
+
+static SPIN_BUDGET: LazyLock<usize> = LazyLock::new(|| *AVAILABLE_PARALLELISM * 100);
+
 impl<T> SpinLock<T> for Mutex<T> {
     fn spin_lock(&self) -> MutexGuard<'_, T> {
-        loop {
+        for _ in 0..*SPIN_BUDGET {
             if let Ok(guard) = self.try_lock() {
-                break guard;
+                return guard;
             }
 
-            std::hint::spin_loop();
+            thread::yield_now();
         }
+
+        panic!(
+            "exhausted spin budget of {} trying to acquire lock",
+            *SPIN_BUDGET
+        );
     }
 
     fn spin_lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
-        loop {
+        for _ in 0..*SPIN_BUDGET {
             if let Ok(guard) = self.clone().try_lock_owned() {
-                break guard;
+                return guard;
             }
 
-            std::hint::spin_loop();
+            thread::yield_now();
         }
+
+        panic!(
+            "exhausted spin budget of {} trying to acquire lock",
+            *SPIN_BUDGET
+        );
     }
 }
