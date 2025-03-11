@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -152,7 +153,12 @@ impl Method<Evm> for ProposalsRequest {
     const METHOD: &'static str = "proposals";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let offset = u32::try_from(self.offset)
+            .map_err(|e| eyre::eyre!("Offset too large for u32: {}", e))?;
+        let length = u32::try_from(self.length)
+            .map_err(|e| eyre::eyre!("Limit too large for u32: {}", e))?;
+
+        Ok(SolValue::abi_encode(&(offset, length)))
     }
 
     fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {

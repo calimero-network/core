@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -150,10 +151,11 @@ impl Method<Evm> for ContextVariableRequest {
     const METHOD: &'static str = "get_context_value";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Ok(SolValue::abi_encode(&(self.key)))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let context_value: Self::Returns = SolValue::abi_decode(&response, false)?;
+        Ok(context_value)
     }
 }

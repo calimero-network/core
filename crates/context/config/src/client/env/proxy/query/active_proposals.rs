@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal};
@@ -105,10 +106,11 @@ impl Method<Evm> for ActiveProposalRequest {
     const METHOD: &'static str = "get_active_proposals_limit";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        Ok(SolValue::abi_encode(&()))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let active_proposals_limit: Self::Returns = SolValue::abi_decode(&response, false)?;
+        Ok(active_proposals_limit)
     }
 }
