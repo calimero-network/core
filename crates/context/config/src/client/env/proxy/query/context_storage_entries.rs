@@ -1,6 +1,5 @@
 use std::io::Cursor;
 
-use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
@@ -167,7 +166,17 @@ impl Method<Evm> for ContextStorageEntriesRequest {
 
         Ok(SolValue::abi_encode(&(offset, limit)))
     }
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
+
+        let context_storage_entries = decoded
+            .chunks(2)
+            .map(|chunk| ContextStorageEntry {
+                key: chunk[0].to_vec(),
+                value: chunk[1].to_vec(),
+            })
+            .collect();
+
+        Ok(context_storage_entries)
     }
 }

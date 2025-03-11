@@ -1,5 +1,7 @@
 use std::io::Cursor;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -160,7 +162,10 @@ impl Method<Evm> for ProposalApprovalsRequest {
     const METHOD: &'static str = "get_confirmations_count";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+        let proposal_id_val = B256::from_slice(&proposal_id);
+
+        Ok(SolValue::abi_encode(&(proposal_id_val)))
     }
 
     fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
