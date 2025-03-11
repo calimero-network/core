@@ -3,6 +3,8 @@ use core::{mem, ptr};
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -227,7 +229,16 @@ impl<'a> Method<Evm> for PrivilegesRequest<'a> {
     const METHOD: &'static str = "privileges";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id_val = B256::from_slice(&context_id);
+
+        let mut identities_val = Vec::new();
+        for identity in self.identities.iter() {
+            let identity_raw: [u8; 32] = identity.rt().expect("infallible conversion");
+            identities_val.push(B256::from_slice(&identity_raw));
+        }
+
+        Ok(SolValue::abi_encode(&(context_id_val, identities_val)))
     }
 
     fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
