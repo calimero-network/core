@@ -2,8 +2,8 @@ use alloy::primitives::{Bytes, FixedBytes, B256};
 use alloy::sol;
 use alloy_sol_types::SolValue;
 
-use crate::repr::{ReprBytes, ReprTransmute};
-use crate::types::{Application, Capability};
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
+use crate::types::{Application, ApplicationMetadata, ApplicationSource, Capability};
 use crate::{ContextRequest, ContextRequestKind, RequestKind};
 
 sol! {
@@ -77,6 +77,18 @@ impl<'a> ToSol<SolApplication> for Application<'a> {
     }
 }
 
+impl From<SolApplication> for Application<'static> {
+    fn from(sol_app: SolApplication) -> Self {
+        Self {
+            id: sol_app.id.rt().expect("infallible conversion"),
+            blob: sol_app.blob.rt().expect("infallible conversion"),
+            size: sol_app.size,
+            source: ApplicationSource(std::borrow::Cow::Owned(sol_app.source)),
+            metadata: ApplicationMetadata(Repr::new(std::borrow::Cow::Owned(sol_app.metadata.to_vec()))),
+        }
+    }
+}
+
 // Implementation for converting Calimero Capability to SolCapability
 impl ToSol<SolCapability> for Capability {
     fn to_sol(&self) -> SolCapability {
@@ -113,7 +125,7 @@ impl<'a> ToSol<SolContextRequest> for ContextRequest<'a> {
 
         SolContextRequest {
             contextId: B256::from_slice(&context_id),
-            kind: SolContextRequestKind::Add,
+            kind: self.kind.to_sol(),
             data: Bytes::from(data),
         }
     }
@@ -137,6 +149,7 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
             data_encode[32..].to_vec()
         }
         ContextRequestKind::AddMembers { members } => {
+            println!("members: {:?}", members);
             // For AddMembers, we need to encode bytes32[] members
             // Convert the members to a Vec of FixedBytes
             let sol_members: Vec<FixedBytes<32>> = members

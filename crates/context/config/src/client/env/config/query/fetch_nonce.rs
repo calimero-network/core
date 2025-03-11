@@ -156,31 +156,7 @@ impl Method<Evm> for FetchNonceRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        // Check if the response is empty
-        if response.is_empty() {
-            return Err(eyre::eyre!(
-                "Empty response from contract. The context might not exist."
-            ));
-        }
-
-        // For a uint64, we expect exactly 32 bytes (padded uint)
-        if response.len() != 32 {
-            return Err(eyre::eyre!(
-                "Invalid response length: expected 32 bytes for uint64, got {} bytes",
-                response.len()
-            ));
-        }
-
-        // In Ethereum ABI, integers are big-endian and right-aligned in 32 bytes
-        // For uint64, we need the last 8 bytes
-        let uint_bytes = &response[24..32];
-
-        // Convert to u64
-        let nonce = u64::from_be_bytes(
-            uint_bytes
-                .try_into()
-                .map_err(|_| eyre::eyre!("Failed to convert bytes to u64"))?,
-        );
+        let nonce: u64 = SolValue::abi_decode(&response, false)?;
 
         Ok(Some(nonce))
     }

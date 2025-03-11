@@ -186,7 +186,7 @@ impl Network {
         ]; // Added "latest" block parameter
 
         // Send the eth_call and get the response
-        let response: String =
+        let response: Bytes =
             client
                 .request("eth_call", params)
                 .await
@@ -195,9 +195,9 @@ impl Network {
                     reason: format!("Failed to execute eth_call: {}", e),
                 })?;
 
-        let bytes = response.as_bytes().to_vec();
+        
 
-        Ok(bytes)
+        Ok(response.to_vec())
     }
 
     async fn mutate(
