@@ -148,7 +148,7 @@ impl Method<Stellar> for ContextVariableRequest {
 impl Method<Evm> for ContextVariableRequest {
     type Returns = Vec<u8>;
 
-    const METHOD: &'static str = "get_context_value";
+    const METHOD: &'static str = "getContextValue(bytes)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         Ok(SolValue::abi_encode(&(self.key)))

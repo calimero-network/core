@@ -23,7 +23,7 @@ use crate::icp::repr::ICRepr;
 use crate::icp::ICProposalWithApprovals;
 use crate::repr::ReprTransmute;
 use crate::stellar::StellarProposalWithApprovals;
-use crate::types::ProposalId;
+use crate::types::{Identity, ProposalId};
 use crate::{ProposalWithApprovals, Repr};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,7 +159,7 @@ impl Method<Stellar> for ProposalApprovalsRequest {
 impl Method<Evm> for ProposalApprovalsRequest {
     type Returns = ProposalWithApprovals;
 
-    const METHOD: &'static str = "get_confirmations_count";
+    const METHOD: &'static str = "getConfirmationsCount(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
@@ -168,7 +168,12 @@ impl Method<Evm> for ProposalApprovalsRequest {
         Ok(SolValue::abi_encode(&(proposal_id_val)))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let (proposal_id, num_approvals): (B256, u32) = SolValue::abi_decode(&response, false)?;
+
+        Ok(ProposalWithApprovals {
+            proposal_id: Repr::new(ProposalId(Identity(proposal_id.0))),
+            num_approvals: num_approvals as usize,
+        })
     }
 }

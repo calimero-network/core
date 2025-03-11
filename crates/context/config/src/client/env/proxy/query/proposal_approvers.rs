@@ -21,7 +21,7 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::{Repr, ReprTransmute};
-use crate::types::{ContextIdentity, ProposalId};
+use crate::types::{ContextIdentity, Identity, ProposalId};
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalApproversRequest {
@@ -178,7 +178,7 @@ impl Method<Stellar> for ProposalApproversRequest {
 impl Method<Evm> for ProposalApproversRequest {
     type Returns = Vec<ContextIdentity>;
 
-    const METHOD: &'static str = "proposal_approvers";
+    const METHOD: &'static str = "proposalApprovers(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
@@ -187,7 +187,8 @@ impl Method<Evm> for ProposalApproversRequest {
         Ok(SolValue::abi_encode(&(proposal_id_val)))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let _decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
+        todo!();
     }
 }

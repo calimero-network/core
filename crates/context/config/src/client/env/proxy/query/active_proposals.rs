@@ -103,7 +103,7 @@ impl Method<Stellar> for ActiveProposalRequest {
 impl Method<Evm> for ActiveProposalRequest {
     type Returns = u16;
 
-    const METHOD: &'static str = "get_active_proposals_limit";
+    const METHOD: &'static str = "getActiveProposalsLimit()";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         Ok(SolValue::abi_encode(&()))

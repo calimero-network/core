@@ -156,7 +156,7 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
 impl Method<Evm> for ContextStorageEntriesRequest {
     type Returns = Vec<ContextStorageEntry>;
 
-    const METHOD: &'static str = "context_storage_entries";
+    const METHOD: &'static str = "contextStorageEntries(uint32, uint32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let offset = u32::try_from(self.offset)
