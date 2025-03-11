@@ -1,6 +1,8 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -123,13 +125,18 @@ impl Method<Stellar> for MembersRevisionRequest {
 impl Method<Evm> for MembersRevisionRequest {
     type Returns = Revision;
 
-    const METHOD: &'static str = "members_revision";
+    const METHOD: &'static str = "membersRevision(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id_val = B256::from_slice(&context_id);
+
+        Ok(SolValue::abi_encode(&(context_id_val)))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let revision: u64 = SolValue::abi_decode(&response, false)?;
+
+        Ok(revision)
     }
 }

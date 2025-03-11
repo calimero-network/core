@@ -181,8 +181,8 @@ impl Network {
             json!("latest"),
         ];
 
-        let response: String =
-            self.client
+        let response: Bytes =
+            client
                 .request("eth_call", params)
                 .await
                 .map_err(|e| EvmError::Custom {
@@ -190,9 +190,7 @@ impl Network {
                     reason: format!("Failed to execute eth_call: {}", e),
                 })?;
 
-        let bytes = response.as_bytes().to_vec();
-
-        Ok(bytes)
+        Ok(response.to_vec())
     }
 
     async fn mutate(
