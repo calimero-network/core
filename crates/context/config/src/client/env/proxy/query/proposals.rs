@@ -150,7 +150,7 @@ impl Method<Stellar> for ProposalsRequest {
 impl Method<Evm> for ProposalsRequest {
     type Returns = Vec<Proposal>;
 
-    const METHOD: &'static str = "getProposals(uint32, uint32)";
+    const METHOD: &'static str = "getProposals(uint32,uint32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let offset = u32::try_from(self.offset)

@@ -21,7 +21,7 @@ use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::stellar::Stellar;
 use crate::icp::repr::ICRepr;
 use crate::repr::{Repr, ReprTransmute};
-use crate::types::{ContextIdentity, Identity, ProposalId};
+use crate::types::{ContextIdentity, ProposalId};
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProposalApproversRequest {
