@@ -188,7 +188,15 @@ impl Method<Evm> for ProposalApproversRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let _decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
-        todo!();
+        let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
+
+        let identities: Vec<[u8; 32]> = decoded.into_iter().map(|val| val.into()).collect();
+
+        let context_identities: Vec<ContextIdentity> = identities
+            .into_iter()
+            .map(|bytes| bytes.rt().expect("infallible conversion"))
+            .collect();
+
+        Ok(context_identities)
     }
 }
