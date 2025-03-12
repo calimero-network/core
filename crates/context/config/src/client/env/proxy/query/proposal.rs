@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -7,6 +8,7 @@ use soroban_sdk::{BytesN, Env, IntoVal, TryFromVal, Val};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
+use crate::client::env::proxy::evm::SolProposal;
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetProposal, StarknetProposalId};
 use crate::client::env::Method;
@@ -168,7 +170,16 @@ impl Method<Evm> for ProposalRequest {
         todo!()
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        // If response is empty or all zeros, return None
+        if response.is_empty() || response.iter().all(|&b| b == 0) {
+            return Ok(None);
+        }
+
+        // Decode the SolProposal from the response
+        let sol_proposal: SolProposal = SolValue::abi_decode(&response, false)?;
+        
+        // Convert to our Proposal type using the From implementation we created
+        Ok(Some(sol_proposal.into()))
     }
 }
