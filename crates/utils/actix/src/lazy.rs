@@ -305,10 +305,18 @@ struct LazyStore {
 
 pub struct Lazy<T: Receiver> {
     inner: Arc<LazyResolver<T>>,
-    store: Arc<Mutex<LazyStore>>,
+    store: Option<Arc<Mutex<LazyStore>>>,
 }
 
 impl LazyStore {
+    fn new(items: VecDeque<(TypeId, DynErased)>) -> Self {
+        LazyStore {
+            state: AtomicBool::new(false),
+            event: None,
+            items,
+        }
+    }
+
     fn is_initialized(&self) -> bool {
         self.state.load(Ordering::Acquire)
     }
@@ -319,6 +327,15 @@ impl LazyStore {
 
     fn initialize(&self) -> bool {
         !self.state.swap(true, Ordering::Acquire)
+    }
+}
+
+impl<T: Receiver> LazyInner<T> {
+    fn new(recvr: Option<T>) -> Self {
+        LazyInner {
+            recvr,
+            queue: Default::default(),
+        }
     }
 }
 
@@ -335,16 +352,13 @@ impl<T: Receiver> fmt::Debug for Lazy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let path = type_name::<Self>();
         let path = utils::compact_path(path).format("");
-        write!(f, "{} {{ {:p} }}", path, self.store)
+        write!(f, "{}", path)
     }
 }
 
 impl<T: Receiver> Lazy<T> {
     pub fn new() -> Self {
-        let inner = Arc::new(Mutex::new(LazyInner {
-            recvr: None,
-            queue: Default::default(),
-        }));
+        let inner = Arc::new(Mutex::new(LazyInner::new(None)));
 
         let mut items = VecDeque::new();
 
@@ -352,13 +366,12 @@ impl<T: Receiver> Lazy<T> {
             items.push_back(item);
         }
 
-        let store = Arc::new(Mutex::new(LazyStore {
-            state: AtomicBool::new(false),
-            event: None,
-            items,
-        }));
+        let store = Arc::new(Mutex::new(LazyStore::new(items)));
 
-        Self { inner, store }
+        Self {
+            inner,
+            store: Some(store),
+        }
     }
 }
 
@@ -378,31 +391,42 @@ where
             inner.recvr.as_ref().map(|addr| addr.clone().recipient())
         };
 
-        let is_ready = recvr.is_some();
-
-        let mut store = self.store.spin_lock();
-
-        let this_id = TypeId::of::<LazyResolver<Recipient<M>>>();
-
         let inner = 'done: {
-            for (that_id, item) in store.items.iter() {
-                if this_id == *that_id {
-                    if let Some(weak) = item.downcast_ref::<A>().upgrade() {
-                        if let Ok(resolver) = weak.downcast_arc::<LazyResolver<Recipient<M>>>() {
-                            break 'done resolver;
-                        }
-                    }
+            let mut store = 'store: {
+                if recvr.is_some() {
+                    break 'store None;
+                }
 
-                    break;
+                let store = (&raw const self.store).cast_mut();
+                let store = unsafe { &mut *store };
+
+                let store = store.get_or_insert_with(|| {
+                    Arc::new(Mutex::new(LazyStore::new(Default::default())))
+                });
+
+                let this_id = TypeId::of::<LazyResolver<Recipient<M>>>();
+
+                Some((store.spin_lock(), this_id))
+            };
+
+            if let Some((store, this_id)) = &mut store {
+                for (that_id, item) in store.items.iter() {
+                    if this_id == that_id {
+                        if let Some(weak) = item.downcast_ref::<A>().upgrade() {
+                            if let Ok(resolver) = weak.downcast_arc::<LazyResolver<Recipient<M>>>()
+                            {
+                                break 'done resolver;
+                            }
+                        }
+
+                        break;
+                    }
                 }
             }
 
-            let inner = Arc::new(Mutex::new(LazyInner {
-                recvr,
-                queue: Default::default(),
-            }));
+            let inner = Arc::new(Mutex::new(LazyInner::new(recvr)));
 
-            if !is_ready {
+            if let Some((mut store, this_id)) = store {
                 let item = DynErased::erase::<A, _>(Arc::downgrade(&inner));
 
                 store.items.push_back((this_id, item));
@@ -425,15 +449,19 @@ impl<T: Receiver + 'static> Lazy<T> {
         T::Item: IntoEnvelope<A>,
         Addr<A>: IntoRef<T>,
     {
+        let Some(store) = &self.store else {
+            return false;
+        };
+
         {
-            let store = (&raw const *self.store).cast_mut();
+            let store = (&raw const **store).cast_mut();
             let store = unsafe { &mut *store };
             if !store.get_mut().initialize() {
                 return false;
             }
         };
 
-        let mut store = self.store.clone().spin_lock_owned();
+        let mut store = store.clone().spin_lock_owned();
 
         #[expect(trivial_casts, reason = "false flag, doesn't compile without it")]
         let maybe_inner = store
@@ -457,6 +485,8 @@ impl<T: Receiver + 'static> Lazy<T> {
             if let Some(notify) = store.event.take() {
                 notify.notify_waiters();
             }
+
+            // ?? can we drop all references to store here? free up the allocation
         });
 
         let resolve_pending = wrap_stream(pending_items)
@@ -488,7 +518,12 @@ impl<T: Receiver + Clone> Lazy<T> {
         }
 
         let notify = {
-            let mut store = self.store.lock().await;
+            let store = self
+                .store
+                .as_ref()
+                .expect("recvr must've been set if store is none");
+
+            let mut store = store.lock().await;
 
             if store.is_ready() {
                 return self
@@ -582,18 +617,9 @@ impl<T: Receiver> Eq for Lazy<T> {}
 
 impl<T: Receiver> From<T> for Lazy<T> {
     fn from(recvr: T) -> Self {
-        let inner = Arc::new(Mutex::new(LazyInner {
-            recvr: Some(recvr),
-            queue: Default::default(),
-        }));
+        let inner = Arc::new(Mutex::new(LazyInner::new(Some(recvr))));
 
-        let store = Arc::new(Mutex::new(LazyStore {
-            state: AtomicBool::new(false),
-            event: None,
-            items: Default::default(),
-        }));
-
-        Self { inner, store }
+        Self { inner, store: None }
     }
 }
 
