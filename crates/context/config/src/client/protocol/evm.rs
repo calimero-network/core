@@ -4,8 +4,10 @@ use std::str::FromStr;
 
 use alloy::network::EthereumWallet;
 use alloy::primitives::{keccak256, Address, Bytes};
-use alloy::providers::{Provider, ProviderBuilder};
-use alloy::rpc::client::{ClientBuilder, ReqwestClient};
+use alloy::providers::fillers::{
+    BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller,
+};
+use alloy::providers::{Identity, Provider, ProviderBuilder, RootProvider};
 use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
@@ -73,9 +75,16 @@ pub struct EvmConfig<'a> {
 
 #[derive(Clone, Debug)]
 struct Network {
-    client: ReqwestClient,
-    rpc_url: String,
-    secret_key: String,
+    provider: FillProvider<
+        JoinFill<
+            JoinFill<
+                Identity,
+                JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+            >,
+            WalletFiller<EthereumWallet>,
+        >,
+        RootProvider,
+    >,
 }
 
 #[derive(Clone, Debug)]
@@ -89,14 +98,15 @@ impl<'a> EvmTransport<'a> {
         let mut networks = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
-            let _ignored = networks.insert(
-                network_id.clone(),
-                Network {
-                    client: ClientBuilder::default().http(network_config.rpc_url.clone()),
-                    rpc_url: network_config.rpc_url.clone().to_string(),
-                    secret_key: network_config.access_key.clone(),
-                },
-            );
+            let signer: PrivateKeySigner =
+                PrivateKeySigner::from_str(&network_config.access_key).unwrap();
+            let wallet = EthereumWallet::from(signer);
+
+            let provider = ProviderBuilder::new()
+                .wallet(wallet)
+                .on_http(network_config.rpc_url.clone());
+
+            let _ignored = networks.insert(network_id.clone(), Network { provider });
         }
 
         Self { networks }
@@ -181,14 +191,15 @@ impl Network {
             json!("latest"),
         ];
 
-        let response: Bytes =
-            self.client
-                .request("eth_call", params)
-                .await
-                .map_err(|e| EvmError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: format!("Failed to execute eth_call: {}", e),
-                })?;
+        let response: Bytes = self
+            .provider
+            .client()
+            .request("eth_call", params)
+            .await
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Query,
+                reason: format!("Failed to execute eth_call: {}", e),
+            })?;
 
         Ok(response.to_vec())
     }
@@ -199,17 +210,6 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, EvmError> {
-        let signer: PrivateKeySigner = PrivateKeySigner::from_str(&self.secret_key).unwrap();
-        let wallet = EthereumWallet::from(signer);
-
-        let provider =
-            ProviderBuilder::new()
-                .wallet(wallet)
-                .on_http(Url::parse(&self.rpc_url).map_err(|e| EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                })?);
-
         let address = contract_id
             .parse::<Address>()
             .map_err(|e| EvmError::Custom {
@@ -233,13 +233,14 @@ impl Network {
                 data: None,
             });
 
-        let tx_builder = provider
-            .send_transaction(tx)
-            .await
-            .map_err(|e| EvmError::Custom {
-                operation: ErrorOperation::Mutate,
-                reason: e.to_string(),
-            })?;
+        let tx_builder =
+            self.provider
+                .send_transaction(tx)
+                .await
+                .map_err(|e| EvmError::Custom {
+                    operation: ErrorOperation::Mutate,
+                    reason: e.to_string(),
+                })?;
         let tx_hash = tx_builder.tx_hash();
 
         let mut receipt = None;
@@ -248,7 +249,8 @@ impl Network {
         for _ in 0..30 {
             let receipt_params = vec![json!(tx_hash)];
             let result: Option<serde_json::Value> = self
-                .client
+                .provider
+                .client()
                 .request("eth_getTransactionReceipt", receipt_params)
                 .await
                 .map_err(|e| EvmError::Custom {
