@@ -11,7 +11,6 @@ use alloy::providers::{Identity, Provider, ProviderBuilder, RootProvider};
 use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use thiserror::Error;
 use url::Url;
 
@@ -183,25 +182,20 @@ impl Network {
 
         let call_data = [method_selector, &args].concat();
 
-        let params = vec![
-            json!({
-                "to": address,
-                "data": Bytes::from(call_data)
-            }),
-            json!("latest"),
-        ];
+        let request = TransactionRequest::default()
+            .to(address)
+            .input(Bytes::from(call_data).into());
 
-        let response: Bytes = self
+        let bytes = self
             .provider
-            .client()
-            .request("eth_call", params)
+            .call(&request)
             .await
             .map_err(|e| EvmError::Custom {
                 operation: ErrorOperation::Query,
                 reason: format!("Failed to execute eth_call: {}", e),
             })?;
 
-        Ok(response.to_vec())
+        Ok(bytes.to_vec())
     }
 
     async fn mutate(
@@ -247,11 +241,9 @@ impl Network {
 
         // Wait for the transaction to be mined
         for _ in 0..30 {
-            let receipt_params = vec![json!(tx_hash)];
-            let result: Option<serde_json::Value> = self
+            let result = self
                 .provider
-                .client()
-                .request("eth_getTransactionReceipt", receipt_params)
+                .get_transaction_receipt(*tx_hash)
                 .await
                 .map_err(|e| EvmError::Custom {
                     operation: ErrorOperation::Mutate,
@@ -273,18 +265,13 @@ impl Network {
             });
         };
 
-        let status = receipt
-            .get("status")
-            .and_then(|s| s.as_str())
-            .unwrap_or("0x0");
-
-        if status == "0x1" {
+        if receipt.status() {
             return Ok(Vec::new());
         }
 
         Err(EvmError::Custom {
             operation: ErrorOperation::Mutate,
-            reason: format!("Transaction failed with status: {}.", status),
+            reason: format!("Transaction failed"),
         })
     }
 }
