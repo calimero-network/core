@@ -1,7 +1,7 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
-use alloy::primitives::{B256, U64};
+use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;

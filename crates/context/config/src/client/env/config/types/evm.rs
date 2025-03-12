@@ -15,6 +15,11 @@ sol! {
       bytes metadata;
   }
 
+  struct SolUserCapabilities {
+      bytes32 userId;
+      SolCapability[] capabilities;
+  }
+
   enum SolContextRequestKind {
       Add,
       AddMembers,

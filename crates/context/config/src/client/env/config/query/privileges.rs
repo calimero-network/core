@@ -12,6 +12,7 @@ use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
 
+use crate::client::env::config::types::evm::{SolCapability, SolUserCapabilities};
 use crate::client::env::config::types::starknet::{
     CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
     StarknetPrivileges,
@@ -26,7 +27,7 @@ use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
 use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::StellarCapability;
-use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
+use crate::types::{Capability, ContextId, ContextIdentity, Identity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct PrivilegesRequest<'a> {
@@ -232,16 +233,47 @@ impl<'a> Method<Evm> for PrivilegesRequest<'a> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let context_id_val = B256::from_slice(&context_id);
 
-        let mut identities_val = Vec::new();
-        for identity in self.identities.iter() {
-            let identity_raw: [u8; 32] = identity.rt().expect("infallible conversion");
-            identities_val.push(B256::from_slice(&identity_raw));
-        }
+        // Convert identities to Vec<B256>
+        let identities: Vec<B256> = self
+            .identities
+            .into_iter()
+            .map(|id| {
+                let bytes: [u8; 32] = id.rt().expect("infallible conversion");
+                B256::from_slice(&bytes)
+            })
+            .collect();
 
-        Ok(SolValue::abi_encode(&(context_id_val, identities_val)))
+        Ok(SolValue::abi_encode(&(context_id_val, identities)))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let user_caps: Vec<SolUserCapabilities> = SolValue::abi_decode(&response, false)?;
+
+        let mut result = BTreeMap::new();
+
+        for user_cap in user_caps {
+            let bytes: [u8; 32] = user_cap.userId.into();
+            let user_id = SignerId(Identity(bytes));
+
+            let capabilities = user_cap
+                .capabilities
+                .into_iter()
+                .map(|cap| match cap {
+                    SolCapability::ManageApplication => Capability::ManageApplication,
+                    SolCapability::ManageMembers => Capability::ManageMembers,
+                    SolCapability::Proxy => Capability::Proxy,
+                    SolCapability::__Invalid => {
+                        panic!("Invalid capability encountered in response")
+                    }
+                })
+                .collect();
+
+            assert!(
+                result.insert(user_id, capabilities).is_none(),
+                "Duplicate user ID in response"
+            );
+        }
+
+        Ok(result)
     }
 }
