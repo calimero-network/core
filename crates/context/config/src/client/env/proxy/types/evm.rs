@@ -1,12 +1,11 @@
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{keccak256, B256, U256};
 use alloy_sol_types::{sol, SolValue};
 
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprTransmute};
 use crate::types::{Identity, ProposalId, SignerId};
-use crate::{Proposal, ProposalAction};
+use crate::{Proposal, ProposalAction, ProxyMutateRequest};
 
 sol! {
-    // Data structures
     enum SolProposalActionKind {
       ExternalFunctionCall,
       Transfer,
@@ -41,6 +40,73 @@ sol! {
     struct ContextValueData {
         bytes key;
         bytes value;
+    }
+
+    struct SolProposalWithApprovals {
+        bytes32 proposalId;
+        uint32 numApprovals;
+    }
+
+    struct SolProposalApprovalWithSigner {
+        bytes32 proposalId;
+        bytes32 userId;
+    }
+
+    enum SolContextRequestKind {
+        Add,
+        AddMembers,
+        RemoveMembers,
+        AddCapability,
+        RevokeCapability
+    }
+
+    enum SolCapability {
+        ManageApplication,
+        ManageMembers,
+        Proxy
+    }
+
+    enum SolRequestKind {
+        Propose,
+        Approve
+    }
+
+    struct SolContextRequest {
+        bytes32 contextId;
+        SolContextRequestKind kind;
+        bytes data;
+    }
+
+    struct SolRequest {
+        bytes32 signerId;
+        bytes32 userId;
+        SolRequestKind kind;
+        bytes data;
+    }
+
+
+    struct SolSignedRequest {
+        SolRequest payload;
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+    }
+}
+
+impl From<ProposalAction> for SolProposalActionKind {
+    fn from(action: ProposalAction) -> Self {
+        match action {
+            ProposalAction::ExternalFunctionCall { .. } => {
+                SolProposalActionKind::ExternalFunctionCall
+            }
+            ProposalAction::Transfer { .. } => SolProposalActionKind::Transfer,
+            ProposalAction::SetNumApprovals { .. } => SolProposalActionKind::SetNumApprovals,
+            ProposalAction::SetActiveProposalsLimit { .. } => {
+                SolProposalActionKind::SetActiveProposalsLimit
+            }
+            ProposalAction::SetContextValue { .. } => SolProposalActionKind::SetContextValue,
+            ProposalAction::DeleteProposal { .. } => SolProposalActionKind::DeleteProposal,
+        }
     }
 }
 
@@ -117,23 +183,104 @@ impl From<SolProposalAction> for ProposalAction {
     }
 }
 
-// We'll need to define this enum to match the Solidity contract's action data structures
-#[derive(Debug)]
-pub enum ProposalActionData {
-    ExternalFunctionCall {
-        target: Address,
-        call_data: Vec<u8>,
-        value: u128,
-    },
-    Transfer {
-        recipient: Address,
-        amount: u128,
-    },
-    SetNumApprovals(u32),
-    SetActiveProposalsLimit(u32),
-    SetContextValue {
-        key: Vec<u8>,
-        value: Vec<u8>,
-    },
-    DeleteProposal(ProposalId),
+impl From<ProposalAction> for SolProposalAction {
+    fn from(action: ProposalAction) -> Self {
+        SolProposalAction {
+            kind: action.clone().into(),
+            data: match action {
+                ProposalAction::ExternalFunctionCall {
+                    receiver_id,
+                    method_name,
+                    args,
+                    deposit,
+                } => {
+                    let method_selector = &keccak256(method_name.as_bytes());
+
+                    let mut selector = [0u8; 4];
+                    selector.copy_from_slice(&method_selector[0..4]);
+
+                    let mut call_data = Vec::with_capacity(4 + args.len());
+                    call_data.extend_from_slice(&selector);
+                    call_data.extend_from_slice(&args.as_bytes());
+
+                    let data = ExternalFunctionCallData {
+                        target: receiver_id.parse().expect("Invalid address"),
+                        callData: call_data.into(),
+                        value: U256::from(deposit),
+                    };
+                    data.abi_encode().into()
+                }
+                ProposalAction::Transfer {
+                    receiver_id,
+                    amount,
+                } => {
+                    let data = TransferData {
+                        recipient: receiver_id.parse().expect("Invalid address"),
+                        amount: U256::from(amount),
+                    };
+                    data.abi_encode().into()
+                }
+                ProposalAction::SetNumApprovals { num_approvals } => {
+                    num_approvals.abi_encode().into()
+                }
+                ProposalAction::SetActiveProposalsLimit {
+                    active_proposals_limit,
+                } => active_proposals_limit.abi_encode().into(),
+                ProposalAction::SetContextValue { key, value } => {
+                    let data = ContextValueData {
+                        key: key.to_vec().into(),
+                        value: value.to_vec().into(),
+                    };
+                    data.abi_encode().into()
+                }
+                ProposalAction::DeleteProposal { proposal_id } => {
+                    let proposal_id: [u8; 32] = proposal_id.rt().expect("infallible conversion");
+                    proposal_id.abi_encode().into()
+                }
+            },
+        }
+    }
+}
+
+impl From<&ProxyMutateRequest> for SolRequestKind {
+    fn from(request: &ProxyMutateRequest) -> Self {
+        match request {
+            ProxyMutateRequest::Propose { .. } => SolRequestKind::Propose,
+            ProxyMutateRequest::Approve { .. } => SolRequestKind::Approve,
+        }
+    }
+}
+
+impl From<&ProxyMutateRequest> for Vec<u8> {
+    fn from(request: &ProxyMutateRequest) -> Self {
+        match request {
+            ProxyMutateRequest::Propose { proposal } => {
+                let proposal_action: Vec<SolProposalAction> = proposal
+                    .actions
+                    .iter()
+                    .map(|action| SolProposalAction::from(action.clone()))
+                    .collect();
+                let proposal_id: [u8; 32] = proposal.id.rt().expect("infallible conversion");
+                let signer_id: [u8; 32] = proposal.author_id.rt().expect("infallible conversion");
+
+                let sol_proposal = SolProposal {
+                    id: B256::from(proposal_id),
+                    authorId: B256::from(signer_id),
+                    actions: proposal_action,
+                };
+
+                SolValue::abi_encode(&sol_proposal)
+            }
+            ProxyMutateRequest::Approve { approval } => {
+                let proposal_id: [u8; 32] =
+                    approval.proposal_id.rt().expect("infallible conversion");
+                let signer_id: [u8; 32] = approval.signer_id.rt().expect("infallible conversion");
+                let proposal_approval = SolProposalApprovalWithSigner {
+                    proposalId: B256::from(proposal_id),
+                    userId: B256::from(signer_id),
+                };
+                SolValue::abi_encode(&proposal_approval)
+            }
+        }
+    }
 }
