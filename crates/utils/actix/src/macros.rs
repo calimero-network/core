@@ -4,17 +4,18 @@ mod macros_tests;
 
 #[doc(hidden)]
 pub mod __private {
-    #![allow(dead_code, unused_imports)]
+    #![allow(dead_code, unused_imports, reason = "Macros")]
 
     pub use std::boxed::Box;
     pub use std::ops::DerefMut;
     pub use std::ptr;
 
-    pub use crate::spawn_actor;
     pub use actix::{AsyncContext, Context, Handler, Message, StreamHandler};
     pub use futures_util::{pin_mut, FutureExt, Stream, StreamExt};
     pub use paste::paste;
     pub use tokio::{select, task};
+
+    pub use crate::spawn_actor;
 
     #[derive(Debug, Message)]
     #[rtype("()")]
