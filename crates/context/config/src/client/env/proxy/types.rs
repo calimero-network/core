@@ -1,2 +1,2 @@
-pub mod starknet;
 pub mod evm;
+pub mod starknet;

@@ -178,7 +178,7 @@ impl Method<Evm> for ProposalRequest {
 
         // Decode the SolProposal from the response
         let sol_proposal: SolProposal = SolValue::abi_decode(&response, false)?;
-        
+
         // Convert to our Proposal type using the From implementation we created
         Ok(Some(sol_proposal.into()))
     }

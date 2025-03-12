@@ -1,7 +1,9 @@
-use alloy_sol_types::{sol, SolValue};
 use alloy::primitives::{Address, Bytes, U256};
+use alloy_sol_types::{sol, SolValue};
 
-use crate::{repr::Repr, types::{Identity, ProposalId, SignerId}, Proposal, ProposalAction};
+use crate::repr::Repr;
+use crate::types::{Identity, ProposalId, SignerId};
+use crate::{Proposal, ProposalAction};
 
 sol! {
     // Data structures
@@ -57,58 +59,57 @@ impl From<SolProposalAction> for ProposalAction {
     fn from(action: SolProposalAction) -> Self {
         match action.kind {
             SolProposalActionKind::ExternalFunctionCall => {
-                let data: ExternalFunctionCallData = 
-                    SolValue::abi_decode(&action.data, false)
-                        .expect("Invalid external call data");
+                let data: ExternalFunctionCallData =
+                    SolValue::abi_decode(&action.data, false).expect("Invalid external call data");
                 ProposalAction::ExternalFunctionCall {
                     receiver_id: format!("{:?}", data.target),
                     method_name: String::from_utf8(data.callData[..4].to_vec())
                         .expect("Invalid method name"),
-                    args: String::from_utf8(data.callData[4..].to_vec())
-                        .expect("Invalid args"),
-                    deposit: data.value.try_into()
+                    args: String::from_utf8(data.callData[4..].to_vec()).expect("Invalid args"),
+                    deposit: data
+                        .value
+                        .try_into()
                         .expect("Amount too large for native token"),
                 }
-            },
+            }
             SolProposalActionKind::Transfer => {
-                let data: TransferData = 
-                    SolValue::abi_decode(&action.data, false)
-                        .expect("Invalid transfer data");
+                let data: TransferData =
+                    SolValue::abi_decode(&action.data, false).expect("Invalid transfer data");
                 ProposalAction::Transfer {
                     receiver_id: format!("{:?}", data.recipient),
-                    amount: data.amount.try_into()
+                    amount: data
+                        .amount
+                        .try_into()
                         .expect("Amount too large for native token"),
                 }
-            },
+            }
             SolProposalActionKind::SetNumApprovals => {
-                let num_approvals: u32 = 
-                    SolValue::abi_decode(&action.data, false)
-                        .expect("Invalid num approvals data");
+                let num_approvals: u32 =
+                    SolValue::abi_decode(&action.data, false).expect("Invalid num approvals data");
                 ProposalAction::SetNumApprovals { num_approvals }
-            },
+            }
             SolProposalActionKind::SetActiveProposalsLimit => {
-                let active_proposals_limit: u32 = 
-                    SolValue::abi_decode(&action.data, false)
-                        .expect("Invalid proposals limit data");
-                ProposalAction::SetActiveProposalsLimit { active_proposals_limit }
-            },
+                let active_proposals_limit: u32 = SolValue::abi_decode(&action.data, false)
+                    .expect("Invalid proposals limit data");
+                ProposalAction::SetActiveProposalsLimit {
+                    active_proposals_limit,
+                }
+            }
             SolProposalActionKind::SetContextValue => {
-                let data: ContextValueData = 
-                    SolValue::abi_decode(&action.data, false)
-                        .expect("Invalid context value data");
+                let data: ContextValueData =
+                    SolValue::abi_decode(&action.data, false).expect("Invalid context value data");
                 ProposalAction::SetContextValue {
                     key: data.key.to_vec().into_boxed_slice(),
                     value: data.value.to_vec().into_boxed_slice(),
                 }
-            },
+            }
             SolProposalActionKind::DeleteProposal => {
-                let proposal_id: [u8; 32] = 
-                    SolValue::abi_decode(&action.data, false)
-                        .expect("Invalid proposal id data");
+                let proposal_id: [u8; 32] =
+                    SolValue::abi_decode(&action.data, false).expect("Invalid proposal id data");
                 ProposalAction::DeleteProposal {
                     proposal_id: Repr::new(ProposalId(Identity(proposal_id))),
                 }
-            },
+            }
             SolProposalActionKind::__Invalid => {
                 panic!("Invalid proposal action kind encountered in response")
             }

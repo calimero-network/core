@@ -234,7 +234,8 @@ impl<'a> Method<Evm> for PrivilegesRequest<'a> {
         let context_id_val = B256::from_slice(&context_id);
 
         // Convert identities to Vec<B256>
-        let identities: Vec<B256> = self.identities
+        let identities: Vec<B256> = self
+            .identities
             .into_iter()
             .map(|id| {
                 let bytes: [u8; 32] = id.rt().expect("infallible conversion");
@@ -247,14 +248,15 @@ impl<'a> Method<Evm> for PrivilegesRequest<'a> {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let user_caps: Vec<SolUserCapabilities> = SolValue::abi_decode(&response, false)?;
-        
+
         let mut result = BTreeMap::new();
-        
+
         for user_cap in user_caps {
             let bytes: [u8; 32] = user_cap.userId.into();
             let user_id = SignerId(Identity(bytes));
-                
-            let capabilities = user_cap.capabilities
+
+            let capabilities = user_cap
+                .capabilities
                 .into_iter()
                 .map(|cap| match cap {
                     SolCapability::ManageApplication => Capability::ManageApplication,
@@ -265,11 +267,13 @@ impl<'a> Method<Evm> for PrivilegesRequest<'a> {
                     }
                 })
                 .collect();
-                
-            assert!(result.insert(user_id, capabilities).is_none(), 
-                "Duplicate user ID in response");
+
+            assert!(
+                result.insert(user_id, capabilities).is_none(),
+                "Duplicate user ID in response"
+            );
         }
-        
+
         Ok(result)
     }
 }
