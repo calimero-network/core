@@ -21,7 +21,7 @@ sol! {
       SolProposalActionKind kind;
       bytes data;
     }
-    
+
     #[derive(Debug)]
     struct SolProposal {
       bytes32 id;
