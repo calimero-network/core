@@ -27,9 +27,7 @@ impl Test for CallStep {
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
-        let Some(ref context_id) = ctx.context_id else {
-            bail!("Context ID is required for JsonRpcExecuteStep");
-        };
+        let context_id;
 
         let mut public_keys = HashMap::new();
         if let Some(ref inviter_public_key) = ctx.inviter_public_key {
@@ -38,15 +36,30 @@ impl Test for CallStep {
             bail!("Inviter public key is required for JsonRpcExecuteStep");
         }
 
-        if matches!(self.target, CallTarget::AllMembers) {
-            for invitee in &ctx.invitees {
-                if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
-                    drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
+        match self.target {
+            CallTarget::Inviter => {
+                if let Some(ref alias) = ctx.context_alias {
+                    context_id = alias;
                 } else {
-                    bail!(
-                        "Public key for invitee '{}' is required for JsonRpcExecuteStep",
-                        invitee
-                    );
+                    bail!("Alias is required for JsonRpcExecuteStep on the Inviter node");
+                };
+            }
+            CallTarget::AllMembers => {
+                if let Some(ref id) = ctx.context_id {
+                    context_id = id;
+                } else {
+                    bail!("Context ID is required for JsonRpcExecuteStep with AllMembers target");
+                }
+
+                for invitee in &ctx.invitees {
+                    if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
+                        drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
+                    } else {
+                        bail!(
+                            "Public key for invitee '{}' is required for JsonRpcExecuteStep",
+                            invitee
+                        );
+                    }
                 }
             }
         }
