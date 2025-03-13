@@ -11,6 +11,7 @@ use crate::client::env::proxy::starknet::{
     CallData, ContextStorageEntriesResponse, StarknetContextStorageEntriesRequest,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -147,5 +148,19 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
             .collect();
 
         Ok(result)
+    }
+}
+
+impl Method<Evm> for ContextStorageEntriesRequest {
+    type Returns = Vec<ContextStorageEntry>;
+
+    const METHOD: &'static str = "context_storage_entries";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        todo!()
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        todo!()
     }
 }

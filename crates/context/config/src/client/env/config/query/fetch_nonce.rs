@@ -1,6 +1,8 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -11,6 +13,7 @@ use crate::client::env::config::types::starknet::{
     CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -133,6 +136,27 @@ impl Method<Stellar> for FetchNonceRequest {
         let nonce: u64 = sc_val
             .try_into()
             .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
+
+        Ok(Some(nonce))
+    }
+}
+
+impl Method<Evm> for FetchNonceRequest {
+    type Returns = Option<u64>;
+
+    const METHOD: &'static str = "fetchNonce(bytes32,bytes32)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id_val = B256::from_slice(&context_id);
+        let member_id: [u8; 32] = self.member_id.rt().expect("infallible conversion");
+        let member_id_val = B256::from_slice(&member_id);
+
+        Ok(SolValue::abi_encode(&(context_id_val, member_id_val)))
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let nonce: u64 = SolValue::abi_decode(&response, false)?;
 
         Ok(Some(nonce))
     }

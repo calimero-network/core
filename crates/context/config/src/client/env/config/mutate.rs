@@ -20,10 +20,21 @@ use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::{
     StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
-use crate::types::Signed;
-use crate::{ContextIdentity, Request, RequestKind};
+use crate::types::{Signed, SignerId};
+use crate::{ContextIdentity, ContextRequestKind, Request, RequestKind};
 pub mod methods;
 
+use alloy::primitives::{keccak256, Bytes, B256};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::{Signature, SignerSync};
+use alloy_sol_types::SolValue;
+
+use super::types::evm::{
+    SolApplication, SolContextRequest, SolContextRequestKind, SolRequest, SolRequestKind,
+    SolSignedRequest,
+};
+use crate::client::env::config::types::evm::ToSol;
+use crate::client::protocol::evm::Evm;
 use crate::stellar::stellar_types::FromWithEnv;
 
 #[derive(Debug)]
@@ -196,6 +207,68 @@ impl<'a> Method<Stellar> for Mutate<'a> {
         let bytes: Vec<u8> = signed_request.to_xdr(&env).into_iter().collect();
 
         Ok(bytes)
+    }
+
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        Ok(())
+    }
+}
+
+impl<'a> Method<Evm> for Mutate<'a> {
+    type Returns = ();
+    // The method needs to be encoded as a tuple with arguments that it expects
+    const METHOD: &'static str =
+        "mutate(((bytes32,bytes32,uint64,uint8,bytes),bytes32,bytes32,uint8))";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let ed25519_key = SigningKey::from_bytes(&self.signing_key);
+        let user_id_bytes = ed25519_key.verifying_key().to_bytes();
+        let user_id = B256::from_slice(&user_id_bytes);
+
+        let ecdsa_private_key_input =
+            ["ECDSA_DERIVE".as_bytes(), &self.signing_key.as_slice()].concat();
+        let ecdsa_private_key_bytes = keccak256(&ecdsa_private_key_input);
+        let signer = PrivateKeySigner::from_bytes(&ecdsa_private_key_bytes)?;
+        let address = signer.address();
+        let ecdsa_public_key = address.into_word();
+
+        let context_request = match &self.kind {
+            RequestKind::Context(req) => req.to_sol(),
+        };
+
+        let encoded_request = SolValue::abi_encode(&context_request);
+
+        let sol_request = SolRequest {
+            signerId: ecdsa_public_key,
+            userId: user_id,
+            nonce: self.nonce,
+            kind: SolRequestKind::Context,
+            data: encoded_request.into(),
+        };
+
+        let request_message = SolValue::abi_encode(&sol_request);
+
+        let message_hash = keccak256(&request_message);
+        let signature: Signature = signer.sign_message_sync(&message_hash.as_slice())?;
+
+        let r = B256::from(signature.r());
+        let s = B256::from(signature.s());
+        let v = if signature.recid().to_byte() == 0 {
+            27
+        } else {
+            28
+        };
+
+        let signed_request = SolSignedRequest {
+            payload: sol_request,
+            r,
+            s,
+            v,
+        };
+
+        let encoded = SolValue::abi_encode(&signed_request);
+
+        Ok(encoded)
     }
 
     fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {

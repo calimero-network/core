@@ -1,4 +1,6 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -6,10 +8,12 @@ use soroban_sdk::{Bytes, BytesN, Env, IntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
+use crate::client::env::config::types::evm::SolApplication;
 use crate::client::env::config::types::starknet::{
     Application as StarknetApplication, CallData, FeltPair,
 };
 use crate::client::env::Method;
+use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -145,6 +149,26 @@ impl Method<Stellar> for ApplicationRequest {
             .map_err(|_| eyre::eyre!("Failed to deserialize response"))?;
 
         let application: Application<'_> = stellar_application.into();
+
+        Ok(application)
+    }
+}
+
+impl Method<Evm> for ApplicationRequest {
+    type Returns = Application<'static>;
+
+    const METHOD: &'static str = "application(bytes32)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+        let context_id_val = B256::from_slice(&context_id);
+
+        Ok(SolValue::abi_encode(&(context_id_val)))
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let application: SolApplication = SolValue::abi_decode(&response, false)?;
+        let application: Application<'static> = application.into();
 
         Ok(application)
     }
