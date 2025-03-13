@@ -3,12 +3,9 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use alloy::eips::BlockId;
-use alloy::network::EthereumWallet;
+use alloy::network::{Ethereum, EthereumWallet};
 use alloy::primitives::{keccak256, Address, Bytes};
-use alloy::providers::fillers::{
-    BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller,
-};
-use alloy::providers::{Identity, Provider, ProviderBuilder, RootProvider};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
@@ -75,16 +72,7 @@ pub struct EvmConfig<'a> {
 
 #[derive(Clone, Debug)]
 struct Network {
-    provider: FillProvider<
-        JoinFill<
-            JoinFill<
-                Identity,
-                JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
-            >,
-            WalletFiller<EthereumWallet>,
-        >,
-        RootProvider,
-    >,
+    provider: DynProvider<Ethereum>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,11 +88,13 @@ impl<'a> EvmTransport<'a> {
         for (network_id, network_config) in &config.networks {
             let signer: PrivateKeySigner =
                 PrivateKeySigner::from_str(&network_config.access_key).unwrap();
+
             let wallet = EthereumWallet::from(signer);
 
-            let provider = ProviderBuilder::new()
+            let provider: DynProvider<Ethereum> = ProviderBuilder::new()
                 .wallet(wallet)
-                .on_http(network_config.rpc_url.clone());
+                .on_http(network_config.rpc_url.clone())
+                .erased();
 
             let _ignored = networks.insert(network_id.clone(), Network { provider });
         }
