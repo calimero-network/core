@@ -15,6 +15,7 @@ use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
 use crate::merod::Merod;
 use crate::output::OutputWriter;
+use crate::protocol::evm::EvmSandboxEnvironment;
 use crate::protocol::icp::IcpSandboxEnvironment;
 use crate::protocol::near::NearSandboxEnvironment;
 use crate::protocol::stellar::StellarSandboxEnvironment;
@@ -88,6 +89,7 @@ impl Driver {
                 ProtocolSandboxConfig::Stellar(_) => "stellar",
                 ProtocolSandboxConfig::Near(_) => "near",
                 ProtocolSandboxConfig::Icp(_) => "icp",
+                ProtocolSandboxConfig::Evm(_) => "evm",
             };
 
             if !self
@@ -111,6 +113,10 @@ impl Driver {
                 ProtocolSandboxConfig::Icp(config) => {
                     let icp = IcpSandboxEnvironment::init(config.clone())?;
                     sandbox_environments.push(ProtocolSandboxEnvironment::Icp(icp));
+                }
+                ProtocolSandboxConfig::Evm(config) => {
+                    let evm = EvmSandboxEnvironment::init(config.clone())?;
+                    sandbox_environments.push(ProtocolSandboxEnvironment::Evm(evm));
                 }
             }
         }

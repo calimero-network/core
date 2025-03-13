@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::evm::EvmProtocolConfig;
 use crate::protocol::icp::IcpProtocolConfig;
 use crate::protocol::near::NearProtocolConfig;
 use crate::protocol::stellar::StellarProtocolConfig;
@@ -33,4 +34,5 @@ pub enum ProtocolSandboxConfig {
     Near(NearProtocolConfig),
     Icp(IcpProtocolConfig),
     Stellar(StellarProtocolConfig),
+    Evm(EvmProtocolConfig),
 }
