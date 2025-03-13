@@ -27,11 +27,7 @@ impl Test for CallStep {
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
-        let mut context_id = if let Some(ref alias) = ctx.context_alias {
-            alias
-        } else {
-            bail!("Context ID or Alias is required for JsonRpcExecuteStep");
-        };
+        let context_id;
 
         let mut public_keys = HashMap::new();
         if let Some(ref inviter_public_key) = ctx.inviter_public_key {
@@ -41,7 +37,13 @@ impl Test for CallStep {
         }
 
         match self.target {
-            CallTarget::Inviter => {}
+            CallTarget::Inviter => {
+                if let Some(ref alias) = ctx.context_alias {
+                    context_id = alias;
+                } else {
+                    bail!("Alias is required for JsonRpcExecuteStep on the Inviter node");
+                };
+            }
             CallTarget::AllMembers => {
                 if let Some(ref id) = ctx.context_id {
                     context_id = id;
