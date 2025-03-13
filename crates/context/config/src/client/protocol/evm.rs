@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
+use alloy::eips::BlockId;
 use alloy::network::EthereumWallet;
 use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::fillers::{
@@ -189,13 +190,14 @@ impl Network {
         let bytes = self
             .provider
             .call(&request)
+            .block(BlockId::latest())
             .await
             .map_err(|e| EvmError::Custom {
                 operation: ErrorOperation::Query,
                 reason: format!("Failed to execute eth_call: {}", e),
             })?;
 
-        Ok(bytes.to_vec())
+        Ok(bytes.into())
     }
 
     async fn mutate(
