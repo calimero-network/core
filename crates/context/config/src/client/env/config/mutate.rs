@@ -236,7 +236,7 @@ impl<'a> Method<Evm> for Mutate<'a> {
             RequestKind::Context(req) => req.to_sol(),
         };
 
-        let encoded_request = SolValue::abi_encode(&context_request);
+        let encoded_request = SolValue::abi_encode(&context_request);        
 
         let sol_request = SolRequest {
             signerId: ecdsa_public_key,

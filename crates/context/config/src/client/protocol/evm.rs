@@ -211,14 +211,37 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
+        println!("method: {:?}", method);
+        println!("contract_id: {:?}", contract_id);
         let method_selector = &keccak256(method.as_bytes());
 
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&method_selector[0..4]);
+        println!("selector: {:?}", selector);
+
+        // let selector = [0x18, 0x21, 0xfe, 0x6f];
+
+        // println!("selector: {:?}", selector);
 
         let mut call_data = Vec::with_capacity(4 + args.len());
         call_data.extend_from_slice(&selector);
         call_data.extend_from_slice(&args);
+
+        // First, try to simulate the transaction to get the return value
+        let request = TransactionRequest::default()
+            .to(address)
+            .input(Bytes::from(call_data.clone()).into());
+
+        // This will give us the return value without actually executing the transaction
+        let return_data = self.provider.call(&request).await.map_err(|e| {
+            println!("Call simulation failed: {}", e);
+            EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to simulate transaction: {}", e),
+            }
+        })?;
+
+        println!("Simulated return data: {:?}", return_data);
 
         let tx = TransactionRequest::default()
             .to(address)
@@ -266,7 +289,7 @@ impl Network {
         };
 
         if receipt.status() {
-            return Ok(Vec::new());
+            return Ok(return_data.to_vec());
         }
 
         Err(EvmError::Custom {

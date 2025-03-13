@@ -202,7 +202,7 @@ impl Method<Stellar> for Mutate {
 impl Method<Evm> for Mutate {
     type Returns = Option<ProposalWithApprovals>;
 
-    const METHOD: &'static str = "mutate";
+    const METHOD: &'static str = "mutate(((bytes32,bytes32,uint8,bytes),bytes32,bytes32,uint8))";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let ed25519_key = SigningKey::from_bytes(&self.signing_key);
@@ -246,11 +246,11 @@ impl Method<Evm> for Mutate {
         };
 
         let encoded = SolValue::abi_encode(&signed_request);
-
         Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        println!("response: {:?}", response);
         let decoded: SolProposalWithApprovals = SolValue::abi_decode(&response, false)?;
 
         let proposal = ProposalWithApprovals {

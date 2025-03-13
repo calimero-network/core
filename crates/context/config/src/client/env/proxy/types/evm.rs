@@ -6,6 +6,7 @@ use crate::types::{Identity, ProposalId, SignerId};
 use crate::{Proposal, ProposalAction, ProxyMutateRequest};
 
 sol! {
+    #[derive(Debug)]
     enum SolProposalActionKind {
       ExternalFunctionCall,
       Transfer,
@@ -15,11 +16,13 @@ sol! {
       DeleteProposal
     }
 
+    #[derive(Debug)]
     struct SolProposalAction {
       SolProposalActionKind kind;
       bytes data;
     }
-
+    
+    #[derive(Debug)]
     struct SolProposal {
       bytes32 id;
       bytes32 authorId;
