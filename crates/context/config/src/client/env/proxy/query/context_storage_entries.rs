@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
+use eyre::OptionExt;
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Bytes, Env, TryIntoVal};
@@ -167,16 +168,19 @@ impl Method<Evm> for ContextStorageEntriesRequest {
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded: Vec<alloy::primitives::Bytes> = SolValue::abi_decode(&response, false)?;
-        let decoded: Vec<Vec<u8>> = decoded.into_iter().map(|b| b.to_vec()).collect();
+        let mut decoded = decoded.into_iter();
+        let mut entries = Vec::with_capacity(decoded.len() / 2);
+        while let Some(key) = decoded.next() {
+            let value = decoded
+                .next()
+                .ok_or_eyre("missing value for storage entry")?;
 
-        let context_storage_entries = decoded
-            .chunks(2)
-            .map(|chunk| ContextStorageEntry {
-                key: chunk[0].clone(),
-                value: chunk[1].clone(),
-            })
-            .collect();
+            entries.push(ContextStorageEntry {
+                key: key.into(),
+                value: value.into(),
+            });
+        }
 
-        Ok(context_storage_entries)
+        Ok(entries)
     }
 }
