@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::ops::Deref;
+use std::str::FromStr;
 
+use alloy::signers::local::PrivateKeySigner;
 use env::Method;
 use thiserror::Error;
 
@@ -228,12 +230,17 @@ impl Client<AnyTransport> {
                         eyre::bail!("missing account id for `{}` signer", network);
                     };
 
+                    let access_key: PrivateKeySigner = PrivateKeySigner::from_str(
+                        &credentials.secret_key.clone(),
+                    )
+                    .map_err(|_| eyre::eyre!("failed to convert secret key to PrivateKeySigner"))?;
+
                     let _ignored = config.networks.insert(
                         network.clone().into(),
                         evm::NetworkConfig {
                             rpc_url: signer.rpc_url.clone(),
                             account_id: account_id.clone(),
-                            access_key: credentials.secret_key.clone(),
+                            access_key,
                         },
                     );
                 }

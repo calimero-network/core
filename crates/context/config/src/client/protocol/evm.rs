@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
 use alloy::eips::BlockId;
 use alloy::network::{Ethereum, EthereumWallet};
@@ -63,7 +62,7 @@ mod serde_creds {
 pub struct NetworkConfig {
     pub rpc_url: Url,
     pub account_id: String,
-    pub access_key: String,
+    pub access_key: PrivateKeySigner,
 }
 
 #[derive(Debug)]
@@ -87,10 +86,7 @@ impl<'a> EvmTransport<'a> {
         let mut networks = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
-            let signer: PrivateKeySigner =
-                PrivateKeySigner::from_str(&network_config.access_key).unwrap();
-
-            let wallet = EthereumWallet::from(signer);
+            let wallet = EthereumWallet::from(network_config.access_key.clone());
 
             let provider: DynProvider<Ethereum> = ProviderBuilder::new()
                 .wallet(wallet)
