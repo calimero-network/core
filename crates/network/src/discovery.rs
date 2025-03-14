@@ -183,6 +183,28 @@ impl EventLoop {
         Ok(())
     }
 
+    pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
+        let peer_info = self
+            .discovery
+            .state
+            .get_peer_info(rendezvous_peer)
+            .wrap_err("Failed to get peer info")?
+            .rendezvous()
+            .wrap_err("Peer isn't rendezvous")?;
+
+        if matches!(
+            peer_info.registration_status(),
+            RendezvousRegistrationStatus::Registered
+        ) {
+            self.swarm.behaviour_mut().rendezvous.unregister(
+                self.discovery.rendezvous_config.namespace.clone(),
+                *rendezvous_peer,
+            );
+        }
+
+        Ok(())
+    }
+
     // Finds a new rendezvous peer for registration.
     // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
     // Returns Some(PeerId) if a suitable peer is found, None otherwise.
