@@ -1916,6 +1916,7 @@ dependencies = [
  "ed25519-consensus",
  "ed25519-dalek",
  "either",
+ "ethabi",
  "eyre",
  "hex",
  "ic-agent",

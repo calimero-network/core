@@ -1,9 +1,10 @@
-use alloy::primitives::{keccak256, B256, U256};
+use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy_sol_types::{sol, SolValue};
-
+use std::str::FromStr;
 use crate::repr::{Repr, ReprTransmute};
 use crate::types::{Identity, ProposalId, SignerId};
 use crate::{Proposal, ProposalAction, ProxyMutateRequest};
+use ethabi::{Function, Param, ParamType, Token};
 
 sol! {
     #[derive(Debug)]
@@ -197,21 +198,66 @@ impl From<ProposalAction> for SolProposalAction {
                     args,
                     deposit,
                 } => {
-                    let method_selector = &keccak256(method_name.as_bytes());
+                    println!("method_name: {:?}", method_name);
+                    println!("args: {:?}", args);
+                    println!("deposit: {:?}", deposit);
+                    println!("receiver_id: {:?}", receiver_id);
 
-                    let mut selector = [0u8; 4];
-                    selector.copy_from_slice(&method_selector[0..4]);
-
-                    let mut call_data = Vec::with_capacity(4 + args.len());
-                    call_data.extend_from_slice(&selector);
-                    call_data.extend_from_slice(&args.as_bytes());
-
-                    let data = ExternalFunctionCallData {
-                        target: receiver_id.parse().expect("Invalid address"),
-                        callData: call_data.into(),
-                        value: U256::from(deposit),
+                    // Hardcoded function definition for setValueNoDeposit(string,string)
+                    #[allow(deprecated)]
+                    let function = Function {
+                        name: "setValueNoDeposit".to_string(),
+                        inputs: vec![ // Iterate over the arguments, get the name from method name and type from args
+                            Param {
+                                name: "key".to_string(),
+                                kind: ParamType::String,
+                                internal_type: None,
+                            },
+                            Param {
+                                name: "value".to_string(),
+                                kind: ParamType::String,
+                                internal_type: None,
+                            },
+                        ],
+                        outputs: vec![],
+                        constant: Some(false),
+                        state_mutability: ethabi::StateMutability::NonPayable, // Change to Payable if deposit is attached
                     };
-                    data.abi_encode().into()
+
+                    // Get values of arguments
+                    let key = "someKey";
+                    let value = "someValue";
+                    
+                    // Create tokens for the arguments
+                    let tokens = vec![
+                        Token::String(key.to_string()),
+                        Token::String(value.to_string()),
+                    ];
+                    
+                    // Encode the function call
+                    let call_data = function.encode_input(&tokens).unwrap();
+                    
+                    println!("Encoded call data with ethabi: {:?}", call_data);
+                    
+                    // Create the action data
+                    let contract_address = Address::from_str(&receiver_id).expect("Invalid address");
+                    let amount = U256::from(0);
+                    let data = SolValue::abi_encode(&(contract_address, call_data, amount));
+                    
+                    data.into()
+                    // let mut selector = [0u8; 4];
+                    // selector.copy_from_slice(&method_selector[0..4]);
+
+                    // let mut call_data = Vec::with_capacity(4 + args.len());
+                    // call_data.extend_from_slice(&selector);
+                    // call_data.extend_from_slice(&args.as_bytes());
+
+                    // let data = ExternalFunctionCallData {
+                    //     target: receiver_id.parse().expect("Invalid address"),
+                    //     callData: call_data.into(),
+                    //     value: U256::from(deposit),
+                    // };
+                    // data.abi_encode().into()
                 }
                 ProposalAction::Transfer {
                     receiver_id,
