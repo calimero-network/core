@@ -70,6 +70,10 @@ impl EventHandler<Event> for EventLoop {
     }
 }
 
+#[allow(
+    clippy::multiple_inherent_impl,
+    reason = "Currently necessary due to code structure"
+)]
 impl EventLoop {
     fn handle_rendezvous_operations(&mut self, rendezvous_peers: &[PeerId]) {
         for peer_id in rendezvous_peers {
