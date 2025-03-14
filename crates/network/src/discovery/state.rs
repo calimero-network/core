@@ -7,6 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Instant;
 
+use libp2p::autonat::NatStatus;
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
@@ -24,6 +25,23 @@ pub struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
+    autonat: AutonatStatus,
+}
+#[derive(Debug)]
+pub struct AutonatStatus {
+    pub status: NatStatus,
+    pub last_status_public: bool,
+    pub confidence: usize,
+}
+
+impl Default for AutonatStatus {
+    fn default() -> Self {
+        Self {
+            status: NatStatus::Unknown,
+            last_status_public: false,
+            confidence: 0,
+        }
+    }
 }
 
 impl DiscoveryState {
@@ -207,6 +225,34 @@ impl DiscoveryState {
                 })
             });
         sum < max
+    }
+
+    pub(crate) fn update_autonat_status(&mut self, status: NatStatus) {
+        self.autonat.status = status
+    }
+
+    pub(crate) fn is_autonat_status_public(&self) -> bool {
+        matches!(self.autonat.status, NatStatus::Public(_))
+    }
+
+    pub(crate) fn is_autonat_status_private(&self) -> bool {
+        matches!(self.autonat.status, NatStatus::Private)
+    }
+
+    pub(crate) fn update_autonat_became_private(&mut self) {
+        self.autonat.last_status_public = true;
+    }
+
+    pub(crate) fn autonat_became_private(&self) -> bool {
+        self.autonat.last_status_public
+    }
+
+    pub(crate) fn update_autonat_confidence(&mut self, confidence: usize) {
+        self.autonat.confidence = confidence
+    }
+
+    pub(crate) fn autonat_confidence(&self) -> usize {
+        self.autonat.confidence
     }
 }
 

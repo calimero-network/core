@@ -24,6 +24,11 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
     "/ip4/18.156.18.6/tcp/4001/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
 ];
 
+pub const AUTONAT_BOOT_NODES: &[&str] = &[
+    "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+    "/ip4/18.156.18.6/tcp/4001/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
+];
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct NetworkConfig {
@@ -111,6 +116,16 @@ impl BootstrapNodes {
                 .collect(),
         }
     }
+
+    #[must_use]
+    pub fn autonat() -> Self {
+        Self {
+            list: AUTONAT_BOOT_NODES
+                .iter()
+                .map(|addr| addr.parse().expect("invalid multiaddr"))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -122,15 +137,23 @@ pub struct DiscoveryConfig {
     pub rendezvous: RendezvousConfig,
 
     pub relay: RelayConfig,
+
+    pub autonat: AutonatConfig,
 }
 
 impl DiscoveryConfig {
     #[must_use]
-    pub const fn new(mdns: bool, rendezvous: RendezvousConfig, relay: RelayConfig) -> Self {
+    pub const fn new(
+        mdns: bool,
+        rendezvous: RendezvousConfig,
+        relay: RelayConfig,
+        autonat: AutonatConfig,
+    ) -> Self {
         Self {
             mdns,
             rendezvous,
             relay,
+            autonat,
         }
     }
 }
@@ -141,6 +164,7 @@ impl Default for DiscoveryConfig {
             mdns: true,
             rendezvous: RendezvousConfig::default(),
             relay: RelayConfig::default(),
+            autonat: AutonatConfig::default(),
         }
     }
 }
@@ -164,6 +188,28 @@ impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             registrations_limit: 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct AutonatConfig {
+    pub confidence_threshold: usize,
+}
+
+impl AutonatConfig {
+    pub fn new(confidence_threshold: usize) -> Self {
+        AutonatConfig {
+            confidence_threshold,
+        }
+    }
+}
+
+impl Default for AutonatConfig {
+    fn default() -> Self {
+        Self {
+            confidence_threshold: 2,
         }
     }
 }
