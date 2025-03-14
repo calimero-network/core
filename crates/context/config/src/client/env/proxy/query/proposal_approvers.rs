@@ -2,6 +2,8 @@
 use std::io::Cursor;
 use std::mem;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -176,13 +178,25 @@ impl Method<Stellar> for ProposalApproversRequest {
 impl Method<Evm> for ProposalApproversRequest {
     type Returns = Vec<ContextIdentity>;
 
-    const METHOD: &'static str = "proposal_approvers";
+    const METHOD: &'static str = "proposalApprovers(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+        let proposal_id_val = B256::from_slice(&proposal_id);
+
+        Ok(SolValue::abi_encode(&(proposal_id_val)))
     }
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
+
+        let identities: Vec<[u8; 32]> = decoded.into_iter().map(|val| val.into()).collect();
+
+        let context_identities: Vec<ContextIdentity> = identities
+            .into_iter()
+            .map(|bytes| bytes.rt().expect("infallible conversion"))
+            .collect();
+
+        Ok(context_identities)
     }
 }

@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
@@ -164,10 +165,13 @@ impl Method<Stellar> for ProposalRequest {
 impl Method<Evm> for ProposalRequest {
     type Returns = Option<Proposal>;
 
-    const METHOD: &'static str = "proposal";
+    const METHOD: &'static str = "getProposal(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+        let proposal_id_val = B256::from_slice(&proposal_id);
+
+        Ok(SolValue::abi_encode(&(proposal_id_val)))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

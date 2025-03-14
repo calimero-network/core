@@ -2,10 +2,8 @@
 use std::io::Cursor;
 
 use alloy::primitives::{Address as AlloyAddress, B256};
-use alloy_sol_types::abi::{encode, Token};
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode, Principal};
-use hex;
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Address, BytesN, Env, IntoVal, TryFromVal};
