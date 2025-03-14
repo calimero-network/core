@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use alloy::primitives::{keccak256, Address, B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy_sol_types::{sol, SolValue};
 use ethabi::{Function, Param, ParamType, Token};
 
