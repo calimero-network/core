@@ -1,10 +1,12 @@
+use std::str::FromStr;
+
 use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy_sol_types::{sol, SolValue};
-use std::str::FromStr;
+use ethabi::{Function, Param, ParamType, Token};
+
 use crate::repr::{Repr, ReprTransmute};
 use crate::types::{Identity, ProposalId, SignerId};
 use crate::{Proposal, ProposalAction, ProxyMutateRequest};
-use ethabi::{Function, Param, ParamType, Token};
 
 sol! {
     #[derive(Debug)]
@@ -207,7 +209,8 @@ impl From<ProposalAction> for SolProposalAction {
                     #[allow(deprecated)]
                     let function = Function {
                         name: "setValueNoDeposit".to_string(),
-                        inputs: vec![ // Iterate over the arguments, get the name from method name and type from args
+                        inputs: vec![
+                            // Iterate over the arguments, get the name from method name and type from args
                             Param {
                                 name: "key".to_string(),
                                 kind: ParamType::String,
@@ -227,23 +230,24 @@ impl From<ProposalAction> for SolProposalAction {
                     // Get values of arguments
                     let key = "someKey";
                     let value = "someValue";
-                    
+
                     // Create tokens for the arguments
                     let tokens = vec![
                         Token::String(key.to_string()),
                         Token::String(value.to_string()),
                     ];
-                    
+
                     // Encode the function call
                     let call_data = function.encode_input(&tokens).unwrap();
-                    
+
                     println!("Encoded call data with ethabi: {:?}", call_data);
-                    
+
                     // Create the action data
-                    let contract_address = Address::from_str(&receiver_id).expect("Invalid address");
+                    let contract_address =
+                        Address::from_str(&receiver_id).expect("Invalid address");
                     let amount = U256::from(0);
                     let data = SolValue::abi_encode(&(contract_address, call_data, amount));
-                    
+
                     data.into()
                     // let mut selector = [0u8; 4];
                     // selector.copy_from_slice(&method_selector[0..4]);
