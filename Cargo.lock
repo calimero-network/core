@@ -1933,6 +1933,7 @@ dependencies = [
  "starknet-crypto 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "starknet-types-core",
  "thiserror 1.0.69",
+ "tokio 1.41.1",
  "url",
 ]
 

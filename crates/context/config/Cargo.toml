@@ -33,6 +33,7 @@ starknet = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
 url = { workspace = true, optional = true }
 
 

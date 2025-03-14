@@ -10,6 +10,7 @@ use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::time::{sleep, Duration};
 use url::Url;
 
 use super::Protocol;
@@ -261,7 +262,7 @@ impl Network {
                 break;
             }
 
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            sleep(Duration::from_secs(2)).await;
         }
 
         let Some(receipt) = receipt else {

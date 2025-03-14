@@ -128,7 +128,6 @@ impl<'a> ToSol<SolContextRequest> for ContextRequest<'a> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
 
         let data = encode_context_request_data(&self.kind);
-        println!("data: {:?}", self.kind);
 
         SolContextRequest {
             contextId: B256::from_slice(&context_id),
