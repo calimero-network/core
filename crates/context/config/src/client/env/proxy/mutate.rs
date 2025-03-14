@@ -250,7 +250,6 @@ impl Method<Evm> for Mutate {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        println!("response: {:?}", response);
         let decoded: SolProposalWithApprovals = SolValue::abi_decode(&response, false)?;
 
         let proposal = ProposalWithApprovals {

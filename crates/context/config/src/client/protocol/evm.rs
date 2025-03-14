@@ -203,17 +203,10 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
-        println!("method: {:?}", method);
-        println!("contract_id: {:?}", contract_id);
         let method_selector = &keccak256(method.as_bytes());
 
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&method_selector[0..4]);
-        println!("selector: {:?}", selector);
-
-        // let selector = [0x18, 0x21, 0xfe, 0x6f];
-
-        // println!("selector: {:?}", selector);
 
         let mut call_data = Vec::with_capacity(4 + args.len());
         call_data.extend_from_slice(&selector);
@@ -232,8 +225,6 @@ impl Network {
                 reason: format!("Failed to simulate transaction: {}", e),
             }
         })?;
-
-        println!("Simulated return data: {:?}", return_data);
 
         let tx = TransactionRequest::default()
             .to(address)

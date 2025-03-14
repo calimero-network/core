@@ -225,7 +225,7 @@ impl From<ProposalAction> for SolProposalAction {
                                 ),
                                 "array(int256)" => Token::Array(
                                     serde_json::from_str(value).expect("Invalid array"),
-                                ),  
+                                ),
                                 "array(address)" => Token::Array(
                                     serde_json::from_str(value).expect("Invalid array"),
                                 ),
@@ -265,10 +265,18 @@ impl From<ProposalAction> for SolProposalAction {
                                     "address" => ParamType::Address,
                                     "bool" => ParamType::Bool,
                                     "bytes" => ParamType::Bytes,
-                                    "array(string)" => ParamType::Array(Box::new(ParamType::String)),
-                                    "array(uint256)" => ParamType::Array(Box::new(ParamType::Uint(256))),
-                                    "array(int256)" => ParamType::Array(Box::new(ParamType::Int(256))),
-                                    "array(address)" => ParamType::Array(Box::new(ParamType::Address)),
+                                    "array(string)" => {
+                                        ParamType::Array(Box::new(ParamType::String))
+                                    }
+                                    "array(uint256)" => {
+                                        ParamType::Array(Box::new(ParamType::Uint(256)))
+                                    }
+                                    "array(int256)" => {
+                                        ParamType::Array(Box::new(ParamType::Int(256)))
+                                    }
+                                    "array(address)" => {
+                                        ParamType::Array(Box::new(ParamType::Address))
+                                    }
                                     "array(bool)" => ParamType::Array(Box::new(ParamType::Bool)),
                                     "array(bytes)" => ParamType::Array(Box::new(ParamType::Bytes)),
                                     "tuple" => ParamType::Tuple(vec![]),

@@ -154,8 +154,6 @@ impl Method<Evm> for ProposalsRequest {
     const METHOD: &'static str = "getProposals(uint32,uint32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        println!("offset: {:?}", self.offset);
-        println!("length: {:?}", self.length);
         let offset = u32::try_from(self.offset)
             .map_err(|e| eyre::eyre!("Offset too large for u32: {}", e))?;
         let length = u32::try_from(self.length)
@@ -165,9 +163,7 @@ impl Method<Evm> for ProposalsRequest {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        println!("response: {:?}", response);
         let proposals: Vec<SolProposal> = SolValue::abi_decode(&response, false)?;
-        println!("proposals: {:?}", proposals);
         Ok(proposals.into_iter().map(|p| p.into()).collect())
     }
 }
