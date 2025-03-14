@@ -200,68 +200,100 @@ impl From<ProposalAction> for SolProposalAction {
                     args,
                     deposit,
                 } => {
-                    println!("method_name: {:?}", method_name);
-                    println!("args: {:?}", args);
-                    println!("deposit: {:?}", deposit);
-                    println!("receiver_id: {:?}", receiver_id);
+                    let parsed_args: Vec<(String, String)> =
+                        serde_json::from_str(&args).expect("Invalid args format");
 
-                    // Hardcoded function definition for setValueNoDeposit(string,string)
+                    let tokens: Vec<Token> = parsed_args
+                        .iter()
+                        .flat_map(|(key, value)| {
+                            let token = match key.as_str() {
+                                "bool" => Token::Bool(value.parse().expect("Invalid bool")),
+                                "string" => Token::String(value.clone()),
+                                "address" => {
+                                    Token::Address(value.parse().expect("Invalid address"))
+                                }
+                                "bytes" => {
+                                    Token::Bytes(hex::decode(value).expect("Invalid hex bytes"))
+                                }
+                                "int256" => Token::Int(value.parse().expect("Invalid int256")),
+                                "uint256" => Token::Uint(value.parse().expect("Invalid uint256")),
+                                "array(string)" => Token::Array(
+                                    serde_json::from_str(value).expect("Invalid array"),
+                                ),
+                                "array(uint256)" => Token::Array(
+                                    serde_json::from_str(value).expect("Invalid array"),
+                                ),
+                                "array(int256)" => Token::Array(
+                                    serde_json::from_str(value).expect("Invalid array"),
+                                ),  
+                                "array(address)" => Token::Array(
+                                    serde_json::from_str(value).expect("Invalid array"),
+                                ),
+                                "array(bool)" => Token::Array(
+                                    serde_json::from_str(value).expect("Invalid array"),
+                                ),
+                                "array(bytes)" => Token::Array(
+                                    serde_json::from_str(value).expect("Invalid array"),
+                                ),
+                                "tuple" => Token::Tuple(
+                                    serde_json::from_str(value).expect("Invalid tuple"),
+                                ),
+                                _ => panic!("Unsupported type: {}", key),
+                            };
+                            vec![token]
+                        })
+                        .collect();
+
+                    let state_mutability = if deposit > 0 {
+                        ethabi::StateMutability::Payable
+                    } else {
+                        ethabi::StateMutability::NonPayable
+                    };
+                    let amount = U256::from(deposit);
+
                     #[allow(deprecated)]
                     let function = Function {
-                        name: "setValueNoDeposit".to_string(),
-                        inputs: vec![
-                            // Iterate over the arguments, get the name from method name and type from args
-                            Param {
-                                name: "key".to_string(),
-                                kind: ParamType::String,
-                                internal_type: None,
-                            },
-                            Param {
-                                name: "value".to_string(),
-                                kind: ParamType::String,
-                                internal_type: None,
-                            },
-                        ],
+                        name: method_name,
+                        inputs: parsed_args
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (key, _value))| {
+                                let param_type = match key.as_str() {
+                                    "string" => ParamType::String,
+                                    "uint256" => ParamType::Uint(256),
+                                    "int256" => ParamType::Int(256),
+                                    "address" => ParamType::Address,
+                                    "bool" => ParamType::Bool,
+                                    "bytes" => ParamType::Bytes,
+                                    "array(string)" => ParamType::Array(Box::new(ParamType::String)),
+                                    "array(uint256)" => ParamType::Array(Box::new(ParamType::Uint(256))),
+                                    "array(int256)" => ParamType::Array(Box::new(ParamType::Int(256))),
+                                    "array(address)" => ParamType::Array(Box::new(ParamType::Address)),
+                                    "array(bool)" => ParamType::Array(Box::new(ParamType::Bool)),
+                                    "array(bytes)" => ParamType::Array(Box::new(ParamType::Bytes)),
+                                    "tuple" => ParamType::Tuple(vec![]),
+                                    _ => panic!("Unsupported parameter type: {}", key),
+                                };
+
+                                Param {
+                                    name: format!("param{}", index),
+                                    kind: param_type,
+                                    internal_type: None,
+                                }
+                            })
+                            .collect(),
                         outputs: vec![],
                         constant: Some(false),
-                        state_mutability: ethabi::StateMutability::NonPayable, // Change to Payable if deposit is attached
+                        state_mutability,
                     };
 
-                    // Get values of arguments
-                    let key = "someKey";
-                    let value = "someValue";
-
-                    // Create tokens for the arguments
-                    let tokens = vec![
-                        Token::String(key.to_string()),
-                        Token::String(value.to_string()),
-                    ];
-
-                    // Encode the function call
                     let call_data = function.encode_input(&tokens).unwrap();
 
-                    println!("Encoded call data with ethabi: {:?}", call_data);
-
-                    // Create the action data
                     let contract_address =
                         Address::from_str(&receiver_id).expect("Invalid address");
-                    let amount = U256::from(0);
                     let data = SolValue::abi_encode(&(contract_address, call_data, amount));
 
                     data.into()
-                    // let mut selector = [0u8; 4];
-                    // selector.copy_from_slice(&method_selector[0..4]);
-
-                    // let mut call_data = Vec::with_capacity(4 + args.len());
-                    // call_data.extend_from_slice(&selector);
-                    // call_data.extend_from_slice(&args.as_bytes());
-
-                    // let data = ExternalFunctionCallData {
-                    //     target: receiver_id.parse().expect("Invalid address"),
-                    //     callData: call_data.into(),
-                    //     value: U256::from(deposit),
-                    // };
-                    // data.abi_encode().into()
                 }
                 ProposalAction::Transfer {
                     receiver_id,
