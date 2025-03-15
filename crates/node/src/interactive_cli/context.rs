@@ -49,6 +49,12 @@ enum Commands {
     Create {
         /// The application to create the context with
         application: Alias<ApplicationId>,
+         /// Name alias for the new context
+         #[clap(long)]
+         name: Option<Alias<ContextId>>,
+         /// Identity alias for the creator
+         #[clap(long = "as")]
+         as_alias: Option<Alias<PublicKey>>,
         /// The initialization parameters for the context
         params: Option<Value>,
         /// The seed for the context (to derive a deterministic context ID)
@@ -65,6 +71,8 @@ enum Commands {
         /// The identity inviting the other
         #[clap(long = "as")]
         inviter: Alias<PublicKey>,
+        #[clap(long)]
+        name: Option<Alias<PublicKey>>,  // New --name parameter
         /// The identity being invited
         invitee_id: PublicKey,
     },
@@ -198,11 +206,17 @@ impl ContextCommand {
                 params,
                 context_seed,
                 protocol,
+                name,
+                as_alias,
             } => {
                 let application_id = node
                     .ctx_manager
                     .resolve_alias(application, None)?
                     .ok_or_eyre("unable to resolve")?;
+                    let ctx_manager = node.ctx_manager.clone();
+                    let name_clone = name.clone();
+                    let as_alias_clone = as_alias.clone();
+                    let ind_str = ind.to_string();
 
                 let (tx, rx) = oneshot::channel();
 
@@ -222,7 +236,34 @@ impl ContextCommand {
                 let _ignored = tokio::spawn(async move {
                     let err: eyre::Report = match rx.await {
                         Ok(Ok((context_id, identity))) => {
-                            println!("{ind} Created context {context_id} with identity {identity}");
+                            // Create context alias if --name provided
+                            if let Some(name_alias) = name_clone {
+                                if let Err(e) = ctx_manager.create_alias(name_alias.clone(), None, context_id) {
+                                    eprintln!("{} Failed to create context alias: {e}", ind_str);
+                                }
+                            }
+                             // Handle identity alias creation
+                             if let Some(identity_alias) = as_alias_clone.clone() {
+                                if let Err(e) = ctx_manager.create_alias(
+                                    identity_alias.clone(),
+                                    Some(context_id),
+                                    identity
+                                ) {
+                                    eprintln!("{} Failed to create identity alias: {e}", ind_str);
+                                }
+                            }
+            
+                            println!(
+                                "{} Created context {} ({}) as {}",
+                                ind_str,
+                                name_clone.as_ref()
+                                    .map(|a| a.to_string())
+                                    .unwrap_or_else(|| context_id.to_string()),
+                                context_id,
+                                as_alias_clone.as_ref()
+                                    .map(|a| a.to_string())
+                                    .unwrap_or_else(|| identity.to_string())
+                            );
                             return;
                         }
                         Ok(Err(err)) => err,
@@ -235,6 +276,7 @@ impl ContextCommand {
             Commands::Invite {
                 context,
                 inviter,
+                name,
                 invitee_id,
             } => {
                 let context_id = node
@@ -251,7 +293,21 @@ impl ContextCommand {
                     .invite_to_context(context_id, inviter_id, invitee_id)
                     .await?
                 {
-                    println!("{ind} Invited {} to context {}", invitee_id, context_id);
+                    if let Some(alias) = name {
+                        node.ctx_manager.create_alias(
+                            alias.clone(),
+                            Some(context_id),
+                            invitee_id
+                        )?;
+                    }
+                    println!(
+                        "{ind} Invited {} [{}] to {}",
+                        name.as_ref()
+                            .map(|a| format!("{} ({})", a, invitee_id))
+                            .unwrap_or_else(|| invitee_id.to_string()),
+                        invitee_id,
+                        context_id
+                    );
                     println!("{ind} Invitation Payload: {invitation_payload}");
                 } else {
                     println!(
