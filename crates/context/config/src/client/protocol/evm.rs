@@ -5,6 +5,7 @@ use alloy::eips::BlockId;
 use alloy::network::{Ethereum, EthereumWallet};
 use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::network::ReceiptResponse;
 use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
@@ -187,7 +188,7 @@ impl Network {
         Ok(bytes.into())
     }
 
-    async fn mutate(
+    pub async fn mutate(
         &self,
         contract_id: String,
         method: String,
@@ -230,51 +231,50 @@ impl Network {
                 data: None,
             });
 
-        let tx_builder =
-            self.provider
-                .send_transaction(tx)
-                .await
-                .map_err(|e| EvmError::Custom {
+        // Send the transaction, wait for it to be confirmed, and get the receipt
+        let receipt = self.provider
+            .send_transaction(tx.clone())
+            .await
+            .map_err(|e| {
+                println!("Error sending transaction: {}", e);
+                EvmError::Custom {
                     operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                })?;
-        let tx_hash = tx_builder.tx_hash();
-
-        let mut receipt = None;
-
-        // Wait for the transaction to be mined
-        for _ in 0..30 {
-            let result = self
-                .provider
-                .get_transaction_receipt(*tx_hash)
-                .await
-                .map_err(|e| EvmError::Custom {
+                    reason: format!("Failed to send transaction: {}", e),
+                }
+            })?
+            .with_required_confirmations(1)
+            .with_timeout(Some(Duration::from_secs(60)))
+            .get_receipt()
+            .await
+            .map_err(|e| {
+                println!("Error getting receipt: {}", e);
+                EvmError::Custom {
                     operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                })?;
+                    reason: format!("Failed to get transaction receipt: {}", e),
+                }
+            })?;
 
-            if let Some(r) = result {
-                receipt = Some(r);
-                break;
+        println!("Transaction confirmed with hash: {}", receipt.transaction_hash());
+
+        // Check if the transaction was successful
+        if receipt.status() {
+            println!("Transaction successful!");
+            return Ok(return_data.to_vec());
+        } else {
+            println!("Transaction failed!");
+            
+            // Try to get more detailed error info using eth_call
+            let call_result = self.provider.call(&tx).await;
+            
+            match call_result {
+                Ok(_) => println!("eth_call succeeded but transaction failed - strange!"),
+                Err(e) => println!("eth_call error details: {}", e),
             }
-
-            sleep(Duration::from_secs(2)).await;
-        }
-
-        let Some(receipt) = receipt else {
+            
             return Err(EvmError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: "Transaction wasn't mined within timeout period".to_string(),
+                reason: "Transaction failed".to_string(),
             });
-        };
-
-        if receipt.status() {
-            return Ok(return_data.to_vec());
         }
-
-        Err(EvmError::Custom {
-            operation: ErrorOperation::Mutate,
-            reason: format!("Transaction failed"),
-        })
     }
 }
