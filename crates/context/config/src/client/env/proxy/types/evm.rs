@@ -203,46 +203,84 @@ impl From<ProposalAction> for SolProposalAction {
                     let parsed_args: Vec<(String, String)> =
                         serde_json::from_str(&args).expect("Invalid args format");
 
-                    let tokens: Vec<Token> = parsed_args
+                    let (tokens, inputs): (Vec<Token>, Vec<Param>) = parsed_args
                         .iter()
-                        .flat_map(|(key, value)| {
-                            let token = match key.as_str() {
-                                "bool" => Token::Bool(value.parse().expect("Invalid bool")),
-                                "string" => Token::String(value.clone()),
-                                "address" => {
-                                    Token::Address(value.parse().expect("Invalid address"))
-                                }
-                                "bytes" => {
-                                    Token::Bytes(hex::decode(value).expect("Invalid hex bytes"))
-                                }
-                                "int256" => Token::Int(value.parse().expect("Invalid int256")),
-                                "uint256" => Token::Uint(value.parse().expect("Invalid uint256")),
-                                "array(string)" => Token::Array(
-                                    serde_json::from_str(value).expect("Invalid array"),
+                        .enumerate()
+                        .map(|(index, (key, value))| {
+                            let (token, param_type) = match key.as_str() {
+                                "bool" => (
+                                    Token::Bool(value.parse().expect("Invalid bool")),
+                                    ParamType::Bool,
                                 ),
-                                "array(uint256)" => Token::Array(
-                                    serde_json::from_str(value).expect("Invalid array"),
+                                "string" => (Token::String(value.clone()), ParamType::String),
+                                "address" => (
+                                    Token::Address(value.parse().expect("Invalid address")),
+                                    ParamType::Address,
                                 ),
-                                "array(int256)" => Token::Array(
-                                    serde_json::from_str(value).expect("Invalid array"),
+                                "bytes" => (
+                                    Token::Bytes(hex::decode(value).expect("Invalid hex bytes")),
+                                    ParamType::Bytes,
                                 ),
-                                "array(address)" => Token::Array(
-                                    serde_json::from_str(value).expect("Invalid array"),
+                                "int256" => (
+                                    Token::Int(value.parse().expect("Invalid int256")),
+                                    ParamType::Int(256),
                                 ),
-                                "array(bool)" => Token::Array(
-                                    serde_json::from_str(value).expect("Invalid array"),
+                                "uint256" => (
+                                    Token::Uint(value.parse().expect("Invalid uint256")),
+                                    ParamType::Uint(256),
                                 ),
-                                "array(bytes)" => Token::Array(
-                                    serde_json::from_str(value).expect("Invalid array"),
+                                "array(bool)" => (
+                                    Token::Array(
+                                        serde_json::from_str(value).expect("Invalid array"),
+                                    ),
+                                    ParamType::Array(Box::new(ParamType::Bool)),
                                 ),
-                                "tuple" => Token::Tuple(
-                                    serde_json::from_str(value).expect("Invalid tuple"),
+                                "array(string)" => (
+                                    Token::Array(
+                                        serde_json::from_str(value).expect("Invalid array"),
+                                    ),
+                                    ParamType::Array(Box::new(ParamType::String)),
+                                ),
+                                "array(address)" => (
+                                    Token::Array(
+                                        serde_json::from_str(value).expect("Invalid array"),
+                                    ),
+                                    ParamType::Array(Box::new(ParamType::Address)),
+                                ),
+                                "array(bytes)" => (
+                                    Token::Array(
+                                        serde_json::from_str(value).expect("Invalid array"),
+                                    ),
+                                    ParamType::Array(Box::new(ParamType::Bytes)),
+                                ),
+                                "array(int256)" => (
+                                    Token::Array(
+                                        serde_json::from_str(value).expect("Invalid array"),
+                                    ),
+                                    ParamType::Array(Box::new(ParamType::Int(256))),
+                                ),
+                                "array(uint256)" => (
+                                    Token::Array(
+                                        serde_json::from_str(value).expect("Invalid array"),
+                                    ),
+                                    ParamType::Array(Box::new(ParamType::Uint(256))),
+                                ),
+                                "tuple" => (
+                                    Token::Tuple(
+                                        serde_json::from_str(value).expect("Invalid tuple"),
+                                    ),
+                                    ParamType::Tuple(vec![]),
                                 ),
                                 _ => panic!("Unsupported type: {}", key),
                             };
-                            vec![token]
+                            let param = Param {
+                                name: format!("param{}", index),
+                                kind: param_type,
+                                internal_type: None,
+                            };
+                            (token, param)
                         })
-                        .collect();
+                        .unzip();
 
                     let state_mutability = if deposit > 0 {
                         ethabi::StateMutability::Payable
@@ -254,42 +292,7 @@ impl From<ProposalAction> for SolProposalAction {
                     #[allow(deprecated)]
                     let function = Function {
                         name: method_name,
-                        inputs: parsed_args
-                            .iter()
-                            .enumerate()
-                            .map(|(index, (key, _value))| {
-                                let param_type = match key.as_str() {
-                                    "string" => ParamType::String,
-                                    "uint256" => ParamType::Uint(256),
-                                    "int256" => ParamType::Int(256),
-                                    "address" => ParamType::Address,
-                                    "bool" => ParamType::Bool,
-                                    "bytes" => ParamType::Bytes,
-                                    "array(string)" => {
-                                        ParamType::Array(Box::new(ParamType::String))
-                                    }
-                                    "array(uint256)" => {
-                                        ParamType::Array(Box::new(ParamType::Uint(256)))
-                                    }
-                                    "array(int256)" => {
-                                        ParamType::Array(Box::new(ParamType::Int(256)))
-                                    }
-                                    "array(address)" => {
-                                        ParamType::Array(Box::new(ParamType::Address))
-                                    }
-                                    "array(bool)" => ParamType::Array(Box::new(ParamType::Bool)),
-                                    "array(bytes)" => ParamType::Array(Box::new(ParamType::Bytes)),
-                                    "tuple" => ParamType::Tuple(vec![]),
-                                    _ => panic!("Unsupported parameter type: {}", key),
-                                };
-
-                                Param {
-                                    name: format!("param{}", index),
-                                    kind: param_type,
-                                    internal_type: None,
-                                }
-                            })
-                            .collect(),
+                        inputs,
                         outputs: vec![],
                         constant: Some(false),
                         state_mutability,
