@@ -2,10 +2,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use alloy::eips::BlockId;
-use alloy::network::{Ethereum, EthereumWallet};
+use alloy::network::{Ethereum, EthereumWallet, ReceiptResponse};
 use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
-use alloy::network::ReceiptResponse;
 use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
@@ -232,7 +231,8 @@ impl Network {
             });
 
         // Send the transaction, wait for it to be confirmed, and get the receipt
-        let receipt = self.provider
+        let receipt = self
+            .provider
             .send_transaction(tx.clone())
             .await
             .map_err(|e| {
@@ -254,7 +254,10 @@ impl Network {
                 }
             })?;
 
-        println!("Transaction confirmed with hash: {}", receipt.transaction_hash());
+        println!(
+            "Transaction confirmed with hash: {}",
+            receipt.transaction_hash()
+        );
 
         // Check if the transaction was successful
         if receipt.status() {
@@ -262,15 +265,15 @@ impl Network {
             return Ok(return_data.to_vec());
         } else {
             println!("Transaction failed!");
-            
+
             // Try to get more detailed error info using eth_call
             let call_result = self.provider.call(&tx).await;
-            
+
             match call_result {
                 Ok(_) => println!("eth_call succeeded but transaction failed - strange!"),
                 Err(e) => println!("eth_call error details: {}", e),
             }
-            
+
             return Err(EvmError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: "Transaction failed".to_string(),
