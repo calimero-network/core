@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
-use env::Method;
+use eyre::Context;
 use thiserror::Error;
 
 pub mod config;
@@ -15,7 +15,7 @@ pub mod transport;
 pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
-use eyre::Context;
+use env::Method;
 use protocol::{evm, icp, near, starknet, stellar, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
@@ -232,7 +232,7 @@ impl Client<AnyTransport> {
                     };
 
                     let access_key: PrivateKeySigner =
-                        PrivateKeySigner::from_str(&credentials.secret_key.clone())
+                        PrivateKeySigner::from_str(&credentials.secret_key)
                             .wrap_err("failed to convert secret key to PrivateKeySigner")?;
 
                     let _ignored = config.networks.insert(
