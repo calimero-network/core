@@ -125,13 +125,13 @@ impl Method<Evm> for ProxyContractRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
-        // verify
-        Ok(SolValue::abi_encode(&context_id))
+
+        Ok(context_id.abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let contract_address: AlloyAddress = SolValue::abi_decode(&response, false)?;
-        println!("contract_address: {:?}", contract_address);
+
         Ok(contract_address.to_string())
     }
 }

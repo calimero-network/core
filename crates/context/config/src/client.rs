@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
 use env::Method;
-use eyre::Context;
 use thiserror::Error;
 
 pub mod config;
@@ -16,6 +15,7 @@ pub mod transport;
 pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
+use eyre::Context;
 use protocol::{evm, icp, near, starknet, stellar, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 

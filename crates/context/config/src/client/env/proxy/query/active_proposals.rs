@@ -106,7 +106,7 @@ impl Method<Evm> for ActiveProposalRequest {
     const METHOD: &'static str = "getActiveProposalsLimit()";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Ok(SolValue::abi_encode(&()))
+        Ok(().abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

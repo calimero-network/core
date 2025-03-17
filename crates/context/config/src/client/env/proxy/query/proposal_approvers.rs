@@ -183,7 +183,7 @@ impl Method<Evm> for ProposalApproversRequest {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
 
-        Ok(SolValue::abi_encode(&(proposal_id)))
+        Ok(proposal_id.abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
