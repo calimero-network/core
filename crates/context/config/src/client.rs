@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
 use env::Method;
+use eyre::Context;
 use thiserror::Error;
 
 pub mod config;
@@ -230,10 +231,9 @@ impl Client<AnyTransport> {
                         eyre::bail!("missing account id for `{}` signer", network);
                     };
 
-                    let access_key: PrivateKeySigner = PrivateKeySigner::from_str(
-                        &credentials.secret_key.clone(),
-                    )
-                    .map_err(|_| eyre::eyre!("failed to convert secret key to PrivateKeySigner"))?;
+                    let access_key: PrivateKeySigner =
+                        PrivateKeySigner::from_str(&credentials.secret_key.clone())
+                            .wrap_err("failed to convert secret key to PrivateKeySigner")?;
 
                     let _ignored = config.networks.insert(
                         network.clone().into(),

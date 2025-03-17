@@ -180,16 +180,11 @@ impl Method<Evm> for MembersRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
-        let context_id_val = B256::from_slice(&context_id);
 
         let offset_val: u64 = self.offset as u64;
         let length_val: u64 = self.length as u64;
 
-        Ok(SolValue::abi_encode(&(
-            context_id_val,
-            offset_val,
-            length_val,
-        )))
+        Ok(SolValue::abi_encode(&(context_id, offset_val, length_val)))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

@@ -308,7 +308,8 @@ impl From<ProposalAction> for SolProposalAction {
                     amount,
                 } => {
                     let data = TransferData {
-                        recipient: receiver_id.parse().expect("Invalid address"),
+                        recipient: Address::from_str(&receiver_id)
+                            .unwrap_or_else(|_| Address::ZERO),
                         amount: U256::from(amount),
                     };
                     data.abi_encode().into()

@@ -1,7 +1,7 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
-use alloy::primitives::{Address as AlloyAddress, B256};
+use alloy::primitives::Address as AlloyAddress;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode, Principal};
 use serde::Serialize;
@@ -125,10 +125,8 @@ impl Method<Evm> for ProxyContractRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
-        let context_id_bytes = B256::from_slice(&context_id);
-
-        let encoded_context_id = SolValue::abi_encode(&context_id_bytes);
-        Ok(encoded_context_id.to_vec())
+        // verify
+        Ok(SolValue::abi_encode(&context_id))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

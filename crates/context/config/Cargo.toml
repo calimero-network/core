@@ -36,7 +36,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 url = { workspace = true, optional = true }
 
-
 [lints]
 workspace = true
 

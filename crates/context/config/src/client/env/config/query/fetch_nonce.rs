@@ -1,7 +1,6 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
-use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
@@ -148,11 +147,9 @@ impl Method<Evm> for FetchNonceRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
-        let context_id_val = B256::from_slice(&context_id);
         let member_id: [u8; 32] = self.member_id.rt().expect("infallible conversion");
-        let member_id_val = B256::from_slice(&member_id);
 
-        Ok(SolValue::abi_encode(&(context_id_val, member_id_val)))
+        Ok(SolValue::abi_encode(&(context_id, member_id)))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
