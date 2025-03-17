@@ -135,9 +135,8 @@ impl From<SolProposalAction> for ProposalAction {
                     SolValue::abi_decode(&action.data, false).expect("Invalid external call data");
                 ProposalAction::ExternalFunctionCall {
                     receiver_id: format!("{:?}", data.target),
-                    method_name: String::from_utf8(data.callData[..4].to_vec())
-                        .expect("Invalid method name"),
-                    args: String::from_utf8(data.callData[4..].to_vec()).expect("Invalid args"),
+                    method_name: hex::encode(&data.callData[..4]),
+                    args: hex::encode(&data.callData[4..]),
                     deposit: data
                         .value
                         .try_into()
