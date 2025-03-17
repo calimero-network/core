@@ -184,7 +184,7 @@ impl Method<Evm> for MembersRequest {
         let offset_val: u64 = self.offset as u64;
         let length_val: u64 = self.length as u64;
 
-        Ok(SolValue::abi_encode(&(context_id, offset_val, length_val)))
+        Ok((context_id, offset_val, length_val).abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

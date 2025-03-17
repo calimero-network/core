@@ -159,7 +159,7 @@ impl Method<Evm> for ProposalsRequest {
         let length = u32::try_from(self.length)
             .map_err(|e| eyre::eyre!("Limit too large for u32: {}", e))?;
 
-        Ok(SolValue::abi_encode(&(offset, length)))
+        Ok((offset, length).abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

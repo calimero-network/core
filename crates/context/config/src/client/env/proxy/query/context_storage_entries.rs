@@ -164,7 +164,7 @@ impl Method<Evm> for ContextStorageEntriesRequest {
         let limit =
             u32::try_from(self.limit).map_err(|e| eyre::eyre!("Limit too large for u32: {}", e))?;
 
-        Ok(SolValue::abi_encode(&(offset, limit)))
+        Ok((offset, limit).abi_encode())
     }
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded: Vec<alloy::primitives::Bytes> = SolValue::abi_decode(&response, false)?;

@@ -152,7 +152,7 @@ impl Method<Evm> for HasMemberRequest {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let identity_bytes: [u8; 32] = self.identity.rt().expect("infallible conversion");
 
-        Ok(SolValue::abi_encode(&(context_id, identity_bytes)))
+        Ok((context_id, identity_bytes).abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

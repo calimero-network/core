@@ -231,14 +231,13 @@ impl<'a> Method<Evm> for PrivilegesRequest<'a> {
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
 
-        // verify
         let identities: Vec<[u8; 32]> = self
             .identities
             .into_iter()
             .map(|id| id.rt().expect("infallible conversion"))
             .collect();
 
-        Ok(SolValue::abi_encode(&(context_id, identities)))
+        Ok((context_id, identities).abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
