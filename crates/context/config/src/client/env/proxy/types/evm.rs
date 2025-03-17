@@ -193,7 +193,7 @@ impl TryFrom<ProposalAction> for SolProposalAction {
 
     fn try_from(action: ProposalAction) -> Result<Self, Self::Error> {
         let kind: <SolProposalActionKind as SolType>::RustType = action.clone().into();
-        let data: Result<Vec<u8>, String> = match action {
+        let data: Result<Vec<u8>, Self::Error> = match action {
             ProposalAction::ExternalFunctionCall {
                 receiver_id,
                 method_name,
