@@ -40,6 +40,7 @@ calimero-node.workspace = true
 calimero-network.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store.workspace = true
+calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true

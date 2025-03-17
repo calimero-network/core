@@ -9,10 +9,11 @@ license.workspace = true
 [dependencies]
 actix.workspace = true
 async-stream.workspace = true
+eyre.workspace = true
 futures-util.workspace = true
 itertools.workspace = true
 paste.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 calimero-primitives.workspace = true
 
 [dev-dependencies]

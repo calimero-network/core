@@ -7,7 +7,7 @@ use multiaddr::Multiaddr;
 use crate::stream::Stream;
 
 #[derive(ActixMessage, Debug)]
-#[rtype(result = "()")]
+#[rtype("()")]
 #[non_exhaustive]
 pub enum NetworkEvent {
     ListeningOn {
