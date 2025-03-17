@@ -216,7 +216,9 @@ impl Method<Evm> for Mutate {
         let address = signer.address();
         let ecdsa_public_key = address.into_word();
 
-        let proxy_request_data: Vec<u8> = (&self.raw_request).into();
+        let proxy_request_data: Vec<u8> = (&self.raw_request)
+            .try_into()
+            .map_err(|e| eyre::eyre!("Failed to convert proxy request to bytes: {:?}", e))?;
 
         let sol_request = SolRequest {
             signerId: ecdsa_public_key,

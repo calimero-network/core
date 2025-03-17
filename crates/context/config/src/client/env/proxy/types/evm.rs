@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use alloy::primitives::{Address, B256, U256};
-use alloy_sol_types::{sol, SolValue};
+use alloy_sol_types::{sol, SolType, SolValue};
 use ethabi::{Function, Param, ParamType, Token};
 
 use crate::repr::{Repr, ReprTransmute};
@@ -188,152 +188,182 @@ impl From<SolProposalAction> for ProposalAction {
     }
 }
 
-impl From<ProposalAction> for SolProposalAction {
-    fn from(action: ProposalAction) -> Self {
-        SolProposalAction {
-            kind: action.clone().into(),
-            data: match action {
-                ProposalAction::ExternalFunctionCall {
-                    receiver_id,
-                    method_name,
-                    args,
-                    deposit,
-                } => {
-                    let parsed_args: Vec<(String, String)> =
-                        serde_json::from_str(&args).expect("Invalid args format");
+impl TryFrom<ProposalAction> for SolProposalAction {
+    type Error = String;
 
-                    let (tokens, inputs): (Vec<Token>, Vec<Param>) = parsed_args
-                        .iter()
-                        .enumerate()
-                        .map(|(index, (key, value))| {
-                            let (token, param_type) = match key.as_str() {
-                                "bool" => (
-                                    Token::Bool(value.parse().expect("Invalid bool")),
-                                    ParamType::Bool,
-                                ),
-                                "string" => (Token::String(value.clone()), ParamType::String),
-                                "address" => (
-                                    Token::Address(value.parse().expect("Invalid address")),
-                                    ParamType::Address,
-                                ),
-                                "bytes" => (
-                                    Token::Bytes(hex::decode(value).expect("Invalid hex bytes")),
-                                    ParamType::Bytes,
-                                ),
-                                "int256" => (
-                                    Token::Int(value.parse().expect("Invalid int256")),
-                                    ParamType::Int(256),
-                                ),
-                                "uint256" => (
-                                    Token::Uint(value.parse().expect("Invalid uint256")),
-                                    ParamType::Uint(256),
-                                ),
-                                "array(bool)" => (
-                                    Token::Array(
-                                        serde_json::from_str(value).expect("Invalid array"),
-                                    ),
-                                    ParamType::Array(Box::new(ParamType::Bool)),
-                                ),
-                                "array(string)" => (
-                                    Token::Array(
-                                        serde_json::from_str(value).expect("Invalid array"),
-                                    ),
-                                    ParamType::Array(Box::new(ParamType::String)),
-                                ),
-                                "array(address)" => (
-                                    Token::Array(
-                                        serde_json::from_str(value).expect("Invalid array"),
-                                    ),
-                                    ParamType::Array(Box::new(ParamType::Address)),
-                                ),
-                                "array(bytes)" => (
-                                    Token::Array(
-                                        serde_json::from_str(value).expect("Invalid array"),
-                                    ),
-                                    ParamType::Array(Box::new(ParamType::Bytes)),
-                                ),
-                                "array(int256)" => (
-                                    Token::Array(
-                                        serde_json::from_str(value).expect("Invalid array"),
-                                    ),
-                                    ParamType::Array(Box::new(ParamType::Int(256))),
-                                ),
-                                "array(uint256)" => (
-                                    Token::Array(
-                                        serde_json::from_str(value).expect("Invalid array"),
-                                    ),
-                                    ParamType::Array(Box::new(ParamType::Uint(256))),
-                                ),
-                                "tuple" => (
-                                    Token::Tuple(
-                                        serde_json::from_str(value).expect("Invalid tuple"),
-                                    ),
-                                    ParamType::Tuple(vec![]),
-                                ),
-                                _ => panic!("Unsupported type: {}", key),
-                            };
-                            let param = Param {
-                                name: format!("param{}", index),
-                                kind: param_type,
-                                internal_type: None,
-                            };
-                            (token, param)
-                        })
-                        .unzip();
+    fn try_from(action: ProposalAction) -> Result<Self, Self::Error> {
+        let kind: <SolProposalActionKind as SolType>::RustType = action.clone().into();
+        let data: Result<Vec<u8>, String> = match action {
+            ProposalAction::ExternalFunctionCall {
+                receiver_id,
+                method_name,
+                args,
+                deposit,
+            } => {
+                let parsed_args: Vec<(String, String)> =
+                    serde_json::from_str(&args).map_err(|_| "Invalid args format".to_string())?;
 
-                    let state_mutability = if deposit > 0 {
-                        ethabi::StateMutability::Payable
-                    } else {
-                        ethabi::StateMutability::NonPayable
-                    };
-                    let amount = U256::from(deposit);
+                let (tokens, inputs): (Vec<Token>, Vec<Param>) = parsed_args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (key, value))| {
+                        let (token, param_type) = match key.as_str() {
+                            "bool" => (
+                                Token::Bool(value.parse().map_err(|_| "Invalid bool".to_string())?),
+                                ParamType::Bool,
+                            ),
+                            "string" => (Token::String(value.clone()), ParamType::String),
+                            "address" => (
+                                Token::Address(
+                                    value.parse().map_err(|_| "Invalid address".to_string())?,
+                                ),
+                                ParamType::Address,
+                            ),
+                            "bytes" => (
+                                Token::Bytes(
+                                    hex::decode(value)
+                                        .map_err(|_| "Invalid hex bytes".to_string())?,
+                                ),
+                                ParamType::Bytes,
+                            ),
+                            "int256" => (
+                                Token::Int(
+                                    value.parse().map_err(|_| "Invalid int256".to_string())?,
+                                ),
+                                ParamType::Int(256),
+                            ),
+                            "uint256" => (
+                                Token::Uint(
+                                    value.parse().map_err(|_| "Invalid uint256".to_string())?,
+                                ),
+                                ParamType::Uint(256),
+                            ),
+                            "array(bool)" => (
+                                Token::Array(
+                                    serde_json::from_str(value)
+                                        .map_err(|_| "Invalid array".to_string())?,
+                                ),
+                                ParamType::Array(Box::new(ParamType::Bool)),
+                            ),
+                            "array(string)" => (
+                                Token::Array(
+                                    serde_json::from_str(value)
+                                        .map_err(|_| "Invalid array".to_string())?,
+                                ),
+                                ParamType::Array(Box::new(ParamType::String)),
+                            ),
+                            "array(address)" => (
+                                Token::Array(
+                                    serde_json::from_str(value)
+                                        .map_err(|_| "Invalid array".to_string())?,
+                                ),
+                                ParamType::Array(Box::new(ParamType::Address)),
+                            ),
+                            "array(bytes)" => (
+                                Token::Array(
+                                    serde_json::from_str(value)
+                                        .map_err(|_| "Invalid array".to_string())?,
+                                ),
+                                ParamType::Array(Box::new(ParamType::Bytes)),
+                            ),
+                            "array(int256)" => (
+                                Token::Array(
+                                    serde_json::from_str(value)
+                                        .map_err(|_| "Invalid array".to_string())?,
+                                ),
+                                ParamType::Array(Box::new(ParamType::Int(256))),
+                            ),
+                            "array(uint256)" => (
+                                Token::Array(
+                                    serde_json::from_str(value)
+                                        .map_err(|_| "Invalid array".to_string())?,
+                                ),
+                                ParamType::Array(Box::new(ParamType::Uint(256))),
+                            ),
+                            "tuple" => (
+                                Token::Tuple(
+                                    serde_json::from_str(value)
+                                        .map_err(|_| "Invalid tuple".to_string())?,
+                                ),
+                                ParamType::Tuple(vec![]),
+                            ),
+                            _ => return Err(format!("Unsupported type: {}", key)),
+                        };
+                        let param = Param {
+                            name: format!("param{}", index),
+                            kind: param_type,
+                            internal_type: None,
+                        };
+                        Ok((token, param))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .unzip();
 
-                    #[allow(deprecated)]
-                    let function = Function {
-                        name: method_name,
-                        inputs,
-                        outputs: vec![],
-                        constant: Some(false),
-                        state_mutability,
-                    };
+                let state_mutability = if deposit > 0 {
+                    ethabi::StateMutability::Payable
+                } else {
+                    ethabi::StateMutability::NonPayable
+                };
+                let amount = U256::from(deposit);
 
-                    let call_data = function.encode_input(&tokens).unwrap();
+                #[allow(deprecated)]
+                let function = Function {
+                    name: method_name,
+                    inputs,
+                    outputs: vec![],
+                    constant: Some(false),
+                    state_mutability,
+                };
 
-                    let contract_address =
-                        Address::from_str(&receiver_id).expect("Invalid address");
-                    let data = SolValue::abi_encode(&(contract_address, call_data, amount));
+                let call_data = function
+                    .encode_input(&tokens)
+                    .map_err(|_| "Encoding error".to_string())?;
 
-                    data.into()
-                }
-                ProposalAction::Transfer {
-                    receiver_id,
-                    amount,
-                } => {
-                    let data = TransferData {
-                        recipient: Address::from_str(&receiver_id)
-                            .unwrap_or_else(|_| Address::ZERO),
-                        amount: U256::from(amount),
-                    };
-                    data.abi_encode().into()
-                }
-                ProposalAction::SetNumApprovals { num_approvals } => {
-                    num_approvals.abi_encode().into()
-                }
-                ProposalAction::SetActiveProposalsLimit {
-                    active_proposals_limit,
-                } => active_proposals_limit.abi_encode().into(),
-                ProposalAction::SetContextValue { key, value } => {
-                    let data = ContextValueData {
-                        key: key.to_vec().into(),
-                        value: value.to_vec().into(),
-                    };
-                    data.abi_encode().into()
-                }
-                ProposalAction::DeleteProposal { proposal_id } => {
-                    let proposal_id: [u8; 32] = proposal_id.rt().expect("infallible conversion");
-                    proposal_id.abi_encode().into()
-                }
-            },
+                let contract_address =
+                    Address::from_str(&receiver_id).map_err(|_| "Invalid address".to_string())?;
+                let data = SolValue::abi_encode(&(contract_address, call_data, amount));
+
+                Ok(data.into())
+            }
+            ProposalAction::Transfer {
+                receiver_id,
+                amount,
+            } => {
+                let data = TransferData {
+                    recipient: Address::from_str(&receiver_id)
+                        .map_err(|e| format!("Invalid receiver address format: {}", e))?,
+                    amount: U256::from(amount),
+                };
+                Ok(data.abi_encode().into())
+            }
+            ProposalAction::SetNumApprovals { num_approvals } => {
+                Ok(num_approvals.abi_encode().into())
+            }
+            ProposalAction::SetActiveProposalsLimit {
+                active_proposals_limit,
+            } => Ok(active_proposals_limit.abi_encode().into()),
+            ProposalAction::SetContextValue { key, value } => {
+                let data = ContextValueData {
+                    key: key.to_vec().into(),
+                    value: value.to_vec().into(),
+                };
+                Ok(data.abi_encode().into())
+            }
+            ProposalAction::DeleteProposal { proposal_id } => {
+                let proposal_id: [u8; 32] = proposal_id
+                    .rt()
+                    .map_err(|_| "Invalid proposal ID".to_string())?;
+                Ok(proposal_id.abi_encode().into())
+            }
+        };
+
+        match data {
+            Ok(data) => Ok(SolProposalAction {
+                kind,
+                data: data.into(),
+            }),
+            Err(e) => Err(e),
         }
     }
 }
@@ -347,35 +377,55 @@ impl From<&ProxyMutateRequest> for SolRequestKind {
     }
 }
 
-impl From<&ProxyMutateRequest> for Vec<u8> {
-    fn from(request: &ProxyMutateRequest) -> Self {
+impl TryFrom<&ProxyMutateRequest> for Vec<u8> {
+    type Error = String;
+
+    fn try_from(request: &ProxyMutateRequest) -> Result<Self, Self::Error> {
         match request {
             ProxyMutateRequest::Propose { proposal } => {
-                let proposal_action: Vec<SolProposalAction> = proposal
+                let proposal_action: Result<Vec<SolProposalAction>, Self::Error> = proposal
                     .actions
                     .iter()
-                    .map(|action| SolProposalAction::from(action.clone()))
+                    .map(|action| {
+                        SolProposalAction::try_from(action.clone())
+                            .map_err(|e| format!("Invalid proposal action: {}", e))
+                    })
                     .collect();
-                let proposal_id: [u8; 32] = proposal.id.rt().expect("infallible conversion");
-                let signer_id: [u8; 32] = proposal.author_id.rt().expect("infallible conversion");
+                let proposal_id: [u8; 32] = proposal
+                    .id
+                    .rt()
+                    .map_err(|_| "Invalid proposal ID".to_string())?;
+                let signer_id: [u8; 32] = proposal
+                    .author_id
+                    .rt()
+                    .map_err(|_| "Invalid signer ID".to_string())?;
 
-                let sol_proposal = SolProposal {
-                    id: B256::from(proposal_id),
-                    authorId: B256::from(signer_id),
-                    actions: proposal_action,
-                };
-
-                SolValue::abi_encode(&sol_proposal)
+                match proposal_action {
+                    Ok(proposal_action) => {
+                        let sol_proposal = SolProposal {
+                            id: B256::from(proposal_id),
+                            authorId: B256::from(signer_id),
+                            actions: proposal_action,
+                        };
+                        Ok(SolValue::abi_encode(&sol_proposal))
+                    }
+                    Err(e) => Err(e),
+                }
             }
             ProxyMutateRequest::Approve { approval } => {
-                let proposal_id: [u8; 32] =
-                    approval.proposal_id.rt().expect("infallible conversion");
-                let signer_id: [u8; 32] = approval.signer_id.rt().expect("infallible conversion");
+                let proposal_id: [u8; 32] = approval
+                    .proposal_id
+                    .rt()
+                    .map_err(|_| "Invalid proposal ID".to_string())?;
+                let signer_id: [u8; 32] = approval
+                    .signer_id
+                    .rt()
+                    .map_err(|_| "Invalid signer ID".to_string())?;
                 let proposal_approval = SolProposalApprovalWithSigner {
                     proposalId: B256::from(proposal_id),
                     userId: B256::from(signer_id),
                 };
-                SolValue::abi_encode(&proposal_approval)
+                Ok(SolValue::abi_encode(&proposal_approval))
             }
         }
     }
