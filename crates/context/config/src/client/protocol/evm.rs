@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use alloy::eips::{BlockId, BlockNumberOrTag};
+use alloy::eips::BlockId;
 use alloy::network::{Ethereum, EthereumWallet, ReceiptResponse};
 use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
-use alloy::rpc::types::{TransactionInput, TransactionRequest};
+use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -209,80 +209,52 @@ impl Network {
         call_data.extend_from_slice(&selector);
         call_data.extend_from_slice(&args);
 
-        let tx = TransactionRequest::default()
+        let request = TransactionRequest::default()
             .to(address)
-            .input(TransactionInput {
-                input: Some(Bytes::from(call_data.clone())),
-                data: None,
-            });
+            .input(Bytes::from(call_data).into());
 
         // Send the transaction, wait for it to be confirmed, and get the receipt
-        let receipt = self
+        let tx = self
             .provider
-            .send_transaction(tx.clone())
+            .send_transaction(request.clone())
             .await
-            .map_err(|e| {
-                println!("Error sending transaction: {}", e);
-                EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: format!("Failed to send transaction: {}", e),
-                }
-            })?
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to send transaction: {}", e),
+            })?;
+
+        let receipt = tx
             .with_required_confirmations(1)
             .with_timeout(Some(Duration::from_secs(60)))
             .get_receipt()
             .await
-            .map_err(|e| {
-                println!("Error getting receipt: {}", e);
-                EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: format!("Failed to get transaction receipt: {}", e),
-                }
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to get transaction receipt: {}", e),
             })?;
 
-        println!(
-            "Transaction confirmed with hash: {}",
-            receipt.transaction_hash()
-        );
-
-        if receipt.status() {
-            println!("Transaction successful!");
-
-            let block_number = receipt.block_number().unwrap();
-            let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number - 1));
-
-            let request = TransactionRequest::default()
-                .to(address)
-                .input(Bytes::from(call_data.clone()).into());
-
-            let return_data = self
-                .provider
-                .call(&request)
-                .block(block_id)
-                .await
-                .map_err(|e| {
-                    println!("Call simulation failed: {}", e);
-                    EvmError::Custom {
-                        operation: ErrorOperation::Mutate,
-                        reason: format!("Failed to simulate transaction: {}", e),
-                    }
-                })?;
-
-            return Ok(return_data.to_vec());
-        } else {
-            println!("Transaction failed!");
-
-            let call_result = self.provider.call(&tx).await;
-
-            match call_result {
-                Ok(_) => println!("eth_call succeeded but transaction failed - strange!"),
-                Err(e) => println!("eth_call error details: {}", e),
-            }
-
+        if !receipt.status() {
             return Err(EvmError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: "Transaction failed".to_string(),
             });
         }
+
+        let block_number = receipt.block_number().ok_or_else(|| EvmError::Custom {
+            operation: ErrorOperation::Mutate,
+            reason: "Failed to get block number".to_string(),
+        })?;
+
+        let return_data = self
+            .provider
+            .call(&request)
+            .block((block_number - 1).into())
+            .await
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Result retrieval failed: {}", e),
+            })?;
+
+        Ok(return_data.to_vec())
     }
 }
