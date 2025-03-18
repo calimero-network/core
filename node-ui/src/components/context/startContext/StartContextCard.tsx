@@ -324,7 +324,7 @@ export default function StartContextCard({
             <option value="starknet">Starknet</option>
             <option value="icp">ICP</option>
             <option value="stellar">Stellar</option>
-            <option value="evm">EVM</option>
+            <option value="ethereum">Ethereum</option>
           </select>
         </div>
         <Button
