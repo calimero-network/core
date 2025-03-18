@@ -29,9 +29,9 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::{Signature, SignerSync};
 use alloy_sol_types::SolValue;
 
-use super::types::evm::{SolRequest, SolRequestKind, SolSignedRequest};
-use crate::client::env::config::types::evm::ToSol;
-use crate::client::protocol::evm::Evm;
+use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
+use crate::client::env::config::types::ethereum::ToSol;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::stellar::stellar_types::FromWithEnv;
 
 #[derive(Debug)]
@@ -211,7 +211,7 @@ impl<'a> Method<Stellar> for Mutate<'a> {
     }
 }
 
-impl<'a> Method<Evm> for Mutate<'a> {
+impl<'a> Method<Ethereum> for Mutate<'a> {
     type Returns = ();
     // The method needs to be encoded as a tuple with arguments that it expects
     const METHOD: &'static str =

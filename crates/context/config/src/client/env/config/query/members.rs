@@ -15,7 +15,7 @@ use crate::client::env::config::types::starknet::{
     CallData, StarknetMembers, StarknetMembersRequest,
 };
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -173,7 +173,7 @@ impl Method<Stellar> for MembersRequest {
     }
 }
 
-impl Method<Evm> for MembersRequest {
+impl Method<Ethereum> for MembersRequest {
     type Returns = Vec<ContextIdentity>;
 
     const METHOD: &'static str = "members(bytes32,uint256,uint256)";

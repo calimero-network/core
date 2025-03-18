@@ -10,12 +10,12 @@ use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
-use super::evm::{SolProposal, SolProposalApprovalWithSigner};
-use super::types::evm::{SolRequest, SolRequestKind, SolSignedRequest};
+use super::ethereum::{SolProposal, SolProposalApprovalWithSigner};
+use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
 use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
-use crate::client::env::proxy::evm::SolProposalWithApprovals;
+use crate::client::env::proxy::ethereum::SolProposalWithApprovals;
 use crate::client::env::{utils, Method};
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -200,7 +200,7 @@ impl Method<Stellar> for Mutate {
     }
 }
 
-impl Method<Evm> for Mutate {
+impl Method<Ethereum> for Mutate {
     type Returns = Option<ProposalWithApprovals>;
 
     const METHOD: &'static str = "mutate(((bytes32,bytes32,uint8,bytes),bytes32,bytes32,uint8))";

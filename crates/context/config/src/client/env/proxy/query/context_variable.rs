@@ -10,7 +10,7 @@ use starknet_crypto::Felt;
 
 use crate::client::env::proxy::starknet::{CallData, ContextVariableKey};
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -145,7 +145,7 @@ impl Method<Stellar> for ContextVariableRequest {
     }
 }
 
-impl Method<Evm> for ContextVariableRequest {
+impl Method<Ethereum> for ContextVariableRequest {
     type Returns = Vec<u8>;
 
     const METHOD: &'static str = "getContextValue(bytes)";

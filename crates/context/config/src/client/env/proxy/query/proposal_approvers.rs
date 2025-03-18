@@ -14,7 +14,7 @@ use starknet::core::types::Felt;
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetApprovers, StarknetProposalId};
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -175,7 +175,7 @@ impl Method<Stellar> for ProposalApproversRequest {
     }
 }
 
-impl Method<Evm> for ProposalApproversRequest {
+impl Method<Ethereum> for ProposalApproversRequest {
     type Returns = Vec<ContextIdentity>;
 
     const METHOD: &'static str = "proposalApprovers(bytes32)";

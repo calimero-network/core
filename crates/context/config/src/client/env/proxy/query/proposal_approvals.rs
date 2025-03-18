@@ -14,7 +14,7 @@ use crate::client::env::proxy::types::starknet::{
     StarknetProposalId, StarknetProposalWithApprovals,
 };
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -156,7 +156,7 @@ impl Method<Stellar> for ProposalApprovalsRequest {
     }
 }
 
-impl Method<Evm> for ProposalApprovalsRequest {
+impl Method<Ethereum> for ProposalApprovalsRequest {
     type Returns = ProposalWithApprovals;
 
     const METHOD: &'static str = "getConfirmationsCount(bytes32)";

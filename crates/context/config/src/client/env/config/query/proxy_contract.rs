@@ -12,7 +12,7 @@ use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -118,7 +118,7 @@ impl Method<Stellar> for ProxyContractRequest {
     }
 }
 
-impl Method<Evm> for ProxyContractRequest {
+impl Method<Ethereum> for ProxyContractRequest {
     type Returns = String;
 
     const METHOD: &'static str = "proxyContract(bytes32)";

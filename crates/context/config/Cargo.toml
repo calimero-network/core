@@ -45,7 +45,7 @@ client = [
   "icp_client",
   "starknet_client",
   "stellar_client",
-  "evm_client",
+  "ethereum_client",
   "dep:either",
   "dep:eyre",
   "reqwest/json",
@@ -82,12 +82,12 @@ stellar_client = [
     "stellar",
 ]
 
-evm = [
+ethereum = [
   "alloy",
   "alloy-sol-types",
   "ethabi"
 ]
 
-evm_client = [
-  "evm"
+ethereum_client = [
+  "ethereum"
 ]

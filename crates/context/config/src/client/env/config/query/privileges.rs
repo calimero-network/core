@@ -11,13 +11,13 @@ use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode, FeltWriter};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::evm::{SolCapability, SolUserCapabilities};
+use crate::client::env::config::types::ethereum::{SolCapability, SolUserCapabilities};
 use crate::client::env::config::types::starknet::{
     CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
     StarknetPrivileges,
 };
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -223,7 +223,7 @@ impl<'a> Method<Stellar> for PrivilegesRequest<'a> {
     }
 }
 
-impl<'a> Method<Evm> for PrivilegesRequest<'a> {
+impl<'a> Method<Ethereum> for PrivilegesRequest<'a> {
     type Returns = BTreeMap<SignerId, Vec<Capability>>;
 
     const METHOD: &'static str = "privileges";
