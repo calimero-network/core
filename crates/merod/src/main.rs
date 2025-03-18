@@ -22,7 +22,10 @@ async fn main() -> EyreResult<()> {
 
 fn setup() -> EyreResult<()> {
     registry()
-        .with(EnvFilter::builder().parse(format!("info,{}", var("RUST_LOG").unwrap_or_default()))?)
+        .with(EnvFilter::builder().parse(format!(
+            "merod=info,calimero_=info,{}",
+            var("RUST_LOG").unwrap_or_default()
+        ))?)
         .with(layer())
         .init();
 
