@@ -3,7 +3,6 @@ use core::{mem, ptr};
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
-use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
@@ -231,19 +230,14 @@ impl<'a> Method<Evm> for PrivilegesRequest<'a> {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
-        let context_id_val = B256::from_slice(&context_id);
 
-        // Convert identities to Vec<B256>
-        let identities: Vec<B256> = self
+        let identities: Vec<[u8; 32]> = self
             .identities
             .into_iter()
-            .map(|id| {
-                let bytes: [u8; 32] = id.rt().expect("infallible conversion");
-                B256::from_slice(&bytes)
-            })
+            .map(|id| id.rt().expect("infallible conversion"))
             .collect();
 
-        Ok(SolValue::abi_encode(&(context_id_val, identities)))
+        Ok((context_id, identities).abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

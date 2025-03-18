@@ -1,7 +1,6 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
-use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
@@ -129,9 +128,8 @@ impl Method<Evm> for MembersRevisionRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
-        let context_id_val = B256::from_slice(&context_id);
 
-        Ok(SolValue::abi_encode(&(context_id_val)))
+        Ok(context_id.abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

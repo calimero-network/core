@@ -1,3 +1,7 @@
+use alloy::primitives::{keccak256, B256};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::{Signature, SignerSync};
+use alloy_sol_types::SolValue;
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::xdr::{FromXdr, ToXdr};
@@ -6,7 +10,10 @@ use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
+use super::evm::{SolProposal, SolProposalApprovalWithSigner};
+use super::types::evm::{SolRequest, SolRequestKind, SolSignedRequest};
 use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
+use crate::client::env::proxy::evm::SolProposalWithApprovals;
 use crate::client::env::{utils, Method};
 use crate::client::protocol::evm::Evm;
 use crate::client::protocol::icp::Icp;
@@ -22,7 +29,7 @@ use crate::stellar::stellar_types::{
     FromWithEnv, StellarSignedRequest, StellarSignedRequestPayload,
 };
 use crate::stellar::{StellarProposalWithApprovals, StellarProxyMutateRequest};
-use crate::types::Signed;
+use crate::types::{Identity, ProposalId, Signed};
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
 pub mod methods;
@@ -196,14 +203,71 @@ impl Method<Stellar> for Mutate {
 impl Method<Evm> for Mutate {
     type Returns = Option<ProposalWithApprovals>;
 
-    const METHOD: &'static str = "mutate";
+    const METHOD: &'static str = "mutate(((bytes32,bytes32,uint8,bytes),bytes32,bytes32,uint8))";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let ed25519_key = SigningKey::from_bytes(&self.signing_key);
+        let user_id_bytes = ed25519_key.verifying_key().to_bytes();
+        let user_id = B256::from_slice(&user_id_bytes);
+
+        let ecdsa_private_key_input =
+            ["ECDSA_DERIVE".as_bytes(), &self.signing_key.as_slice()].concat();
+        let ecdsa_private_key_bytes = keccak256(&ecdsa_private_key_input);
+        let signer = PrivateKeySigner::from_bytes(&ecdsa_private_key_bytes)?;
+        let address = signer.address();
+        let ecdsa_public_key = address.into_word();
+
+        let kind = SolRequestKind::from(&self.raw_request);
+
+        let request_data = match self.raw_request {
+            ProxyMutateRequest::Propose { proposal } => {
+                SolProposal::try_from(proposal)?.abi_encode()
+            }
+            ProxyMutateRequest::Approve { approval } => {
+                SolProposalApprovalWithSigner::from(approval).abi_encode()
+            }
+        };
+
+        let sol_request = SolRequest {
+            signerId: ecdsa_public_key,
+            userId: user_id,
+            kind,
+            data: request_data.into(),
+        };
+
+        let request_message = SolValue::abi_encode(&sol_request);
+
+        let message_hash = keccak256(&request_message);
+        let signature: Signature = signer.sign_message_sync(&message_hash.as_slice())?;
+
+        let r = B256::from(signature.r());
+        let s = B256::from(signature.s());
+        let v = if signature.recid().to_byte() == 0 {
+            27
+        } else {
+            28
+        };
+
+        let signed_request = SolSignedRequest {
+            payload: sol_request,
+            r,
+            s,
+            v,
+        };
+
+        let encoded = SolValue::abi_encode(&signed_request);
+        Ok(encoded)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        let decoded: SolProposalWithApprovals = SolValue::abi_decode(&response, false)?;
+
+        let proposal = ProposalWithApprovals {
+            proposal_id: Repr::new(ProposalId(Identity(decoded.proposalId.0))),
+            num_approvals: decoded.numApprovals as usize,
+        };
+
+        Ok(Some(proposal))
     }
 }
 

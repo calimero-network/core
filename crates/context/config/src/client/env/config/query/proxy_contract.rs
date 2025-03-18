@@ -1,11 +1,9 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
-use alloy::primitives::{Address as AlloyAddress, B256};
-use alloy_sol_types::abi::{encode, Token};
+use alloy::primitives::Address as AlloyAddress;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode, Principal};
-use hex;
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Address, BytesN, Env, IntoVal, TryFromVal};
@@ -127,15 +125,13 @@ impl Method<Evm> for ProxyContractRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
-        let context_id_bytes = B256::from_slice(&context_id);
 
-        let encoded_context_id = SolValue::abi_encode(&context_id_bytes);
-        Ok(encoded_context_id.to_vec())
+        Ok(context_id.abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let contract_address: AlloyAddress = SolValue::abi_decode(&response, false)?;
-        println!("contract_address: {:?}", contract_address);
+
         Ok(contract_address.to_string())
     }
 }

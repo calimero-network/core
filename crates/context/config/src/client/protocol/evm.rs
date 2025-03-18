@@ -1,11 +1,15 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use alloy::eips::BlockId;
+use alloy::network::{Ethereum, EthereumWallet, ReceiptResponse};
 use alloy::primitives::{keccak256, Address, Bytes};
-use alloy::rpc::client::{ClientBuilder, ReqwestClient};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
+use alloy::rpc::types::TransactionRequest;
+use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use thiserror::Error;
+use tokio::time::Duration;
 use url::Url;
 
 use super::Protocol;
@@ -58,7 +62,7 @@ mod serde_creds {
 pub struct NetworkConfig {
     pub rpc_url: Url,
     pub account_id: String,
-    pub access_key: String,
+    pub access_key: PrivateKeySigner,
 }
 
 #[derive(Debug)]
@@ -68,9 +72,7 @@ pub struct EvmConfig<'a> {
 
 #[derive(Clone, Debug)]
 struct Network {
-    client: String,
-    account_id: String,
-    secret_key: String,
+    provider: DynProvider<Ethereum>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,16 +86,14 @@ impl<'a> EvmTransport<'a> {
         let mut networks = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
-            let client = network_config.rpc_url.clone();
+            let wallet = EthereumWallet::from(network_config.access_key.clone());
 
-            let _ignored = networks.insert(
-                network_id.clone(),
-                Network {
-                    client: client.to_string(),
-                    account_id: network_config.account_id.clone(),
-                    secret_key: network_config.access_key.clone(),
-                },
-            );
+            let provider: DynProvider<Ethereum> = ProviderBuilder::new()
+                .wallet(wallet)
+                .on_http(network_config.rpc_url.clone())
+                .erased();
+
+            let _ignored = networks.insert(network_id.clone(), Network { provider });
         }
 
         Self { networks }
@@ -159,10 +159,6 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, EvmError> {
-        // Create RPC client
-        let client: ReqwestClient = ClientBuilder::default().http(self.client.parse().unwrap());
-
-        // Parse contract address
         let address = contract_id
             .parse::<Address>()
             .map_err(|e| EvmError::Custom {
@@ -170,42 +166,33 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
-        // Create method selector (first 4 bytes of method signature hash)
         let method_selector = &keccak256(method.as_bytes())[..4];
 
-        // Combine method selector with arguments
         let call_data = [method_selector, &args].concat();
 
-        // Create parameters for the RPC call
-        let params = vec![
-            json!({
-                "to": address,
-                "data": Bytes::from(call_data)
-            }),
-            json!("latest"),
-        ]; // Added "latest" block parameter
+        let request = TransactionRequest::default()
+            .to(address)
+            .input(Bytes::from(call_data).into());
 
-        // Send the eth_call and get the response
-        let response: Bytes =
-            client
-                .request("eth_call", params)
-                .await
-                .map_err(|e| EvmError::Custom {
-                    operation: ErrorOperation::Query,
-                    reason: format!("Failed to execute eth_call: {}", e),
-                })?;
+        let bytes = self
+            .provider
+            .call(&request)
+            .block(BlockId::latest())
+            .await
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Query,
+                reason: format!("Failed to execute eth_call: {}", e),
+            })?;
 
-        Ok(response.to_vec())
+        Ok(bytes.into())
     }
 
-    async fn mutate(
+    pub async fn mutate(
         &self,
         contract_id: String,
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, EvmError> {
-        let client: ReqwestClient = ClientBuilder::default().http(self.client.parse().unwrap());
-
         let address = contract_id
             .parse::<Address>()
             .map_err(|e| EvmError::Custom {
@@ -215,7 +202,6 @@ impl Network {
 
         let method_selector = &keccak256(method.as_bytes());
 
-        // The method selector is the first 4 bytes of the hash
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&method_selector[0..4]);
 
@@ -223,74 +209,52 @@ impl Network {
         call_data.extend_from_slice(&selector);
         call_data.extend_from_slice(&args);
 
-        let params = vec![json!({
-            "to": address,
-            "data": Bytes::from(call_data.clone())
-        })];
+        let request = TransactionRequest::default()
+            .to(address)
+            .input(Bytes::from(call_data).into());
 
-        // Send the transaction and get the transaction hash
-        let tx_hash: String = client
-            .request("eth_sendTransaction", params.clone())
+        // Send the transaction, wait for it to be confirmed, and get the receipt
+        let tx = self
+            .provider
+            .send_transaction(request.clone())
             .await
-            .map_err(|e| {
-                println!("Error 1: {}", e);
-                EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                }
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to send transaction: {}", e),
             })?;
 
-        // Wait for the transaction to be mined
-        let mut receipt = None;
-        for _ in 0..30 {
-            // Try for 30 attempts with 2-second intervals
-            let receipt_params = vec![json!(tx_hash)];
-            let result: Option<serde_json::Value> = client
-                .request("eth_getTransactionReceipt", receipt_params)
-                .await
-                .map_err(|e| EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                })?;
+        let receipt = tx
+            .with_required_confirmations(1)
+            .with_timeout(Some(Duration::from_secs(60)))
+            .get_receipt()
+            .await
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to get transaction receipt: {}", e),
+            })?;
 
-            if let Some(r) = result {
-                receipt = Some(r);
-                break;
-            }
-
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-
-        // Check if the transaction was successful
-        if let Some(receipt) = receipt {
-            let status = receipt
-                .get("status")
-                .and_then(|s| s.as_str())
-                .unwrap_or("0x0");
-
-            if status == "0x1" {
-                // Transaction was successful
-                return Ok(Vec::new());
-            } else {
-                let call_params = vec![
-                    json!({
-                        "to": address,
-                        "data": Bytes::from(call_data.clone())
-                    }),
-                    json!("latest"),
-                ];
-
-                return Err(EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: "Transaction failed".to_string(),
-                });
-            }
-        } else {
-            // Transaction wasn't mined in time
+        if !receipt.status() {
             return Err(EvmError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: "Transaction wasn't mined in time".to_string(),
+                reason: "Transaction failed".to_string(),
             });
         }
+
+        let block_number = receipt.block_number().ok_or_else(|| EvmError::Custom {
+            operation: ErrorOperation::Mutate,
+            reason: "Failed to get block number".to_string(),
+        })?;
+
+        let return_data = self
+            .provider
+            .call(&request)
+            .block((block_number - 1).into())
+            .await
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Result retrieval failed: {}", e),
+            })?;
+
+        Ok(return_data.into())
     }
 }

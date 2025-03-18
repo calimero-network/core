@@ -164,10 +164,12 @@ impl Method<Stellar> for ProposalRequest {
 impl Method<Evm> for ProposalRequest {
     type Returns = Option<Proposal>;
 
-    const METHOD: &'static str = "proposal";
+    const METHOD: &'static str = "getProposal(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
+        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+
+        Ok(proposal_id.abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
@@ -180,6 +182,6 @@ impl Method<Evm> for ProposalRequest {
         let sol_proposal: SolProposal = SolValue::abi_decode(&response, false)?;
 
         // Convert to our Proposal type using the From implementation we created
-        Ok(Some(sol_proposal.into()))
+        sol_proposal.try_into().map(Some)
     }
 }

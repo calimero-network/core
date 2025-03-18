@@ -1,6 +1,8 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
+use eyre::OptionExt;
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Bytes, Env, TryIntoVal};
@@ -154,13 +156,31 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
 impl Method<Evm> for ContextStorageEntriesRequest {
     type Returns = Vec<ContextStorageEntry>;
 
-    const METHOD: &'static str = "context_storage_entries";
+    const METHOD: &'static str = "contextStorageEntries(uint32,uint32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        todo!()
-    }
+        let offset = u32::try_from(self.offset)
+            .map_err(|e| eyre::eyre!("Offset too large for u32: {}", e))?;
+        let limit =
+            u32::try_from(self.limit).map_err(|e| eyre::eyre!("Limit too large for u32: {}", e))?;
 
-    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        todo!()
+        Ok((offset, limit).abi_encode())
+    }
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded: Vec<alloy::primitives::Bytes> = SolValue::abi_decode(&response, false)?;
+        let mut decoded = decoded.into_iter();
+        let mut entries = Vec::with_capacity(decoded.len() / 2);
+        while let Some(key) = decoded.next() {
+            let value = decoded
+                .next()
+                .ok_or_eyre("missing value for storage entry")?;
+
+            entries.push(ContextStorageEntry {
+                key: key.into(),
+                value: value.into(),
+            });
+        }
+
+        Ok(entries)
     }
 }

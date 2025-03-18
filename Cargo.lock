@@ -1884,8 +1884,6 @@ dependencies = [
 name = "calimero-context"
 version = "0.1.0"
 dependencies = [
- "alloy",
- "alloy-sol-types",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-network",
@@ -1916,6 +1914,7 @@ dependencies = [
  "ed25519-consensus",
  "ed25519-dalek",
  "either",
+ "ethabi",
  "eyre",
  "hex",
  "ic-agent",
@@ -1932,6 +1931,7 @@ dependencies = [
  "starknet-crypto 0.7.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "starknet-types-core",
  "thiserror 1.0.69",
+ "tokio 1.41.1",
  "url",
 ]
 
@@ -6263,7 +6263,6 @@ name = "merod"
 version = "0.4.0"
 dependencies = [
  "alloy",
- "alloy-sol-types",
  "axum",
  "calimero-blobstore",
  "calimero-config",
