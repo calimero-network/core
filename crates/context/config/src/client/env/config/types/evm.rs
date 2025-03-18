@@ -155,7 +155,6 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
             data_encode[32..].to_vec()
         }
         ContextRequestKind::AddMembers { members } => {
-            println!("members: {:?}", members);
             // For AddMembers, we need to encode bytes32[] members
             // Convert the members to a Vec of FixedBytes
             let sol_members: Vec<FixedBytes<32>> = members

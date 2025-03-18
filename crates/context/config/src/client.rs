@@ -221,7 +221,6 @@ impl Client<AnyTransport> {
                 let mut config = evm::EvmConfig {
                     networks: Default::default(),
                 };
-                println!("evm_config: {:?}", evm_config);
                 for (network, signer) in &evm_config.signers {
                     let Credentials::Raw(credentials) = &signer.credentials else {
                         eyre::bail!("expected EVM credentials but got {:?}", signer.credentials)
