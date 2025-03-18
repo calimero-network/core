@@ -1884,8 +1884,6 @@ dependencies = [
 name = "calimero-context"
 version = "0.1.0"
 dependencies = [
- "alloy",
- "alloy-sol-types",
  "calimero-blobstore",
  "calimero-context-config",
  "calimero-network",
@@ -6265,7 +6263,6 @@ name = "merod"
 version = "0.4.0"
 dependencies = [
  "alloy",
- "alloy-sol-types",
  "axum",
  "calimero-blobstore",
  "calimero-config",

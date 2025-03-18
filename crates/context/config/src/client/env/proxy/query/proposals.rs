@@ -164,6 +164,7 @@ impl Method<Evm> for ProposalsRequest {
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let proposals: Vec<SolProposal> = SolValue::abi_decode(&response, false)?;
-        Ok(proposals.into_iter().map(|p| p.into()).collect())
+
+        proposals.into_iter().map(TryInto::try_into).collect()
     }
 }
