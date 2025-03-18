@@ -296,9 +296,7 @@ impl TryFrom<ProposalAction> for SolProposalAction {
                         };
                         Ok((token, param))
                     })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .unzip();
+                    .collect::<Result<(Vec<_>, Vec<_>), _>>()?;
 
                 let state_mutability = if deposit > 0 {
                     ethabi::StateMutability::Payable
@@ -322,9 +320,8 @@ impl TryFrom<ProposalAction> for SolProposalAction {
 
                 let contract_address =
                     Address::from_str(&receiver_id).map_err(|_| "Invalid address".to_string())?;
-                let data = SolValue::abi_encode(&(contract_address, call_data, amount));
 
-                Ok(data.into())
+                Ok((contract_address, call_data, amount).abi_encode().into())
             }
             ProposalAction::Transfer {
                 receiver_id,
@@ -407,7 +404,7 @@ impl TryFrom<&ProxyMutateRequest> for Vec<u8> {
                             authorId: B256::from(signer_id),
                             actions: proposal_action,
                         };
-                        Ok(SolValue::abi_encode(&sol_proposal))
+                        Ok(sol_proposal.abi_encode())
                     }
                     Err(e) => Err(e),
                 }
@@ -425,7 +422,7 @@ impl TryFrom<&ProxyMutateRequest> for Vec<u8> {
                     proposalId: B256::from(proposal_id),
                     userId: B256::from(signer_id),
                 };
-                Ok(SolValue::abi_encode(&proposal_approval))
+                Ok(proposal_approval.abi_encode())
             }
         }
     }
