@@ -16,17 +16,17 @@ pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use env::Method;
-use protocol::{evm, icp, near, starknet, stellar, Protocol};
+use protocol::{ethereum, icp, near, starknet, stellar, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 type MaybeNear = Option<near::NearTransport<'static>>;
 type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
 type MaybeStellar = Option<stellar::StellarTransport<'static>>;
-type MaybeEvm = Option<evm::EvmTransport<'static>>;
+type MaybeEthereum = Option<ethereum::EthereumTransport<'static>>;
 
 pub type LocalTransports =
-    Both<MaybeNear, Both<MaybeStarknet, Both<MaybeIcp, Both<MaybeStellar, MaybeEvm>>>>;
+    Both<MaybeNear, Both<MaybeStarknet, Both<MaybeIcp, Both<MaybeStellar, MaybeEthereum>>>>;
 
 pub type AnyTransport = Both<LocalTransports, relayer::RelayerTransport>;
 
@@ -206,24 +206,27 @@ impl Client<AnyTransport> {
             }
         }
 
-        let mut evm_transport = None;
+        let mut ethereum_transport = None;
 
         'skipped: {
-            if let Some(evm_config) = config.signer.local.protocols.get("evm") {
-                let Some(e) = config.params.get("evm") else {
-                    eyre::bail!("missing config specification for `{}` signer", "evm");
+            if let Some(ethereum_config) = config.signer.local.protocols.get("ethereum") {
+                let Some(e) = config.params.get("ethereum") else {
+                    eyre::bail!("missing config specification for `{}` signer", "ethereum");
                 };
 
                 if !matches!(e.signer, ClientSelectedSigner::Local) {
                     break 'skipped;
                 }
 
-                let mut config = evm::EvmConfig {
+                let mut config = ethereum::EthereumConfig {
                     networks: Default::default(),
                 };
-                for (network, signer) in &evm_config.signers {
+                for (network, signer) in &ethereum_config.signers {
                     let Credentials::Raw(credentials) = &signer.credentials else {
-                        eyre::bail!("expected EVM credentials but got {:?}", signer.credentials)
+                        eyre::bail!(
+                            "expected Ethereum credentials but got {:?}",
+                            signer.credentials
+                        )
                     };
 
                     let Some(account_id) = &credentials.account_id else {
@@ -236,7 +239,7 @@ impl Client<AnyTransport> {
 
                     let _ignored = config.networks.insert(
                         network.clone().into(),
-                        evm::NetworkConfig {
+                        ethereum::NetworkConfig {
                             rpc_url: signer.rpc_url.clone(),
                             account_id: account_id.clone(),
                             access_key,
@@ -244,7 +247,7 @@ impl Client<AnyTransport> {
                     );
                 }
 
-                evm_transport = Some(evm::EvmTransport::new(&config));
+                ethereum_transport = Some(ethereum::EthereumTransport::new(&config));
             }
         }
 
@@ -256,7 +259,7 @@ impl Client<AnyTransport> {
                     left: icp_transport,
                     right: Both {
                         left: stellar_transport,
-                        right: evm_transport,
+                        right: ethereum_transport,
                     },
                 },
             },

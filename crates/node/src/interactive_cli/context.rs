@@ -25,7 +25,7 @@ enum Protocol {
     Starknet,
     Icp,
     Stellar,
-    Evm,
+    Ethereum,
 }
 
 impl Protocol {
@@ -35,7 +35,7 @@ impl Protocol {
             Protocol::Starknet => "starknet",
             Protocol::Icp => "icp",
             Protocol::Stellar => "stellar",
-            Protocol::Evm => "evm",
+            Protocol::Ethereum => "ethereum",
         }
     }
 }
@@ -54,7 +54,7 @@ enum Commands {
         /// The seed for the context (to derive a deterministic context ID)
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
-        /// The protocol to use for the context - possible values: near|starknet|icp|stellar|evm
+        /// The protocol to use for the context - possible values: near|starknet|icp|stellar|ethereum
         #[clap(long, value_enum)]
         protocol: Protocol,
     },

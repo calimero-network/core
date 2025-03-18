@@ -8,10 +8,10 @@ use soroban_sdk::{Env, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use crate::client::env::proxy::evm::SolProposal;
+use crate::client::env::proxy::ethereum::SolProposal;
 use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetProposalsRequest};
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -148,7 +148,7 @@ impl Method<Stellar> for ProposalsRequest {
     }
 }
 
-impl Method<Evm> for ProposalsRequest {
+impl Method<Ethereum> for ProposalsRequest {
     type Returns = Vec<Proposal>;
 
     const METHOD: &'static str = "getProposals(uint32,uint32)";

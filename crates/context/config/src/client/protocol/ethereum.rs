@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use alloy::eips::BlockId;
-use alloy::network::{Ethereum, EthereumWallet, ReceiptResponse};
+use alloy::network::{Ethereum as EthereumNetwork, EthereumWallet, ReceiptResponse};
 use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
@@ -18,14 +18,14 @@ use crate::client::transport::{
 };
 
 #[derive(Copy, Clone, Debug)]
-pub enum Evm {}
+pub enum Ethereum {}
 
-impl Protocol for Evm {
-    const PROTOCOL: &'static str = "evm";
+impl Protocol for Ethereum {
+    const PROTOCOL: &'static str = "ethereum";
 }
 
-impl AssociatedTransport for EvmTransport<'_> {
-    type Protocol = Evm;
+impl AssociatedTransport for EthereumTransport<'_> {
+    type Protocol = Ethereum;
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]
@@ -66,29 +66,29 @@ pub struct NetworkConfig {
 }
 
 #[derive(Debug)]
-pub struct EvmConfig<'a> {
+pub struct EthereumConfig<'a> {
     pub networks: BTreeMap<Cow<'a, str>, NetworkConfig>,
 }
 
 #[derive(Clone, Debug)]
 struct Network {
-    provider: DynProvider<Ethereum>,
+    provider: DynProvider<EthereumNetwork>,
 }
 
 #[derive(Clone, Debug)]
-pub struct EvmTransport<'a> {
+pub struct EthereumTransport<'a> {
     networks: BTreeMap<Cow<'a, str>, Network>,
 }
 
-impl<'a> EvmTransport<'a> {
+impl<'a> EthereumTransport<'a> {
     #[must_use]
-    pub fn new(config: &EvmConfig<'a>) -> Self {
+    pub fn new(config: &EthereumConfig<'a>) -> Self {
         let mut networks = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
             let wallet = EthereumWallet::from(network_config.access_key.clone());
 
-            let provider: DynProvider<Ethereum> = ProviderBuilder::new()
+            let provider: DynProvider<EthereumNetwork> = ProviderBuilder::new()
                 .wallet(wallet)
                 .on_http(network_config.rpc_url.clone())
                 .erased();
@@ -102,7 +102,7 @@ impl<'a> EvmTransport<'a> {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum EvmError {
+pub enum EthereumError {
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid response from RPC while {operation}")]
@@ -123,8 +123,8 @@ pub enum ErrorOperation {
     Mutate,
 }
 
-impl ProtocolTransport for EvmTransport<'_> {
-    type Error = EvmError;
+impl ProtocolTransport for EthereumTransport<'_> {
+    type Error = EthereumError;
 
     async fn send(
         &self,
@@ -132,7 +132,9 @@ impl ProtocolTransport for EvmTransport<'_> {
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
         let Some(network) = self.networks.get(&request.network_id) else {
-            return Err(EvmError::UnknownNetwork(request.network_id.into_owned()));
+            return Err(EthereumError::UnknownNetwork(
+                request.network_id.into_owned(),
+            ));
         };
 
         let contract_id = request.contract_id.into_owned();
@@ -158,10 +160,10 @@ impl Network {
         contract_id: String,
         method: String,
         args: Vec<u8>,
-    ) -> Result<Vec<u8>, EvmError> {
+    ) -> Result<Vec<u8>, EthereumError> {
         let address = contract_id
             .parse::<Address>()
-            .map_err(|e| EvmError::Custom {
+            .map_err(|e| EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: e.to_string(),
             })?;
@@ -179,7 +181,7 @@ impl Network {
             .call(&request)
             .block(BlockId::latest())
             .await
-            .map_err(|e| EvmError::Custom {
+            .map_err(|e| EthereumError::Custom {
                 operation: ErrorOperation::Query,
                 reason: format!("Failed to execute eth_call: {}", e),
             })?;
@@ -192,10 +194,10 @@ impl Network {
         contract_id: String,
         method: String,
         args: Vec<u8>,
-    ) -> Result<Vec<u8>, EvmError> {
+    ) -> Result<Vec<u8>, EthereumError> {
         let address = contract_id
             .parse::<Address>()
-            .map_err(|e| EvmError::Custom {
+            .map_err(|e| EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: e.to_string(),
             })?;
@@ -218,7 +220,7 @@ impl Network {
             .provider
             .send_transaction(request.clone())
             .await
-            .map_err(|e| EvmError::Custom {
+            .map_err(|e| EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: format!("Failed to send transaction: {}", e),
             })?;
@@ -228,29 +230,31 @@ impl Network {
             .with_timeout(Some(Duration::from_secs(60)))
             .get_receipt()
             .await
-            .map_err(|e| EvmError::Custom {
+            .map_err(|e| EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: format!("Failed to get transaction receipt: {}", e),
             })?;
 
         if !receipt.status() {
-            return Err(EvmError::Custom {
+            return Err(EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: "Transaction failed".to_string(),
             });
         }
 
-        let block_number = receipt.block_number().ok_or_else(|| EvmError::Custom {
-            operation: ErrorOperation::Mutate,
-            reason: "Failed to get block number".to_string(),
-        })?;
+        let block_number = receipt
+            .block_number()
+            .ok_or_else(|| EthereumError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: "Failed to get block number".to_string(),
+            })?;
 
         let return_data = self
             .provider
             .call(&request)
             .block((block_number - 1).into())
             .await
-            .map_err(|e| EvmError::Custom {
+            .map_err(|e| EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: format!("Result retrieval failed: {}", e),
             })?;

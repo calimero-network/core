@@ -16,7 +16,7 @@ mod utils {
     #![expect(clippy::type_repetition_in_bounds, reason = "Useful for clarity")]
 
     use super::Method;
-    use crate::client::protocol::evm::Evm;
+    use crate::client::protocol::ethereum::Ethereum;
     use crate::client::protocol::icp::Icp;
     use crate::client::protocol::near::Near;
     use crate::client::protocol::starknet::Starknet;
@@ -35,14 +35,14 @@ mod utils {
         M: Method<Starknet, Returns = R>,
         M: Method<Icp, Returns = R>,
         M: Method<Stellar, Returns = R>,
-        M: Method<Evm, Returns = R>,
+        M: Method<Ethereum, Returns = R>,
     {
         match &*client.protocol {
             Near::PROTOCOL => client.send::<Near, _>(params).await,
             Starknet::PROTOCOL => client.send::<Starknet, _>(params).await,
             Icp::PROTOCOL => client.send::<Icp, _>(params).await,
             Stellar::PROTOCOL => client.send::<Stellar, _>(params).await,
-            Evm::PROTOCOL => client.send::<Evm, _>(params).await,
+            Ethereum::PROTOCOL => client.send::<Ethereum, _>(params).await,
             unsupported_protocol => Err(ClientError::UnsupportedProtocol {
                 found: unsupported_protocol.to_owned(),
                 expected: vec![
