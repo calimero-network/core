@@ -6,7 +6,7 @@ use ethabi::{Function, Param, ParamType, Token};
 use eyre::{bail, Context};
 
 use crate::repr::ReprTransmute;
-use crate::{Proposal, ProposalAction, ProxyMutateRequest};
+use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProxyMutateRequest};
 
 sol! {
     #[derive(Debug)]
@@ -129,6 +129,29 @@ impl TryFrom<SolProposal> for Proposal {
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<eyre::Result<_>>()?,
+        };
+
+        Ok(proposal)
+    }
+}
+
+impl TryFrom<Proposal> for SolProposal {
+    type Error = eyre::Report;
+
+    fn try_from(proposal: Proposal) -> eyre::Result<Self> {
+        let proposal_action = proposal
+            .actions
+            .into_iter()
+            .map(SolProposalAction::try_from)
+            .collect::<eyre::Result<Vec<_>>>()?;
+
+        let proposal_id: [u8; 32] = proposal.id.rt().wrap_err("Invalid proposal ID")?;
+        let signer_id: [u8; 32] = proposal.author_id.rt().wrap_err("Invalid signer ID")?;
+
+        let proposal = SolProposal {
+            id: B256::from(proposal_id),
+            authorId: B256::from(signer_id),
+            actions: proposal_action,
         };
 
         Ok(proposal)
@@ -363,41 +386,18 @@ impl From<&ProxyMutateRequest> for SolRequestKind {
     }
 }
 
-impl TryFrom<ProxyMutateRequest> for Vec<u8> {
+impl TryFrom<ProposalApprovalWithSigner> for SolProposalApprovalWithSigner {
     type Error = eyre::Report;
 
-    fn try_from(request: ProxyMutateRequest) -> eyre::Result<Self> {
-        match request {
-            ProxyMutateRequest::Propose { proposal } => {
-                let proposal_action = proposal
-                    .actions
-                    .into_iter()
-                    .map(SolProposalAction::try_from)
-                    .collect::<eyre::Result<Vec<_>>>()?;
+    fn try_from(approval: ProposalApprovalWithSigner) -> eyre::Result<Self> {
+        let proposal_id: [u8; 32] = approval.proposal_id.rt().wrap_err("Invalid proposal ID")?;
+        let signer_id: [u8; 32] = approval.signer_id.rt().wrap_err("Invalid signer ID")?;
 
-                let proposal_id: [u8; 32] = proposal.id.rt().wrap_err("Invalid proposal ID")?;
-                let signer_id: [u8; 32] = proposal.author_id.rt().wrap_err("Invalid signer ID")?;
+        let proposal_approval = SolProposalApprovalWithSigner {
+            proposalId: B256::from(proposal_id),
+            userId: B256::from(signer_id),
+        };
 
-                let sol_proposal = SolProposal {
-                    id: B256::from(proposal_id),
-                    authorId: B256::from(signer_id),
-                    actions: proposal_action,
-                };
-
-                Ok(sol_proposal.abi_encode())
-            }
-            ProxyMutateRequest::Approve { approval } => {
-                let proposal_id: [u8; 32] =
-                    approval.proposal_id.rt().wrap_err("Invalid proposal ID")?;
-                let signer_id: [u8; 32] = approval.signer_id.rt().wrap_err("Invalid signer ID")?;
-
-                let proposal_approval = SolProposalApprovalWithSigner {
-                    proposalId: B256::from(proposal_id),
-                    userId: B256::from(signer_id),
-                };
-
-                Ok(proposal_approval.abi_encode())
-            }
-        }
+        Ok(proposal_approval)
     }
 }

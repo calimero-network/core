@@ -10,6 +10,7 @@ use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
+use super::evm::{SolProposal, SolProposalApprovalWithSigner};
 use super::types::evm::{SolRequest, SolRequestKind, SolSignedRequest};
 use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
 use crate::client::env::proxy::evm::SolProposalWithApprovals;
@@ -218,16 +219,20 @@ impl Method<Evm> for Mutate {
 
         let kind = SolRequestKind::from(&self.raw_request);
 
-        let proxy_request_data: Vec<u8> = self
-            .raw_request
-            .try_into()
-            .map_err(|e| eyre::eyre!("Failed to convert proxy request to bytes: {:?}", e))?;
+        let request_data = match self.raw_request {
+            ProxyMutateRequest::Propose { proposal } => {
+                SolProposal::try_from(proposal)?.abi_encode()
+            }
+            ProxyMutateRequest::Approve { approval } => {
+                SolProposalApprovalWithSigner::try_from(approval)?.abi_encode()
+            }
+        };
 
         let sol_request = SolRequest {
             signerId: ecdsa_public_key,
             userId: user_id,
             kind,
-            data: proxy_request_data.into(),
+            data: request_data.into(),
         };
 
         let request_message = SolValue::abi_encode(&sol_request);
