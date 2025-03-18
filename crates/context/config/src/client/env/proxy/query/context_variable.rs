@@ -151,7 +151,7 @@ impl Method<Evm> for ContextVariableRequest {
     const METHOD: &'static str = "getContextValue(bytes)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        Ok(SolValue::abi_encode(&(self.key)))
+        Ok(self.key.abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

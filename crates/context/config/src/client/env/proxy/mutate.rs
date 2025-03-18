@@ -10,6 +10,7 @@ use starknet::core::codec::Encode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
+use super::evm::{SolProposal, SolProposalApprovalWithSigner};
 use super::types::evm::{SolRequest, SolRequestKind, SolSignedRequest};
 use super::types::starknet::{StarknetProxyMutateRequest, StarknetSignedRequest};
 use crate::client::env::proxy::evm::SolProposalWithApprovals;
@@ -216,13 +217,22 @@ impl Method<Evm> for Mutate {
         let address = signer.address();
         let ecdsa_public_key = address.into_word();
 
-        let proxy_request_data: Vec<u8> = (&self.raw_request).into();
+        let kind = SolRequestKind::from(&self.raw_request);
+
+        let request_data = match self.raw_request {
+            ProxyMutateRequest::Propose { proposal } => {
+                SolProposal::try_from(proposal)?.abi_encode()
+            }
+            ProxyMutateRequest::Approve { approval } => {
+                SolProposalApprovalWithSigner::from(approval).abi_encode()
+            }
+        };
 
         let sol_request = SolRequest {
             signerId: ecdsa_public_key,
             userId: user_id,
-            kind: SolRequestKind::from(&self.raw_request),
-            data: proxy_request_data.into(),
+            kind,
+            data: request_data.into(),
         };
 
         let request_message = SolValue::abi_encode(&sol_request);
@@ -250,7 +260,6 @@ impl Method<Evm> for Mutate {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        println!("response: {:?}", response);
         let decoded: SolProposalWithApprovals = SolValue::abi_decode(&response, false)?;
 
         let proposal = ProposalWithApprovals {

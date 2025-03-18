@@ -16,6 +16,7 @@ candid = { workspace = true, optional = true }
 ed25519-consensus = { workspace = true, optional = true }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
+ethabi = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 ic-agent = { workspace = true, optional = true }
@@ -32,6 +33,7 @@ starknet = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
 url = { workspace = true, optional = true }
 
 [lints]
@@ -82,7 +84,8 @@ stellar_client = [
 
 evm = [
   "alloy",
-  "alloy-sol-types"
+  "alloy-sol-types",
+  "ethabi"
 ]
 
 evm_client = [

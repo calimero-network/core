@@ -1,8 +1,10 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::ops::Deref;
+use std::str::FromStr;
 
-use env::Method;
+use alloy::signers::local::PrivateKeySigner;
+use eyre::Context;
 use thiserror::Error;
 
 pub mod config;
@@ -13,6 +15,7 @@ pub mod transport;
 pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
+use env::Method;
 use protocol::{evm, icp, near, starknet, stellar, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
@@ -228,12 +231,16 @@ impl Client<AnyTransport> {
                         eyre::bail!("missing account id for `{}` signer", network);
                     };
 
+                    let access_key: PrivateKeySigner =
+                        PrivateKeySigner::from_str(&credentials.secret_key)
+                            .wrap_err("failed to convert secret key to PrivateKeySigner")?;
+
                     let _ignored = config.networks.insert(
                         network.clone().into(),
                         evm::NetworkConfig {
                             rpc_url: signer.rpc_url.clone(),
                             account_id: account_id.clone(),
-                            access_key: credentials.secret_key.clone(),
+                            access_key,
                         },
                     );
                 }

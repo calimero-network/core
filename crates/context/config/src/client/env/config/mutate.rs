@@ -20,19 +20,16 @@ use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::{
     StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
 };
-use crate::types::{Signed, SignerId};
-use crate::{ContextIdentity, ContextRequestKind, Request, RequestKind};
+use crate::types::Signed;
+use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
 
-use alloy::primitives::{keccak256, Bytes, B256};
+use alloy::primitives::{keccak256, B256};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::{Signature, SignerSync};
 use alloy_sol_types::SolValue;
 
-use super::types::evm::{
-    SolApplication, SolContextRequest, SolContextRequestKind, SolRequest, SolRequestKind,
-    SolSignedRequest,
-};
+use super::types::evm::{SolRequest, SolRequestKind, SolSignedRequest};
 use crate::client::env::config::types::evm::ToSol;
 use crate::client::protocol::evm::Evm;
 use crate::stellar::stellar_types::FromWithEnv;

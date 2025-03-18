@@ -1,15 +1,15 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
 use alloy::eips::BlockId;
-use alloy::network::{Ethereum, EthereumWallet};
+use alloy::network::{Ethereum, EthereumWallet, ReceiptResponse};
 use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
-use alloy::rpc::types::{TransactionInput, TransactionRequest};
+use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::time::Duration;
 use url::Url;
 
 use super::Protocol;
@@ -62,7 +62,7 @@ mod serde_creds {
 pub struct NetworkConfig {
     pub rpc_url: Url,
     pub account_id: String,
-    pub access_key: String,
+    pub access_key: PrivateKeySigner,
 }
 
 #[derive(Debug)]
@@ -86,10 +86,7 @@ impl<'a> EvmTransport<'a> {
         let mut networks = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
-            let signer: PrivateKeySigner =
-                PrivateKeySigner::from_str(&network_config.access_key).unwrap();
-
-            let wallet = EthereumWallet::from(signer);
+            let wallet = EthereumWallet::from(network_config.access_key.clone());
 
             let provider: DynProvider<Ethereum> = ProviderBuilder::new()
                 .wallet(wallet)
@@ -190,7 +187,7 @@ impl Network {
         Ok(bytes.into())
     }
 
-    async fn mutate(
+    pub async fn mutate(
         &self,
         contract_id: String,
         method: String,
@@ -203,90 +200,61 @@ impl Network {
                 reason: e.to_string(),
             })?;
 
-        println!("method: {:?}", method);
-        println!("contract_id: {:?}", contract_id);
         let method_selector = &keccak256(method.as_bytes());
 
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&method_selector[0..4]);
-        println!("selector: {:?}", selector);
-
-        // let selector = [0x18, 0x21, 0xfe, 0x6f];
-
-        // println!("selector: {:?}", selector);
 
         let mut call_data = Vec::with_capacity(4 + args.len());
         call_data.extend_from_slice(&selector);
         call_data.extend_from_slice(&args);
 
-        // First, try to simulate the transaction to get the return value
         let request = TransactionRequest::default()
             .to(address)
-            .input(Bytes::from(call_data.clone()).into());
+            .input(Bytes::from(call_data).into());
 
-        // This will give us the return value without actually executing the transaction
-        let return_data = self.provider.call(&request).await.map_err(|e| {
-            println!("Call simulation failed: {}", e);
-            EvmError::Custom {
+        // Send the transaction, wait for it to be confirmed, and get the receipt
+        let tx = self
+            .provider
+            .send_transaction(request.clone())
+            .await
+            .map_err(|e| EvmError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: format!("Failed to simulate transaction: {}", e),
-            }
-        })?;
+                reason: format!("Failed to send transaction: {}", e),
+            })?;
 
-        println!("Simulated return data: {:?}", return_data);
+        let receipt = tx
+            .with_required_confirmations(1)
+            .with_timeout(Some(Duration::from_secs(60)))
+            .get_receipt()
+            .await
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Failed to get transaction receipt: {}", e),
+            })?;
 
-        let tx = TransactionRequest::default()
-            .to(address)
-            .input(TransactionInput {
-                input: Some(Bytes::from(call_data)),
-                data: None,
-            });
-
-        let tx_builder =
-            self.provider
-                .send_transaction(tx)
-                .await
-                .map_err(|e| EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                })?;
-        let tx_hash = tx_builder.tx_hash();
-
-        let mut receipt = None;
-
-        // Wait for the transaction to be mined
-        for _ in 0..30 {
-            let result = self
-                .provider
-                .get_transaction_receipt(*tx_hash)
-                .await
-                .map_err(|e| EvmError::Custom {
-                    operation: ErrorOperation::Mutate,
-                    reason: e.to_string(),
-                })?;
-
-            if let Some(r) = result {
-                receipt = Some(r);
-                break;
-            }
-
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-
-        let Some(receipt) = receipt else {
+        if !receipt.status() {
             return Err(EvmError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: "Transaction wasn't mined within timeout period".to_string(),
+                reason: "Transaction failed".to_string(),
             });
-        };
-
-        if receipt.status() {
-            return Ok(return_data.to_vec());
         }
 
-        Err(EvmError::Custom {
+        let block_number = receipt.block_number().ok_or_else(|| EvmError::Custom {
             operation: ErrorOperation::Mutate,
-            reason: format!("Transaction failed"),
-        })
+            reason: "Failed to get block number".to_string(),
+        })?;
+
+        let return_data = self
+            .provider
+            .call(&request)
+            .block((block_number - 1).into())
+            .await
+            .map_err(|e| EvmError::Custom {
+                operation: ErrorOperation::Mutate,
+                reason: format!("Result retrieval failed: {}", e),
+            })?;
+
+        Ok(return_data.into())
     }
 }
