@@ -48,7 +48,7 @@ pub enum ConfigProtocol {
     Starknet,
     Icp,
     Stellar,
-    Evm,
+    Ethereum,
 }
 
 /// Initialize node configuration
@@ -334,10 +334,10 @@ impl InitCommand {
 
         {
             let _ignored = client_params.insert(
-                "evm".to_owned(),
+                "ethereum".to_owned(),
                 ClientConfigParams {
                     network: "sepolia".into(),
-                    protocol: "evm".into(),
+                    protocol: "ethereum".into(),
                     contract_id: "0x0000000000000000000000000000000000000000".parse()?,
                     signer: ClientSelectedSigner::Local,
                 },
@@ -351,13 +351,13 @@ impl InitCommand {
                 "sepolia".to_owned(),
                 generate_local_signer(
                     "https://sepolia.infura.io/v3/167f8143e0174d2da4108663ff8e0164".parse()?,
-                    ConfigProtocol::Evm,
+                    ConfigProtocol::Ethereum,
                 )?,
             );
 
             let _ignored = local_signers
                 .protocols
-                .insert("evm".to_owned(), local_config);
+                .insert("ethereum".to_owned(), local_config);
         }
 
         let relayer = self
@@ -482,7 +482,7 @@ fn generate_local_signer(
             })
         }
 
-        ConfigProtocol::Evm => {
+        ConfigProtocol::Ethereum => {
             let secp = PrivateKeySigner::random();
             let address = secp.address();
             let public_key = address.into_word();

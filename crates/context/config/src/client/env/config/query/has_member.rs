@@ -10,7 +10,7 @@ use starknet::core::codec::Encode as StarknetEncode;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -143,7 +143,7 @@ impl Method<Stellar> for HasMemberRequest {
     }
 }
 
-impl Method<Evm> for HasMemberRequest {
+impl Method<Ethereum> for HasMemberRequest {
     type Returns = bool;
 
     const METHOD: &'static str = "hasMember(bytes32,bytes32)";

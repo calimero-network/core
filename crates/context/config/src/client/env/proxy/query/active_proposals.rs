@@ -6,7 +6,7 @@ use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal};
 
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -100,7 +100,7 @@ impl Method<Stellar> for ActiveProposalRequest {
     }
 }
 
-impl Method<Evm> for ActiveProposalRequest {
+impl Method<Ethereum> for ActiveProposalRequest {
     type Returns = u16;
 
     const METHOD: &'static str = "getActiveProposalsLimit()";

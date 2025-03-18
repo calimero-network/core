@@ -1,2 +1,2 @@
-pub mod evm;
+pub mod ethereum;
 pub mod starknet;

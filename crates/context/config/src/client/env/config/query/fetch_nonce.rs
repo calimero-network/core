@@ -12,7 +12,7 @@ use crate::client::env::config::types::starknet::{
     CallData, ContextId as StarknetContextId, ContextIdentity as StarknetContextIdentity,
 };
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -140,7 +140,7 @@ impl Method<Stellar> for FetchNonceRequest {
     }
 }
 
-impl Method<Evm> for FetchNonceRequest {
+impl Method<Ethereum> for FetchNonceRequest {
     type Returns = Option<u64>;
 
     const METHOD: &'static str = "fetchNonce(bytes32,bytes32)";

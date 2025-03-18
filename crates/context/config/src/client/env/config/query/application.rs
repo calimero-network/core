@@ -7,12 +7,12 @@ use soroban_sdk::{Bytes, BytesN, Env, IntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
-use crate::client::env::config::types::evm::SolApplication;
+use crate::client::env::config::types::ethereum::SolApplication;
 use crate::client::env::config::types::starknet::{
     Application as StarknetApplication, CallData, FeltPair,
 };
 use crate::client::env::Method;
-use crate::client::protocol::evm::Evm;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -153,7 +153,7 @@ impl Method<Stellar> for ApplicationRequest {
     }
 }
 
-impl Method<Evm> for ApplicationRequest {
+impl Method<Ethereum> for ApplicationRequest {
     type Returns = Application<'static>;
 
     const METHOD: &'static str = "application(bytes32)";
