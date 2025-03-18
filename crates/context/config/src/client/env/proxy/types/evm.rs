@@ -386,18 +386,14 @@ impl From<&ProxyMutateRequest> for SolRequestKind {
     }
 }
 
-impl TryFrom<ProposalApprovalWithSigner> for SolProposalApprovalWithSigner {
-    type Error = eyre::Report;
+impl From<ProposalApprovalWithSigner> for SolProposalApprovalWithSigner {
+    fn from(approval: ProposalApprovalWithSigner) -> Self {
+        let proposal_id: [u8; 32] = approval.proposal_id.rt().expect("infallible conversion");
+        let signer_id: [u8; 32] = approval.signer_id.rt().expect("infallible conversion");
 
-    fn try_from(approval: ProposalApprovalWithSigner) -> eyre::Result<Self> {
-        let proposal_id: [u8; 32] = approval.proposal_id.rt().wrap_err("Invalid proposal ID")?;
-        let signer_id: [u8; 32] = approval.signer_id.rt().wrap_err("Invalid signer ID")?;
-
-        let proposal_approval = SolProposalApprovalWithSigner {
+        SolProposalApprovalWithSigner {
             proposalId: B256::from(proposal_id),
             userId: B256::from(signer_id),
-        };
-
-        Ok(proposal_approval)
+        }
     }
 }

@@ -224,7 +224,7 @@ impl Method<Evm> for Mutate {
                 SolProposal::try_from(proposal)?.abi_encode()
             }
             ProxyMutateRequest::Approve { approval } => {
-                SolProposalApprovalWithSigner::try_from(approval)?.abi_encode()
+                SolProposalApprovalWithSigner::from(approval).abi_encode()
             }
         };
 
