@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use alloy::eips::BlockId;
+use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{Ethereum, EthereumWallet, ReceiptResponse};
 use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
@@ -209,24 +209,10 @@ impl Network {
         call_data.extend_from_slice(&selector);
         call_data.extend_from_slice(&args);
 
-        // First, try to simulate the transaction to get the return value
-        let request = TransactionRequest::default()
-            .to(address)
-            .input(Bytes::from(call_data.clone()).into());
-
-        // This will give us the return value without actually executing the transaction
-        let return_data = self.provider.call(&request).await.map_err(|e| {
-            println!("Call simulation failed: {}", e);
-            EvmError::Custom {
-                operation: ErrorOperation::Mutate,
-                reason: format!("Failed to simulate transaction: {}", e),
-            }
-        })?;
-
         let tx = TransactionRequest::default()
             .to(address)
             .input(TransactionInput {
-                input: Some(Bytes::from(call_data)),
+                input: Some(Bytes::from(call_data.clone())),
                 data: None,
             });
 
@@ -259,14 +245,33 @@ impl Network {
             receipt.transaction_hash()
         );
 
-        // Check if the transaction was successful
         if receipt.status() {
             println!("Transaction successful!");
+
+            let block_number = receipt.block_number().unwrap();
+            let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number - 1));
+
+            let request = TransactionRequest::default()
+                .to(address)
+                .input(Bytes::from(call_data.clone()).into());
+
+            let return_data = self
+                .provider
+                .call(&request)
+                .block(block_id)
+                .await
+                .map_err(|e| {
+                    println!("Call simulation failed: {}", e);
+                    EvmError::Custom {
+                        operation: ErrorOperation::Mutate,
+                        reason: format!("Failed to simulate transaction: {}", e),
+                    }
+                })?;
+
             return Ok(return_data.to_vec());
         } else {
             println!("Transaction failed!");
 
-            // Try to get more detailed error info using eth_call
             let call_result = self.provider.call(&tx).await;
 
             match call_result {
