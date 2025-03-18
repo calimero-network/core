@@ -216,6 +216,8 @@ impl Method<Evm> for Mutate {
         let address = signer.address();
         let ecdsa_public_key = address.into_word();
 
+        let kind = SolRequestKind::from(&self.raw_request);
+
         let proxy_request_data: Vec<u8> = (&self.raw_request)
             .try_into()
             .map_err(|e| eyre::eyre!("Failed to convert proxy request to bytes: {:?}", e))?;
@@ -223,7 +225,7 @@ impl Method<Evm> for Mutate {
         let sol_request = SolRequest {
             signerId: ecdsa_public_key,
             userId: user_id,
-            kind: SolRequestKind::from(&self.raw_request),
+            kind,
             data: proxy_request_data.into(),
         };
 
