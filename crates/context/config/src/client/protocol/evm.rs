@@ -255,6 +255,6 @@ impl Network {
                 reason: format!("Result retrieval failed: {}", e),
             })?;
 
-        Ok(return_data.to_vec())
+        Ok(return_data.into())
     }
 }
