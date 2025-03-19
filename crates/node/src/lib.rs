@@ -7,8 +7,10 @@
 use core::future::{pending, Future};
 use core::pin::Pin;
 use core::str;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
+use actix::prelude::*;
 use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
@@ -29,7 +31,7 @@ use calimero_primitives::events::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
-use calimero_runtime::Constraint;
+use calimero_runtime::{Constraint, ExecuteMsg, RuntimeManager};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
@@ -527,17 +529,36 @@ impl Node {
             return Ok(None);
         };
 
-        let mut store = self.store.clone();
+        // let mut store = self.store.clone();
 
-        let mut storage = RuntimeCompatStore::new(&mut store, context.id);
+        // let mut storage = RuntimeCompatStore::new(&mut store, context.id);
 
-        let outcome = calimero_runtime::run(
-            &blob,
-            &method,
-            VMContext::new(payload, *context.id, *executor_public_key),
-            &mut storage,
-            &get_runtime_limits()?,
-        )?;
+        // let outcome = calimero_runtime::run(
+        //     &blob,
+        //     &method,
+        //     VMContext::new(payload, *context.id, *executor_public_key),
+        //     &mut storage,
+        //     &get_runtime_limits()?,
+        // )?;
+
+        let exec_msg = ExecuteMsg {
+            blob,
+            method_name: method.to_string(),
+            context: vm_context,
+            limits: get_runtime_limits()?,
+            context_id: *context.id,
+        };
+
+        // this will not be here, leaving as a POC
+        let runtime_manager = RuntimeManager {
+            tasks: BTreeMap::new(),
+        };
+
+        let (outcome, storage) = runtime_manager
+            .start()
+            .send(exec_msg)
+            .await
+            .map_err(|e| eyre::eyre!("Actor error: {}", e))??;
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
@@ -557,6 +578,7 @@ impl Node {
                 self.ctx_manager.save_context(context)?;
             }
 
+            // InMemoryStorage doesn't have .is_empty() or .commit() ?
             if !storage.is_empty() {
                 storage.commit()?;
             }
