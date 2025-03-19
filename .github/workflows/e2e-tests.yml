@@ -22,10 +22,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust & Cache
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust dependencies
+      - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -241,7 +241,7 @@ jobs:
               | tee /dev/stderr \
               | awk '{print $NF}' \
               | xargs dirname \
-              | sort -u
+              | sort -u \
           )
 
           ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports

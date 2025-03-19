@@ -163,6 +163,9 @@ async fn main() -> EyreResult<()> {
     }
 
     if let Some(Commands::Combine { dirs, output_dir }) = args.commands {
+        dbg!(&dirs);
+        dbg!(std::env::current_dir());
+
         let mut dirs = dirs.into_iter();
 
         let first = dirs.next().expect("first dir should be present");
