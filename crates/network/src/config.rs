@@ -24,11 +24,6 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
     "/ip4/18.156.18.6/tcp/4001/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
 ];
 
-pub const AUTONAT_BOOT_NODES: &[&str] = &[
-    "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
-    "/ip4/18.156.18.6/tcp/4001/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
-];
-
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct NetworkConfig {
@@ -113,16 +108,6 @@ impl BootstrapNodes {
             list: CALIMERO_DEV_BOOT_NODES
                 .iter()
                 .map(|s| s.parse().expect("invalid multiaddr"))
-                .collect(),
-        }
-    }
-
-    #[must_use]
-    pub fn autonat() -> Self {
-        Self {
-            list: AUTONAT_BOOT_NODES
-                .iter()
-                .map(|addr| addr.parse().expect("invalid multiaddr"))
                 .collect(),
         }
     }

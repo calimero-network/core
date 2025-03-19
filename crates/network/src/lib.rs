@@ -7,7 +7,7 @@ use std::collections::hash_map::{Entry, HashMap};
 use std::collections::HashSet;
 
 use client::NetworkClient;
-use config::{BootstrapNodes, NetworkConfig};
+use config::NetworkConfig;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::autonat::{Behaviour as AutonatBehaviour, Config as AutonatConfig};
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
@@ -102,19 +102,6 @@ fn init(
         peers
     };
 
-    let autonat_bootstrap_peers = {
-        let mut autonat_peers = vec![];
-
-        for mut addr in BootstrapNodes::autonat().list {
-            let Some(Protocol::P2p(peer_id)) = addr.pop() else {
-                bail!("Failed to parse peer id from addr {:?}", addr);
-            };
-
-            autonat_peers.push((addr, peer_id))
-        }
-        autonat_peers
-    };
-
     let swarm = SwarmBuilder::with_existing_identity(config.identity.clone())
         .with_tokio()
         .with_tcp(
@@ -126,17 +113,13 @@ fn init(
         .with_relay_client(NoiseConfig::new, YamuxConfig::default)?
         .with_behaviour(|key, relay_behaviour| Behaviour {
             autonat: {
-                let mut autonat_behaviour = AutonatBehaviour::new(
+                AutonatBehaviour::new(
                     peer_id,
                     AutonatConfig {
                         boot_delay: Duration::from_secs(5),
                         ..Default::default()
                     },
-                );
-                for (address, peer) in autonat_bootstrap_peers {
-                    autonat_behaviour.add_server(peer, Some(address));
-                }
-                autonat_behaviour
+                )
             },
             dcutr: DcutrBehaviour::new(peer_id),
             identify: IdentifyBehaviour::new(

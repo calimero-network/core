@@ -2,6 +2,7 @@ use eyre::{bail, ContextCompat, Result as EyreResult};
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
 use multiaddr::Protocol;
+use state::AutonatServerStatus;
 use tracing::{debug, error};
 
 use super::EventLoop;
@@ -183,6 +184,8 @@ impl EventLoop {
         Ok(())
     }
 
+    // We unregister from a rendezvous peer if we were previously registered.
+    // This function expectes that the rendezvous peer is already connected.
     pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
         let peer_info = self
             .discovery
@@ -276,6 +279,31 @@ impl EventLoop {
         self.discovery
             .state
             .update_relay_reservation_status(relay_peer, RelayReservationStatus::Requested);
+
+        Ok(())
+    }
+
+    pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
+        let peer_info = self
+            .discovery
+            .state
+            .get_peer_info(autonat_peer)
+            .wrap_err("Failed to get peer info")?;
+
+        debug!(
+            %autonat_peer,
+            ?peer_info,
+            "Adding peer to the list of autonat servers"
+        );
+
+        self.swarm
+            .behaviour_mut()
+            .autonat
+            .add_server(*autonat_peer, None);
+
+        self.discovery
+            .state
+            .update_autonat_connection_status(autonat_peer, AutonatServerStatus::Connected);
 
         Ok(())
     }
