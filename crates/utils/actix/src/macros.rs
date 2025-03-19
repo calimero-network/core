@@ -4,7 +4,7 @@ mod macros_tests;
 
 #[doc(hidden)]
 pub mod __private {
-    #![allow(dead_code, unused_imports)]
+    #![allow(dead_code, unused_imports, reason = "Macros")]
 
     pub use std::boxed::Box;
     pub use std::ops::DerefMut;

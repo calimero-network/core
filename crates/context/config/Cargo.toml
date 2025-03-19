@@ -52,35 +52,15 @@ client = [
   "url/serde",
 ]
 
-near_client = [
-  "dep:near-crypto",
-  "dep:near-jsonrpc-client",
-  "dep:near-jsonrpc-primitives",
-  "dep:near-primitives",
-]
+near_client = ["dep:near-crypto", "dep:near-jsonrpc-client", "dep:near-jsonrpc-primitives", "dep:near-primitives"]
 
 icp = ["candid"]
 
-icp_client = [
-  "icp",
-  "dep:ic-agent",
-  "dep:ed25519-consensus",
-]
+icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
-starknet_client = [
-  "dep:hex",
-  "dep:starknet",
-  "dep:starknet-crypto",
-  "dep:starknet-types-core",
-]
+starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starknet-types-core"]
 
-stellar = [
-    "dep:soroban-sdk",
-]
-
-stellar_client = [
-    "stellar",
-]
+stellar = ["dep:soroban-sdk"]
 
 ethereum = [
   "alloy",
@@ -91,3 +71,4 @@ ethereum = [
 ethereum_client = [
   "ethereum"
 ]
+stellar_client = ["stellar"]

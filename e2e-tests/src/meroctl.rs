@@ -76,6 +76,30 @@ impl Meroctl {
         Ok((context_id, member_public_key))
     }
 
+    pub async fn context_create_alias(
+        &self,
+        node_name: &str,
+        context_id: &str,
+        alias: &str,
+    ) -> EyreResult<()> {
+        drop(
+            self.run_cmd(node_name, ["context", "alias", "add", alias, context_id])
+                .await?,
+        );
+        Ok(())
+    }
+
+    pub async fn context_get_alias(&self, node_name: &str, alias: &str) -> EyreResult<String> {
+        let json = self
+            .run_cmd(node_name, ["context", "alias", "get", alias])
+            .await?;
+
+        let data = self.remove_value_from_object(json, "data")?;
+        let context_id = self.get_string_from_object(&data, "value")?;
+
+        Ok(context_id)
+    }
+
     pub async fn context_invite(
         &self,
         node_name: &str,

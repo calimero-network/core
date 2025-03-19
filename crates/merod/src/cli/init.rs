@@ -14,7 +14,8 @@ use calimero_context_config::client::config::{
     ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
 };
 use calimero_context_config::client::protocol::{
-    icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
+    ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,
+    starknet as starknet_protocol,
 };
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
@@ -485,16 +486,13 @@ fn generate_local_signer(
         ConfigProtocol::Ethereum => {
             let secp = PrivateKeySigner::random();
             let address = secp.address();
-            let public_key = address.into_word();
             let secret_key = secp.to_bytes();
             let secret_key_hex = encode(secret_key);
-            let public_key_hex = encode(&public_key);
 
             Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Raw(RawCredentials {
-                    account_id: Some(address.to_string()),
-                    public_key: public_key_hex,
+                credentials: Credentials::Ethereum(ethereum_protocol::Credentials {
+                    account_id: address.to_string(),
                     secret_key: secret_key_hex,
                 }),
             })
