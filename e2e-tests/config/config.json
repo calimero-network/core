@@ -12,8 +12,8 @@
     {
       "protocol": "near",
       "config": {
-        "contextConfigContract": "./contracts/near/context-config/res/calimero_context_config_near.wasm",
-        "proxyLibContract": "./contracts/near/context-proxy/res/calimero_context_proxy_near.wasm"
+        "contextConfigContract": "./contracts/near/calimero_context_config_near.wasm",
+        "proxyLibContract": "./contracts/near/calimero_context_proxy_near.wasm"
       }
     },
     {

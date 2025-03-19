@@ -32,6 +32,7 @@ pub struct TestContext<'a> {
     pub invitees_public_keys: HashMap<String, String>,
     pub protocol_name: &'a str,
     pub output_writer: OutputWriter,
+    pub context_alias: Option<String>,
 }
 
 pub trait Test {
@@ -57,6 +58,7 @@ impl<'a> TestContext<'a> {
             inviter_public_key: None,
             invitees_public_keys: HashMap::new(),
             output_writer,
+            context_alias: None,
         }
     }
 }

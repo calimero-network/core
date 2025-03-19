@@ -1,8 +1,15 @@
+# mero(d)
 data/
 corpus/
+certs/
+contracts/*
+!contracts/.gitkeep
+
+# rust
 **/res/*
 target
 target/
+
 .DS_Store
 .idea/
 .vscode/
@@ -13,5 +20,4 @@ coverage/
 dist/
 lib/
 node_modules/
-certs/
 output/*
