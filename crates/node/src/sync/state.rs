@@ -139,6 +139,7 @@ impl Node {
             Some((shared_key, our_nonce)),
         )
         .await?;
+
         self.bidirectional_sync(
             context,
             our_identity,
@@ -149,9 +150,7 @@ impl Node {
             our_new_nonce,
             their_nonce,
         )
-        .await?;
-
-        Ok(())
+        .await
     }
 
     pub(super) async fn handle_state_sync_request(
@@ -255,8 +254,6 @@ impl Node {
             their_nonce,
         )
         .await
-
-        // should we compare root hashes again?
     }
 
     async fn bidirectional_sync(
@@ -345,6 +342,8 @@ impl Node {
 
             our_nonce = our_new_nonce;
         }
+
+        // eventually compare that both nodes arrive at the same state
 
         debug!(
             context_id=%context.id,
