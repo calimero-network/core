@@ -335,20 +335,31 @@ impl Node {
             bail!("context '{}' not found", context_id);
         };
 
+        debug!(
+            %context_id, %author_id,
+            expected_root_hash = %root_hash,
+            current_root_hash = %context.root_hash,
+            "Received state delta"
+        );
+
         if root_hash == context.root_hash {
             debug!(%context_id, "Received state delta with same root hash, ignoring..");
             return Ok(());
         }
 
         let Some(sender_key) = self.ctx_manager.get_sender_key(&context_id, &author_id)? else {
+            debug!(%author_id, %context_id, "Missing sender key, initiating sync");
+
             return self.initiate_sync(context_id, source).await;
         };
 
         let shared_key = SharedKey::from_sk(&sender_key);
 
-        let artifact = shared_key
-            .decrypt(artifact, nonce)
-            .ok_or_eyre("failed to decrypt message")?;
+        let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
+            debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
+
+            return self.initiate_sync(context_id, source).await;
+        };
 
         let Some(outcome) = self
             .execute(&mut context, "__calimero_sync_next", artifact, author_id)
@@ -372,6 +383,13 @@ impl Node {
         outcome: &Outcome,
         executor_public_key: PublicKey,
     ) -> EyreResult<()> {
+        debug!(
+            %context.id,
+            executor = %executor_public_key,
+            %context.root_hash,
+            "Sending state delta"
+        );
+
         if self
             .network_client
             .mesh_peer_count(TopicHash::from_raw(context.id))
