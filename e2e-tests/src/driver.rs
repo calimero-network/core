@@ -401,7 +401,6 @@ impl TestRunReport {
     }
 
     pub async fn from_dir(dir: &Utf8Path) -> EyreResult<Self> {
-        dbg!(dir);
         let file = dir.join("report.json");
         let content = read(&file).await?;
         let report = serde_json::from_slice(&content)?;

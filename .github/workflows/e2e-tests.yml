@@ -241,10 +241,10 @@ jobs:
               | tee /dev/stderr \
               | awk '{print $NF}' \
               | xargs dirname \
-              | sort -u \
+              | sort -u
           )
 
-          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
+          ./target/debug/e2e-tests combine ${protocols[@]} --output-dir reports
 
           # Debug: Show final report content
           echo "Combined report content:" >> /dev/stderr
