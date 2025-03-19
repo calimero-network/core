@@ -467,7 +467,7 @@ impl Node {
         }
 
         let outcome_option = self
-            .execute(&mut context, method, payload.clone(), executor_public_key)
+            .execute(&mut context, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute query call.");
