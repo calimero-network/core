@@ -1,8 +1,5 @@
-use core::time::Duration;
-
 use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
-use tokio::time::sleep;
 
 use crate::driver::{Test, TestContext};
 
@@ -63,9 +60,6 @@ impl Test for ContextInviteJoinStep {
                 ctx.invitees_public_keys
                     .insert(invitee.clone(), invitee_public_key),
             );
-
-            // Sync period is 30s, but in GHA we have some timeout issues
-            sleep(Duration::from_secs(40)).await;
 
             ctx.output_writer
                 .write_str(&format!("Report: Node '{invitee}' joined the context"));

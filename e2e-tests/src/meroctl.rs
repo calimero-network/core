@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::process::Stdio;
 
 use camino::Utf8PathBuf;
@@ -156,43 +158,52 @@ impl Meroctl {
 
         Ok((public_key, private_key))
     }
+}
 
-    pub async fn json_rpc_execute(
+impl Meroctl {
+    pub fn json_rpc_execute(
         &self,
         node_name: &str,
         context_id: &str,
         method_name: &str,
         args: &serde_json::Value,
         public_key: &str,
-    ) -> EyreResult<serde_json::Value> {
-        let args_json = serde_json::to_string(args)?;
-        let json = self
-            .run_cmd(
-                node_name,
-                [
-                    "call",
-                    context_id,
-                    method_name,
-                    "--args",
-                    &args_json,
-                    "--as",
-                    public_key,
-                ],
-            )
-            .await?;
+    ) -> Pin<Box<dyn Future<Output = EyreResult<serde_json::Value>> + Send>> {
+        let args_json = serde_json::to_string(args).unwrap();
 
-        if let Some(error) = json.get("error") {
-            bail!("JSON RPC response error: {:?}", error)
-        }
+        let task = self.run_cmd(
+            node_name,
+            [
+                "call",
+                context_id,
+                method_name,
+                "--args",
+                &args_json,
+                "--as",
+                public_key,
+            ],
+        );
 
-        Ok(json)
+        let task = async move {
+            let json = task.await?;
+
+            if let Some(error) = json.get("error") {
+                bail!("JSON RPC response error: {:?}", error)
+            }
+
+            Ok(json)
+        };
+
+        // https://github.com/rust-lang/rust/issues/42940
+        // apparently anon trait returns capture all param lifetimes, whoops
+        Box::pin(task)
     }
 
-    async fn run_cmd<'a>(
+    fn run_cmd<'a>(
         &'a self,
         node_name: &'a str,
         args: impl IntoIterator<Item = &'a str>,
-    ) -> EyreResult<serde_json::Value> {
+    ) -> impl Future<Output = EyreResult<serde_json::Value>> + 'static {
         let mut command = Command::new(&self.binary);
 
         let mut command_line = format!("Command: '{}", &self.binary);
@@ -217,13 +228,15 @@ impl Meroctl {
 
         self.output_writer.write_str(&command_line);
 
-        let output = command
-            .stdout(Stdio::piped())
-            .spawn()?
-            .wait_with_output()
-            .await?;
+        async move {
+            let output = command
+                .stdout(Stdio::piped())
+                .spawn()?
+                .wait_with_output()
+                .await?;
 
-        Ok(serde_json::from_slice(&output.stdout)?)
+            Ok(serde_json::from_slice(&output.stdout)?)
+        }
     }
 
     fn remove_value_from_object(

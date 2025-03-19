@@ -38,7 +38,27 @@
         "methodName": "get",
         "argsJson": { "key": "foo" },
         "expectedResultJson": "bar",
-        "target": "allMembers"
+        "target": "allMembers",
+        "retries": 5,
+        "intervalMs": 35000
+      }
+    },
+    {
+      "call": {
+        "methodName": "set",
+        "argsJson": { "key": "foo", "value": "baz" },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "call": {
+        "methodName": "get",
+        "argsJson": { "key": "foo" },
+        "expectedResultJson": "baz",
+        "target": "allMembers",
+        "retries": 1,
+        "intervalMs": 5000
       }
     }
   ]
