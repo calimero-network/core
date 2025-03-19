@@ -71,3 +71,4 @@ ethereum = [
 ethereum_client = [
   "ethereum"
 ]
+stellar_client = ["stellar"]
