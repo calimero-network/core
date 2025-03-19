@@ -31,7 +31,6 @@ impl AssociatedTransport for EthereumTransport<'_> {
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
     pub account_id: String,
-    pub public_key: String,
     pub secret_key: String,
 }
 
@@ -41,7 +40,6 @@ mod serde_creds {
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {
         account_id: String,
-        public_key: String,
         secret_key: String,
     }
 
@@ -51,7 +49,6 @@ mod serde_creds {
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
             Ok(Self {
                 account_id: creds.account_id,
-                public_key: creds.public_key,
                 secret_key: creds.secret_key,
             })
         }
