@@ -158,9 +158,7 @@ impl Meroctl {
 
         Ok((public_key, private_key))
     }
-}
 
-impl Meroctl {
     pub fn json_rpc_execute(
         &self,
         node_name: &str,
