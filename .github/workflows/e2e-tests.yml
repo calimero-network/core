@@ -206,7 +206,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-report-${{ matrix.protocol }}
-          path: e2e-tests/corpus/report.md
+          path: e2e-tests/corpus/report.json
           retention-days: 1
 
   comment:
@@ -222,35 +222,33 @@ jobs:
           merge-multiple: false
           path: reports/
 
+      - name: Download Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: resources
+          path: .
+
+      - name: Set Permissions
+        run: |
+          chmod +x target/debug/e2e-tests
+
       - name: Combine reports
         run: |
           mkdir -p reports
 
-          {
-            echo "# E2E Test Results"
-            echo
-            echo "### Scenario: kv-store"
-            echo
-            echo "| Protocol/Step | 0. app install (AllMembers) | 1. ctx create | 2. call (set, Inviter) | 3. call (get, Inviter) | 4. ctx invite-join | 5. call (get, AllMembers) |"
-            echo "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
+          protocols=$(
+            find reports/ -type f -name "report.json" -ls \
+              | tee /dev/stderr \
+              | awk '{print $NF}' \
+              | xargs dirname \
+              | sort -u
+          )
 
-            # Debug: List all report files
-            echo "Found report files:" >> /dev/stderr
-            find reports/ -type f -name "report.md" -ls >> /dev/stderr
-
-            # Process each protocol's report
-            for protocol in near icp stellar; do
-              if [ -f "reports/e2e-test-report-${protocol}/report.md" ]; then
-                grep "^|" "reports/e2e-test-report-${protocol}/report.md" | \
-                  grep -v "Protocol/Step" | \
-                  grep -v ":---"
-              fi
-            done
-          } > combined_report.md
+          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
 
           # Debug: Show final report content
           echo "Combined report content:" >> /dev/stderr
-          cat combined_report.md >> /dev/stderr
+          cat reports/report.md >> /dev/stderr
 
       - name: Get PR number
         id: pr_number
@@ -270,7 +268,7 @@ jobs:
         uses: thollander/actions-comment-pull-request@v3
         if: steps.pr_number.outputs.PR_NUMBER != ''
         with:
-          file-path: ./combined_report.md
+          file-path: ./reports/report.md
           pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
           comment-tag: e2e-tests-report
           mode: recreate
