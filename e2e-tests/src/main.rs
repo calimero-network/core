@@ -60,9 +60,9 @@ pub struct Args {
     #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
     pub output_format: OutputFormat,
 
-    /// Filter tests by protocols (e.g., "stellar near icp")
-    #[arg(long, value_name = "PROTOCOLS", num_args = 0..)]
-    pub protocols: Vec<String>,
+    // /// Filter tests by protocols (e.g., "stellar near icp")
+    // #[arg(long, value_name = "PROTOCOLS", num_args = 0..)]
+    // pub protocols: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -76,7 +76,7 @@ pub struct TestEnvironment {
     pub logs_dir: Utf8PathBuf,
     pub icp_dir: Utf8PathBuf,
     pub output_writer: OutputWriter,
-    pub protocols: Vec<String>,
+    // pub protocols: Vec<String>,
 }
 
 impl From<Args> for TestEnvironment {
@@ -93,7 +93,7 @@ impl From<Args> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            protocols: val.protocols,
+            // protocols: val.protocols,
         }
     }
 }

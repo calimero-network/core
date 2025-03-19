@@ -260,6 +260,8 @@ impl Network {
             .simulate_transaction(transaction.clone(), None)
             .await;
 
+        println!("simulation_result: {:?}", simulation_result);
+
         if let Err(err) = simulation_result {
             return Err(StellarError::Custom {
                 operation: ErrorOperation::Mutate,

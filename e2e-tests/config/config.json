@@ -1,6 +1,6 @@
 {
   "network": {
-    "nodeCount": 2,
+    "nodeCount": 3,
     "swarmHost": "0.0.0.0",
     "startSwarmPort": 2427,
     "startServerPort": 2527
@@ -29,14 +29,14 @@
     {
       "protocol": "stellar",
       "config": {
-        "contextConfigContractId": "CBLAUS2QL542DAFE2FH7PS4EI2QQ64IFKS27UJCGLZ2IY46ECQULD2SL",
+        "contextConfigContractId": "CCWFWBX4JM3JMGJN5NKHTBMLGAD4OAAHHC4E26TUAJVBPCJEZ65S67ZK",
         "rpcUrl": "http://127.0.0.1:8000/soroban/rpc",
-        "publicKey": "GD3G7WKBQOQGKXWNVGAAQHJPSQEDYOAN7VP2IZTC6CKKUMQ62L4E5WLY",
-        "secretKey": "SD3M4GVODVCEBOSCDTP2RCT7YXQJPH35CDSEBQHMCZXUZCALKMKG5MOT"
+        "publicKey": "GCS6ITU4OH4ITEES2IUTPUMTGESR2ETPBYPUKVKDU4ZUN6SE5AAYAT74",
+        "secretKey": "SAPE6ONPQCB6ZHMDWLCVR6CRYOOX4KBUVJJQINWOEFB2JYFYQGGQ2SCK"
       }
     },
     {
-      "protocol": "evm",
+      "protocol": "ethereum",
       "config": {
         "contextConfigContractId": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
         "rpcUrl": "http://127.0.0.1:8545",

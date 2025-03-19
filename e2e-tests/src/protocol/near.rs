@@ -13,6 +13,7 @@ pub struct NearProtocolConfig {
     pub proxy_lib_contract: Utf8PathBuf,
 }
 
+#[derive(Debug, Clone)]
 pub struct NearSandboxEnvironment {
     pub worker: Worker<Sandbox>,
     pub root_account: Account,

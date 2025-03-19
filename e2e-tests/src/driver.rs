@@ -15,7 +15,7 @@ use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
 use crate::merod::Merod;
 use crate::output::OutputWriter;
-use crate::protocol::evm::EvmSandboxEnvironment;
+use crate::protocol::ethereum::EthereumSandboxEnvironment;
 use crate::protocol::icp::IcpSandboxEnvironment;
 use crate::protocol::near::NearSandboxEnvironment;
 use crate::protocol::stellar::StellarSandboxEnvironment;
@@ -34,6 +34,7 @@ pub struct TestContext<'a> {
     pub protocol_name: &'a str,
     pub output_writer: OutputWriter,
     pub context_alias: Option<String>,
+    pub proposal_id: Option<String>,
 }
 
 pub trait Test {
@@ -48,6 +49,7 @@ impl<'a> TestContext<'a> {
         meroctl: &'a Meroctl,
         output_writer: OutputWriter,
         protocol_name: &'a str,
+        proposal_id: Option<String>,
     ) -> Self {
         Self {
             inviter,
@@ -60,6 +62,7 @@ impl<'a> TestContext<'a> {
             invitees_public_keys: HashMap::new(),
             output_writer,
             context_alias: None,
+            proposal_id: None,
         }
     }
 }
@@ -85,59 +88,102 @@ impl Driver {
     pub async fn run(&self) -> EyreResult<()> {
         self.environment.init().await?;
 
-        let mut sandbox_environments: Vec<ProtocolSandboxEnvironment> = Vec::default();
-        for protocol_sandbox in &self.config.protocol_sandboxes {
-            let protocol_name = match protocol_sandbox {
-                ProtocolSandboxConfig::Stellar(_) => "stellar",
-                ProtocolSandboxConfig::Near(_) => "near",
-                ProtocolSandboxConfig::Icp(_) => "icp",
-                ProtocolSandboxConfig::Evm(_) => "evm",
-            };
-
-            if !self
-                .environment
-                .protocols
-                .iter()
-                .any(|p| p.to_lowercase() == protocol_name)
-            {
-                continue;
-            }
-
-            match protocol_sandbox {
-                ProtocolSandboxConfig::Stellar(config) => {
-                    let stellar = StellarSandboxEnvironment::init(config.clone())?;
-                    sandbox_environments.push(ProtocolSandboxEnvironment::Stellar(stellar));
-                }
-                ProtocolSandboxConfig::Near(config) => {
-                    let near = NearSandboxEnvironment::init(config.clone()).await?;
-                    sandbox_environments.push(ProtocolSandboxEnvironment::Near(near));
-                }
-                ProtocolSandboxConfig::Icp(config) => {
-                    let icp = IcpSandboxEnvironment::init(config.clone())?;
-                    sandbox_environments.push(ProtocolSandboxEnvironment::Icp(icp));
-                }
-                ProtocolSandboxConfig::Evm(config) => {
-                    let evm = EvmSandboxEnvironment::init(config.clone())?;
-                    sandbox_environments.push(ProtocolSandboxEnvironment::Evm(evm));
-                }
-            }
-        }
-
         let mut report = TestRunReport::new();
-        let mero = self.setup_mero(&sandbox_environments).await?;
-        for sandbox in &sandbox_environments {
-            self.environment
-                .output_writer
-                .write_header(&format!("Running protocol {}", sandbox.name()), 1);
+        let mut initialized_protocols: HashMap<String, ProtocolSandboxEnvironment> = HashMap::new();
+        
+        // Run scenarios directory by directory
+        let scenarios_dir = self.environment.input_dir.join("scenarios");
+        let mut entries = read_dir(scenarios_dir).await?;
 
-            report = self.run_scenarios(&mero, report, sandbox.name()).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.is_dir() {
+                let test_file_path = path.join("test.json");
+                if test_file_path.exists() {
+                    // Read the test file to get protocol information
+                    let test_content = read(&test_file_path).await?;
+                    let test_json: serde_json::Value = from_slice(&test_content)?;
+                    
+                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str()) {
+                        // Initialize protocol if not already done
+                        if !initialized_protocols.contains_key(protocol_name) {
+                            // Find and initialize the protocol sandbox
+                            for protocol_sandbox in &self.config.protocol_sandboxes {
+                                let config_protocol_name = match protocol_sandbox {
+                                    ProtocolSandboxConfig::Stellar(_) => "stellar",
+                                    ProtocolSandboxConfig::Near(_) => "near",
+                                    ProtocolSandboxConfig::Icp(_) => "icp",
+                                    ProtocolSandboxConfig::Ethereum(_) => "ethereum",
+                                };
+                                
+                                if config_protocol_name == protocol_name {
+                                    let sandbox_env = match protocol_sandbox {
+                                        ProtocolSandboxConfig::Stellar(config) => {
+                                            ProtocolSandboxEnvironment::Stellar(
+                                                StellarSandboxEnvironment::init(config.clone())?
+                                            )
+                                        }
+                                        ProtocolSandboxConfig::Near(config) => {
+                                            ProtocolSandboxEnvironment::Near(
+                                                NearSandboxEnvironment::init(config.clone()).await?
+                                            )
+                                        }
+                                        ProtocolSandboxConfig::Icp(config) => {
+                                            ProtocolSandboxEnvironment::Icp(
+                                                IcpSandboxEnvironment::init(config.clone())?
+                                            )
+                                        }
+                                        ProtocolSandboxConfig::Ethereum(config) => {
+                                            ProtocolSandboxEnvironment::Ethereum(
+                                                EthereumSandboxEnvironment::init(config.clone())?
+                                            )
+                                        }
+                                    };
+                                    if initialized_protocols.insert(protocol_name.to_string(), sandbox_env).is_some() {
+                                        self.environment
+                                            .output_writer
+                                            .write_str(&format!("Warning: Overwriting existing protocol {}", protocol_name));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
 
-            self.environment
-                .output_writer
-                .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
+                        // If we have the protocol initialized, run the scenario
+                        if let Some(sandbox) = initialized_protocols.get(protocol_name) {
+                            let mero = self.setup_mero(&vec![sandbox.clone()]).await?;
+                            
+                            // Parse the scenario from already loaded test_content
+                            let scenario: TestScenario = from_slice(&test_content)?;
+                            let scenario_name = path.file_name()
+                                .ok_or_eyre("failed to get scenario file name")?
+                                .to_str()
+                                .ok_or_eyre("failed to convert scenario file name")?;
+
+                            self.environment
+                                .output_writer
+                                .write_header(&format!("Running protocol {}", sandbox.name()), 1);
+
+                            report = self.run_scenarios(
+                                &mero,
+                                report,
+                                sandbox.name(),
+                                scenario_name,
+                                scenario,
+                                &test_file_path
+                            ).await?;
+
+                            self.environment
+                                .output_writer
+                                .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
+
+                            // Stop mero after running scenarios
+                            self.stop_merods(&mero.ds).await;
+                        }
+                    }
+                }
+            }
         }
-
-        self.stop_merods(&mero.ds).await;
 
         if let Err(e) = report.result() {
             self.environment
@@ -147,7 +193,6 @@ impl Driver {
         }
 
         let report_file = report.store_to_file(&self.environment.output_dir).await?;
-
         self.environment
             .output_writer
             .write_str(&format!("Report file: {report_file:?}"));
@@ -229,37 +274,27 @@ impl Driver {
         mero: &Mero,
         mut report: TestRunReport,
         protocol_name: &str,
+        scenario_name: &str,
+        scenario: TestScenario,
+        file_path: &PathBuf,
     ) -> EyreResult<TestRunReport> {
-        let scenarios_dir = self.environment.input_dir.join("scenarios");
-        let mut entries = read_dir(scenarios_dir).await?;
+        let scenario_report = self
+            .run_scenario(
+                mero,
+                scenario_name,
+                scenario,
+                file_path,
+                protocol_name,
+            )
+            .await?;
 
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.is_dir() {
-                let test_file_path = path.join("test.json");
-                if test_file_path.exists() {
-                    let scenario_report = self
-                        .run_scenario(
-                            mero,
-                            path.file_name()
-                                .ok_or_eyre("failed to get scenario file name")?
-                                .to_str()
-                                .ok_or_eyre("failed to convert scenario file name")?,
-                            test_file_path,
-                            protocol_name,
-                        )
-                        .await?;
-
-                    drop(
-                        report
-                            .scenario_matrix
-                            .entry(scenario_report.scenario_name.clone())
-                            .or_default()
-                            .insert(protocol_name.to_owned(), scenario_report),
-                    );
-                }
-            }
-        }
+        drop(
+            report
+                .scenario_matrix
+                .entry(scenario_report.scenario_name.clone())
+                .or_default()
+                .insert(protocol_name.to_owned(), scenario_report),
+        );
 
         Ok(report)
     }
@@ -267,15 +302,14 @@ impl Driver {
     async fn run_scenario(
         &self,
         mero: &Mero,
-        scenarion_name: &str,
-        file_path: PathBuf,
+        scenario_name: &str,
+        scenario: TestScenario,
+        file_path: &PathBuf,
         protocol_name: &str,
     ) -> EyreResult<TestScenarioReport> {
         self.environment
             .output_writer
             .write_header("Running scenario", 2);
-
-        let scenario: TestScenario = from_slice(&read(&file_path).await?)?;
 
         self.environment
             .output_writer
@@ -301,9 +335,10 @@ impl Driver {
             &mero.ctl,
             self.environment.output_writer,
             protocol_name,
+            None,
         );
 
-        let mut report = TestScenarioReport::new(scenarion_name.to_owned());
+        let mut report = TestScenarioReport::new(scenario_name.to_owned());
 
         let mut scenario_failed = false;
         for (i, step) in scenario.steps.iter().enumerate() {

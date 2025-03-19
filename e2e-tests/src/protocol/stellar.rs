@@ -14,6 +14,7 @@ pub struct StellarProtocolConfig {
     pub secret_key: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct StellarSandboxEnvironment {
     config: StellarProtocolConfig,
 }

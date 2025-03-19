@@ -19,6 +19,7 @@ pub struct CallStep {
 pub enum CallTarget {
     Inviter,
     AllMembers,
+    Invitees,
 }
 
 impl Test for CallStep {
@@ -30,27 +31,33 @@ impl Test for CallStep {
         let context_id;
 
         let mut public_keys = HashMap::new();
-        if let Some(ref inviter_public_key) = ctx.inviter_public_key {
-            drop(public_keys.insert(ctx.inviter.clone(), inviter_public_key.clone()));
-        } else {
-            bail!("Inviter public key is required for JsonRpcExecuteStep");
-        }
-
+        
         match self.target {
             CallTarget::Inviter => {
-                if let Some(ref alias) = ctx.context_alias {
-                    context_id = alias;
+                if let Some(ref inviter_public_key) = ctx.inviter_public_key {
+                    drop(public_keys.insert(ctx.inviter.clone(), inviter_public_key.clone()));
                 } else {
-                    bail!("Alias is required for JsonRpcExecuteStep on the Inviter node");
-                };
-            }
-            CallTarget::AllMembers => {
-                if let Some(ref id) = ctx.context_id {
-                    context_id = id;
-                } else {
-                    bail!("Context ID is required for JsonRpcExecuteStep with AllMembers target");
+                    bail!("Inviter public key is required for JsonRpcExecuteStep");
                 }
-
+            },
+            CallTarget::AllMembers => {
+                if let Some(ref inviter_public_key) = ctx.inviter_public_key {
+                    drop(public_keys.insert(ctx.inviter.clone(), inviter_public_key.clone()));
+                } else {
+                    bail!("Inviter public key is required for JsonRpcExecuteStep");
+                }
+                for invitee in &ctx.invitees {
+                    if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
+                        drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
+                    } else {
+                        bail!(
+                            "Public key for invitee '{}' is required for JsonRpcExecuteStep",
+                            invitee
+                        );
+                    }
+                }
+            },
+            CallTarget::Invitees => {
                 for invitee in &ctx.invitees {
                     if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
                         drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
@@ -63,6 +70,19 @@ impl Test for CallStep {
                 }
             }
         }
+        println!("number of public keys: {}", public_keys.len());
+
+        let mut args_json = self.args_json.clone();
+
+        if self.method_name == "approve_proposal" {
+            if let Some(ref proposal_id) = ctx.proposal_id {
+                args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
+            } else {
+                bail!("Proposal ID is required for JsonRpcExecuteStep");
+            }
+        }
+
+        println!("args_json: {:?}", args_json);
 
         for (node, public_key) in &public_keys {
             let response = ctx
@@ -71,11 +91,24 @@ impl Test for CallStep {
                     node,
                     context_id,
                     &self.method_name,
-                    &self.args_json,
+                    &args_json,
                     public_key,
                 )
                 .await?;
-
+            println!("response: {:?}", response);
+            if self.method_name == "create_new_proposal" {
+                let output = response
+                    .get("result")
+                    .ok_or_else(|| eyre!("No result in response"))?
+                    .get("output")
+                    .ok_or_else(|| eyre!("No output in result"))?
+                    .as_str()
+                    .ok_or_else(|| eyre!("Output is not a string"))?
+                    .to_string();
+                println!("output: {:?}", output);
+                ctx.proposal_id = Some(output);
+            }
+            
             if let Some(expected_result_json) = &self.expected_result_json {
                 let output = response
                     .get("result")

@@ -15,6 +15,7 @@ pub struct IcpProtocolConfig {
     pub secret_key: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct IcpSandboxEnvironment {
     config: IcpProtocolConfig,
 }

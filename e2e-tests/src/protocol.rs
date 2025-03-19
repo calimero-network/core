@@ -1,19 +1,20 @@
-use evm::EvmSandboxEnvironment;
+use ethereum::EthereumSandboxEnvironment;
 use eyre::Result as EyreResult;
 use icp::IcpSandboxEnvironment;
 use near::NearSandboxEnvironment;
 use stellar::StellarSandboxEnvironment;
 
-pub mod evm;
+pub mod ethereum;
 pub mod icp;
 pub mod near;
 pub mod stellar;
 
+#[derive(Debug, Clone)]
 pub enum ProtocolSandboxEnvironment {
     Near(NearSandboxEnvironment),
     Icp(IcpSandboxEnvironment),
     Stellar(StellarSandboxEnvironment),
-    Evm(EvmSandboxEnvironment),
+    Ethereum(EthereumSandboxEnvironment),
 }
 
 impl ProtocolSandboxEnvironment {
@@ -22,7 +23,7 @@ impl ProtocolSandboxEnvironment {
             Self::Near(env) => env.node_args(node_name).await,
             Self::Icp(env) => Ok(env.node_args()),
             Self::Stellar(env) => Ok(env.node_args()),
-            Self::Evm(env) => Ok(env.node_args()),
+            Self::Ethereum(env) => Ok(env.node_args()),
         }
     }
 
@@ -31,7 +32,7 @@ impl ProtocolSandboxEnvironment {
             Self::Near(_) => "near",
             Self::Icp(_) => "icp",
             Self::Stellar(_) => "stellar",
-            Self::Evm(_) => "evm",
+            Self::Ethereum(_) => "ethereum",
         }
     }
 }
