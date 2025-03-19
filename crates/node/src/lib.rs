@@ -451,9 +451,9 @@ impl Node {
             return Err(CallError::ContextNotFound);
         };
 
-        // if method != "init" && &*context.root_hash == &[0; 32] {
-        //     return Err(CallError::Uninitialized);
-        // }
+        if method != "init" && &*context.root_hash == &[0; 32] {
+            return Err(CallError::Uninitialized);
+        }
 
         if !self
             .ctx_manager
