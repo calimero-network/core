@@ -5,6 +5,7 @@ use context_invite_join::ContextInviteJoinStep;
 use eyre::Result as EyreResult;
 use jsonrpc_call::CallStep;
 use serde::{Deserialize, Serialize};
+use wait::WaitStep;
 
 use crate::driver::{Test, TestContext};
 
@@ -13,6 +14,7 @@ mod context_create;
 mod context_create_alias;
 mod context_invite_join;
 mod jsonrpc_call;
+mod wait;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +30,7 @@ pub enum TestStep {
     ContextCreateAlias(ContextCreateAliasStep),
     ContextInviteJoin(ContextInviteJoinStep),
     Call(CallStep),
+    Wait(WaitStep),
 }
 
 impl Test for TestStep {
@@ -38,6 +41,7 @@ impl Test for TestStep {
             Self::ContextCreateAlias(step) => step.display_name(),
             Self::ContextInviteJoin(step) => step.display_name(),
             Self::Call(step) => step.display_name(),
+            Self::Wait(step) => step.display_name(),
         }
     }
 
@@ -48,6 +52,7 @@ impl Test for TestStep {
             Self::ContextCreateAlias(step) => step.run_assert(ctx).await,
             Self::ContextInviteJoin(step) => step.run_assert(ctx).await,
             Self::Call(step) => step.run_assert(ctx).await,
+            Self::Wait(step) => step.run_assert(ctx).await,
         }
     }
 }
