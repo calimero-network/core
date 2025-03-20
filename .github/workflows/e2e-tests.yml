@@ -178,7 +178,6 @@ jobs:
           NO_COLOR: '1'
         continue-on-error: true
         run: |
-          export SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
           echo "Running e2e tests for ${{ matrix.protocol }}"
 
           ./target/debug/e2e-tests \

@@ -615,7 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ports() -> eyre::Result<()> {
-        let env_hosts = env::var("TEST_HOST").ok();
+        let env_hosts = env::var("TEST_HOSTS").ok();
 
         dbg!(&env_hosts);
 
