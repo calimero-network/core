@@ -1,4 +1,5 @@
 use core::fmt::Debug;
+use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
 
 pub type Key = Vec<u8>;
@@ -32,5 +33,15 @@ impl Storage for InMemoryStorage {
 
     fn has(&self, key: &Key) -> bool {
         self.inner.contains_key(key)
+    }
+}
+
+impl IntoIterator for InMemoryStorage {
+    type Item = (Key, Value);
+
+    type IntoIter = IntoIter<Key, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
     }
 }

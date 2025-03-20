@@ -7,8 +7,10 @@
 use core::future::{pending, Future};
 use core::pin::Pin;
 use core::str;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
+use actix::prelude::*;
 use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
@@ -29,7 +31,7 @@ use calimero_primitives::events::{
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
-use calimero_runtime::Constraint;
+use calimero_runtime::{Constraint, ExecuteMsg, RuntimeManager};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
@@ -51,7 +53,6 @@ pub mod runtime_compat;
 pub mod sync;
 pub mod types;
 
-use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
 use types::BroadcastMessage;
 
@@ -102,6 +103,7 @@ pub struct Node {
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
+    runtime_manager: Addr<RuntimeManager>,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -116,6 +118,8 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
     let store = Store::open::<RocksDB>(&config.datastore)?;
 
     let blob_manager = BlobManager::new(store.clone(), FileSystem::new(&config.blobstore).await?);
+
+    let runtime_manager = RuntimeManager::new(BTreeMap::new(), get_runtime_limits()?).start();
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
@@ -157,7 +161,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         config.sync.interval,
     );
 
-    let mut node = Node::new(config.sync, network_client, node_events, ctx_manager, store);
+    let mut node = Node::new(
+        config.sync,
+        network_client,
+        node_events,
+        ctx_manager,
+        store,
+        runtime_manager,
+    );
 
     #[expect(clippy::redundant_pub_crate, reason = "Tokio code")]
     loop {
@@ -196,6 +207,7 @@ impl Node {
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
+        runtime_manager: Addr<RuntimeManager>,
     ) -> Self {
         Self {
             sync_config,
@@ -203,6 +215,7 @@ impl Node {
             ctx_manager,
             network_client,
             node_events,
+            runtime_manager,
         }
     }
 
@@ -527,17 +540,24 @@ impl Node {
             return Ok(None);
         };
 
-        let mut store = self.store.clone();
+        let exec_msg = ExecuteMsg {
+            blob,
+            method_name: method.to_string(),
+            context: VMContext::new(payload, *context.id, *executor_public_key),
+        };
 
-        let mut storage = RuntimeCompatStore::new(&mut store, context.id);
+        let (outcome, storage) = self
+            .runtime_manager
+            .send(exec_msg)
+            .await
+            .map_err(|e| eyre::eyre!("Actor error: {}", e))
+            .and_then(|(outcome, storage)| {
+                outcome
+                    .map_err(|e| eyre::eyre!("VM Runtime error: {}", e))
+                    .map(|o| (o, storage))
+            })?;
 
-        let outcome = calimero_runtime::run(
-            &blob,
-            &method,
-            VMContext::new(payload, *context.id, *executor_public_key),
-            &mut storage,
-            &get_runtime_limits()?,
-        )?;
+        let storage_iter = storage.into_iter();
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
@@ -557,6 +577,7 @@ impl Node {
                 self.ctx_manager.save_context(context)?;
             }
 
+            // InMemoryStorage doesn't have .is_empty() or .commit() ?
             if !storage.is_empty() {
                 storage.commit()?;
             }
