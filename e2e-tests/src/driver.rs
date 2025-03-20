@@ -605,3 +605,31 @@ impl PortBinding {
         );
     }
 }
+
+#[tokio::test]
+async fn test_ports() -> EyreResult<()> {
+    let mut port = 2800;
+
+    let host = [0, 0, 0, 0].into();
+
+    let bind1 = PortBinding::next_available(host, &mut port).await?;
+
+    assert_eq!(port, bind1.port() + 1);
+
+    let bind2 = PortBinding::next_available(host, &mut port).await?;
+
+    assert_eq!(port, bind2.port() + 1);
+
+    let port1 = bind1.into_socket_addr().port();
+    let port2 = bind2.into_socket_addr().port();
+
+    assert!(port1 < port2);
+
+    let bind1 = PortBinding::next_available(host, &mut { port1 }).await?;
+    let bind2 = PortBinding::next_available(host, &mut { port2 }).await?;
+
+    assert_eq!(bind1.port(), port1);
+    assert_eq!(bind2.port(), port2);
+
+    Ok(())
+}
