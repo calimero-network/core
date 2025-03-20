@@ -30,9 +30,8 @@ pub struct DiscoveryState {
 }
 #[derive(Debug)]
 pub struct AutonatStatus {
-    pub status: NatStatus,
-    pub last_status_public: bool,
-    pub confidence: usize,
+    status: NatStatus,
+    last_status_public: bool,
 }
 
 impl Default for AutonatStatus {
@@ -40,7 +39,6 @@ impl Default for AutonatStatus {
         Self {
             status: NatStatus::Unknown,
             last_status_public: false,
-            confidence: 0,
         }
     }
 }
@@ -268,6 +266,11 @@ impl DiscoveryState {
     }
 
     pub(crate) fn update_autonat_status(&mut self, status: NatStatus) {
+        if matches!(self.autonat.status, NatStatus::Public(_))
+            && matches!(status, NatStatus::Private)
+        {
+            self.autonat.last_status_public = true;
+        }
         self.autonat.status = status
     }
 
@@ -279,20 +282,8 @@ impl DiscoveryState {
         matches!(self.autonat.status, NatStatus::Private)
     }
 
-    pub(crate) fn update_autonat_became_private(&mut self) {
-        self.autonat.last_status_public = true;
-    }
-
     pub(crate) fn autonat_became_private(&self) -> bool {
         self.autonat.last_status_public
-    }
-
-    pub(crate) fn update_autonat_confidence(&mut self, confidence: usize) {
-        self.autonat.confidence = confidence
-    }
-
-    pub(crate) fn autonat_confidence(&self) -> usize {
-        self.autonat.confidence
     }
 }
 

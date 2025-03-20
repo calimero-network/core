@@ -29,7 +29,7 @@ impl EventHandler<Event> for EventLoop {
 
             if self.discovery.state.is_peer_rendezvous(&peer_id)
                 && self.discovery.state.is_autonat_status_public()
-                && self.discovery.state.autonat_confidence()
+                && self.swarm.behaviour().autonat.confidence()
                     >= self.discovery.autonat_config.confidence_threshold
             {
                 if let Err(err) = self.rendezvous_discover(&peer_id) {

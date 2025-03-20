@@ -1,4 +1,4 @@
-use libp2p::autonat::{Event, NatStatus, OutboundProbeEvent};
+use libp2p::autonat::{Event, OutboundProbeEvent};
 use libp2p::PeerId;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
@@ -16,9 +16,6 @@ impl EventHandler<Event> for EventLoop {
                 }
                 OutboundProbeEvent::Response { peer, address, .. } => {
                     debug!("Peer: {} determined external address {}", peer, address);
-                    self.discovery
-                        .state
-                        .update_autonat_confidence(self.swarm.behaviour().autonat.confidence());
 
                     let rendezvous_peers: Vec<PeerId> =
                         self.discovery.state.get_rendezvous_peer_ids().collect();
@@ -26,7 +23,7 @@ impl EventHandler<Event> for EventLoop {
                         self.discovery.state.get_relay_peer_ids().collect();
 
                     if self.discovery.state.is_autonat_status_public()
-                        && self.discovery.state.autonat_confidence()
+                        && self.swarm.behaviour().autonat.confidence()
                             >= self.discovery.autonat_config.confidence_threshold
                     {
                         for peer_id in &rendezvous_peers {
@@ -40,7 +37,7 @@ impl EventHandler<Event> for EventLoop {
                     }
 
                     if self.discovery.state.is_autonat_status_private()
-                        && self.discovery.state.autonat_confidence()
+                        && self.swarm.behaviour().autonat.confidence()
                             >= self.discovery.autonat_config.confidence_threshold
                     {
                         if self.discovery.state.autonat_became_private() {
@@ -72,9 +69,6 @@ impl EventHandler<Event> for EventLoop {
                 debug!("NAT status changed from {:?} to {:?}", old, new);
 
                 self.discovery.state.update_autonat_status(new.clone());
-                if matches!(&old, NatStatus::Public(_)) && matches!(&new, NatStatus::Private) {
-                    self.discovery.state.update_autonat_became_private();
-                }
             }
             _ => {}
         }
