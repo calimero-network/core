@@ -1,6 +1,6 @@
 use core::fmt::Write;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::btree_map::{BTreeMap, Entry as BTreeMapEntry};
+use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
@@ -169,7 +169,7 @@ impl Driver {
 
         for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
-            if let Entry::Vacant(e) = merods.entry(node_name.clone()) {
+            if let HashMapEntry::Vacant(e) = merods.entry(node_name.clone()) {
                 let config_args = [format!(
                     "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
                     self.environment.test_id
@@ -372,13 +372,13 @@ impl Driver {
 
 #[derive(Serialize, Deserialize)]
 pub struct TestRunReport {
-    scenario_matrix: HashMap<String, HashMap<String, TestScenarioReport>>,
+    scenario_matrix: BTreeMap<String, BTreeMap<String, TestScenarioReport>>,
 }
 
 impl TestRunReport {
     fn new() -> Self {
         Self {
-            scenario_matrix: HashMap::default(),
+            scenario_matrix: BTreeMap::default(),
         }
     }
 
@@ -438,7 +438,7 @@ impl TestRunReport {
                 let entry = protocols.entry(protocol);
 
                 match entry {
-                    Entry::Occupied(mut entry) => {
+                    BTreeMapEntry::Occupied(mut entry) => {
                         let report = entry.get_mut();
 
                         for step in other_report.steps {
@@ -447,7 +447,7 @@ impl TestRunReport {
                             }
                         }
                     }
-                    Entry::Vacant(entry) => {
+                    BTreeMapEntry::Vacant(entry) => {
                         entry.insert(other_report);
                     }
                 }
