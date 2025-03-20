@@ -12,51 +12,49 @@ impl EventHandler<Event> for EventLoop {
         match event {
             Event::OutboundProbe(outbound_probe_event) => match outbound_probe_event {
                 OutboundProbeEvent::Request { peer, .. } => {
-                    debug!("Sent probe request to: {:?}", peer)
+                    debug!(%peer, "Sent probe request");
                 }
                 OutboundProbeEvent::Response { peer, address, .. } => {
-                    debug!("Peer: {} determined external address {}", peer, address);
+                    debug!(%peer, %address, "Peer determined our external address");
 
                     let rendezvous_peers: Vec<PeerId> =
                         self.discovery.state.get_rendezvous_peer_ids().collect();
                     let relay_peers: Vec<PeerId> =
                         self.discovery.state.get_relay_peer_ids().collect();
 
-                    if self.is_autonat_status_public()
-                        && self.swarm.behaviour().autonat.confidence()
-                            >= self.discovery.autonat_config.confidence_threshold
+                    if self.swarm.behaviour().autonat.confidence()
+                        >= self.discovery.autonat_config.confidence_threshold
                     {
-                        for peer_id in &rendezvous_peers {
-                            if let Err(err) = self.rendezvous_discover(peer_id) {
-                                error!(%err, "Failed to perform rendezvous discovery");
-                            }
-                            if let Err(err) = self.rendezvous_register(peer_id) {
-                                error!(%err, "Failed to register with rendezvous");
-                            }
-                        }
-                    }
-
-                    if self.is_autonat_status_private()
-                        && self.swarm.behaviour().autonat.confidence()
-                            >= self.discovery.autonat_config.confidence_threshold
-                    {
-                        if self.autonat_became_private() {
+                        if self.is_autonat_status_public() {
                             for peer_id in &rendezvous_peers {
-                                drop(self.rendezvous_unregister(peer_id));
-                            }
-                        }
-                        for peer_id in relay_peers {
-                            if let Err(err) = self.create_relay_reservation(&peer_id) {
-                                error!(%err, "Failed to handle relay reservation");
+                                if let Err(err) = self.rendezvous_discover(peer_id) {
+                                    error!(%err, "Failed to perform rendezvous discovery");
+                                }
+                                if let Err(err) = self.rendezvous_register(peer_id) {
+                                    error!(%err, "Failed to register with rendezvous");
+                                }
                             }
                         }
 
-                        for peer_id in &rendezvous_peers {
-                            if let Err(err) = self.rendezvous_discover(peer_id) {
-                                error!(%err, "Failed to perform rendezvous discovery");
+                        if self.is_autonat_status_private() {
+                            if self.autonat_became_private() {
+                                for peer_id in &rendezvous_peers {
+                                    drop(self.rendezvous_unregister(peer_id));
+                                }
                             }
-                            if let Err(err) = self.rendezvous_register(peer_id) {
-                                error!(%err, "Failed to register with rendezvous");
+                            for peer_id in relay_peers {
+                                if let Err(err) = self.create_relay_reservation(&peer_id) {
+                                    error!(%err, "Failed to handle relay reservation");
+                                }
+                            }
+
+                            for peer_id in &rendezvous_peers {
+                                if let Err(err) = self.rendezvous_discover(peer_id) {
+                                    error!(%err, "Failed to perform rendezvous discovery");
+                                }
+                                if let Err(err) = self.rendezvous_register(peer_id) {
+                                    error!(%err, "Failed to register with rendezvous");
+                                }
                             }
                         }
                     }
@@ -68,7 +66,7 @@ impl EventHandler<Event> for EventLoop {
             Event::StatusChanged { old, new } => {
                 debug!("NAT status changed from {:?} to {:?}", old, new);
 
-                self.update_autonat_status(new.clone());
+                self.update_autonat_status(new);
             }
             _ => {}
         }

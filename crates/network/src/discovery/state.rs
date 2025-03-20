@@ -63,63 +63,21 @@ impl DiscoveryState {
             if protocol == &HOP_PROTOCOL_NAME {
                 let _ = self.relay_index.insert(*peer_id);
 
-                match self.peers.entry(*peer_id) {
-                    Entry::Occupied(mut entry) => {
-                        if entry.get().relay.is_none() {
-                            entry.get_mut().relay = Some(PeerRelayInfo::default());
-                        }
-                    }
-                    Entry::Vacant(entry) => {
-                        let _ = entry.insert(PeerInfo {
-                            addrs: HashSet::default(),
-                            discoveries: HashSet::default(),
-                            relay: Some(PeerRelayInfo::default()),
-                            rendezvous: None,
-                            autonat: None,
-                        });
-                    }
-                };
+                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let _ignored = peer_info.relay.get_or_insert_with(Default::default);
             }
             if protocol == &RENDEZVOUS_PROTOCOL_NAME {
                 let _ = self.rendezvous_index.insert(*peer_id);
 
-                match self.peers.entry(*peer_id) {
-                    Entry::Occupied(mut entry) => {
-                        if entry.get().rendezvous.is_none() {
-                            entry.get_mut().rendezvous = Some(PeerRendezvousInfo::default());
-                        }
-                    }
-                    Entry::Vacant(entry) => {
-                        let _ = entry.insert(PeerInfo {
-                            addrs: HashSet::default(),
-                            discoveries: HashSet::default(),
-                            relay: None,
-                            rendezvous: Some(PeerRendezvousInfo::default()),
-                            autonat: None,
-                        });
-                    }
-                };
+                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let _ignored = peer_info.rendezvous.get_or_insert_with(Default::default);
             }
 
             if protocol == &AUTONAT_PROTOCOL_NAME {
                 let _ = self.autonat_index.insert(*peer_id);
 
-                match self.peers.entry(*peer_id) {
-                    Entry::Occupied(mut entry) => {
-                        if entry.get().autonat.is_none() {
-                            entry.get_mut().autonat = Some(PeerAutonatInfo::default())
-                        }
-                    }
-                    Entry::Vacant(entry) => {
-                        let _ = entry.insert(PeerInfo {
-                            addrs: HashSet::default(),
-                            discoveries: HashSet::default(),
-                            relay: None,
-                            rendezvous: None,
-                            autonat: Some(PeerAutonatInfo::default()),
-                        });
-                    }
-                }
+                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let _ignored = peer_info.autonat.get_or_insert_with(Default::default);
             }
         }
     }
