@@ -1,7 +1,7 @@
 use core::fmt::Write;
-use core::time::Duration;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use camino::Utf8Path;
@@ -9,7 +9,8 @@ use eyre::{bail, OptionExt, Result as EyreResult};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{read, read_dir, write};
-use tokio::time::sleep;
+use tokio::net::{TcpListener, TcpSocket};
+use tokio::{time, try_join};
 
 use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
@@ -160,6 +161,12 @@ impl Driver {
 
         let mut merods = HashMap::new();
 
+        let swarm_host = self.config.network.swarm_host.to_string();
+        let mut swarm_port = self.config.network.start_swarm_port;
+
+        let server_host = self.config.network.server_host.to_string();
+        let mut server_port = self.config.network.start_server_port;
+
         for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
             if let Entry::Vacant(e) = merods.entry(node_name.clone()) {
@@ -183,23 +190,39 @@ impl Driver {
                     self.environment.output_writer,
                 );
 
+                let swarm_port =
+                    PortBinding::next_available(self.config.network.swarm_host, &mut swarm_port)
+                        .await?;
+
+                let server_port =
+                    PortBinding::next_available(self.config.network.server_host, &mut server_port)
+                        .await?;
+
                 merod
                     .init(
-                        &self.config.network.swarm_host,
-                        self.config.network.start_swarm_port + i,
-                        self.config.network.start_server_port + i,
+                        &swarm_host,
+                        &server_host,
+                        swarm_port.port(),
+                        server_port.port(),
                         config_args.map(String::as_str),
                     )
                     .await?;
 
+                let swarm_addr = swarm_port.into_socket_addr();
+                let server_addr = server_port.into_socket_addr();
+
                 merod.run().await?;
 
                 let _ = e.insert(merod);
+
+                while let Err(_) = try_join!(
+                    TcpSocket::new_v4()?.connect(swarm_addr),
+                    TcpSocket::new_v4()?.connect(server_addr)
+                ) {
+                    time::sleep(time::Duration::from_secs(1)).await;
+                }
             }
         }
-
-        // TODO: Implement health check?
-        sleep(Duration::from_secs(10)).await;
 
         Ok(Mero {
             ctl: Meroctl::new(
@@ -543,5 +566,42 @@ mod serde_eyre {
         Ok(Some(
             outcome.error.map_or_else(|| Ok(()), |error| bail!(error)),
         ))
+    }
+}
+
+struct PortBinding {
+    address: SocketAddr,
+    listener: TcpListener,
+}
+
+impl PortBinding {
+    fn port(&self) -> u16 {
+        self.address.port()
+    }
+
+    /// Drop the binding, returning the bound address.
+    fn into_socket_addr(self) -> SocketAddr {
+        drop(self.listener);
+        self.address
+    }
+
+    async fn next_available(host: IpAddr, port: &mut u16) -> EyreResult<PortBinding> {
+        for _ in 0..100 {
+            let address = (host, *port).into();
+
+            let res = TcpListener::bind(address).await;
+
+            *port += 1;
+
+            if let Ok(listener) = res {
+                return Ok(PortBinding { address, listener });
+            }
+        }
+
+        bail!(
+            "unable to select a port in range {}..={}",
+            *port - 100,
+            *port - 1
+        );
     }
 }
