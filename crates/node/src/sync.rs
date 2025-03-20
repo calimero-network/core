@@ -140,7 +140,16 @@ impl Node {
         }
 
         self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
-            .await
+            .await?;
+
+        if *context.root_hash != [0; 32] {
+            let _ignored = self
+                .ctx_manager
+                .clear_context_pending_sync(&context.id)
+                .await;
+        }
+
+        Ok(())
     }
 
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
@@ -247,6 +256,13 @@ impl Node {
             }
         };
 
+        if *context.root_hash != [0; 32] {
+            let _ignored = self
+                .ctx_manager
+                .clear_context_pending_sync(&context.id)
+                .await;
+        }
+
         Ok(Some(()))
     }
 
@@ -283,11 +299,6 @@ impl Node {
                 error!(%err, "Failed to perform interval sync, trying another peer");
                 continue;
             }
-
-            let _ = self
-                .ctx_manager
-                .clear_context_pending_sync(&context_id)
-                .await;
 
             debug!(%context_id, %peer_id, "Interval triggered sync successfully finished");
 
