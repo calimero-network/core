@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use actix::prelude::*;
 use calimero_primitives::context::ContextId;
 use calimero_utils_actix::global_runtime;
 use store::InMemoryStorage;
+use tokio::sync::Mutex;
 use wasmer::{Engine, Instance, Module, NativeEngineExt, Store};
 
 use crate::errors::{FunctionCallError, VMRuntimeError};
@@ -22,14 +23,14 @@ pub use constraint::Constraint;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
-#[derive(Message)]
-#[rtype(result = "RuntimeResult<(Outcome, InMemoryStorage)>")]
+#[derive(Message, Debug)]
+#[rtype(result = "(RuntimeResult<Outcome>, InMemoryStorage)")]
 pub struct ExecuteMsg {
     pub blob: Vec<u8>,
     pub method_name: String,
     pub context: VMContext,
 }
-
+#[derive(Debug)]
 pub struct RuntimeManager {
     pub tasks: BTreeMap<ContextId, Arc<Mutex<()>>>,
     pub limits: VMLimits,
@@ -46,20 +47,21 @@ impl RuntimeManager {
 }
 
 impl Handler<ExecuteMsg> for RuntimeManager {
-    type Result = ResponseActFuture<Self, RuntimeResult<(Outcome, InMemoryStorage)>>;
+    type Result = ResponseFuture<(RuntimeResult<Outcome>, InMemoryStorage)>;
 
     fn handle(&mut self, msg: ExecuteMsg, _ctx: &mut Self::Context) -> Self::Result {
         let mutex = self
             .tasks
             .entry(msg.context.context_id.into())
-            .or_insert_with(|| Arc::new(Mutex::new(())));
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
 
         let mut storage = InMemoryStorage::default();
 
         let limits = self.limits.clone();
 
         let future = async move {
-            let _lock = mutex.lock().unwrap();
+            let _lock = mutex.lock().await;
 
             let handle = global_runtime().spawn_blocking(move || {
                 let result = run(
@@ -75,15 +77,7 @@ impl Handler<ExecuteMsg> for RuntimeManager {
             handle.await.unwrap()
         };
 
-        // lifetime issues here
-        Box::pin(
-            future
-                .into_actor(self)
-                .map(|(result, storage), _act, _ctx| match result {
-                    Ok(outcome) => Ok((outcome, storage)),
-                    Err(err) => Err(err),
-                }),
-        )
+        Box::pin(future)
     }
 }
 

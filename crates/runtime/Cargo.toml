@@ -11,6 +11,7 @@ actix.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 fragile.workspace = true
 ouroboros.workspace = true
+tokio.workspace = true
 owo-colors = { workspace = true, optional = true }
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }

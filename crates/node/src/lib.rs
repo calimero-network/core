@@ -53,7 +53,6 @@ pub mod runtime_compat;
 pub mod sync;
 pub mod types;
 
-use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
 use types::BroadcastMessage;
 
@@ -104,7 +103,7 @@ pub struct Node {
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
-    runtime_manager: RuntimeManager,
+    runtime_manager: Addr<RuntimeManager>,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -120,7 +119,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let blob_manager = BlobManager::new(store.clone(), FileSystem::new(&config.blobstore).await?);
 
-    let runtime_manager = RuntimeManager::new(BTreeMap::new(), get_runtime_limits()?);
+    let runtime_manager = RuntimeManager::new(BTreeMap::new(), get_runtime_limits()?).start();
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
@@ -208,7 +207,7 @@ impl Node {
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
-        runtime_manager: RuntimeManager,
+        runtime_manager: Addr<RuntimeManager>,
     ) -> Self {
         Self {
             sync_config,
@@ -541,30 +540,24 @@ impl Node {
             return Ok(None);
         };
 
-        // let mut store = self.store.clone();
-
-        // let mut storage = RuntimeCompatStore::new(&mut store, context.id);
-
-        // let outcome = calimero_runtime::run(
-        //     &blob,
-        //     &method,
-        //     VMContext::new(payload, *context.id, *executor_public_key),
-        //     &mut storage,
-        //     &get_runtime_limits()?,
-        // )?;
-
         let exec_msg = ExecuteMsg {
             blob,
             method_name: method.to_string(),
-            context: vm_context,
+            context: VMContext::new(payload, *context.id, *executor_public_key),
         };
 
         let (outcome, storage) = self
             .runtime_manager
-            .start()
             .send(exec_msg)
             .await
-            .map_err(|e| eyre::eyre!("Actor error: {}", e))??;
+            .map_err(|e| eyre::eyre!("Actor error: {}", e))
+            .and_then(|(outcome, storage)| {
+                outcome
+                    .map_err(|e| eyre::eyre!("VM Runtime error: {}", e))
+                    .map(|o| (o, storage))
+            })?;
+
+        let storage_iter = storage.into_iter();
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
