@@ -1,13 +1,13 @@
 use core::fmt::Write;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::btree_map::{BTreeMap, Entry as BTreeMapEntry};
+use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
-use camino::Utf8PathBuf;
+use camino::Utf8Path;
 use eyre::{bail, OptionExt, Result as EyreResult};
 use rand::seq::IteratorRandom;
-use serde_json::from_slice;
+use serde::{Deserialize, Serialize};
 use tokio::fs::{read, read_dir, write};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::{time, try_join};
@@ -141,11 +141,12 @@ impl Driver {
             self.environment.output_writer.write_str(&e.to_string());
         }
 
-        let report_file = report.store_to_file(&self.environment.output_dir).await?;
-
-        self.environment
-            .output_writer
-            .write_str(&format!("Report file: {report_file:?}"));
+        report
+            .store_to_file(
+                &self.environment.output_dir,
+                &self.environment.output_writer,
+            )
+            .await?;
 
         report.result()
     }
@@ -168,7 +169,7 @@ impl Driver {
 
         for i in 0..self.config.network.node_count {
             let node_name = format!("node{}", i + 1);
-            if let Entry::Vacant(e) = merods.entry(node_name.clone()) {
+            if let HashMapEntry::Vacant(e) = merods.entry(node_name.clone()) {
                 let config_args = [format!(
                     "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
                     self.environment.test_id
@@ -292,7 +293,7 @@ impl Driver {
             .output_writer
             .write_header("Running scenario", 2);
 
-        let scenario: TestScenario = from_slice(&read(&file_path).await?)?;
+        let scenario: TestScenario = serde_json::from_slice(&read(&file_path).await?)?;
 
         self.environment
             .output_writer
@@ -369,14 +370,15 @@ impl Driver {
     }
 }
 
-struct TestRunReport {
-    scenario_matrix: HashMap<String, HashMap<String, TestScenarioReport>>,
+#[derive(Serialize, Deserialize)]
+pub struct TestRunReport {
+    scenario_matrix: BTreeMap<String, BTreeMap<String, TestScenarioReport>>,
 }
 
 impl TestRunReport {
     fn new() -> Self {
         Self {
-            scenario_matrix: HashMap::default(),
+            scenario_matrix: BTreeMap::default(),
         }
     }
 
@@ -400,11 +402,57 @@ impl TestRunReport {
         }
     }
 
-    async fn store_to_file(&self, folder: &Utf8PathBuf) -> EyreResult<Utf8PathBuf> {
+    pub async fn store_to_file(
+        &self,
+        output_dir: &Utf8Path,
+        output_writer: &OutputWriter,
+    ) -> EyreResult<()> {
         let markdown = self.to_markdown()?;
-        let report_file = folder.join("report.md");
+        let json = serde_json::to_string_pretty(&self)?;
+
+        let report_file = output_dir.join("report.md");
         write(&report_file, markdown).await?;
-        Ok(report_file)
+
+        output_writer.write_str(&format!("Report file (.md): {report_file:?}"));
+
+        let report_file = output_dir.join("report.json");
+        write(&report_file, json).await?;
+
+        output_writer.write_str(&format!("Report file (.json): {report_file:?}"));
+
+        Ok(())
+    }
+
+    pub async fn from_dir(dir: &Utf8Path) -> EyreResult<Self> {
+        let file = dir.join("report.json");
+        let content = read(&file).await?;
+        let report = serde_json::from_slice(&content)?;
+        Ok(report)
+    }
+
+    pub async fn merge(&mut self, other: Self) {
+        for (scenario, other_protocols) in other.scenario_matrix {
+            let protocols = self.scenario_matrix.entry(scenario).or_default();
+
+            for (protocol, other_report) in other_protocols {
+                let entry = protocols.entry(protocol);
+
+                match entry {
+                    BTreeMapEntry::Occupied(mut entry) => {
+                        let report = entry.get_mut();
+
+                        for step in other_report.steps {
+                            if report.steps.iter().all(|s| s.step_name != step.step_name) {
+                                report.steps.push(step);
+                            }
+                        }
+                    }
+                    BTreeMapEntry::Vacant(entry) => {
+                        entry.insert(other_report);
+                    }
+                }
+            }
+        }
     }
 
     fn to_markdown(&self) -> EyreResult<String> {
@@ -443,18 +491,17 @@ impl TestRunReport {
             for (protocol, report) in protocols {
                 write!(&mut markdown, "| {protocol} |")?;
                 for step_name in &step_names {
-                    let result = report
-                        .steps
-                        .iter()
-                        .find(|step| &step.step_name == step_name)
-                        .map_or(":bug:", |step| {
-                            step.result
-                                .as_ref()
-                                .map_or(":fast_forward:", |result| match result {
-                                    Ok(()) => ":white_check_mark:",
-                                    Err(_) => ":x:",
-                                })
-                        });
+                    let result = report.steps.iter().find_map(|step| {
+                        (&step.step_name == step_name).then_some(step.result.as_ref())
+                    });
+
+                    let result = match result {
+                        None => "-",
+                        Some(None) => ":fast_forward:",
+                        Some(Some(Ok(_))) => ":white_check_mark:",
+                        Some(Some(Err(_))) => ":x:",
+                    };
+
                     write!(&mut markdown, " {result} |")?;
                 }
                 writeln!(&mut markdown)?;
@@ -466,6 +513,7 @@ impl TestRunReport {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct TestScenarioReport {
     scenario_name: String,
     steps: Vec<TestStepReport>,
@@ -480,9 +528,45 @@ impl TestScenarioReport {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct TestStepReport {
     step_name: String,
+    #[serde(default, with = "serde_eyre", skip_serializing_if = "Option::is_none")]
     result: Option<EyreResult<()>>,
+}
+
+mod serde_eyre {
+    use eyre::bail;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct Outcome {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    }
+
+    pub fn serialize<S>(result: &Option<eyre::Result<()>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        result
+            .as_ref()
+            .map(|result| Outcome {
+                error: result.as_ref().err().map(|err| err.to_string()),
+            })
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<eyre::Result<()>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let outcome = Outcome::deserialize(deserializer)?;
+
+        Ok(Some(
+            outcome.error.map_or_else(|| Ok(()), |error| bail!(error)),
+        ))
+    }
 }
 
 struct PortBinding {
