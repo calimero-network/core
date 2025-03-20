@@ -3,7 +3,7 @@ use core::ops::Deref;
 
 use thiserror::Error as ThisError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Constrained<T, R> {
     value: T,
     _phantom: PhantomData<R>,
@@ -36,7 +36,7 @@ impl<T> Constraint for T {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MaxU64<const MAX: u64>;
 
 #[derive(Debug, ThisError)]

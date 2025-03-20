@@ -43,7 +43,7 @@ impl VMContext {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,

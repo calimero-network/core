@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use actix::prelude::*;
 use calimero_primitives::context::ContextId;
 use calimero_utils_actix::global_runtime;
 use store::InMemoryStorage;
-use tokio::sync::Notify;
 use wasmer::{Engine, Instance, Module, NativeEngineExt, Store};
 
 use crate::errors::{FunctionCallError, VMRuntimeError};
@@ -28,31 +28,38 @@ pub struct ExecuteMsg {
     pub blob: Vec<u8>,
     pub method_name: String,
     pub context: VMContext,
-    pub limits: VMLimits,
-    pub context_id: ContextId,
 }
 
 pub struct RuntimeManager {
-    pub tasks: BTreeMap<ContextId, Notify>,
+    pub tasks: BTreeMap<ContextId, Arc<Mutex<()>>>,
+    pub limits: VMLimits,
 }
 
 impl Actor for RuntimeManager {
     type Context = Context<Self>;
 }
 
+impl RuntimeManager {
+    pub fn new(tasks: BTreeMap<ContextId, Arc<Mutex<()>>>, limits: VMLimits) -> Self {
+        RuntimeManager { tasks, limits }
+    }
+}
+
 impl Handler<ExecuteMsg> for RuntimeManager {
     type Result = ResponseActFuture<Self, RuntimeResult<(Outcome, InMemoryStorage)>>;
 
-    fn handle(&mut self, msg: ExecuteMsg, ctx: &mut Self::Context) -> Self::Result {
-        let notify = self
+    fn handle(&mut self, msg: ExecuteMsg, _ctx: &mut Self::Context) -> Self::Result {
+        let mutex = self
             .tasks
-            .entry(msg.context_id)
-            .or_insert_with(|| Notify::new());
+            .entry(msg.context.context_id.into())
+            .or_insert_with(|| Arc::new(Mutex::new(())));
 
         let mut storage = InMemoryStorage::default();
 
+        let limits = self.limits.clone();
+
         let future = async move {
-            notify.notified().await;
+            let _lock = mutex.lock().unwrap();
 
             let handle = global_runtime().spawn_blocking(move || {
                 let result = run(
@@ -60,7 +67,7 @@ impl Handler<ExecuteMsg> for RuntimeManager {
                     &msg.method_name,
                     msg.context,
                     &mut storage,
-                    &msg.limits,
+                    &limits,
                 );
                 (result, storage)
             });

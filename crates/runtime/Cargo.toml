@@ -14,7 +14,6 @@ ouroboros.workspace = true
 owo-colors = { workspace = true, optional = true }
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
-tokio.workspace = true
 thiserror.workspace = true
 ureq.workspace = true
 wasmer.workspace = true

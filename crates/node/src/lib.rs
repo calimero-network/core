@@ -104,6 +104,7 @@ pub struct Node {
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
+    runtime_manager: RuntimeManager,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -118,6 +119,8 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
     let store = Store::open::<RocksDB>(&config.datastore)?;
 
     let blob_manager = BlobManager::new(store.clone(), FileSystem::new(&config.blobstore).await?);
+
+    let runtime_manager = RuntimeManager::new(BTreeMap::new(), get_runtime_limits()?);
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
@@ -159,7 +162,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         config.sync.interval,
     );
 
-    let mut node = Node::new(config.sync, network_client, node_events, ctx_manager, store);
+    let mut node = Node::new(
+        config.sync,
+        network_client,
+        node_events,
+        ctx_manager,
+        store,
+        runtime_manager,
+    );
 
     #[expect(clippy::redundant_pub_crate, reason = "Tokio code")]
     loop {
@@ -198,6 +208,7 @@ impl Node {
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
+        runtime_manager: RuntimeManager,
     ) -> Self {
         Self {
             sync_config,
@@ -205,6 +216,7 @@ impl Node {
             ctx_manager,
             network_client,
             node_events,
+            runtime_manager,
         }
     }
 
@@ -545,16 +557,10 @@ impl Node {
             blob,
             method_name: method.to_string(),
             context: vm_context,
-            limits: get_runtime_limits()?,
-            context_id: *context.id,
         };
 
-        // this will not be here, leaving as a POC
-        let runtime_manager = RuntimeManager {
-            tasks: BTreeMap::new(),
-        };
-
-        let (outcome, storage) = runtime_manager
+        let (outcome, storage) = self
+            .runtime_manager
             .start()
             .send(exec_msg)
             .await
