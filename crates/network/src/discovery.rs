@@ -283,6 +283,9 @@ impl EventLoop {
         Ok(())
     }
 
+    // Add a peer to the list of servers that may be used for determining our NAT status.
+    // These peers are used for dial-request even if they are currently not connected,
+    // in which case a connection will be established before sending the dial-request.
     pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
         let peer_info = self
             .discovery

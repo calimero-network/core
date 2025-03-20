@@ -102,25 +102,25 @@ impl DiscoveryState {
                         });
                     }
                 };
+            }
 
-                if protocol == &AUTONAT_PROTOCOL_NAME {
-                    let _ = self.autonat_index.insert(*peer_id);
+            if protocol == &AUTONAT_PROTOCOL_NAME {
+                let _ = self.autonat_index.insert(*peer_id);
 
-                    match self.peers.entry(*peer_id) {
-                        Entry::Occupied(mut entry) => {
-                            if entry.get().autonat.is_none() {
-                                entry.get_mut().autonat = Some(PeerAutonatInfo::default())
-                            }
+                match self.peers.entry(*peer_id) {
+                    Entry::Occupied(mut entry) => {
+                        if entry.get().autonat.is_none() {
+                            entry.get_mut().autonat = Some(PeerAutonatInfo::default())
                         }
-                        Entry::Vacant(entry) => {
-                            let _ = entry.insert(PeerInfo {
-                                addrs: HashSet::default(),
-                                discoveries: HashSet::default(),
-                                relay: None,
-                                rendezvous: None,
-                                autonat: Some(PeerAutonatInfo::default()),
-                            });
-                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        let _ = entry.insert(PeerInfo {
+                            addrs: HashSet::default(),
+                            discoveries: HashSet::default(),
+                            relay: None,
+                            rendezvous: None,
+                            autonat: Some(PeerAutonatInfo::default()),
+                        });
                     }
                 }
             }
