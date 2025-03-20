@@ -22,7 +22,7 @@ impl EventHandler<Event> for EventLoop {
                     let relay_peers: Vec<PeerId> =
                         self.discovery.state.get_relay_peer_ids().collect();
 
-                    if self.discovery.state.is_autonat_status_public()
+                    if self.is_autonat_status_public()
                         && self.swarm.behaviour().autonat.confidence()
                             >= self.discovery.autonat_config.confidence_threshold
                     {
@@ -36,11 +36,11 @@ impl EventHandler<Event> for EventLoop {
                         }
                     }
 
-                    if self.discovery.state.is_autonat_status_private()
+                    if self.is_autonat_status_private()
                         && self.swarm.behaviour().autonat.confidence()
                             >= self.discovery.autonat_config.confidence_threshold
                     {
-                        if self.discovery.state.autonat_became_private() {
+                        if self.autonat_became_private() {
                             for peer_id in &rendezvous_peers {
                                 drop(self.rendezvous_unregister(peer_id));
                             }
@@ -68,7 +68,7 @@ impl EventHandler<Event> for EventLoop {
             Event::StatusChanged { old, new } => {
                 debug!("NAT status changed from {:?} to {:?}", old, new);
 
-                self.discovery.state.update_autonat_status(new.clone());
+                self.update_autonat_status(new.clone());
             }
             _ => {}
         }

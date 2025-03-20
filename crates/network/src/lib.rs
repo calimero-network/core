@@ -8,8 +8,9 @@ use std::collections::HashSet;
 
 use client::NetworkClient;
 use config::NetworkConfig;
+use discovery::state::AutonatStatus;
 use eyre::{bail, eyre, Result as EyreResult};
-use libp2p::autonat::{Behaviour as AutonatBehaviour, Config as AutonatConfig};
+use libp2p::autonat::{Behaviour as AutonatBehaviour, Config as AutonatConfig, NatStatus};
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
 use libp2p::futures::prelude::*;
 use libp2p::gossipsub::{
@@ -205,6 +206,7 @@ pub(crate) struct EventLoop {
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<NetworkEvent>,
     discovery: Discovery,
+    autonat_status: AutonatStatus,
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<Option<()>>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<Option<()>>>>,
     pending_start_providing: HashMap<QueryId, oneshot::Sender<()>>,
@@ -229,6 +231,7 @@ impl EventLoop {
             command_receiver,
             event_sender,
             discovery,
+            autonat_status: AutonatStatus::default(),
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
             pending_start_providing: HashMap::default(),
@@ -383,6 +386,27 @@ impl EventLoop {
                 drop(self.pending_get_providers.insert(query_id, sender));
             }
         }
+    }
+
+    pub(crate) fn update_autonat_status(&mut self, status: NatStatus) {
+        if matches!(self.autonat_status.status, NatStatus::Public(_))
+            && matches!(status, NatStatus::Private)
+        {
+            self.autonat_status.last_status_public = true;
+        }
+        self.autonat_status.status = status
+    }
+
+    pub(crate) fn is_autonat_status_public(&self) -> bool {
+        matches!(self.autonat_status.status, NatStatus::Public(_))
+    }
+
+    pub(crate) fn is_autonat_status_private(&self) -> bool {
+        matches!(self.autonat_status.status, NatStatus::Private)
+    }
+
+    pub(crate) fn autonat_became_private(&self) -> bool {
+        self.autonat_status.last_status_public
     }
 }
 
