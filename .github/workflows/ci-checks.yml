@@ -44,7 +44,7 @@ jobs:
         run: |
           FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
 
-          export TEST_HOSTS: $FIRST_HOST,127.0.0.1,0.0.0.0
+          export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
           echo $TEST_HOSTS
 
           cargo test -- --nocapture
