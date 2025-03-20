@@ -222,15 +222,11 @@ impl Client<AnyTransport> {
                     networks: Default::default(),
                 };
                 for (network, signer) in &ethereum_config.signers {
-                    let Credentials::Raw(credentials) = &signer.credentials else {
+                    let Credentials::Ethereum(credentials) = &signer.credentials else {
                         eyre::bail!(
                             "expected Ethereum credentials but got {:?}",
                             signer.credentials
                         )
-                    };
-
-                    let Some(account_id) = &credentials.account_id else {
-                        eyre::bail!("missing account id for `{}` signer", network);
                     };
 
                     let access_key: PrivateKeySigner =
@@ -241,7 +237,7 @@ impl Client<AnyTransport> {
                         network.clone().into(),
                         ethereum::NetworkConfig {
                             rpc_url: signer.rpc_url.clone(),
-                            account_id: account_id.clone(),
+                            account_id: credentials.account_id.clone(),
                             access_key,
                         },
                     );
