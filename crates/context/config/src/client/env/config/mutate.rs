@@ -6,6 +6,12 @@ use soroban_sdk::{BytesN, Env};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
+use alloy::primitives::{keccak256, B256};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::{Signature, SignerSync};
+use alloy_sol_types::SolValue;
+
+pub mod methods;
 
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
 use crate::client::env::{utils, Method};
@@ -22,12 +28,6 @@ use crate::stellar::stellar_types::{
 };
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
-pub mod methods;
-
-use alloy::primitives::{keccak256, B256};
-use alloy::signers::local::PrivateKeySigner;
-use alloy::signers::{Signature, SignerSync};
-use alloy_sol_types::SolValue;
 
 use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
 use crate::client::env::config::types::ethereum::ToSol;
