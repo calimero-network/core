@@ -53,7 +53,7 @@ impl Node {
                 bail!("connection closed while awaiting state sync handshake");
             };
 
-            let (root_hash, their_identity, their_nonce) = match ack {
+            let (their_root_hash, their_identity, their_nonce) = match ack {
                 StreamMessage::Init {
                     party_id,
                     payload:
@@ -97,16 +97,25 @@ impl Node {
                 }
             };
 
-            triple = Some((root_hash, their_identity, their_nonce));
+            triple = Some((their_root_hash, their_identity, their_nonce));
 
             break;
         }
 
-        let Some((root_hash, their_identity, their_nonce)) = triple else {
+        let Some((their_root_hash, their_identity, their_nonce)) = triple else {
             bail!("expected two state sync handshakes, got none");
         };
 
-        if root_hash == context.root_hash {
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            our_root_hash=%context.root_hash,
+            their_identity=%their_identity,
+            their_root_hash=%their_root_hash,
+            "Received state sync request acknowledgement",
+        );
+
+        if their_root_hash == context.root_hash {
             debug!(
                 context_id=%context.id,
                 our_identity=%our_identity,
@@ -139,6 +148,7 @@ impl Node {
             Some((shared_key, our_nonce)),
         )
         .await?;
+
         self.bidirectional_sync(
             context,
             our_identity,
@@ -149,9 +159,7 @@ impl Node {
             our_new_nonce,
             their_nonce,
         )
-        .await?;
-
-        Ok(())
+        .await
     }
 
     pub(super) async fn handle_state_sync_request(
@@ -167,7 +175,7 @@ impl Node {
         debug!(
             context_id=%context.id,
             our_identity=%our_identity,
-            our_root_hash=?context.root_hash,
+            our_root_hash=%context.root_hash,
             our_application_id=%context.application_id,
             their_identity=%their_identity,
             their_root_hash=%their_root_hash,
@@ -255,8 +263,6 @@ impl Node {
             their_nonce,
         )
         .await
-
-        // should we compare root hashes again?
     }
 
     async fn bidirectional_sync(
@@ -345,6 +351,8 @@ impl Node {
 
             our_nonce = our_new_nonce;
         }
+
+        // eventually compare that both nodes arrive at the same state
 
         debug!(
             context_id=%context.id,

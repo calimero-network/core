@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, OptionExt, Result as EyreResult};
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinSet;
+use tokio::time;
 
 use crate::driver::{Test, TestContext};
 
@@ -12,6 +14,10 @@ pub struct CallStep {
     pub args_json: serde_json::Value,
     pub expected_result_json: Option<serde_json::Value>,
     pub target: CallTarget,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -28,7 +34,7 @@ impl Test for CallStep {
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
-        let context_id;
+        let context_id = ctx.context_id.as_ref().unwrap();
 
         let mut public_keys = HashMap::new();
         
@@ -74,7 +80,7 @@ impl Test for CallStep {
 
         let mut args_json = self.args_json.clone();
 
-        if self.method_name == "approve_proposal" {
+        if self.method_name == "approve_proposal" || self.method_name == "get_proposal_messages" {
             if let Some(ref proposal_id) = ctx.proposal_id {
                 args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
             } else {
@@ -82,51 +88,114 @@ impl Test for CallStep {
             }
         }
 
+        if self.method_name == "send_proposal_messages" {
+            println!("send_proposal_messages ctx.proposal_id: {:?}", ctx.proposal_id);
+            if let Some(ref proposal_id) = ctx.proposal_id {
+                args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
+                args_json["message"]["proposal_id"] = serde_json::Value::String(proposal_id.clone());
+            } else {
+                bail!("Proposal ID is required for JsonRpcExecuteStep");
+            }
+        }
+
         println!("args_json: {:?}", args_json);
 
-        for (node, public_key) in &public_keys {
-            let response = ctx
-                .meroctl
-                .json_rpc_execute(
-                    node,
-                    context_id,
-                    &self.method_name,
-                    &args_json,
-                    public_key,
-                )
-                .await?;
-            println!("response: {:?}", response);
-            if self.method_name == "create_new_proposal" {
-                let output = response
-                    .get("result")
-                    .ok_or_else(|| eyre!("No result in response"))?
-                    .get("output")
-                    .ok_or_else(|| eyre!("No output in result"))?
-                    .as_str()
-                    .ok_or_else(|| eyre!("Output is not a string"))?
-                    .to_string();
-                println!("output: {:?}", output);
-                ctx.proposal_id = Some(output);
-            }
-            
-            if let Some(expected_result_json) = &self.expected_result_json {
-                let output = response
-                    .get("result")
-                    .ok_or_else(|| eyre!("result not found in JSON RPC response"))?
-                    .get("output")
-                    .ok_or_else(|| eyre!("output not found in JSON RPC response result"))?;
+        let mut tasks = JoinSet::new();
 
-                if expected_result_json != output {
+        let task = |node: String, public_key: String, count: u8| {
+            let task = ctx.meroctl.json_rpc_execute(
+                &node,
+                context_id,
+                &self.method_name,
+                &args_json,
+                &public_key,
+            );
+
+            async move { (task.await, node, public_key, count) }
+        };
+
+        for (node, public_key) in public_keys {
+            let _ignored = tasks.spawn(task(node, public_key, 0));
+        }
+
+        while let Some((response, node, public_key, count)) = tasks.join_next().await.transpose()? {
+            let can_retry = count < self.retries.unwrap_or(0);
+
+            if let Ok(response) = &response {
+                println!("response: {:?}", response);
+                let output = response
+                    .get("result")
+                    .ok_or_eyre("result not found in JSON RPC response")?
+                    .get("output")
+                    .ok_or_eyre("output not found in JSON RPC response result")?;
+
+                if self.method_name == "create_new_proposal" {
+                    let proposal_id_str = output.as_str()
+                        .ok_or_eyre("Expected proposal ID to be a string")?
+                        .to_string();
+                    
+                    ctx.proposal_id = Some(proposal_id_str);
+                    println!("ctx.proposal_id: {:?}", ctx.proposal_id);
+                }
+
+                let modified_expected_result = if self.method_name == "get_proposal_messages" && self.expected_result_json.is_some() {
+                    let mut expected_clone = self.expected_result_json.clone().unwrap();
+                    
+                    if let (Some(proposal_id), Some(array)) = (ctx.proposal_id.clone(), expected_clone.as_array_mut()) {
+                        if let Some(first_msg) = array.first_mut() {
+                            if let Some(obj) = first_msg.as_object_mut() {
+                                let _unused = obj.insert(
+                                    "proposal_id".to_string(),
+                                    serde_json::Value::String(proposal_id.clone())
+                                );
+                            }
+                        }
+                    }
+                    
+                    Some(expected_clone)
+                } else {
+                    self.expected_result_json.clone()
+                };
+
+                let Some(expected_result) = &modified_expected_result else {
+                    continue;
+                };
+
+                if expected_result == output {
+                    continue;
+                }
+
+                if !can_retry {
                     bail!(
                         "JSON RPC result output mismatch:\nexpected: {}\nactual  : {}",
-                        expected_result_json,
+                        expected_result,
                         output
                     );
                 }
             }
 
-            ctx.output_writer
-                .write_str(&format!("Report: Call on '{node}' node passed assertion"));
+            if can_retry {
+                ctx.output_writer
+                    .write_str(&format!("Retrying JSON RPC call for node {}", node));
+
+                let delay = self
+                    .interval_ms
+                    .map(|s| time::sleep(time::Duration::from_millis(s)));
+
+                let task = task(node, public_key, count + 1);
+
+                let _ignored = tasks.spawn(async move {
+                    if let Some(delay) = delay {
+                        delay.await;
+                    }
+
+                    task.await
+                });
+
+                continue;
+            }
+
+            let _ignored = response?;
         }
 
         Ok(())

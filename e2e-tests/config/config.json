@@ -2,6 +2,7 @@
   "network": {
     "nodeCount": 3,
     "swarmHost": "0.0.0.0",
+    "serverHost": "127.0.0.1",
     "startSwarmPort": 2427,
     "startServerPort": 2527
   },

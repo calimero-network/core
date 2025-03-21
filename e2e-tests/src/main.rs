@@ -1,10 +1,9 @@
+#![expect(unused_results, reason = "clap has a dangling returned type")]
+
 use camino::Utf8PathBuf;
-use clap::Parser;
-use config::Config;
+use clap::{Args, Parser, Subcommand};
 use const_format::concatcp;
-use driver::Driver;
 use eyre::Result as EyreResult;
-use output::{OutputFormat, OutputWriter};
 use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
 
@@ -15,6 +14,10 @@ mod merod;
 mod output;
 mod protocol;
 mod steps;
+
+use config::Config;
+use driver::{Driver, TestRunReport};
+use output::{OutputFormat, OutputWriter};
 
 pub const EXAMPLES: &str = r"
   # Run from the repository root with debug binaries
@@ -30,7 +33,36 @@ pub const EXAMPLES: &str = r"
     "Examples:",
     EXAMPLES
 ))]
-pub struct Args {
+#[clap(args_conflicts_with_subcommands = true)]
+pub struct Command {
+    #[command(subcommand)]
+    commands: Option<Commands>,
+
+    #[command(flatten)]
+    args: Option<RootArgs>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    Combine {
+        /// The directories that contains the test data to be combined.
+        #[arg(value_name = "PATH", num_args=1.., required = true)]
+        dirs: Vec<Utf8PathBuf>,
+
+        /// Directory to write the combined test results.
+        #[arg(long, value_name = "PATH")]
+        #[arg(env = "E2E_OUTPUT_DIR", hide_env_values = true)]
+        output_dir: Utf8PathBuf,
+    },
+}
+
+#[derive(Debug, Args)]
+#[command(author, version, about, long_about = None)]
+#[command(after_help = concatcp!(
+    "Examples:",
+    EXAMPLES
+))]
+pub struct RootArgs {
     /// Directory containing the test configuration and test scenarios.
     /// In root directory, there should be a `config.json` file. This file
     /// contains the configuration for the test run. Refer to the `Config`
@@ -79,8 +111,8 @@ pub struct TestEnvironment {
     // pub protocols: Vec<String>,
 }
 
-impl From<Args> for TestEnvironment {
-    fn from(val: Args) -> Self {
+impl From<RootArgs> for TestEnvironment {
+    fn from(val: RootArgs) -> Self {
         let mut rng = rand::thread_rng();
 
         Self {
@@ -118,13 +150,35 @@ impl TestEnvironment {
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
-    let args = Args::parse();
+    let args = Command::parse();
 
-    let config_path = args.input_dir.join("config.json");
-    let config_content = read_to_string(config_path).await?;
-    let config: Config = serde_json::from_str(&config_content)?;
+    if let Some(args) = args.args {
+        let config_path = args.input_dir.join("config.json");
+        let config_content = read_to_string(config_path).await?;
+        let config: Config = serde_json::from_str(&config_content)?;
 
-    let driver = Driver::new(args.into(), config);
+        let driver = Driver::new(args.into(), config);
 
-    driver.run().await
+        driver.run().await?;
+    }
+
+    if let Some(Commands::Combine { dirs, output_dir }) = args.commands {
+        let mut dirs = dirs.into_iter();
+
+        let first = dirs.next().expect("first dir should be present");
+
+        let mut report = TestRunReport::from_dir(&first).await?;
+
+        for dir in dirs {
+            let other = TestRunReport::from_dir(&dir).await?;
+
+            report.merge(other).await;
+        }
+
+        let writer = OutputWriter::new(OutputFormat::PlainText);
+
+        report.store_to_file(&output_dir, &writer).await?;
+    }
+
+    Ok(())
 }
