@@ -91,7 +91,6 @@ pub struct RootArgs {
     #[arg(long, value_name = "OUTPUT_FORMAT", default_value_t, value_enum)]
     #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
     pub output_format: OutputFormat,
-
     // /// Filter tests by protocols (e.g., "stellar near icp")
     // #[arg(long, value_name = "PROTOCOLS", num_args = 0..)]
     // pub protocols: Vec<String>,

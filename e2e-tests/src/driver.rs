@@ -92,7 +92,7 @@ impl Driver {
 
         let mut report = TestRunReport::new();
         let mut initialized_protocols: HashMap<String, ProtocolSandboxEnvironment> = HashMap::new();
-        
+
         // Run scenarios directory by directory
         let scenarios_dir = self.environment.input_dir.join("scenarios");
         let mut entries = read_dir(scenarios_dir).await?;
@@ -105,8 +105,9 @@ impl Driver {
                     // Read the test file to get protocol information
                     let test_content = read(&test_file_path).await?;
                     let test_json: serde_json::Value = from_slice(&test_content)?;
-                    
-                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str()) {
+
+                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str())
+                    {
                         // Initialize protocol if not already done
                         if !initialized_protocols.contains_key(protocol_name) {
                             // Find and initialize the protocol sandbox
@@ -117,34 +118,39 @@ impl Driver {
                                     ProtocolSandboxConfig::Icp(_) => "icp",
                                     ProtocolSandboxConfig::Ethereum(_) => "ethereum",
                                 };
-                                
+
                                 if config_protocol_name == protocol_name {
                                     let sandbox_env = match protocol_sandbox {
                                         ProtocolSandboxConfig::Stellar(config) => {
                                             ProtocolSandboxEnvironment::Stellar(
-                                                StellarSandboxEnvironment::init(config.clone())?
+                                                StellarSandboxEnvironment::init(config.clone())?,
                                             )
                                         }
                                         ProtocolSandboxConfig::Near(config) => {
                                             ProtocolSandboxEnvironment::Near(
-                                                NearSandboxEnvironment::init(config.clone()).await?
+                                                NearSandboxEnvironment::init(config.clone())
+                                                    .await?,
                                             )
                                         }
                                         ProtocolSandboxConfig::Icp(config) => {
                                             ProtocolSandboxEnvironment::Icp(
-                                                IcpSandboxEnvironment::init(config.clone())?
+                                                IcpSandboxEnvironment::init(config.clone())?,
                                             )
                                         }
                                         ProtocolSandboxConfig::Ethereum(config) => {
                                             ProtocolSandboxEnvironment::Ethereum(
-                                                EthereumSandboxEnvironment::init(config.clone())?
+                                                EthereumSandboxEnvironment::init(config.clone())?,
                                             )
                                         }
                                     };
-                                    if initialized_protocols.insert(protocol_name.to_string(), sandbox_env).is_some() {
-                                        self.environment
-                                            .output_writer
-                                            .write_str(&format!("Warning: Overwriting existing protocol {}", protocol_name));
+                                    if initialized_protocols
+                                        .insert(protocol_name.to_string(), sandbox_env)
+                                        .is_some()
+                                    {
+                                        self.environment.output_writer.write_str(&format!(
+                                            "Warning: Overwriting existing protocol {}",
+                                            protocol_name
+                                        ));
                                     }
                                     break;
                                 }
@@ -154,10 +160,11 @@ impl Driver {
                         // If we have the protocol initialized, run the scenario
                         if let Some(sandbox) = initialized_protocols.get(protocol_name) {
                             let mero = self.setup_mero(&vec![sandbox.clone()]).await?;
-                            
+
                             // Parse the scenario from already loaded test_content
                             let scenario: TestScenario = from_slice(&test_content)?;
-                            let scenario_name = path.file_name()
+                            let scenario_name = path
+                                .file_name()
                                 .ok_or_eyre("failed to get scenario file name")?
                                 .to_str()
                                 .ok_or_eyre("failed to convert scenario file name")?;
@@ -166,14 +173,16 @@ impl Driver {
                                 .output_writer
                                 .write_header(&format!("Running protocol {}", sandbox.name()), 1);
 
-                            report = self.run_scenarios(
-                                &mero,
-                                report,
-                                sandbox.name(),
-                                scenario_name,
-                                scenario,
-                                &test_file_path
-                            ).await?;
+                            report = self
+                                .run_scenarios(
+                                    &mero,
+                                    report,
+                                    sandbox.name(),
+                                    scenario_name,
+                                    scenario,
+                                    &test_file_path,
+                                )
+                                .await?;
 
                             self.environment
                                 .output_writer
@@ -305,13 +314,7 @@ impl Driver {
         file_path: &PathBuf,
     ) -> EyreResult<TestRunReport> {
         let scenario_report = self
-            .run_scenario(
-                mero,
-                scenario_name,
-                scenario,
-                file_path,
-                protocol_name,
-            )
+            .run_scenario(mero, scenario_name, scenario, file_path, protocol_name)
             .await?;
 
         drop(

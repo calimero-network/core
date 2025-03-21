@@ -37,7 +37,7 @@ impl Test for CallStep {
         let context_id = ctx.context_id.as_ref().unwrap();
 
         let mut public_keys = HashMap::new();
-        
+
         match self.target {
             CallTarget::Inviter => {
                 if let Some(ref inviter_public_key) = ctx.inviter_public_key {
@@ -45,7 +45,7 @@ impl Test for CallStep {
                 } else {
                     bail!("Inviter public key is required for JsonRpcExecuteStep");
                 }
-            },
+            }
             CallTarget::AllMembers => {
                 if let Some(ref inviter_public_key) = ctx.inviter_public_key {
                     drop(public_keys.insert(ctx.inviter.clone(), inviter_public_key.clone()));
@@ -62,7 +62,7 @@ impl Test for CallStep {
                         );
                     }
                 }
-            },
+            }
             CallTarget::Invitees => {
                 for invitee in &ctx.invitees {
                     if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
@@ -89,10 +89,14 @@ impl Test for CallStep {
         }
 
         if self.method_name == "send_proposal_messages" {
-            println!("send_proposal_messages ctx.proposal_id: {:?}", ctx.proposal_id);
+            println!(
+                "send_proposal_messages ctx.proposal_id: {:?}",
+                ctx.proposal_id
+            );
             if let Some(ref proposal_id) = ctx.proposal_id {
                 args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
-                args_json["message"]["proposal_id"] = serde_json::Value::String(proposal_id.clone());
+                args_json["message"]["proposal_id"] =
+                    serde_json::Value::String(proposal_id.clone());
             } else {
                 bail!("Proposal ID is required for JsonRpcExecuteStep");
             }
@@ -130,28 +134,33 @@ impl Test for CallStep {
                     .ok_or_eyre("output not found in JSON RPC response result")?;
 
                 if self.method_name == "create_new_proposal" {
-                    let proposal_id_str = output.as_str()
+                    let proposal_id_str = output
+                        .as_str()
                         .ok_or_eyre("Expected proposal ID to be a string")?
                         .to_string();
-                    
+
                     ctx.proposal_id = Some(proposal_id_str);
                     println!("ctx.proposal_id: {:?}", ctx.proposal_id);
                 }
 
-                let modified_expected_result = if self.method_name == "get_proposal_messages" && self.expected_result_json.is_some() {
+                let modified_expected_result = if self.method_name == "get_proposal_messages"
+                    && self.expected_result_json.is_some()
+                {
                     let mut expected_clone = self.expected_result_json.clone().unwrap();
-                    
-                    if let (Some(proposal_id), Some(array)) = (ctx.proposal_id.clone(), expected_clone.as_array_mut()) {
+
+                    if let (Some(proposal_id), Some(array)) =
+                        (ctx.proposal_id.clone(), expected_clone.as_array_mut())
+                    {
                         if let Some(first_msg) = array.first_mut() {
                             if let Some(obj) = first_msg.as_object_mut() {
                                 let _unused = obj.insert(
                                     "proposal_id".to_string(),
-                                    serde_json::Value::String(proposal_id.clone())
+                                    serde_json::Value::String(proposal_id.clone()),
                                 );
                             }
                         }
                     }
-                    
+
                     Some(expected_clone)
                 } else {
                     self.expected_result_json.clone()

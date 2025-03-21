@@ -2,10 +2,10 @@ use core::time::Duration;
 use std::net::TcpStream;
 
 use eyre::{bail, OptionExt, Result as EyreResult};
-use serde::{Deserialize, Serialize};
-use url::Url;
 use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use url::Url;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,7 +74,11 @@ impl IcpSandboxEnvironment {
         ]
     }
 
-    pub fn check_external_contract_state(&self, contract_id: &str, key: &str) -> EyreResult<Option<String>> {
+    pub fn check_external_contract_state(
+        &self,
+        contract_id: &str,
+        key: &str,
+    ) -> EyreResult<Option<String>> {
         let rpc_url = Url::parse(&self.config.rpc_url)?;
         let rpc_host = rpc_url
             .host_str()
@@ -99,7 +103,8 @@ impl IcpSandboxEnvironment {
         });
 
         // Make the HTTP POST request
-        let response = client.post(&endpoint)
+        let response = client
+            .post(&endpoint)
             .json(&request)
             .send()?
             .json::<serde_json::Value>()?;
@@ -121,10 +126,12 @@ impl IcpSandboxEnvironment {
         }
 
         // Convert result to string
-        let value = result
-            .as_str()
-            .map(|s| s.to_string())
-            .or_else(|| result.get(0).and_then(|v| v.as_str()).map(|s| s.to_string()));
+        let value = result.as_str().map(|s| s.to_string()).or_else(|| {
+            result
+                .get(0)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
 
         Ok(value)
     }
