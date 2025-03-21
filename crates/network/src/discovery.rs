@@ -2,7 +2,6 @@ use eyre::{bail, ContextCompat, Result as EyreResult};
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
 use multiaddr::Protocol;
-use state::AutonatServerStatus;
 use tracing::{debug, error};
 
 use super::EventLoop;
@@ -303,10 +302,6 @@ impl EventLoop {
             .behaviour_mut()
             .autonat
             .add_server(*autonat_peer, None);
-
-        self.discovery
-            .state
-            .update_autonat_connection_status(autonat_peer, AutonatServerStatus::Connected);
 
         Ok(())
     }

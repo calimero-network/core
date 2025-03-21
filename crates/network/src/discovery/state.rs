@@ -76,8 +76,7 @@ impl DiscoveryState {
             if protocol == &AUTONAT_PROTOCOL_NAME {
                 let _ = self.autonat_index.insert(*peer_id);
 
-                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
-                let _ignored = peer_info.autonat.get_or_insert_with(Default::default);
+                let _peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
             }
         }
     }
@@ -110,7 +109,6 @@ impl DiscoveryState {
                     discoveries,
                     relay: None,
                     rendezvous: None,
-                    autonat: None,
                 });
             }
         }
@@ -143,17 +141,6 @@ impl DiscoveryState {
             .peers
             .entry(*rendezvous_peer)
             .and_modify(|info| info.update_rendezvous_registartion_status(status));
-    }
-
-    pub(crate) fn update_autonat_connection_status(
-        &mut self,
-        autonat_server_peer: &PeerId,
-        status: AutonatServerStatus,
-    ) {
-        let _ = self
-            .peers
-            .entry(*autonat_server_peer)
-            .and_modify(|info| info.update_autonat_server_connection_status(status));
     }
 
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {
@@ -231,7 +218,6 @@ pub struct PeerInfo {
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,
-    autonat: Option<PeerAutonatInfo>,
 }
 
 impl PeerInfo {
@@ -287,12 +273,6 @@ impl PeerInfo {
     fn update_rendezvous_registartion_status(&mut self, status: RendezvousRegistrationStatus) {
         if let Some(ref mut info) = self.rendezvous {
             info.update_registration_status(status);
-        }
-    }
-
-    fn update_autonat_server_connection_status(&mut self, status: AutonatServerStatus) {
-        if let Some(ref mut info) = self.autonat {
-            info.update_autonat_status(status);
         }
     }
 }
@@ -364,26 +344,4 @@ impl PeerRendezvousInfo {
     fn update_registration_status(&mut self, status: RendezvousRegistrationStatus) {
         self.registration_status = status;
     }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct PeerAutonatInfo {
-    autonat_server_status: AutonatServerStatus,
-}
-
-impl PeerAutonatInfo {
-    pub(crate) fn autonat_status(&self) -> AutonatServerStatus {
-        self.autonat_server_status
-    }
-
-    fn update_autonat_status(&mut self, status: AutonatServerStatus) {
-        self.autonat_server_status = status;
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum AutonatServerStatus {
-    #[default]
-    NotConnected,
-    Connected,
 }
