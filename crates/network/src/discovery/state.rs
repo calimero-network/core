@@ -26,11 +26,12 @@ pub struct DiscoveryState {
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
     autonat_index: BTreeSet<PeerId>,
+    autonat: AutonatStatus,
 }
 #[derive(Debug)]
 pub struct AutonatStatus {
-    pub status: NatStatus,
-    pub last_status_public: bool,
+    status: NatStatus,
+    last_status_public: bool,
 }
 
 impl Default for AutonatStatus {
@@ -207,6 +208,28 @@ impl DiscoveryState {
                 })
             });
         sum < max
+    }
+
+    pub(crate) fn update_autonat_status(&mut self, status: NatStatus) {
+        if matches!(self.autonat.status, NatStatus::Public(_))
+            && matches!(status, NatStatus::Private)
+        {
+            self.autonat.last_status_public = true;
+        }
+
+        self.autonat.status = status
+    }
+
+    pub(crate) fn is_autonat_status_public(&self) -> bool {
+        matches!(self.autonat.status, NatStatus::Public(_))
+    }
+
+    pub(crate) fn is_autonat_status_private(&self) -> bool {
+        matches!(self.autonat.status, NatStatus::Private)
+    }
+
+    pub(crate) fn autonat_became_private(&self) -> bool {
+        self.autonat.last_status_public
     }
 }
 

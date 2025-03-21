@@ -28,7 +28,7 @@ impl EventHandler<Event> for EventLoop {
                         return;
                     }
 
-                    if self.is_autonat_status_public() {
+                    if self.discovery.state.is_autonat_status_public() {
                         for peer_id in &rendezvous_peers {
                             if let Err(err) = self.rendezvous_discover(peer_id) {
                                 error!(%err, "Failed to perform rendezvous discovery");
@@ -39,8 +39,8 @@ impl EventHandler<Event> for EventLoop {
                         }
                     }
 
-                    if self.is_autonat_status_private() {
-                        if self.autonat_became_private() {
+                    if self.discovery.state.is_autonat_status_private() {
+                        if self.discovery.state.autonat_became_private() {
                             for peer_id in &rendezvous_peers {
                                 drop(self.rendezvous_unregister(peer_id));
                             }
@@ -68,7 +68,7 @@ impl EventHandler<Event> for EventLoop {
             Event::StatusChanged { old, new } => {
                 debug!("NAT status changed from {:?} to {:?}", old, new);
 
-                self.update_autonat_status(new);
+                self.discovery.state.update_autonat_status(new);
             }
             _ => {}
         }
