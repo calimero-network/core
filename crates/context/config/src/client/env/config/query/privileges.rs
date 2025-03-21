@@ -249,23 +249,24 @@ impl<'a> Method<Ethereum> for PrivilegesRequest<'a> {
             let bytes: [u8; 32] = user_cap.userId.into();
             let user_id = SignerId(Identity(bytes));
 
-            let capabilities = user_cap
+            let capabilities: Result<Vec<_>, _> = user_cap
                 .capabilities
                 .into_iter()
-                .map(|cap| match cap {
-                    SolCapability::ManageApplication => Capability::ManageApplication,
-                    SolCapability::ManageMembers => Capability::ManageMembers,
-                    SolCapability::Proxy => Capability::Proxy,
-                    SolCapability::__Invalid => {
-                        panic!("Invalid capability encountered in response")
-                    }
+                .map(|cap| -> Result<_, eyre::Report> {
+                    Ok(match cap {
+                        SolCapability::ManageApplication => Capability::ManageApplication,
+                        SolCapability::ManageMembers => Capability::ManageMembers,
+                        SolCapability::Proxy => Capability::Proxy,
+                        SolCapability::__Invalid => {
+                            eyre::bail!("Invalid capability encountered in response")
+                        }
+                    })
                 })
                 .collect();
 
-            assert!(
-                result.insert(user_id, capabilities).is_none(),
-                "Duplicate user ID in response"
-            );
+            if result.insert(user_id, capabilities?).is_some() {
+                eyre::bail!("Duplicate user ID in response");
+            }
         }
 
         Ok(result)
