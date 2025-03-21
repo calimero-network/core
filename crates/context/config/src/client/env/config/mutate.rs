@@ -1,20 +1,23 @@
 use std::fmt::Debug;
 
+use alloy::primitives::{keccak256, B256};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::{Signature, SignerSync};
+use alloy_sol_types::SolValue;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{BytesN, Env};
 use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
-use alloy::primitives::{keccak256, B256};
-use alloy::signers::local::PrivateKeySigner;
-use alloy::signers::{Signature, SignerSync};
-use alloy_sol_types::SolValue;
 
 pub mod methods;
 
+use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
+use crate::client::env::config::types::ethereum::ToSol;
 use crate::client::env::{utils, Method};
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -24,15 +27,11 @@ use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::{
-    StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
+    FromWithEnv, StellarRequest, StellarRequestKind, StellarSignedRequest,
+    StellarSignedRequestPayload,
 };
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
-
-use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
-use crate::client::env::config::types::ethereum::ToSol;
-use crate::client::protocol::ethereum::Ethereum;
-use crate::stellar::stellar_types::FromWithEnv;
 
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
