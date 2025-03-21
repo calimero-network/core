@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -9,6 +10,7 @@ use starknet_crypto::Felt;
 
 use crate::client::env::proxy::starknet::{CallData, ContextVariableKey};
 use crate::client::env::Method;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -140,5 +142,20 @@ impl Method<Stellar> for ContextVariableRequest {
             .map_err(|e| eyre::eyre!("Failed to convert to Bytes: {:?}", e))?;
 
         Ok(value.to_alloc_vec())
+    }
+}
+
+impl Method<Ethereum> for ContextVariableRequest {
+    type Returns = Vec<u8>;
+
+    const METHOD: &'static str = "getContextValue(bytes)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        Ok(self.key.abi_encode())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let context_value: Self::Returns = SolValue::abi_decode(&response, false)?;
+        Ok(context_value)
     }
 }

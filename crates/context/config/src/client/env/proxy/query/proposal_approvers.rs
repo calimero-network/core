@@ -2,6 +2,8 @@
 use std::io::Cursor;
 use std::mem;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -12,6 +14,7 @@ use starknet::core::types::Felt;
 use crate::client::env::proxy::starknet::CallData;
 use crate::client::env::proxy::types::starknet::{StarknetApprovers, StarknetProposalId};
 use crate::client::env::Method;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -169,5 +172,28 @@ impl Method<Stellar> for ProposalApproversRequest {
                     .map_err(|e| eyre::eyre!("Failed to convert bytes to identity: {}", e))
             })
             .collect()
+    }
+}
+
+impl Method<Ethereum> for ProposalApproversRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "proposalApprovers(bytes32)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+
+        Ok(proposal_id.abi_encode())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
+
+        let context_identities: Vec<ContextIdentity> = decoded
+            .into_iter()
+            .map(|bytes| bytes.rt().expect("infallible conversion"))
+            .collect();
+
+        Ok(context_identities)
     }
 }

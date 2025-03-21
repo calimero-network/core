@@ -1,5 +1,6 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -7,8 +8,10 @@ use soroban_sdk::{Env, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
 
+use crate::client::env::proxy::ethereum::SolProposal;
 use crate::client::env::proxy::starknet::{CallData, StarknetProposals, StarknetProposalsRequest};
 use crate::client::env::Method;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -142,5 +145,26 @@ impl Method<Stellar> for ProposalsRequest {
             .iter()
             .map(|p| Proposal::from(p.clone()))
             .collect())
+    }
+}
+
+impl Method<Ethereum> for ProposalsRequest {
+    type Returns = Vec<Proposal>;
+
+    const METHOD: &'static str = "getProposals(uint32,uint32)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let offset = u32::try_from(self.offset)
+            .map_err(|e| eyre::eyre!("Offset too large for u32: {}", e))?;
+        let length = u32::try_from(self.length)
+            .map_err(|e| eyre::eyre!("Limit too large for u32: {}", e))?;
+
+        Ok((offset, length).abi_encode())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let proposals: Vec<SolProposal> = SolValue::abi_decode(&response, false)?;
+
+        proposals.into_iter().map(TryInto::try_into).collect()
     }
 }

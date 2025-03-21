@@ -7,6 +7,8 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+alloy = { workspace = true, optional = true }
+alloy-sol-types = { workspace = true, optional = true }
 base64.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
@@ -14,6 +16,7 @@ candid = { workspace = true, optional = true }
 ed25519-consensus = { workspace = true, optional = true }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
+ethabi = { workspace = true, optional = true }
 eyre = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 ic-agent = { workspace = true, optional = true }
@@ -30,6 +33,7 @@ starknet = { workspace = true, optional = true }
 starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
 url = { workspace = true, optional = true }
 
 [lints]
@@ -37,14 +41,15 @@ workspace = true
 
 [features]
 client = [
-    "near_client",
-    "icp_client",
-    "starknet_client",
-    "stellar_client",
-    "dep:either",
-    "dep:eyre",
-    "reqwest/json",
-    "url/serde",
+  "near_client",
+  "icp_client",
+  "starknet_client",
+  "stellar_client",
+  "ethereum_client",
+  "dep:either",
+  "dep:eyre",
+  "reqwest/json",
+  "url/serde",
 ]
 
 near_client = ["dep:near-crypto", "dep:near-jsonrpc-client", "dep:near-jsonrpc-primitives", "dep:near-primitives"]
@@ -57,4 +62,13 @@ starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starkn
 
 stellar = ["dep:soroban-sdk"]
 
+ethereum = [
+  "alloy",
+  "alloy-sol-types",
+  "ethabi"
+]
+
+ethereum_client = [
+  "ethereum"
+]
 stellar_client = ["stellar"]

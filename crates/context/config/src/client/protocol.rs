@@ -1,3 +1,4 @@
+pub mod ethereum;
 pub mod icp;
 pub mod near;
 pub mod starknet;
