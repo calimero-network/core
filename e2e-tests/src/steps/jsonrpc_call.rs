@@ -25,6 +25,7 @@ pub struct CallStep {
 pub enum CallTarget {
     Inviter,
     AllMembers,
+    Invitees,
 }
 
 impl Test for CallStep {
@@ -33,30 +34,36 @@ impl Test for CallStep {
     }
 
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
-        let context_id;
+        let context_id = ctx.context_id.as_ref().unwrap();
 
         let mut public_keys = HashMap::new();
-        if let Some(ref inviter_public_key) = ctx.inviter_public_key {
-            drop(public_keys.insert(ctx.inviter.clone(), inviter_public_key.clone()));
-        } else {
-            bail!("Inviter public key is required for JsonRpcExecuteStep");
-        }
 
         match self.target {
             CallTarget::Inviter => {
-                if let Some(ref alias) = ctx.context_alias {
-                    context_id = alias;
+                if let Some(ref inviter_public_key) = ctx.inviter_public_key {
+                    drop(public_keys.insert(ctx.inviter.clone(), inviter_public_key.clone()));
                 } else {
-                    bail!("Alias is required for JsonRpcExecuteStep on the Inviter node");
-                };
+                    bail!("Inviter public key is required for JsonRpcExecuteStep");
+                }
             }
             CallTarget::AllMembers => {
-                if let Some(ref id) = ctx.context_id {
-                    context_id = id;
+                if let Some(ref inviter_public_key) = ctx.inviter_public_key {
+                    drop(public_keys.insert(ctx.inviter.clone(), inviter_public_key.clone()));
                 } else {
-                    bail!("Context ID is required for JsonRpcExecuteStep with AllMembers target");
+                    bail!("Inviter public key is required for JsonRpcExecuteStep");
                 }
-
+                for invitee in &ctx.invitees {
+                    if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
+                        drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
+                    } else {
+                        bail!(
+                            "Public key for invitee '{}' is required for JsonRpcExecuteStep",
+                            invitee
+                        );
+                    }
+                }
+            }
+            CallTarget::Invitees => {
                 for invitee in &ctx.invitees {
                     if let Some(invitee_public_key) = ctx.invitees_public_keys.get(invitee) {
                         drop(public_keys.insert(invitee.clone(), invitee_public_key.clone()));
@@ -69,6 +76,33 @@ impl Test for CallStep {
                 }
             }
         }
+        println!("number of public keys: {}", public_keys.len());
+
+        let mut args_json = self.args_json.clone();
+
+        if self.method_name == "approve_proposal" || self.method_name == "get_proposal_messages" {
+            if let Some(ref proposal_id) = ctx.proposal_id {
+                args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
+            } else {
+                bail!("Proposal ID is required for JsonRpcExecuteStep");
+            }
+        }
+
+        if self.method_name == "send_proposal_messages" {
+            println!(
+                "send_proposal_messages ctx.proposal_id: {:?}",
+                ctx.proposal_id
+            );
+            if let Some(ref proposal_id) = ctx.proposal_id {
+                args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
+                args_json["message"]["proposal_id"] =
+                    serde_json::Value::String(proposal_id.clone());
+            } else {
+                bail!("Proposal ID is required for JsonRpcExecuteStep");
+            }
+        }
+
+        println!("args_json: {:?}", args_json);
 
         let mut tasks = JoinSet::new();
 
@@ -77,7 +111,7 @@ impl Test for CallStep {
                 &node,
                 context_id,
                 &self.method_name,
-                &self.args_json,
+                &args_json,
                 &public_key,
             );
 
@@ -92,24 +126,58 @@ impl Test for CallStep {
             let can_retry = count < self.retries.unwrap_or(0);
 
             if let Ok(response) = &response {
+                println!("response: {:?}", response);
                 let output = response
                     .get("result")
                     .ok_or_eyre("result not found in JSON RPC response")?
                     .get("output")
                     .ok_or_eyre("output not found in JSON RPC response result")?;
 
-                let Some(expected_result_json) = &self.expected_result_json else {
+                if self.method_name == "create_new_proposal" {
+                    let proposal_id_str = output
+                        .as_str()
+                        .ok_or_eyre("Expected proposal ID to be a string")?
+                        .to_string();
+
+                    ctx.proposal_id = Some(proposal_id_str);
+                    println!("ctx.proposal_id: {:?}", ctx.proposal_id);
+                }
+
+                let modified_expected_result = if self.method_name == "get_proposal_messages"
+                    && self.expected_result_json.is_some()
+                {
+                    let mut expected_clone = self.expected_result_json.clone().unwrap();
+
+                    if let (Some(proposal_id), Some(array)) =
+                        (ctx.proposal_id.clone(), expected_clone.as_array_mut())
+                    {
+                        if let Some(first_msg) = array.first_mut() {
+                            if let Some(obj) = first_msg.as_object_mut() {
+                                let _unused = obj.insert(
+                                    "proposal_id".to_string(),
+                                    serde_json::Value::String(proposal_id.clone()),
+                                );
+                            }
+                        }
+                    }
+
+                    Some(expected_clone)
+                } else {
+                    self.expected_result_json.clone()
+                };
+
+                let Some(expected_result) = &modified_expected_result else {
                     continue;
                 };
 
-                if expected_result_json == output {
+                if expected_result == output {
                     continue;
                 }
 
                 if !can_retry {
                     bail!(
                         "JSON RPC result output mismatch:\nexpected: {}\nactual  : {}",
-                        expected_result_json,
+                        expected_result,
                         output
                     );
                 }

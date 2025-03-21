@@ -1,0 +1,104 @@
+{
+  "protocol": "icp",
+  "steps": [
+    {
+      "applicationInstall": {
+        "application": { "localFile": "./apps/blockchain/res/blockchain.wasm" },
+        "target": "allMembers"
+      }
+    },
+    {
+      "contextCreate": null
+    },
+    {
+      "contextInviteJoin": null
+    },
+    {
+      "wait": {
+        "for": "consensus",
+        "durationMs": 5000,
+        "description": [
+          "assuming it takes 5s to propagate we should",
+          "only need to wait 5 * ceil(log2(nodes)) seconds"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "create_new_proposal",
+        "argsJson": {
+          "request": {
+            "action_type": "ExternalFunctionCall",
+            "params": {
+              "receiver_id": "br5f7-7uaaa-aaaaa-qaaca-cai",
+              "method_name": "test_method_no_transfer",
+              "args": "{\"testKey\":\"testValue\"}",
+              "deposit": "0"
+            }
+          }
+        },
+        "expectedResultJson": null,
+        "target": "inviter",
+        "retries": 20,
+        "intervalMs": 5000,
+        "description": [
+          "if we don't reach consensus in the ideal case",
+          "wait 5 seconds for nodes that have not yet synced",
+          "in the worst case, wait 20 * 5s for nodes that uselessly",
+          "keep syncing with themselves without having the state"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "send_proposal_messages",
+        "argsJson": {
+          "message": {
+            "id": "msg1",
+            "author": "inviter",
+            "text": "This is a test message for the proposal",
+            "created_at": "2023-11-24T12:34:56Z"
+          }
+        },
+        "expectedResultJson": null,
+        "target": "inviter"
+      }
+    },
+    {
+      "wait": {
+        "for": "broadcast",
+        "durationMs": 5000,
+        "description": ["wait exactly 5s for the broadcast to propagate"]
+      }
+    },
+    {
+      "call": {
+        "methodName": "get_proposal_messages",
+        "argsJson": {},
+        "expectedResultJson": [
+          {
+            "id": "msg1",
+            "author": "inviter",
+            "text": "This is a test message for the proposal",
+            "created_at": "2023-11-24T12:34:56Z"
+          }
+        ],
+        "target": "invitees",
+        "retries": 5,
+        "intervalMs": 5000,
+        "description": [
+          "if a node still hasn't received the broadcast",
+          "try 5 more times in 5 seconds, but no more"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "approve_proposal",
+        "argsJson": {},
+        "expectedResultJson": null,
+        "target": "invitees"
+      }
+    }
+  ]
+}
