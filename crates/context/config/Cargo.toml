@@ -37,43 +37,24 @@ workspace = true
 
 [features]
 client = [
-  "near_client",
-  "icp_client",
-  "starknet_client",
-  "stellar_client",
-  "dep:either",
-  "dep:eyre",
-  "reqwest/json",
-  "url/serde",
+    "near_client",
+    "icp_client",
+    "starknet_client",
+    "stellar_client",
+    "dep:either",
+    "dep:eyre",
+    "reqwest/json",
+    "url/serde",
 ]
 
-near_client = [
-  "dep:near-crypto",
-  "dep:near-jsonrpc-client",
-  "dep:near-jsonrpc-primitives",
-  "dep:near-primitives",
-]
+near_client = ["dep:near-crypto", "dep:near-jsonrpc-client", "dep:near-jsonrpc-primitives", "dep:near-primitives"]
 
 icp = ["candid"]
 
-icp_client = [
-  "icp",
-  "dep:ic-agent",
-  "dep:ed25519-consensus",
-]
+icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
-starknet_client = [
-  "dep:hex",
-  "dep:starknet",
-  "dep:starknet-crypto",
-  "dep:starknet-types-core",
-]
+starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starknet-types-core"]
 
-stellar = [
-    "dep:soroban-sdk",
-]
+stellar = ["dep:soroban-sdk"]
 
-stellar_client = [
-    "stellar",
-]
-
+stellar_client = ["stellar"]
