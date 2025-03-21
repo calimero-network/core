@@ -18,7 +18,8 @@ use calimero_context_config::client::protocol::{
     starknet as starknet_protocol,
 };
 use calimero_network::config::{
-    BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
+    AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
+    SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
@@ -108,6 +109,9 @@ pub struct InitCommand {
 
     #[clap(long, default_value = "3")]
     pub relay_registrations_limit: usize,
+
+    #[clap(long, default_value = "2")]
+    pub autonat_confidence_threshold: usize,
 
     /// Force initialization even if the directory already exists
     #[clap(long)]
@@ -382,6 +386,7 @@ impl InitCommand {
                     mdns,
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
                     RelayConfig::new(self.relay_registrations_limit),
+                    AutonatConfig::new(self.autonat_confidence_threshold),
                 ),
                 ServerConfig::new(
                     self.server_host
