@@ -1,0 +1,46 @@
+name: PR
+on:
+  pull_request:
+    types: [opened, edited]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check-description:
+    name: Check Description
+    permissions: write-all
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR Description
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const requiredSections = [
+              "## Test plan",
+              "## Documentation update"
+            ];
+            
+            const prBody = context.payload.pull_request.body || "";
+
+            function isValidDescription(body) {
+              return requiredSections.every(section => 
+                body.includes(section) && 
+                body.split(section)[1].trim().length > 10
+              );
+            }
+
+            if (!isValidDescription(prBody)) {
+              github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: "PR description does not follow the required template. Please update it to include:\n\n" +
+                      "`## Description`\n" +
+                      "`## Test plan`\n" +
+                      "`## Documentation update`\n\n" +
+                      "❌ PR merge is blocked until this is fixed."
+              });
+              core.setFailed("PR description is missing required sections.");
+            }
