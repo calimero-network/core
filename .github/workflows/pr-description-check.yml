@@ -1,4 +1,4 @@
-name: PR Description Check
+name: PR
 on:
   pull_request:
     types: [opened, edited]
@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   check-description:
+    name: Check Description
     permissions: write-all
     runs-on: ubuntu-latest
     steps:
