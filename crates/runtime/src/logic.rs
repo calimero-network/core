@@ -65,7 +65,7 @@ pub struct VMLimits {
 
 #[derive(Debug)]
 pub struct VMLogic<'a> {
-    storage: &'a mut dyn Storage,
+    storage: Box<dyn Storage>,
     memory: Option<wasmer::Memory>,
     context: VMContext,
     limits: &'a VMLimits,
@@ -80,7 +80,7 @@ pub struct VMLogic<'a> {
 }
 
 impl<'a> VMLogic<'a> {
-    pub fn new(storage: &'a mut dyn Storage, context: VMContext, limits: &'a VMLimits) -> Self {
+    pub fn new(storage: Box<dyn Storage>, context: VMContext, limits: &'a VMLimits) -> Self {
         VMLogic {
             storage,
             memory: None,

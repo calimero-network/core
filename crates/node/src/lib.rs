@@ -42,6 +42,7 @@ use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
+use runtime_compat::RuntimeCompatStore;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -119,7 +120,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let blob_manager = BlobManager::new(store.clone(), FileSystem::new(&config.blobstore).await?);
 
-    let runtime_manager = RuntimeManager::new(BTreeMap::new(), get_runtime_limits()?).start();
+    let runtime_manager = RuntimeManager::new(get_runtime_limits()?).start();
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
@@ -540,24 +541,24 @@ impl Node {
             return Ok(None);
         };
 
+        let mut store = self.store.clone();
+
+        let storage = Box::new(RuntimeCompatStore::new(&mut store, context.id));
+
         let exec_msg = ExecuteMsg {
             blob,
             method_name: method.to_string(),
             context: VMContext::new(payload, *context.id, *executor_public_key),
+            storage,
         };
 
-        let (outcome, storage) = self
+        let outcome = self
             .runtime_manager
             .send(exec_msg)
             .await
-            .map_err(|e| eyre::eyre!("Actor error: {}", e))
-            .and_then(|(outcome, storage)| {
-                outcome
-                    .map_err(|e| eyre::eyre!("VM Runtime error: {}", e))
-                    .map(|o| (o, storage))
-            })?;
+            .map_err(|e| eyre::eyre!("Actor error: {}", e))??;
 
-        let storage_iter = storage.into_iter();
+        // let storage_iter = storage.into_iter();
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {

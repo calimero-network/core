@@ -4,14 +4,8 @@ use std::sync::Arc;
 use actix::prelude::*;
 use calimero_primitives::context::ContextId;
 use calimero_utils_actix::global_runtime;
-use store::InMemoryStorage;
 use tokio::sync::Mutex;
 use wasmer::{Engine, Instance, Module, NativeEngineExt, Store};
-
-use crate::errors::{FunctionCallError, VMRuntimeError};
-use crate::logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
-use crate::memory::WasmerTunables;
-use crate::store::Storage;
 
 mod constraint;
 pub mod errors;
@@ -20,15 +14,20 @@ mod memory;
 pub mod store;
 
 pub use constraint::Constraint;
+use errors::{FunctionCallError, VMRuntimeError};
+use logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
+use memory::WasmerTunables;
+use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
 #[derive(Message, Debug)]
-#[rtype(result = "(RuntimeResult<Outcome>, InMemoryStorage)")]
+#[rtype(result = "RuntimeResult<Outcome>")]
 pub struct ExecuteMsg {
     pub blob: Vec<u8>,
     pub method_name: String,
     pub context: VMContext,
+    pub storage: Box<dyn Storage + Send>,
 }
 #[derive(Debug)]
 pub struct RuntimeManager {
@@ -41,22 +40,25 @@ impl Actor for RuntimeManager {
 }
 
 impl RuntimeManager {
-    pub fn new(tasks: BTreeMap<ContextId, Arc<Mutex<()>>>, limits: VMLimits) -> Self {
-        RuntimeManager { tasks, limits }
+    pub fn new(limits: VMLimits) -> Self {
+        RuntimeManager {
+            tasks: BTreeMap::new(),
+            limits,
+        }
     }
 }
 
 impl Handler<ExecuteMsg> for RuntimeManager {
-    type Result = ResponseFuture<(RuntimeResult<Outcome>, InMemoryStorage)>;
+    type Result = ResponseFuture<RuntimeResult<Outcome>>;
 
     fn handle(&mut self, msg: ExecuteMsg, _ctx: &mut Self::Context) -> Self::Result {
         let mutex = self
             .tasks
             .entry(msg.context.context_id.into())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .or_default()
             .clone();
 
-        let mut storage = InMemoryStorage::default();
+        let storage = msg.storage;
 
         let limits = self.limits.clone();
 
@@ -64,14 +66,8 @@ impl Handler<ExecuteMsg> for RuntimeManager {
             let _lock = mutex.lock().await;
 
             let handle = global_runtime().spawn_blocking(move || {
-                let result = run(
-                    &msg.blob,
-                    &msg.method_name,
-                    msg.context,
-                    &mut storage,
-                    &limits,
-                );
-                (result, storage)
+                let result = run(&msg.blob, &msg.method_name, msg.context, storage, &limits);
+                result
             });
 
             handle.await.unwrap()
@@ -85,7 +81,7 @@ pub fn run(
     code: &[u8],
     method_name: &str,
     context: VMContext,
-    storage: &mut dyn Storage,
+    storage: Box<dyn Storage>,
     limits: &VMLimits,
 ) -> RuntimeResult<Outcome> {
     // todo! calculate storage key for cached precompiled
