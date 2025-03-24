@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use eyre::bail;
 use tokio::runtime::{Handle, RuntimeFlavor};
 
+pub mod adapters;
 pub mod lazy;
 #[doc(hidden)]
 pub mod macros;
