@@ -232,7 +232,7 @@ impl<'a> Method<Ethereum> for Mutate<'a> {
             RequestKind::Context(req) => req.to_sol(),
         };
 
-        let encoded_request = SolValue::abi_encode(&context_request);
+        let encoded_request = context_request.abi_encode();
 
         let sol_request = SolRequest {
             signerId: ecdsa_public_key,
@@ -242,7 +242,7 @@ impl<'a> Method<Ethereum> for Mutate<'a> {
             data: encoded_request.into(),
         };
 
-        let request_message = SolValue::abi_encode(&sol_request);
+        let request_message = sol_request.abi_encode();
 
         let message_hash = keccak256(&request_message);
         let signature: Signature = signer.sign_message_sync(&message_hash.as_slice())?;
@@ -262,7 +262,7 @@ impl<'a> Method<Ethereum> for Mutate<'a> {
             v,
         };
 
-        let encoded = SolValue::abi_encode(&signed_request);
+        let encoded = signed_request.abi_encode();
 
         Ok(encoded)
     }
