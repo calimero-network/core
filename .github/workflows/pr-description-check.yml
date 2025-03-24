@@ -1,4 +1,5 @@
 name: PR
+
 on:
   pull_request:
     types: [opened, edited]
@@ -11,88 +12,44 @@ jobs:
   check-description:
     name: Check Description
     runs-on: ubuntu-latest
+    outputs:
+      comment_action: ${{ steps.validate_description.outputs.comment_action }}
+      comment_content: ${{ steps.validate_description.outputs.comment_content }}
     steps:
-      - name: Validate PR Description
+      - name: Validate Description
         id: validate_description
-        uses: actions/github-script@v7
+        run: |
+          required_sections=("## Description" "## Test plan" "## Documentation update")
+          pr_body="${{ github.event.pull_request.body }}"
+          missing_sections=()
+
+          for section in "${required_sections[@]}"; do
+            if [[ -z $(echo "$pr_body" | grep -i "$section") ]]; then
+              missing_sections+=("$section")
+            fi
+          done
+
+          if [[ ${#missing_sections[@]} -gt 0 ]]; then
+            echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
+            echo "comment_content=**PR is missing required sections:** <br><br>${missing_sections[*]}.<br><br>Please update the PR description.<br><br>**❌ PR merge is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
+          else
+            echo "comment_action=delete" >> "$GITHUB_OUTPUT"
+            echo "comment_content=" >> "$GITHUB_OUTPUT"
+          fi
+
+  update-comment:
+    name: Update PR Comment
+    runs-on: ubuntu-latest
+    needs: check-description
+    steps:
+      - name: Post PR Comment
+        uses: thollander/actions-comment-pull-request@v3
         with:
-          script: |
-            const requiredSections = [
-              "## Description",
-              "## Test plan",
-              "## Documentation update"
-            ];
-            
-            const prBody = context.payload.pull_request.body || "";
-            const missingSections = requiredSections.filter(section => 
-              !prBody.includes(section) || prBody.split(section)[1].trim().length <= 10
-            );
+          pr-number: ${{ github.event.pull_request.number }}
+          comment-tag: pr-description-check
+          mode: ${{ needs.check-description.outputs.comment_action }}
+          message: ${{ needs.check-description.outputs.comment_content }}
 
-            if (missingSections.length > 0) {
-              core.setOutput("is_invalid", "true");
-              core.setOutput("comment_body", 
-                `**PR description is missing required sections!**\n\n` +
-                requiredSections.map(s => `${s}`).join("\n") +
-                `\n\n**❌ PR merge is blocked until this is fixed.**`
-              );
-            } else {
-              core.setOutput("is_invalid", "false");
-            }
-
-      - name: Find Existing Comment
-        id: find_comment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const comments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number
-            });
-
-            const existingComment = comments.data.find(comment => 
-              comment.body.includes("PR description is missing required sections!")
-            );
-
-            if (existingComment) {
-              core.setOutput("comment_id", existingComment.id);
-            }
-
-      - name: Update PR Comment
-        if: steps.validate_description.outputs.is_invalid == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const commentId = "${{ steps.find_comment.outputs.comment_id }}";
-            const message = `${{ steps.validate_description.outputs.comment_body }}`;
-
-            if (commentId) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: commentId,
-                body: message
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body: message
-              });
-            }
-
-      - name: Delete PR Comment if Fixed
-        if: steps.validate_description.outputs.is_invalid == 'false' && steps.find_comment.outputs.comment_id
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.deleteComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: ${{ steps.find_comment.outputs.comment_id }}
-            });
-
-      - name: Fail Job if PR is Invalid
-        if: steps.validate_description.outputs.is_invalid == 'true'
+      - name: Fail job if PR description is invalid
+        if: needs.check-description.outputs.comment_action == 'recreate'
         run: exit 1
