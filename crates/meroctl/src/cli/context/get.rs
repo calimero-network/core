@@ -85,7 +85,7 @@ impl GetCommand {
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        match self.command {
+    match self.command {
             GetSubcommand::Info => {
                 self.get_context(
                     environment,
