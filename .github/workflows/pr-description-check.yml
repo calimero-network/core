@@ -10,37 +10,89 @@ permissions:
 jobs:
   check-description:
     name: Check Description
-    permissions: write-all
     runs-on: ubuntu-latest
     steps:
-      - name: Check PR Description
+      - name: Validate PR Description
+        id: validate_description
         uses: actions/github-script@v7
         with:
           script: |
             const requiredSections = [
+              "## Description",
               "## Test plan",
               "## Documentation update"
             ];
             
             const prBody = context.payload.pull_request.body || "";
+            const missingSections = requiredSections.filter(section => 
+              !prBody.includes(section) || prBody.split(section)[1].trim().length <= 10
+            );
 
-            function isValidDescription(body) {
-              return requiredSections.every(section => 
-                body.includes(section) && 
-                body.split(section)[1].trim().length > 10
+            if (missingSections.length > 0) {
+              core.setOutput("is_invalid", "true");
+              core.setOutput("comment_body", 
+                `**PR description is missing required sections!**\n\n` +
+                requiredSections.map(s => `${s}`).join("\n") +
+                `\n\n**PR merge is blocked until this is fixed.**`
               );
+            } else {
+              core.setOutput("is_invalid", "false");
             }
 
-            if (!isValidDescription(prBody)) {
-              github.rest.issues.createComment({
+      - name: Find Existing Comment
+        id: find_comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number
+            });
+
+            const existingComment = comments.data.find(comment => 
+              comment.body.includes("PR description is missing required sections!")
+            );
+
+            if (existingComment) {
+              core.setOutput("comment_id", existingComment.id);
+            }
+
+      - name: Update PR Comment
+        if: steps.validate_description.outputs.is_invalid == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentId = "${{ steps.find_comment.outputs.comment_id }}";
+            const message = `${{ steps.validate_description.outputs.comment_body }}`;
+
+            if (commentId) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: commentId,
+                body: message
+              });
+            } else {
+              await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.payload.pull_request.number,
-                body: "PR description does not follow the required template. Please update it to include:\n\n" +
-                      "`## Description`\n" +
-                      "`## Test plan`\n" +
-                      "`## Documentation update`\n\n" +
-                      "❌ PR merge is blocked until this is fixed."
+                body: message
               });
-              core.setFailed("PR description is missing required sections.");
             }
+
+      - name: Delete PR Comment if Fixed
+        if: steps.validate_description.outputs.is_invalid == 'false' && steps.find_comment.outputs.comment_id
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.deleteComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: ${{ steps.find_comment.outputs.comment_id }}
+            });
+
+      - name: Fail Job if PR is Invalid
+        if: steps.validate_description.outputs.is_invalid == 'true'
+        run: exit 1
