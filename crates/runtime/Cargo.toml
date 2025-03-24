@@ -11,11 +11,11 @@ actix.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 fragile.workspace = true
 ouroboros.workspace = true
-tokio.workspace = true
 owo-colors = { workspace = true, optional = true }
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+tokio.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true

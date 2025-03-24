@@ -7,7 +7,6 @@
 use core::future::{pending, Future};
 use core::pin::Pin;
 use core::str;
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use actix::prelude::*;
@@ -42,7 +41,6 @@ use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
-use runtime_compat::RuntimeCompatStore;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -54,6 +52,7 @@ pub mod runtime_compat;
 pub mod sync;
 pub mod types;
 
+use runtime_compat::RuntimeStore;
 use sync::SyncConfig;
 use types::BroadcastMessage;
 
@@ -543,7 +542,7 @@ impl Node {
 
         let mut store = self.store.clone();
 
-        let storage = Box::new(RuntimeCompatStore::new(&mut store, context.id));
+        let storage = Box::new(RuntimeStore::new(store, context.id).inner);
 
         let exec_msg = ExecuteMsg {
             blob,
@@ -552,13 +551,13 @@ impl Node {
             storage,
         };
 
-        let outcome = self
+        let (outcome, storage) = self
             .runtime_manager
             .send(exec_msg)
             .await
-            .map_err(|e| eyre::eyre!("Actor error: {}", e))??;
+            .map_err(|e| eyre::eyre!("Actor error: {}", e))?;
 
-        // let storage_iter = storage.into_iter();
+        let outcome = outcome?;
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {

@@ -21,8 +21,9 @@ use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
-#[derive(Message, Debug)]
-#[rtype(result = "RuntimeResult<Outcome>")]
+#[allow(missing_debug_implementations)]
+#[derive(Message)]
+#[rtype(result = "(RuntimeResult<Outcome>, Box<dyn Storage + Send>)")]
 pub struct ExecuteMsg {
     pub blob: Vec<u8>,
     pub method_name: String,
@@ -49,7 +50,7 @@ impl RuntimeManager {
 }
 
 impl Handler<ExecuteMsg> for RuntimeManager {
-    type Result = ResponseFuture<RuntimeResult<Outcome>>;
+    type Result = ResponseFuture<(RuntimeResult<Outcome>, Box<dyn Storage + Send>)>;
 
     fn handle(&mut self, msg: ExecuteMsg, _ctx: &mut Self::Context) -> Self::Result {
         let mutex = self
@@ -58,16 +59,22 @@ impl Handler<ExecuteMsg> for RuntimeManager {
             .or_default()
             .clone();
 
-        let storage = msg.storage;
-
         let limits = self.limits.clone();
 
         let future = async move {
             let _lock = mutex.lock().await;
 
             let handle = global_runtime().spawn_blocking(move || {
-                let result = run(&msg.blob, &msg.method_name, msg.context, storage, &limits);
-                result
+                let mut msg = msg;
+
+                let result = run(
+                    &msg.blob,
+                    &msg.method_name,
+                    msg.context,
+                    &mut *msg.storage,
+                    &limits,
+                );
+                (result, msg.storage)
             });
 
             handle.await.unwrap()
@@ -81,7 +88,7 @@ pub fn run(
     code: &[u8],
     method_name: &str,
     context: VMContext,
-    storage: Box<dyn Storage>,
+    storage: &mut dyn Storage,
     limits: &VMLimits,
 ) -> RuntimeResult<Outcome> {
     // todo! calculate storage key for cached precompiled

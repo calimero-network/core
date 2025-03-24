@@ -2,10 +2,12 @@ use core::fmt::Debug;
 use std::collections::btree_map::IntoIter;
 use std::collections::BTreeMap;
 
+use calimero_primitives::reflect::Reflect;
+
 pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
 
-pub trait Storage: Debug {
+pub trait Storage: Reflect {
     fn get(&self, key: &Key) -> Option<Value>;
     fn set(&mut self, key: Key, value: Value) -> Option<Value>;
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
