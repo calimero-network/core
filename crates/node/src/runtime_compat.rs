@@ -27,9 +27,8 @@ impl RuntimeStore {
         }
     }
 }
-
 #[self_referencing]
-struct RuntimeCompatStore {
+pub struct RuntimeCompatStore {
     context_id: ContextId,
     store: Store,
 
@@ -39,6 +38,8 @@ struct RuntimeCompatStore {
     // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
     keys: RefCell<Vec<Arc<ContextStateKey>>>,
 }
+
+unsafe impl Send for RuntimeCompatStore {}
 
 impl RuntimeCompatStore {
     fn state_key(&self, key: &[u8]) -> Option<ContextStateKey> {
@@ -60,8 +61,8 @@ impl RuntimeCompatStore {
         keys.last().map(|x| *&**x) //?
     }
 
-    pub fn commit(self) -> EyreResult<()> {
-        self.with_inner(|inner| inner.commit())
+    pub fn commit(mut self) -> EyreResult<()> {
+        self.with_inner_mut(|inner| inner.commit())
     }
 
     pub fn is_empty(&self) -> bool {

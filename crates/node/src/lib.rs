@@ -29,6 +29,7 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_primitives::reflect::ReflectExt;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::{Constraint, ExecuteMsg, RuntimeManager};
 use calimero_server::config::ServerConfig;
@@ -52,7 +53,7 @@ pub mod runtime_compat;
 pub mod sync;
 pub mod types;
 
-use runtime_compat::RuntimeStore;
+use runtime_compat::{RuntimeCompatStore, RuntimeStore};
 use sync::SyncConfig;
 use types::BroadcastMessage;
 
@@ -540,7 +541,7 @@ impl Node {
             return Ok(None);
         };
 
-        let mut store = self.store.clone();
+        let store = self.store.clone();
 
         let storage = Box::new(RuntimeStore::new(store, context.id).inner);
 
@@ -558,6 +559,9 @@ impl Node {
             .map_err(|e| eyre::eyre!("Actor error: {}", e))?;
 
         let outcome = outcome?;
+        let storage = storage
+            .downcast_box::<RuntimeCompatStore>()
+            .map_err(|_| eyre::eyre!("Downcast to RuntimeCompatStore failed"))?;
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
