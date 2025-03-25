@@ -14,7 +14,8 @@
       "protocol": "near",
       "config": {
         "contextConfigContract": "./contracts/near/calimero_context_config_near.wasm",
-        "proxyLibContract": "./contracts/near/calimero_context_proxy_near.wasm"
+        "proxyLibContract": "./contracts/near/calimero_context_proxy_near.wasm",
+        "mockExternalContract": "./contracts/near/calimero_mock_external_near.wasm"
       }
     },
     {
@@ -30,10 +31,10 @@
     {
       "protocol": "stellar",
       "config": {
-        "contextConfigContractId": "CCWFWBX4JM3JMGJN5NKHTBMLGAD4OAAHHC4E26TUAJVBPCJEZ65S67ZK",
+        "contextConfigContractId": "CCIZDIWGDVCMO2PIR6VFW63GZNUAA47UYG4VUDL3XXN3DYJ2HWLIWIGD",
         "rpcUrl": "http://127.0.0.1:8000/soroban/rpc",
-        "publicKey": "GCS6ITU4OH4ITEES2IUTPUMTGESR2ETPBYPUKVKDU4ZUN6SE5AAYAT74",
-        "secretKey": "SAPE6ONPQCB6ZHMDWLCVR6CRYOOX4KBUVJJQINWOEFB2JYFYQGGQ2SCK"
+        "publicKey": "GDIY6AQQ75WMD4W46EYB7O6UYMHOCGQHLAQGQTKHDX4J2DYQCHVCR4W4",
+        "secretKey": "SC36BWNUOCZAO7DMEJNNKFV6BOTPJP7IG5PSHLUOLT6DZFRU3D3XGIXW"
       }
     },
     {
