@@ -21,15 +21,18 @@ use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
-#[allow(missing_debug_implementations)]
+type ExecuteResponse = Option<(RuntimeResult<Outcome>, Box<dyn Storage + Send>)>;
+
+#[expect(missing_debug_implementations, reason = "not needed")]
 #[derive(Message)]
-#[rtype(result = "(RuntimeResult<Outcome>, Box<dyn Storage + Send>)")]
-pub struct ExecuteMsg {
+#[rtype(ExecuteResponse)]
+pub struct ExecuteRequest {
     pub blob: Vec<u8>,
     pub method_name: String,
     pub context: VMContext,
     pub storage: Box<dyn Storage + Send>,
 }
+
 #[derive(Debug)]
 pub struct RuntimeManager {
     pub tasks: BTreeMap<ContextId, Arc<Mutex<()>>>,
@@ -49,10 +52,10 @@ impl RuntimeManager {
     }
 }
 
-impl Handler<ExecuteMsg> for RuntimeManager {
-    type Result = ResponseFuture<(RuntimeResult<Outcome>, Box<dyn Storage + Send>)>;
+impl Handler<ExecuteRequest> for RuntimeManager {
+    type Result = ResponseFuture<ExecuteResponse>;
 
-    fn handle(&mut self, msg: ExecuteMsg, _ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ExecuteRequest, _ctx: &mut Self::Context) -> Self::Result {
         let mutex = self
             .tasks
             .entry(msg.context.context_id.into())
@@ -74,10 +77,11 @@ impl Handler<ExecuteMsg> for RuntimeManager {
                     &mut *msg.storage,
                     &limits,
                 );
+
                 (result, msg.storage)
             });
 
-            handle.await.unwrap()
+            handle.await.ok()
         };
 
         Box::pin(future)

@@ -10,23 +10,6 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use ouroboros::self_referencing;
 
-pub struct RuntimeStore {
-    pub inner: RuntimeCompatStore,
-}
-
-impl RuntimeStore {
-    pub fn new(store: Store, context_id: ContextId) -> Self {
-        RuntimeStore {
-            inner: RuntimeCompatStoreBuilder {
-                context_id,
-                store,
-                inner_builder: |store| Temporal::new(store),
-                keys: RefCell::default(),
-            }
-            .build(),
-        }
-    }
-}
 #[self_referencing]
 pub struct RuntimeCompatStore {
     context_id: ContextId,
@@ -42,6 +25,16 @@ pub struct RuntimeCompatStore {
 unsafe impl Send for RuntimeCompatStore {}
 
 impl RuntimeCompatStore {
+    pub fn from(store: Store, context_id: ContextId) -> Self {
+        RuntimeCompatStoreBuilder {
+            context_id,
+            store,
+            inner_builder: |store| Temporal::new(store),
+            keys: RefCell::default(),
+        }
+        .build()
+    }
+
     fn state_key(&self, key: &[u8]) -> Option<ContextStateKey> {
         let mut state_key = [0; 32];
 
