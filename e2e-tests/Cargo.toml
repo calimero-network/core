@@ -20,6 +20,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }
 url = { workspace = true }
+reqwest = { workspace = true }
 
 # Add ICP dependencies from workspace
 ic-agent = { workspace = true }
@@ -32,6 +33,7 @@ alloy = { workspace = true }
 soroban-client = { workspace = true }
 soroban-sdk = { workspace = true }
 base64 = { workspace = true }
+flate2 = "1.1.0"
 
 [lints]
 workspace = true

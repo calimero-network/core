@@ -3,7 +3,9 @@
   "steps": [
     {
       "applicationInstall": {
-        "application": { "localFile": "./apps/blockchain/res/blockchain.wasm" },
+        "application": { 
+          "url": "https://github.com/calimero-network/demo-blockchain-integrations/releases/download/v0.1.2-rc1/blockchain.wasm.gz"
+        },
         "target": "allMembers"
       }
     },
