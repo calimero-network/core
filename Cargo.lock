@@ -3089,15 +3089,21 @@ checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 name = "e2e-tests"
 version = "0.1.0"
 dependencies = [
+ "alloy",
+ "base64 0.22.1",
  "camino",
+ "candid",
  "clap",
  "const_format",
  "eyre",
+ "ic-agent",
  "near-workspaces",
  "nix 0.29.0",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "soroban-client",
+ "soroban-sdk",
  "tokio",
  "url",
 ]
