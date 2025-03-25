@@ -32,7 +32,7 @@
           "request": {
             "action_type": "ExternalFunctionCall",
             "params": {
-              "receiver_id": "CC5YECC24HXHX5D6G7YWGN2LII4LHFNLLCJMGXEENGFSXMNAUSLYTYNM",
+              "receiver_id": "CDT6O4UMQBAY6PZTGRCBXDYHTFSL55NE4CZ3COCGPE5UEHRAODIZKDEJ",
               "method_name": "no_deposit",
               "args": "[[\"string\",\"someKey\"], [\"string\",\"someValue\"]]",
               "deposit": "0"
@@ -72,12 +72,20 @@
           "proposal_id": "${proposal_id}"
         },
         "expectedResultJson": null,
-        "target": "invitees"
+        "target": "invitees",
+        "retries": 20,
+        "intervalMs": 5000,
+        "description": [
+          "if we don't reach consensus in the ideal case",
+          "wait 5 seconds for nodes that have not yet synced",
+          "in the worst case, wait 20 * 5s for nodes that uselessly",
+          "keep syncing with themselves without having the state"
+        ]
       }
     },
     {
       "verifyExternalState": {
-        "contractId": "CC5YECC24HXHX5D6G7YWGN2LII4LHFNLLCJMGXEENGFSXMNAUSLYTYNM",
+        "contractId": "CDT6O4UMQBAY6PZTGRCBXDYHTFSL55NE4CZ3COCGPE5UEHRAODIZKDEJ",
         "methodName": "get_value",
         "args": ["someKey"],
         "expectedValue": "someValue"

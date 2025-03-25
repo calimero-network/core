@@ -103,7 +103,7 @@ impl ApplicationSource {
                 // Download the file
                 let response = reqwest::get(url).await?;
                 let bytes = response.bytes().await?;
-                
+
                 let decoded_bytes = if url.ends_with(".gz") {
                     use std::io::Read;
                     let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
@@ -113,19 +113,19 @@ impl ApplicationSource {
                 } else {
                     bytes.to_vec()
                 };
-                
+
                 // Use a simple temp file name
                 let temp_path = "/tmp/app.wasm";
-                
+
                 // Save to temporary file
                 tokio::fs::write(&temp_path, decoded_bytes).await?;
 
                 // Install using the downloaded file
                 let result = meroctl.application_install(node_name, &temp_path).await;
-                
+
                 // Clean up
                 tokio::fs::remove_file(&temp_path).await?;
-                
+
                 result
             }
         }

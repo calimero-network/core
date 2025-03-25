@@ -10,7 +10,7 @@ set -e
 CONTRACTS_DIR=${1:-contracts/stellar}
 CONTEXT_CONFIG_CONTRACT="calimero_context_config_stellar"
 CONTEXT_PROXY_CONTRACT="calimero_context_proxy_stellar"
-
+EXTERNAL_CONTRACT="calimero_mock_external_stellar"
 # Check if required dependencies are installed
 if ! command -v stellar &> /dev/null; then
     echo "Error: stellar CLI is not installed"
@@ -67,7 +67,7 @@ stellar network add local \
     --network-passphrase "Standalone Network ; February 2017"
 
 # Generate and fund keys
-stellar keys generate local --network local --fund
+stellar keys generate --default-seed local --network local --fund
 ACCOUNT_ADDRESS=$(stellar keys address local)
 SECRET_KEY=$(stellar keys show local)
 
@@ -85,13 +85,24 @@ stellar contract invoke \
     --id "$CONTRACT_ID" \
     --source local \
     --network local \
+    --salt "12345" \
     -- \
     set_proxy_code \
     --proxy-wasm-file-path "$CONTEXT_PROXY_CONTRACT".wasm \
     --owner "$ACCOUNT_ADDRESS"
+
+
+EXTERNAL_CONTRACT_ID=$(stellar contract deploy \
+    --wasm "$EXTERNAL_CONTRACT".wasm \
+    --source local \
+    --network local \
+    --salt "98765" \
+    -- \
+    --token CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | tail -n 1)
 
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="
 echo "Contract ID: $CONTRACT_ID"
 echo "Account address: $ACCOUNT_ADDRESS"
 echo "Secret key: $SECRET_KEY"
+echo "External contract ID: $EXTERNAL_CONTRACT_ID"
