@@ -42,7 +42,7 @@ jobs:
             echo "comment_content=**PR is missing required sections:** <br><br>${missing_sections[*]}.<br><br>Please update the PR description.<br><br>**❌ PR merge is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
           else
             echo "comment_action=delete" >> "$GITHUB_OUTPUT"
-             echo "is_valid=true" >> "$GITHUB_OUTPUT"
+            echo "is_valid=true" >> "$GITHUB_OUTPUT"
             echo "comment_content=" >> "$GITHUB_OUTPUT"
           fi
 
