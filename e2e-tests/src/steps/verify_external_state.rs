@@ -51,19 +51,10 @@ impl Test for VerifyExternalStateStep {
                             "Value mismatch: expected '{}' but got '{}'",
                             self.expected_value, actual_value
                         ));
-                        return Err(eyre!(
-                            "Value mismatch: expected '{}' but got '{}'",
-                            self.expected_value,
-                            actual_value
-                        ));
                     }
                 }
                 None => {
                     ctx.output_writer.write_str(&format!(
-                        "Key '{:?}' not found in external contract state",
-                        self.args
-                    ));
-                    return Err(eyre!(
                         "Key '{:?}' not found in external contract state",
                         self.args
                     ));

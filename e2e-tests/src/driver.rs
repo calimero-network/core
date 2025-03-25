@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use camino::Utf8Path;
-use eyre::{bail, OptionExt, Result as EyreResult};
+use eyre::{bail, Result as EyreResult};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
