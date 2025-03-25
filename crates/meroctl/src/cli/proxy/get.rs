@@ -29,7 +29,7 @@ pub struct GetCommand {
 
     #[arg(value_name = "PROPOSAL_ID", help = "proposal_id of the proposal")]
     pub proposal_id: Option<Hash>,
-    
+
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method (e.g., {\"offset\": 0, \"limit\": 10})")]
     pub args: Option<Value>,
 }
@@ -155,7 +155,6 @@ impl GetCommand {
         keypair: &Keypair,
         context_id: ContextId,
     ) -> EyreResult<()> {
-
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let url = multiaddr_to_url(
             multiaddr,
@@ -237,9 +236,9 @@ impl GetCommand {
             multiaddr,
             &format!("admin-api/dev/contexts/{}/proposals", context_id),
         )?;
-        
+
         let params = self.args.clone().ok_or_eyre("arguments are required")?;
-        
+
         make_request::<_, GetProposalsResponse>(
             environment,
             client,
