@@ -31,9 +31,11 @@ jobs:
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
+            echo "is_valid=false" >> "$GITHUB_OUTPUT"
             echo "comment_content=**PR is missing required sections:** <br><br>${missing_sections[*]}.<br><br>Please update the PR description.<br><br>**❌ PR merge is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
           else
             echo "comment_action=delete" >> "$GITHUB_OUTPUT"
+             echo "is_valid=true" >> "$GITHUB_OUTPUT"
             echo "comment_content=" >> "$GITHUB_OUTPUT"
           fi
 
@@ -51,5 +53,5 @@ jobs:
           message: ${{ needs.check-description.outputs.comment_content }}
 
       - name: Fail job if PR description is invalid
-        if: needs.check-description.outputs.comment_action == 'recreate'
+        if: needs.check-description.outputs.is_valid == 'false'
         run: exit 1
