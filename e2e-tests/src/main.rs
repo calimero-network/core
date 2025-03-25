@@ -25,7 +25,7 @@ pub const EXAMPLES: &str = r"
   $ e2e-tests --input-dir ./e2e-tests/config
     --output-dir ./e2e-tests/corpus
     --merod-binary ./target/debug/merod
-    --meroctl-binary ./target/debug/meroctl
+    --meroctl-binary ./target/debug/meroctl 
 ";
 
 #[derive(Debug, Parser)]
