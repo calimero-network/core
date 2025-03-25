@@ -44,7 +44,7 @@ pub struct Command {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum Commands { 
+pub enum Commands {
     Combine {
         /// The directories that contains the test data to be combined.
         #[arg(value_name = "PATH", num_args=1.., required = true)]
