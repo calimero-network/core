@@ -103,9 +103,9 @@ fn parse_scenario(s: &str) -> Result<String, String> {
     match s {
         "ethereum" | "near" | "stellar" | "icp" => Ok(s.to_string()),
         _ => Err(format!(
-            "Invalid scenario. Must be one of: ethereum, near, stellar, icp. Got: {}", 
+            "Invalid scenario. Must be one of: ethereum, near, stellar, icp. Got: {}",
             s
-        ))
+        )),
     }
 }
 

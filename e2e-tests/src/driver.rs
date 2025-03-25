@@ -108,7 +108,8 @@ impl Driver {
                     let test_content = read(&test_file_path).await?;
                     let test_json: serde_json::Value = from_slice(&test_content)?;
 
-                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str()) {
+                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str())
+                    {
                         // Skip if this isn't the requested scenario/protocol
                         if protocol_name != self.environment.scenario {
                             continue;

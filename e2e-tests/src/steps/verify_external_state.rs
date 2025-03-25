@@ -51,7 +51,11 @@ impl Test for VerifyExternalStateStep {
                             "Value mismatch: expected '{}' but got '{}'",
                             self.expected_value, actual_value
                         ));
-                        return Err(eyre!("Value mismatch: expected '{}' but got '{}'", self.expected_value, actual_value));
+                        return Err(eyre!(
+                            "Value mismatch: expected '{}' but got '{}'",
+                            self.expected_value,
+                            actual_value
+                        ));
                     }
                 }
                 None => {
@@ -59,7 +63,10 @@ impl Test for VerifyExternalStateStep {
                         "Key '{:?}' not found in external contract state",
                         self.args
                     ));
-                    return Err(eyre!("Key '{:?}' not found in external contract state", self.args));
+                    return Err(eyre!(
+                        "Key '{:?}' not found in external contract state",
+                        self.args
+                    ));
                 }
             }
 
