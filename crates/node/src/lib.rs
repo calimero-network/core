@@ -9,6 +9,7 @@ use core::pin::Pin;
 use core::str;
 use std::time::Duration;
 
+use actix::prelude::*;
 use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
@@ -28,8 +29,9 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_primitives::reflect::ReflectExt;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
-use calimero_runtime::Constraint;
+use calimero_runtime::{Constraint, ExecuteRequest, RuntimeManager};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
@@ -102,6 +104,7 @@ pub struct Node {
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
+    runtime_manager: Addr<RuntimeManager>,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -116,6 +119,8 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
     let store = Store::open::<RocksDB>(&config.datastore)?;
 
     let blob_manager = BlobManager::new(store.clone(), FileSystem::new(&config.blobstore).await?);
+
+    let runtime_manager = RuntimeManager::new(get_runtime_limits()?).start();
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
@@ -157,7 +162,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         config.sync.interval,
     );
 
-    let mut node = Node::new(config.sync, network_client, node_events, ctx_manager, store);
+    let mut node = Node::new(
+        config.sync,
+        network_client,
+        node_events,
+        ctx_manager,
+        store,
+        runtime_manager,
+    );
 
     #[expect(clippy::redundant_pub_crate, reason = "Tokio code")]
     loop {
@@ -196,6 +208,7 @@ impl Node {
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
+        runtime_manager: Addr<RuntimeManager>,
     ) -> Self {
         Self {
             sync_config,
@@ -203,6 +216,7 @@ impl Node {
             ctx_manager,
             network_client,
             node_events,
+            runtime_manager,
         }
     }
 
@@ -527,17 +541,28 @@ impl Node {
             return Ok(None);
         };
 
-        let mut store = self.store.clone();
+        let store = self.store.clone();
 
-        let mut storage = RuntimeCompatStore::new(&mut store, context.id);
+        let storage = Box::new(RuntimeCompatStore::from(store, context.id));
 
-        let outcome = calimero_runtime::run(
-            &blob,
-            &method,
-            VMContext::new(payload, *context.id, *executor_public_key),
-            &mut storage,
-            &get_runtime_limits()?,
-        )?;
+        let exec_msg = ExecuteRequest {
+            blob,
+            method_name: method.to_string(),
+            context: VMContext::new(payload, *context.id, *executor_public_key),
+            storage,
+        };
+
+        let (outcome, storage) = self
+            .runtime_manager
+            .send(exec_msg)
+            .await
+            .map_err(|e| eyre::eyre!("Actor error: {}", e))?
+            .ok_or_eyre("An unknown runtime error occurred")?;
+
+        let outcome = outcome?;
+        let storage = storage
+            .downcast_box::<RuntimeCompatStore>()
+            .map_err(|_| eyre::eyre!("Downcast to RuntimeCompatStore failed"))?;
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {

@@ -7,12 +7,14 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+actix.workspace = true
 borsh.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 libp2p.workspace = true
+ouroboros.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
 serde_json.workspace = true

@@ -43,7 +43,7 @@ impl VMContext {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -63,7 +63,7 @@ pub struct VMLimits {
     // number of functions per contract
 }
 
-#[derive(Debug)]
+#[allow(missing_debug_implementations)]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,

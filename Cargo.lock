@@ -1268,6 +1268,7 @@ dependencies = [
 name = "calimero-node"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "borsh",
  "calimero-blobstore",
  "calimero-context",
@@ -1284,6 +1285,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "libp2p",
+ "ouroboros",
  "owo-colors",
  "rand 0.8.5",
  "serde_json",
@@ -1335,8 +1337,11 @@ dependencies = [
 name = "calimero-runtime"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "assert-json-diff",
  "borsh",
+ "calimero-primitives",
+ "calimero-utils-actix",
  "eyre",
  "fragile",
  "ouroboros",
@@ -1345,6 +1350,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio 1.41.1",
  "ureq",
  "wasmer",
  "wasmer-types",
@@ -6343,9 +6349,9 @@ dependencies = [
 
 [[package]]
 name = "ouroboros"
-version = "0.18.4"
+version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "944fa20996a25aded6b4795c6d63f10014a7a83f8be9828a11860b08c5fc4a67"
+checksum = "1e0f050db9c44b97a94723127e6be766ac5c340c48f2c4bb3ffa11713744be59"
 dependencies = [
  "aliasable",
  "ouroboros_macro",
@@ -6354,12 +6360,11 @@ dependencies = [
 
 [[package]]
 name = "ouroboros_macro"
-version = "0.18.4"
+version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39b0deead1528fd0e5947a8546a9642a9777c25f6e1e26f34c97b204bbb465bd"
+checksum = "3c7028bdd3d43083f6d8d4d5187680d0d3560d54df4cc9d752005268b41e64d0"
 dependencies = [
  "heck 0.4.1",
- "itertools 0.12.1",
  "proc-macro2",
  "proc-macro2-diagnostics",
  "quote",
