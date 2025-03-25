@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        protocol: [near, icp, stellar]
+        protocol: [near, icp, stellar, ethereum]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -172,6 +172,17 @@ jobs:
              .protocolSandboxes[2].config.secretKey = $secretKey' \
             e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
+      - name: Install Foundry
+        if: matrix.protocol == 'ethereum'
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Deploy Ethereum Devnet
+        if: matrix.protocol == 'ethereum'
+        run: |
+          ./scripts/ethereum/deploy-devnet.sh
+
       - name: Run e2e Tests
         id: e2e-tests
         env:
@@ -186,7 +197,7 @@ jobs:
             --output-dir ./e2e-tests/corpus \
             --merod-binary ./target/debug/merod \
             --meroctl-binary ./target/debug/meroctl \
-            --protocols ${{ matrix.protocol }}
+            --scenario ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
         uses: actions/upload-artifact@v4
