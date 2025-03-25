@@ -1,4 +1,5 @@
 use core::cell::RefCell;
+use core::mem;
 use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
@@ -35,7 +36,7 @@ impl RuntimeCompatStore {
         .build()
     }
 
-    fn state_key(&self, key: &[u8]) -> Option<ContextStateKey> {
+    fn state_key(&self, key: &[u8]) -> Option<&'static ContextStateKey> {
         let mut state_key = [0; 32];
 
         (key.len() <= state_key.len()).then_some(())?;
@@ -44,14 +45,17 @@ impl RuntimeCompatStore {
 
         let mut keys = self.borrow_keys().borrow_mut();
 
-        keys.push(Arc::new(ContextStateKey::new(
-            *self.borrow_context_id(),
-            state_key,
-        )));
+        let context_id = self.borrow_context_id();
+
+        keys.push(Arc::new(ContextStateKey::new(*context_id, state_key)));
 
         // safety: TemporalStore lives as long as Self, so the reference will hold
-
-        keys.last().map(|x| *&**x) //?
+        //         plus, we never return a reference to the keys externally
+        unsafe {
+            mem::transmute::<Option<&ContextStateKey>, Option<&'static ContextStateKey>>(
+                keys.last().map(|x| &**x),
+            )
+        }
     }
 
     pub fn commit(mut self) -> EyreResult<()> {
@@ -67,10 +71,9 @@ impl Storage for RuntimeCompatStore {
     fn get(&self, key: &Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 
-        self.with_inner(|inner| {
-            let slice = inner.get(&key).ok()??;
-            Some(slice.into_boxed().into_vec())
-        })
+        let slice = self.borrow_inner().get(key).ok()??;
+
+        Some(slice.into_boxed().into_vec())
     }
 
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
@@ -78,12 +81,12 @@ impl Storage for RuntimeCompatStore {
 
         self.with_inner_mut(|inner| {
             let old = inner
-                .get(&key)
+                .get(key)
                 .ok()
                 .flatten()
                 .map(|slice| slice.into_boxed().into_vec());
 
-            inner.delete(&key).ok()?;
+            inner.delete(key).ok()?;
 
             old
         })
@@ -94,13 +97,13 @@ impl Storage for RuntimeCompatStore {
 
         self.with_inner_mut(|inner| {
             let old = inner
-                .has(&key)
+                .has(key)
                 .ok()?
-                .then(|| inner.get(&key).ok().flatten())
+                .then(|| inner.get(key).ok().flatten())
                 .flatten()
                 .map(|slice| slice.into_boxed().into_vec());
 
-            inner.put(&key, value.into()).ok()?;
+            inner.put(key, value.into()).ok()?;
 
             old
         })
@@ -111,6 +114,6 @@ impl Storage for RuntimeCompatStore {
             return false;
         };
 
-        self.with_inner(|inner| inner.has(&key).unwrap_or(false))
+        self.borrow_inner().has(key).unwrap_or_default()
     }
 }
