@@ -1,5 +1,5 @@
 {
-  "protocol": "icp",
+  "protocol": "near",
   "steps": [
     {
       "applicationInstall": {
@@ -30,9 +30,9 @@
           "request": {
             "action_type": "ExternalFunctionCall",
             "params": {
-              "receiver_id": "be2us-64aaa-aaaaa-qaabq-cai",
-              "method_name": "test_method_no_transfer",
-              "args": "{\"testKey\":\"testValue\"}",
+              "receiver_id": "mock-external.test.near",
+              "method_name": "increment",
+              "args": "{}",
               "deposit": "0"
             }
           }
@@ -118,16 +118,15 @@
           "proposal_id": "${proposal_id}"
         },
         "expectedResultJson": null,
-        "target": "invitees",
-        "genericInput": "proposal_id"
+        "target": "invitees"
       }
     },
     {
       "verifyExternalState": {
-        "contractId": "be2us-64aaa-aaaaa-qaabq-cai",
-        "methodName": "get_calls",
+        "contractId": "mock-external.test.near",
+        "methodName": "get_count",
         "args": [],
-        "expectedValue": "{\"testKey\":\"testValue\"}"
+        "expectedValue": "1"
       }
     }
   ]

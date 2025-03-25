@@ -34,6 +34,7 @@ pub struct TestContext<'a> {
     pub inviter_public_key: Option<String>,
     pub invitees_public_keys: HashMap<String, String>,
     pub protocol_name: &'a str,
+    pub protocol: &'a ProtocolSandboxEnvironment,
     pub output_writer: OutputWriter,
     pub context_alias: Option<String>,
     pub proposal_id: Option<String>,
@@ -52,6 +53,7 @@ impl<'a> TestContext<'a> {
         output_writer: OutputWriter,
         protocol_name: &'a str,
         proposal_id: Option<String>,
+        protocol: &'a ProtocolSandboxEnvironment,
     ) -> Self {
         Self {
             inviter,
@@ -64,7 +66,8 @@ impl<'a> TestContext<'a> {
             invitees_public_keys: HashMap::new(),
             output_writer,
             context_alias: None,
-            proposal_id: proposal_id,
+            proposal_id,
+            protocol,
         }
     }
 }
@@ -102,12 +105,15 @@ impl Driver {
             if path.is_dir() {
                 let test_file_path = path.join("test.json");
                 if test_file_path.exists() {
-                    // Read the test file to get protocol information
                     let test_content = read(&test_file_path).await?;
                     let test_json: serde_json::Value = from_slice(&test_content)?;
 
-                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str())
-                    {
+                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str()) {
+                        // Skip if this isn't the requested scenario/protocol
+                        if protocol_name != self.environment.scenario {
+                            continue;
+                        }
+
                         // Initialize protocol if not already done
                         if !initialized_protocols.contains_key(protocol_name) {
                             // Find and initialize the protocol sandbox
@@ -161,13 +167,29 @@ impl Driver {
                         if let Some(sandbox) = initialized_protocols.get(protocol_name) {
                             let mero = self.setup_mero(&vec![sandbox.clone()]).await?;
 
+                            let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
+                                bail!("Not enough nodes to run the test")
+                            };
+
+                            self.environment
+                                .output_writer
+                                .write_str(&format!("Picked inviter: {inviter}"));
+                            self.environment
+                                .output_writer
+                                .write_str(&format!("Picked invitees: {invitees:?}"));
+
+                            let mut ctx = TestContext::new(
+                                inviter,
+                                invitees,
+                                &mero.ctl,
+                                self.environment.output_writer,
+                                protocol_name,
+                                None,
+                                sandbox,
+                            );
+
                             // Parse the scenario from already loaded test_content
                             let scenario: TestScenario = from_slice(&test_content)?;
-                            let scenario_name = path
-                                .file_name()
-                                .ok_or_eyre("failed to get scenario file name")?
-                                .to_str()
-                                .ok_or_eyre("failed to convert scenario file name")?;
 
                             self.environment
                                 .output_writer
@@ -175,10 +197,9 @@ impl Driver {
 
                             report = self
                                 .run_scenarios(
-                                    &mero,
+                                    &mut ctx,
                                     report,
-                                    sandbox.name(),
-                                    scenario_name,
+                                    protocol_name,
                                     scenario,
                                     &test_file_path,
                                 )
@@ -306,15 +327,14 @@ impl Driver {
 
     async fn run_scenarios(
         &self,
-        mero: &Mero,
+        ctx: &mut TestContext<'_>,
         mut report: TestRunReport,
-        protocol_name: &str,
         scenario_name: &str,
         scenario: TestScenario,
         file_path: &PathBuf,
     ) -> EyreResult<TestRunReport> {
         let scenario_report = self
-            .run_scenario(mero, scenario_name, scenario, file_path, protocol_name)
+            .run_scenario(ctx, scenario_name, scenario, file_path)
             .await?;
 
         drop(
@@ -322,7 +342,7 @@ impl Driver {
                 .scenario_matrix
                 .entry(scenario_report.scenario_name.clone())
                 .or_default()
-                .insert(protocol_name.to_owned(), scenario_report),
+                .insert(ctx.protocol_name.to_owned(), scenario_report),
         );
 
         Ok(report)
@@ -330,11 +350,10 @@ impl Driver {
 
     async fn run_scenario(
         &self,
-        mero: &Mero,
+        ctx: &mut TestContext<'_>,
         scenario_name: &str,
         scenario: TestScenario,
         file_path: &PathBuf,
-        protocol_name: &str,
     ) -> EyreResult<TestScenarioReport> {
         self.environment
             .output_writer
@@ -346,26 +365,6 @@ impl Driver {
         self.environment
             .output_writer
             .write_str(&format!("Steps count: {}", scenario.steps.len()));
-
-        let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
-            bail!("Not enough nodes to run the test")
-        };
-
-        self.environment
-            .output_writer
-            .write_str(&format!("Picked inviter: {inviter}"));
-        self.environment
-            .output_writer
-            .write_str(&format!("Picked invitees: {invitees:?}"));
-
-        let mut ctx = TestContext::new(
-            inviter,
-            invitees,
-            &mero.ctl,
-            self.environment.output_writer,
-            protocol_name,
-            None,
-        );
 
         let mut report = TestScenarioReport::new(scenario_name.to_owned());
 
@@ -385,7 +384,7 @@ impl Driver {
             self.environment.output_writer.write_str("Step spec:");
             self.environment.output_writer.write_json(&step)?;
 
-            let result = step.run_assert(&mut ctx).await;
+            let result = step.run_assert(ctx).await;
 
             if result.is_err() {
                 scenario_failed = true;

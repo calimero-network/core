@@ -1,10 +1,11 @@
 use core::time::Duration;
 use std::net::TcpStream;
 
+use candid::Principal;
 use eyre::{bail, OptionExt, Result as EyreResult};
-use reqwest::blocking::Client;
+use ic_agent::identity::AnonymousIdentity;
+use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use url::Url;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -74,65 +75,60 @@ impl IcpSandboxEnvironment {
         ]
     }
 
-    pub fn check_external_contract_state(
+    pub async fn verify_external_contract_state(
         &self,
         contract_id: &str,
-        key: &str,
+        method_name: &str,
+        _args_json: &[String],
     ) -> EyreResult<Option<String>> {
-        let rpc_url = Url::parse(&self.config.rpc_url)?;
-        let rpc_host = rpc_url
-            .host_str()
-            .ok_or_eyre("failed to get icp rpc host from config")?;
-        let rpc_port = rpc_url
-            .port()
-            .ok_or_eyre("failed to get icp rpc port from config")?;
+        // Parse the canister ID
+        let canister_id = Principal::from_text(contract_id)
+            .map_err(|e| eyre::eyre!("Invalid canister ID '{}': {}", contract_id, e))?;
 
-        let client = Client::new();
-        let endpoint = format!("http://{}:{}", rpc_host, rpc_port);
+        // Create an agent with anonymous identity
+        let agent = Agent::builder()
+            .with_url(&self.config.rpc_url)
+            .with_identity(AnonymousIdentity)
+            .build()
+            .map_err(|e| eyre::eyre!("Failed to create agent: {}", e))?;
 
-        // Prepare the JSON-RPC request for querying the contract
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "call",
-            "params": {
-                "canister_id": contract_id,
-                "method_name": "get_value",
-                "arg": json!({ "key": key })
+        // Fetch the root key (needed for local development)
+        agent
+            .fetch_root_key()
+            .await
+            .map_err(|e| eyre::eyre!("Failed to fetch root key: {}", e))?;
+
+        // Simply encode the args_json value, empty or not
+        let arg =
+            candid::encode_one(()).map_err(|e| eyre::eyre!("Failed to encode argument: {}", e))?;
+
+        // Query the canister
+        let response = agent
+            .query(&canister_id, method_name)
+            .with_arg(arg)
+            .call()
+            .await
+            .map_err(|e| eyre::eyre!("Query failed: {}", e))?;
+
+        // Just decode as Vec<Vec<u8>> for get_calls
+        match candid::decode_one::<Vec<Vec<u8>>>(&response) {
+            Ok(calls) => {
+                // Convert all calls to strings and return as a single string
+                let result = calls
+                    .iter()
+                    .map(|call| String::from_utf8_lossy(call).to_string())
+                    .collect::<Vec<String>>()
+                    .join("\n");
+
+                if !result.is_empty() {
+                    return Ok(Some(result));
+                } else {
+                    return Ok(None);
+                }
             }
-        });
-
-        // Make the HTTP POST request
-        let response = client
-            .post(&endpoint)
-            .json(&request)
-            .send()?
-            .json::<serde_json::Value>()?;
-
-        // Check for errors in the response
-        if let Some(error) = response.get("error") {
-            bail!("JSON-RPC error when querying contract state: {}", error);
+            Err(e) => {
+                bail!("Failed to decode response: {}", e);
+            }
         }
-
-        // Extract the result
-        let result = response
-            .get("result")
-            .and_then(|r| r.get("output"))
-            .ok_or_eyre("Failed to parse output from response")?;
-
-        // Check if the result is null/empty
-        if result.is_null() || result.as_array().map_or(false, |a| a.is_empty()) {
-            return Ok(None);
-        }
-
-        // Convert result to string
-        let value = result.as_str().map(|s| s.to_string()).or_else(|| {
-            result
-                .get(0)
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        });
-
-        Ok(value)
     }
 }

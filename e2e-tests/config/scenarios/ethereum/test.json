@@ -1,5 +1,5 @@
 {
-  "protocol": "icp",
+  "protocol": "ethereum",
   "steps": [
     {
       "applicationInstall": {
@@ -30,9 +30,9 @@
           "request": {
             "action_type": "ExternalFunctionCall",
             "params": {
-              "receiver_id": "be2us-64aaa-aaaaa-qaabq-cai",
-              "method_name": "test_method_no_transfer",
-              "args": "{\"testKey\":\"testValue\"}",
+              "receiver_id": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+              "method_name": "setValueNoDeposit",
+              "args": "[[\"string\",\"someKey\"],[\"string\",\"someValue\"]]",
               "deposit": "0"
             }
           }
@@ -124,10 +124,10 @@
     },
     {
       "verifyExternalState": {
-        "contractId": "be2us-64aaa-aaaaa-qaabq-cai",
-        "methodName": "get_calls",
-        "args": [],
-        "expectedValue": "{\"testKey\":\"testValue\"}"
+        "contractId": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+        "methodName": "getValue(string)",
+        "args": ["someKey"],
+        "expectedValue": "someValue"
       }
     }
   ]

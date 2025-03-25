@@ -35,4 +35,30 @@ impl ProtocolSandboxEnvironment {
             Self::Ethereum(_) => "ethereum",
         }
     }
+
+    pub async fn verify_external_contract_state(
+        &self,
+        contract_id: &str,
+        method_name: &str,
+        args: &Vec<String>,
+    ) -> EyreResult<Option<String>> {
+        match self {
+            Self::Near(env) => {
+                env.verify_external_contract_state(contract_id, method_name, args)
+                    .await
+            }
+            Self::Icp(env) => {
+                env.verify_external_contract_state(contract_id, method_name, args)
+                    .await
+            }
+            Self::Stellar(env) => {
+                env.verify_external_contract_state(contract_id, method_name, args)
+                    .await
+            }
+            Self::Ethereum(env) => {
+                env.verify_external_contract_state(contract_id, method_name, args)
+                    .await
+            }
+        }
+    }
 }

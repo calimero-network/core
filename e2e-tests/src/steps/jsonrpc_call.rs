@@ -6,6 +6,7 @@ use tokio::task::JoinSet;
 use tokio::time;
 
 use crate::driver::{Test, TestContext};
+use crate::utils::process_json_variables;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,33 +77,9 @@ impl Test for CallStep {
                 }
             }
         }
-        println!("number of public keys: {}", public_keys.len());
-
         let mut args_json = self.args_json.clone();
 
-        if self.method_name == "approve_proposal" || self.method_name == "get_proposal_messages" {
-            if let Some(ref proposal_id) = ctx.proposal_id {
-                args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
-            } else {
-                bail!("Proposal ID is required for JsonRpcExecuteStep");
-            }
-        }
-
-        if self.method_name == "send_proposal_messages" {
-            println!(
-                "send_proposal_messages ctx.proposal_id: {:?}",
-                ctx.proposal_id
-            );
-            if let Some(ref proposal_id) = ctx.proposal_id {
-                args_json["proposal_id"] = serde_json::Value::String(proposal_id.clone());
-                args_json["message"]["proposal_id"] =
-                    serde_json::Value::String(proposal_id.clone());
-            } else {
-                bail!("Proposal ID is required for JsonRpcExecuteStep");
-            }
-        }
-
-        println!("args_json: {:?}", args_json);
+        process_json_variables(&mut args_json, ctx)?;
 
         let mut tasks = JoinSet::new();
 
@@ -126,45 +103,20 @@ impl Test for CallStep {
             let can_retry = count < self.retries.unwrap_or(0);
 
             if let Ok(response) = &response {
-                println!("response: {:?}", response);
                 let output = response
                     .get("result")
                     .ok_or_eyre("result not found in JSON RPC response")?
                     .get("output")
                     .ok_or_eyre("output not found in JSON RPC response result")?;
 
-                if self.method_name == "create_new_proposal" {
-                    let proposal_id_str = output
-                        .as_str()
-                        .ok_or_eyre("Expected proposal ID to be a string")?
-                        .to_string();
-
-                    ctx.proposal_id = Some(proposal_id_str);
-                    println!("ctx.proposal_id: {:?}", ctx.proposal_id);
-                }
-
-                let modified_expected_result = if self.method_name == "get_proposal_messages"
-                    && self.expected_result_json.is_some()
-                {
-                    let mut expected_clone = self.expected_result_json.clone().unwrap();
-
-                    if let (Some(proposal_id), Some(array)) =
-                        (ctx.proposal_id.clone(), expected_clone.as_array_mut())
-                    {
-                        if let Some(first_msg) = array.first_mut() {
-                            if let Some(obj) = first_msg.as_object_mut() {
-                                let _unused = obj.insert(
-                                    "proposal_id".to_string(),
-                                    serde_json::Value::String(proposal_id.clone()),
-                                );
-                            }
-                        }
-                    }
-
-                    Some(expected_clone)
-                } else {
-                    self.expected_result_json.clone()
-                };
+                let modified_expected_result =
+                    if let Some(expected_json) = &self.expected_result_json {
+                        let mut expected_clone = expected_json.clone();
+                        process_json_variables(&mut expected_clone, ctx)?;
+                        Some(expected_clone)
+                    } else {
+                        None
+                    };
 
                 let Some(expected_result) = &modified_expected_result else {
                     continue;
