@@ -33,7 +33,7 @@ cd "${CONTRACTS_DIR}"
 # Start Stellar Quickstart container
 docker run --rm -d -p 8000:8000 \
     --name stellar \
-    stellar/quickstart:testing \
+    stellar/quickstart \
     --local --enable rpc --limits unlimited
 
 # Wait for the container to be ready
@@ -76,6 +76,7 @@ CONTRACT_ID=$(stellar contract deploy \
     --wasm "$CONTEXT_CONFIG_CONTRACT".wasm \
     --source local \
     --network local \
+    --salt "12345" \
     -- \
     --owner "$ACCOUNT_ADDRESS" \
     --ledger_id CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | tail -n 1)
@@ -85,7 +86,6 @@ stellar contract invoke \
     --id "$CONTRACT_ID" \
     --source local \
     --network local \
-    --salt "12345" \
     -- \
     set_proxy_code \
     --proxy-wasm-file-path "$CONTEXT_PROXY_CONTRACT".wasm \
