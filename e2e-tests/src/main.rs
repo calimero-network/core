@@ -99,7 +99,7 @@ pub struct RootArgs {
     pub scenario: String,
 }
 
-fn parse_scenario(s: &str) -> Result<String, String> { 
+fn parse_scenario(s: &str) -> Result<String, String> {
     match s {
         "ethereum" | "near" | "stellar" | "icp" => Ok(s.to_string()),
         _ => Err(format!(
