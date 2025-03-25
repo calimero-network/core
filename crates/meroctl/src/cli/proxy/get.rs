@@ -10,6 +10,7 @@ use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
+use serde_json::Value;
 
 use crate::cli::Environment;
 use crate::common::{
@@ -27,7 +28,14 @@ pub struct GetCommand {
     pub context: Alias<ContextId>,
 
     #[arg(value_name = "PROPOSAL_ID", help = "proposal_id of the proposal")]
-    pub proposal_id: Hash,
+    pub proposal_id: Option<Hash>,
+    
+    #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method (e.g., {\"offset\": 0, \"limit\": 10})")]
+    pub args: Option<Value>,
+}
+
+fn serde_value(s: &str) -> serde_json::Result<Value> {
+    serde_json::from_str(s)
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -147,11 +155,13 @@ impl GetCommand {
         keypair: &Keypair,
         context_id: ContextId,
     ) -> EyreResult<()> {
+
+        let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
-                context_id, self.proposal_id
+                context_id, proposal_id
             ),
         )?;
         make_request::<_, GetNumberOfProposalApprovalsResponse>(
@@ -196,11 +206,12 @@ impl GetCommand {
         keypair: &Keypair,
         context_id: ContextId,
     ) -> EyreResult<()> {
+        let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
-                context_id, self.proposal_id
+                context_id, proposal_id
             ),
         )?;
         make_request::<_, GetProposalApproversResponse>(
@@ -226,13 +237,16 @@ impl GetCommand {
             multiaddr,
             &format!("admin-api/dev/contexts/{}/proposals", context_id),
         )?;
+        
+        let params = self.args.clone().ok_or_eyre("arguments are required")?;
+        
         make_request::<_, GetProposalsResponse>(
             environment,
             client,
             url,
-            None::<()>,
+            Some(params),
             keypair,
-            RequestType::Get,
+            RequestType::Post,
         )
         .await
     }
@@ -245,11 +259,12 @@ impl GetCommand {
         keypair: &Keypair,
         context_id: ContextId,
     ) -> EyreResult<()> {
+        let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}",
-                context_id, self.proposal_id
+                context_id, proposal_id
             ),
         )?;
         make_request::<_, GetProposalResponse>(

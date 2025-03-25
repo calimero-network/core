@@ -90,6 +90,7 @@ impl<'a> StellarTransport<'a> {
             let network = match network_config.network.as_str() {
                 "mainnet" => Networks::public(),
                 "testnet" => Networks::testnet(),
+                "local" => Networks::standalone(),
                 _ => Networks::standalone(),
             };
 
@@ -259,8 +260,6 @@ impl Network {
             .client
             .simulate_transaction(transaction.clone(), None)
             .await;
-
-        println!("simulation_result: {:?}", simulation_result);
 
         if let Err(err) = simulation_result {
             return Err(StellarError::Custom {
