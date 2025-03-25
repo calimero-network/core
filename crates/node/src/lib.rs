@@ -582,11 +582,6 @@ impl Node {
                 self.ctx_manager.save_context(context)?;
             }
 
-            let storage = storage
-                .downcast_box::<RuntimeCompatStore>()
-                .ok()
-                .ok_or_eyre("fatal: received store we didn't send??")?;
-
             if !storage.is_empty() {
                 storage.commit()?;
             }
