@@ -23,6 +23,14 @@ pub struct RuntimeCompatStore {
     keys: RefCell<Vec<Arc<ContextStateKey>>>,
 }
 
+// safety: RuntimeCompatStore is constructed exclusively for the runtime
+//         which maintains exclusive access in a single-threaded environment
+//         before returning the same instance back to the constructor
+//         which then proceeds to directly commit any written data
+//         never having multiple references to this same instance
+//         --
+//         we can eventually get rid of this when Slice<'_>: Send
+//         ref: https://github.com/calimero-network/core/commit/455fe09ca9be09df17046584a3ef6cd28564e01a
 unsafe impl Send for RuntimeCompatStore {}
 
 impl RuntimeCompatStore {
