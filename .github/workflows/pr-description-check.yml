@@ -27,23 +27,26 @@ jobs:
         run: |
           # Read required sections from env var, one per line
           readarray -t required_sections <<< "$REQUIRED_SECTIONS"
-          pr_body="${{ github.event.pull_request.body }}"
+          
+          # Encode PR body in base64 to avoid issues with special characters
+          pr_body_base64=$(echo -n "${{ github.event.pull_request.body }}" | base64 -w0)
           missing_sections=()
 
           for section in "${required_sections[@]}"; do
-            if [[ -z $(echo "$pr_body" | grep -i "$section") ]]; then
+            # Decode base64 and search for the section
+            if ! echo "$pr_body_base64" | base64 --decode | grep -q -i "$section"; then
               missing_sections+=("$section")
             fi
           done
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
-            echo "is_valid=false" >> "$GITHUB_OUTPUT"
             echo "comment_content=**PR is missing required sections:** <br><br>${missing_sections[*]}.<br><br>Please update the PR description.<br><br>**❌ PR merge is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
+            echo "is_valid=false" >> "$GITHUB_OUTPUT"
           else
             echo "comment_action=delete" >> "$GITHUB_OUTPUT"
-            echo "is_valid=true" >> "$GITHUB_OUTPUT"
             echo "comment_content=" >> "$GITHUB_OUTPUT"
+            echo "is_valid=true" >> "$GITHUB_OUTPUT"
           fi
 
   update-comment:
