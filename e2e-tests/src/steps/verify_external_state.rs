@@ -1,19 +1,31 @@
 use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
+use tokio::time::{sleep, Duration};
 
 use crate::driver::{Test, TestContext};
 
+/// Step to verify the state of an external contract by checking if a specific method call
+/// returns an expected value. Supports retrying the verification multiple times with configurable intervals.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyExternalStateStep {
+    /// ID or address of the contract to verify
     pub contract_id: String,
+    /// Name of the method to call on the contract
     pub method_name: String,
+    /// Arguments to pass to the method call
     pub args: Vec<String>,
+    /// Expected value that should be contained in the method's response
     pub expected_value: String,
+    /// Number of times to retry the verification if it fails
+    /// Defaults to 1 (no retries) if not specified
     #[serde(default)]
     pub retries: Option<usize>,
+    /// Milliseconds to wait between retries
+    /// Defaults to 1000ms if not specified
     #[serde(default)]
     pub interval_ms: Option<u64>,
+    /// Optional description of what this verification step is checking
     #[serde(default)]
     pub description: Option<Vec<String>>,
 }
@@ -23,6 +35,18 @@ impl Test for VerifyExternalStateStep {
         "verify external state".to_owned()
     }
 
+    /// Executes the verification step by calling the specified method on the external contract
+    /// and comparing the result with the expected value.
+    ///
+    /// # Process
+    /// 1. Calls the specified method on the contract
+    /// 2. Checks if the returned value contains the expected value
+    /// 3. If verification fails, retries the specified number of times with configured intervals
+    /// 4. Logs the progress and results of each attempt
+    ///
+    /// # Errors
+    /// * If verification fails after all retry attempts
+    /// * If the contract call itself fails
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         ctx.output_writer.write_str(&format!(
             "Verifying external contract state in {} protocol for contract: {}",
@@ -69,7 +93,7 @@ impl Test for VerifyExternalStateStep {
                     max_retries
                 ));
 
-                tokio::time::sleep(tokio::time::Duration::from_millis(interval_ms)).await;
+                sleep(Duration::from_millis(interval_ms)).await;
             }
         }
 

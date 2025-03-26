@@ -2,18 +2,18 @@ use std::collections::HashMap;
 
 use eyre::{bail, OptionExt, Result as EyreResult};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::task::JoinSet;
 use tokio::time;
 
 use crate::driver::{Test, TestContext};
-use crate::utils::process_json_variables;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallStep {
     pub method_name: String,
-    pub args_json: serde_json::Value,
-    pub expected_result_json: Option<serde_json::Value>,
+    pub args_json: Value,
+    pub expected_result_json: Option<Value>,
     pub target: CallTarget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retries: Option<u8>,
@@ -161,4 +161,55 @@ impl Test for CallStep {
 
         Ok(())
     }
+}
+
+/// Recursively processes a JSON value, replacing variable references
+/// like ${variable_name} with corresponding values from the TestContext.
+///
+/// Used internally by CallStep to:
+/// 1. Substitute variables in JSON RPC input arguments before making the call
+/// 2. Process expected result templates to compare with actual responses
+///
+/// For example:
+/// - Input args: {"proposalId": "${proposal_id}"}
+/// - Expected result: {"status": "${proposal_id}"}
+///
+/// # Arguments
+/// * `value` - JSON value to process, modified in place
+/// * `ctx` - Test context containing variable values
+///
+/// # Errors
+/// * If a referenced variable is not found in the context
+fn process_json_variables(value: &mut Value, ctx: &TestContext<'_>) -> EyreResult<()> {
+    match value {
+        Value::String(s) => {
+            if s.starts_with("${") && s.ends_with("}") {
+                let var_name = s.trim_start_matches("${").trim_end_matches("}");
+
+                let replacement = match var_name {
+                    "proposal_id" => ctx.proposal_id.clone(),
+                    // Add other fields as needed
+                    _ => None,
+                };
+
+                if let Some(new_value) = replacement {
+                    *s = new_value;
+                } else {
+                    bail!("Variable '{}' not found in context", var_name);
+                }
+            }
+        }
+        Value::Object(obj) => {
+            for (_, v) in obj {
+                process_json_variables(v, ctx)?;
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                process_json_variables(item, ctx)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
