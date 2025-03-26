@@ -12,7 +12,7 @@ on:
       - '.github/workflows/e2e_tests.yml'
 
 env:
-  CALIMERO_CONTRACTS_VERSION: 'prerelease-7' # Or you can use 'prerelease-{PR-NUMBER}'
+  CALIMERO_CONTRACTS_VERSION: 'prerelease-7'
 
 jobs:
   build:
@@ -176,7 +176,7 @@ jobs:
         if: matrix.protocol == 'ethereum'
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
+          version: stable
 
       - name: Deploy Ethereum Devnet
         if: matrix.protocol == 'ethereum'
