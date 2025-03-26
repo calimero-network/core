@@ -14,7 +14,6 @@ mod merod;
 mod output;
 mod protocol;
 mod steps;
-mod utils;
 
 use config::Config;
 use driver::{Driver, TestRunReport};
