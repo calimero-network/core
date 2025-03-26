@@ -25,15 +25,11 @@ jobs:
             ## Test plan
             ## Documentation update
         run: |
-          # Read required sections from env var, one per line
           readarray -t required_sections <<< "$REQUIRED_SECTIONS"
-          
-          # Encode PR body in base64 to avoid issues with special characters
           pr_body_base64=$(echo -n "${{ github.event.pull_request.body }}" | base64 -w0)
           missing_sections=()
 
           for section in "${required_sections[@]}"; do
-            # Decode base64 and search for the section
             if ! echo "$pr_body_base64" | base64 --decode | grep -q -i "$section"; then
               missing_sections+=("$section")
             fi
