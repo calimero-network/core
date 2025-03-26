@@ -44,27 +44,28 @@ impl Report for InstallApplicationResponse {
 
 impl InstallCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let metadata = self.metadata.as_ref().map(|s| s.clone().into_bytes());
-        let path = self.path.clone().unwrap();
-        let watch = self.watch;
         let _ignored = self.install_app(environment).await?;
-        if watch {
-            watch_app(environment, path, metadata).await?;
+        if self.watch {
+            self.watch_app(environment).await?;
         }
         Ok(())
     }
 
-    pub async fn install_app(self, environment: &Environment) -> EyreResult<ApplicationId> {
+    pub async fn install_app(&self, environment: &Environment) -> EyreResult<ApplicationId> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let mut is_dev_installation = false;
-        let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
-        let request = if let Some(app_path) = self.path {
+        let metadata = self
+            .metadata
+            .as_ref()
+            .map(|s| s.as_bytes().to_vec())
+            .unwrap_or_default();
+        let request = if let Some(app_path) = self.path.as_ref() {
             is_dev_installation = true;
             serde_json::to_value(InstallDevApplicationRequest::new(
                 app_path.canonicalize_utf8()?,
                 metadata,
             ))?
-        } else if let Some(app_url) = self.url {
+        } else if let Some(app_url) = self.url.as_ref() {
             serde_json::to_value(InstallApplicationRequest::new(
                 Url::parse(&app_url)?,
                 self.hash,
@@ -94,67 +95,67 @@ impl InstallCommand {
         environment.output.write(&response);
         Ok(response.data.application_id)
     }
-}
+    pub async fn watch_app(&self, environment: &Environment) -> EyreResult<()> {
+        // let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
+        let (tx, mut rx) = mpsc::channel(1);
 
-async fn watch_app(
-    environment: &Environment,
-    path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
-) -> EyreResult<()> {
-    let (tx, mut rx) = mpsc::channel(1);
+        let handle = Handle::current();
+        let mut watcher = notify::recommended_watcher(move |evt| {
+            handle.block_on(async {
+                drop(tx.send(evt).await);
+            });
+        })?;
 
-    let handle = Handle::current();
-    let mut watcher = notify::recommended_watcher(move |evt| {
-        handle.block_on(async {
-            drop(tx.send(evt).await);
-        });
-    })?;
+        if let Some(path) = self.path.as_ref() {
+            watcher.watch(path.as_std_path(), RecursiveMode::NonRecursive)?;
+            environment
+                .output
+                .write(&InfoLine(&format!("Watching for changes to {path}")));
 
-    watcher.watch(path.as_std_path(), RecursiveMode::NonRecursive)?;
+            while let Some(event) = rx.recv().await {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(err) => {
+                        environment.output.write(&ErrorLine(&format!("{err:?}")));
+                        continue;
+                    }
+                };
 
-    environment
-        .output
-        .write(&InfoLine(&format!("Watching for changes to {path}")));
+                match event.kind {
+                    EventKind::Modify(ModifyKind::Data(_)) => {}
+                    EventKind::Remove(_) => {
+                        environment
+                            .output
+                            .write(&ErrorLine("File removed, ignoring.."));
+                        continue;
+                    }
+                    EventKind::Any
+                    | EventKind::Access(_)
+                    | EventKind::Create(_)
+                    | EventKind::Modify(_)
+                    | EventKind::Other => continue,
+                }
 
-    while let Some(event) = rx.recv().await {
-        let event = match event {
-            Ok(event) => event,
-            Err(err) => {
-                environment.output.write(&ErrorLine(&format!("{err:?}")));
-                continue;
+                let _application_id = InstallCommand {
+                    path: Some(path.clone()),
+                    url: None,
+                    metadata: self
+                        .metadata
+                        .as_ref()
+                        .map(|m| String::from_utf8(m.as_bytes().to_vec()).unwrap()),
+                    hash: None,
+                    watch: false,
+                }
+                .install_app(environment)
+                .await?;
+                environment.output.write(&InfoLine(&format!(
+                    "New file is in use with id {_application_id}"
+                )));
             }
-        };
-
-        match event.kind {
-            EventKind::Modify(ModifyKind::Data(_)) => {}
-            EventKind::Remove(_) => {
-                environment
-                    .output
-                    .write(&ErrorLine("File removed, ignoring.."));
-                continue;
-            }
-            EventKind::Any
-            | EventKind::Access(_)
-            | EventKind::Create(_)
-            | EventKind::Modify(_)
-            | EventKind::Other => continue,
+        } else {
+            bail!("The path must be provided");
         }
 
-        let _application_id = InstallCommand {
-            path: Some(path.clone()),
-            url: None,
-            metadata: metadata
-                .as_ref()
-                .map(|m| String::from_utf8(m.clone()).unwrap()),
-            hash: None,
-            watch: false,
-        }
-        .install_app(environment)
-        .await?;
-        environment.output.write(&InfoLine(&format!(
-            "New file is in use with id {_application_id}"
-        )));
+        Ok(())
     }
-
-    Ok(())
 }
