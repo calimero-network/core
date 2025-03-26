@@ -49,12 +49,12 @@ enum Commands {
     Create {
         /// The application to create the context with
         application: Alias<ApplicationId>,
-         /// Name alias for the new context
-         #[clap(long)]
-         name: Option<Alias<ContextId>>,
-         /// Identity alias for the creator
-         #[clap(long = "as")]
-         as_alias: Option<Alias<PublicKey>>,
+        /// Name alias for the new context
+        #[clap(long = "name")]
+        context: Option<Alias<ContextId>>,
+        /// Identity alias for the creator
+        #[clap(long = "as")]
+        author: Option<Alias<PublicKey>>,
         /// The initialization parameters for the context
         params: Option<Value>,
         /// The seed for the context (to derive a deterministic context ID)
@@ -72,7 +72,7 @@ enum Commands {
         #[clap(long = "as")]
         inviter: Alias<PublicKey>,
         #[clap(long)]
-        name: Option<Alias<PublicKey>>,  // New --name parameter
+        name: Option<Alias<PublicKey>>, // New --name parameter
         /// The identity being invited
         invitee_id: PublicKey,
     },
@@ -82,6 +82,11 @@ enum Commands {
         private_key: PrivateKey,
         /// The invitation payload from the inviter
         invitation_payload: ContextInvitationPayload,
+        #[clap(long)]
+        name: Option<Alias<PublicKey>>,
+        /// Verify your identity using an existing alias
+        #[clap(long = "as")]
+        author: Option<Alias<PublicKey>>,
     },
     /// Leave a context
     Leave {
@@ -173,22 +178,64 @@ impl ContextCommand {
             Commands::Join {
                 private_key,
                 invitation_payload,
+                name,
+                author,
             } => {
+                let public_key = private_key.public_key();
+
+                // Validate --as alias if provided
+                if let Some(author_alias) = &author {
+                    let resolved_pk = node
+                        .ctx_manager
+                        .resolve_alias(author_alias.clone(), None)?
+                        .ok_or_eyre(format!("alias '{}' not found", author_alias))?;
+                    if resolved_pk != public_key {
+                        return Err(eyre::eyre!(
+                            "alias '{}' does not match the private key's public key {}",
+                            author_alias,
+                            public_key
+                        ));
+                    }
+                }
                 let response = node
                     .ctx_manager
                     .join_context(private_key, invitation_payload)
                     .await?;
-
-                if let Some((context_id, identity)) = response {
-                    println!(
-                        "{ind} Joined context {context_id} as {identity}, waiting for catchup to complete..."
-                    );
-                } else {
-                    println!(
-                        "{ind} Unable to join context at this time, a catchup is in progress."
-                    );
-                }
+                    if let Some((context_id, identity)) = response {
+                        // Create identity alias in the context if --name is provided
+                        if let Some(name_alias) = name {
+                            node.ctx_manager
+                                .create_alias(name_alias.as_ref(), Some(context_id), identity)?;
+                            println!(
+                                "{} Created identity alias '{}' for {} in context {}",
+                                ind,
+                                name_alias.cyan(),
+                                identity.cyan(),
+                                context_id.cyan()
+                            );
+                        }
+    
+                        println!(
+                            "{} Joined context {} as {}",
+                            ind,
+                            context_id.cyan(),
+                            author
+                                .as_ref()
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|| identity.to_string())
+                                .cyan()
+                        );
+                    } else {
+                        println!(
+                            "{} Unable to join context at this time, a catchup is in progress.",
+                            ind
+                        );
+                    }
             }
+    
+
+                
+            
             Commands::Leave { context } => {
                 let context_id = node
                     .ctx_manager
@@ -206,17 +253,14 @@ impl ContextCommand {
                 params,
                 context_seed,
                 protocol,
-                name,
-                as_alias,
+                context,
+                author,
             } => {
                 let application_id = node
                     .ctx_manager
                     .resolve_alias(application, None)?
                     .ok_or_eyre("unable to resolve")?;
-                    let ctx_manager = node.ctx_manager.clone();
-                    let name_clone = name.clone();
-                    let as_alias_clone = as_alias.clone();
-                    let ind_str = ind.to_string();
+                let ctx_manager = node.ctx_manager.clone();
 
                 let (tx, rx) = oneshot::channel();
 
@@ -237,30 +281,34 @@ impl ContextCommand {
                     let err: eyre::Report = match rx.await {
                         Ok(Ok((context_id, identity))) => {
                             // Create context alias if --name provided
-                            if let Some(name_alias) = name_clone {
-                                if let Err(e) = ctx_manager.create_alias(name_alias.clone(), None, context_id) {
-                                    eprintln!("{} Failed to create context alias: {e}", ind_str);
+                            if let Some(name_alias) = context {
+                                if let Err(e) =
+                                    ctx_manager.create_alias(name_alias, None, context_id)
+                                {
+                                    eprintln!("{} Failed to create context alias: {e}", ind);
                                 }
                             }
-                             // Handle identity alias creation
-                             if let Some(identity_alias) = as_alias_clone.clone() {
+                            // Handle identity alias creation
+                            if let Some(identity_alias) = author {
                                 if let Err(e) = ctx_manager.create_alias(
-                                    identity_alias.clone(),
+                                    identity_alias,
                                     Some(context_id),
-                                    identity
+                                    identity,
                                 ) {
-                                    eprintln!("{} Failed to create identity alias: {e}", ind_str);
+                                    eprintln!("{} Failed to create identity alias: {e}", ind);
                                 }
                             }
-            
+
+                            
                             println!(
-                                "{} Created context {} ({}) as {}",
+                                "{} Created context {} as {}",
                                 ind_str,
-                                name_clone.as_ref()
-                                    .map(|a| a.to_string())
-                                    .unwrap_or_else(|| context_id.to_string()),
-                                context_id,
-                                as_alias_clone.as_ref()
+                                context
+                                    .as_ref()
+                                    .map(|a| format!("{} ({})", a, context_id))  // Show alias + context_id in parens
+                                    .unwrap_or_else(|| context_id.to_string()),  // Show just context_id if no alias
+                                author
+                                    .as_ref()
                                     .map(|a| a.to_string())
                                     .unwrap_or_else(|| identity.to_string())
                             );
@@ -297,7 +345,7 @@ impl ContextCommand {
                         node.ctx_manager.create_alias(
                             alias.clone(),
                             Some(context_id),
-                            invitee_id
+                            invitee_id,
                         )?;
                     }
                     println!(
