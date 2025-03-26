@@ -5,13 +5,17 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::{bail, Result};
+use eyre::{bail, Result as EyreResult};
+use notify::event::ModifyKind;
+use notify::{EventKind, RecursiveMode, Watcher};
 use reqwest::Client;
+use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 use url::Url;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
-use crate::output::Report;
+use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
 #[command(about = "Install an application")]
@@ -27,6 +31,9 @@ pub struct InstallCommand {
 
     #[clap(long, help = "Hash of the application")]
     pub hash: Option<Hash>,
+
+    #[clap(long, short = 'w', requires = "path")]
+    pub watch: bool,
 }
 
 impl Report for InstallApplicationResponse {
@@ -36,17 +43,21 @@ impl Report for InstallApplicationResponse {
 }
 
 impl InstallCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let metadata = self.metadata.as_ref().map(|s| s.clone().into_bytes());
+        let path = self.path.clone().unwrap();
+        let watch = self.watch;
         let _ignored = self.install_app(environment).await?;
-
+        if watch {
+            watch_app(environment, path, metadata).await?;
+        }
         Ok(())
     }
 
-    pub async fn install_app(self, environment: &Environment) -> Result<ApplicationId> {
+    pub async fn install_app(self, environment: &Environment) -> EyreResult<ApplicationId> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let mut is_dev_installation = false;
         let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
-
         let request = if let Some(app_path) = self.path {
             is_dev_installation = true;
             serde_json::to_value(InstallDevApplicationRequest::new(
@@ -80,9 +91,70 @@ impl InstallCommand {
             RequestType::Post,
         )
         .await?;
-
         environment.output.write(&response);
-
         Ok(response.data.application_id)
     }
+}
+
+async fn watch_app(
+    environment: &Environment,
+    path: Utf8PathBuf,
+    metadata: Option<Vec<u8>>,
+) -> EyreResult<()> {
+    let (tx, mut rx) = mpsc::channel(1);
+
+    let handle = Handle::current();
+    let mut watcher = notify::recommended_watcher(move |evt| {
+        handle.block_on(async {
+            drop(tx.send(evt).await);
+        });
+    })?;
+
+    watcher.watch(path.as_std_path(), RecursiveMode::NonRecursive)?;
+
+    environment
+        .output
+        .write(&InfoLine(&format!("Watching for changes to {path}")));
+
+    while let Some(event) = rx.recv().await {
+        let event = match event {
+            Ok(event) => event,
+            Err(err) => {
+                environment.output.write(&ErrorLine(&format!("{err:?}")));
+                continue;
+            }
+        };
+
+        match event.kind {
+            EventKind::Modify(ModifyKind::Data(_)) => {}
+            EventKind::Remove(_) => {
+                environment
+                    .output
+                    .write(&ErrorLine("File removed, ignoring.."));
+                continue;
+            }
+            EventKind::Any
+            | EventKind::Access(_)
+            | EventKind::Create(_)
+            | EventKind::Modify(_)
+            | EventKind::Other => continue,
+        }
+
+        let _application_id = InstallCommand {
+            path: Some(path.clone()),
+            url: None,
+            metadata: metadata
+                .as_ref()
+                .map(|m| String::from_utf8(m.clone()).unwrap()),
+            hash: None,
+            watch: false,
+        }
+        .install_app(environment)
+        .await?;
+        environment.output.write(&InfoLine(&format!(
+            "New file is in use with id {_application_id}"
+        )));
+    }
+
+    Ok(())
 }
