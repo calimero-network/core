@@ -12,7 +12,7 @@ on:
       - '.github/workflows/e2e_tests.yml'
 
 env:
-  CALIMERO_CONTRACTS_VERSION: 'prerelease-7'
+  CALIMERO_CONTRACTS_VERSION: 'latest'
 
 jobs:
   build:
