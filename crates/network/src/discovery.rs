@@ -5,7 +5,7 @@ use multiaddr::Protocol;
 use tracing::{debug, error};
 
 use super::EventLoop;
-use crate::config::{RelayConfig, RendezvousConfig};
+use crate::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use crate::discovery::state::{
     DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
 };
@@ -17,14 +17,20 @@ pub struct Discovery {
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: RendezvousConfig,
     pub(crate) relay_config: RelayConfig,
+    pub(crate) autonat_config: AutonatConfig,
 }
 
 impl Discovery {
-    pub(crate) fn new(rendezvous_config: &RendezvousConfig, relay_config: &RelayConfig) -> Self {
+    pub(crate) fn new(
+        rendezvous_config: &RendezvousConfig,
+        relay_config: &RelayConfig,
+        autonat_config: &AutonatConfig,
+    ) -> Self {
         Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
             relay_config: relay_config.clone(),
+            autonat_config: autonat_config.clone(),
         }
     }
 }
@@ -177,6 +183,30 @@ impl EventLoop {
         Ok(())
     }
 
+    // We unregister from a rendezvous peer if we were previously registered.
+    // This function expectes that the rendezvous peer is already connected.
+    pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
+        let peer_info = self
+            .discovery
+            .state
+            .get_peer_info(rendezvous_peer)
+            .wrap_err("Failed to get peer info")?
+            .rendezvous()
+            .wrap_err("Peer isn't rendezvous")?;
+
+        if matches!(
+            peer_info.registration_status(),
+            RendezvousRegistrationStatus::Registered
+        ) {
+            self.swarm.behaviour_mut().rendezvous.unregister(
+                self.discovery.rendezvous_config.namespace.clone(),
+                *rendezvous_peer,
+            );
+        }
+
+        Ok(())
+    }
+
     // Finds a new rendezvous peer for registration.
     // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
     // Returns Some(PeerId) if a suitable peer is found, None otherwise.
@@ -248,6 +278,30 @@ impl EventLoop {
         self.discovery
             .state
             .update_relay_reservation_status(relay_peer, RelayReservationStatus::Requested);
+
+        Ok(())
+    }
+
+    // Add a peer to the list of servers that may be used for determining our NAT status.
+    // These peers are used for dial-request even if they are currently not connected,
+    // in which case a connection will be established before sending the dial-request.
+    pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
+        let peer_info = self
+            .discovery
+            .state
+            .get_peer_info(autonat_peer)
+            .wrap_err("Failed to get peer info")?;
+
+        debug!(
+            %autonat_peer,
+            ?peer_info,
+            "Adding peer to the list of autonat servers"
+        );
+
+        self.swarm
+            .behaviour_mut()
+            .autonat
+            .add_server(*autonat_peer, None);
 
         Ok(())
     }

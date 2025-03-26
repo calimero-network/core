@@ -13,13 +13,25 @@ impl EventHandler<Event> for EventLoop {
                 .state
                 .update_peer_protocols(&peer_id, &info.protocols);
 
-            if self.discovery.state.is_peer_relay(&peer_id) {
+            if self.discovery.state.is_peer_autonat(&peer_id) {
+                if let Err(err) = self.add_autonat_server(&peer_id) {
+                    error!(%err, "Failed to add autonat server");
+                };
+            }
+
+            if self.discovery.state.is_peer_relay(&peer_id)
+                && self.discovery.state.is_autonat_status_private()
+            {
                 if let Err(err) = self.create_relay_reservation(&peer_id) {
                     error!(%err, "Failed to handle relay reservation");
                 };
             }
 
-            if self.discovery.state.is_peer_rendezvous(&peer_id) {
+            if self.discovery.state.is_peer_rendezvous(&peer_id)
+                && self.discovery.state.is_autonat_status_public()
+                && self.swarm.behaviour().autonat.confidence()
+                    >= self.discovery.autonat_config.confidence_threshold
+            {
                 if let Err(err) = self.rendezvous_discover(&peer_id) {
                     error!(%err, "Failed to perform rendezvous discovery");
                 };

@@ -1,0 +1,64 @@
+name: PR
+
+on:
+  pull_request:
+    types: [opened, edited]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check-description:
+    name: Check Description
+    runs-on: ubuntu-latest
+    outputs:
+      comment_action: ${{ steps.validate_description.outputs.comment_action }}
+      comment_content: ${{ steps.validate_description.outputs.comment_content }}
+      is_valid: ${{ steps.validate_description.outputs.is_valid }}
+    steps:
+      - name: Validate Description
+        id: validate_description
+        env:
+          REQUIRED_SECTIONS: |
+            ## Description
+            ## Test plan
+            ## Documentation update
+        run: |
+          # Read required sections from env var, one per line
+          readarray -t required_sections <<< "$REQUIRED_SECTIONS"
+          pr_body="${{ github.event.pull_request.body }}"
+          missing_sections=()
+
+          for section in "${required_sections[@]}"; do
+            if [[ -z $(echo "$pr_body" | grep -i "$section") ]]; then
+              missing_sections+=("$section")
+            fi
+          done
+
+          if [[ ${#missing_sections[@]} -gt 0 ]]; then
+            echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
+            echo "is_valid=false" >> "$GITHUB_OUTPUT"
+            echo "comment_content=**PR is missing required sections:** <br><br>${missing_sections[*]}.<br><br>Please update the PR description.<br><br>**❌ PR merge is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
+          else
+            echo "comment_action=delete" >> "$GITHUB_OUTPUT"
+            echo "is_valid=true" >> "$GITHUB_OUTPUT"
+            echo "comment_content=" >> "$GITHUB_OUTPUT"
+          fi
+
+  update-comment:
+    name: Update PR Comment
+    runs-on: ubuntu-latest
+    needs: check-description
+    steps:
+      - name: Post PR Comment
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          comment-tag: pr-description-check
+          mode: ${{ needs.check-description.outputs.comment_action }}
+          message: ${{ needs.check-description.outputs.comment_content }}
+
+      - name: Fail job if PR description is invalid
+        if: needs.check-description.outputs.is_valid == 'false'
+        run: exit 1

@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use client::NetworkClient;
 use config::NetworkConfig;
 use eyre::{bail, eyre, Result as EyreResult};
+use libp2p::autonat::{Behaviour as AutonatBehaviour, Config as AutonatConfig};
 use libp2p::dcutr::Behaviour as DcutrBehaviour;
 use libp2p::futures::prelude::*;
 use libp2p::gossipsub::{
@@ -53,6 +54,7 @@ const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/k
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
+    autonat: AutonatBehaviour,
     dcutr: DcutrBehaviour,
     gossipsub: GossipsubBehaviour,
     identify: IdentifyBehaviour,
@@ -110,6 +112,15 @@ fn init(
         .with_quic()
         .with_relay_client(NoiseConfig::new, YamuxConfig::default)?
         .with_behaviour(|key, relay_behaviour| Behaviour {
+            autonat: {
+                AutonatBehaviour::new(
+                    peer_id,
+                    AutonatConfig {
+                        boot_delay: Duration::from_secs(5),
+                        ..Default::default()
+                    },
+                )
+            },
             dcutr: DcutrBehaviour::new(peer_id),
             identify: IdentifyBehaviour::new(
                 IdentifyConfig::new(PROTOCOL_VERSION.to_owned(), key.public())
@@ -171,7 +182,11 @@ fn init(
         sender: command_sender,
     };
 
-    let discovery = Discovery::new(&config.discovery.rendezvous, &config.discovery.relay);
+    let discovery = Discovery::new(
+        &config.discovery.rendezvous,
+        &config.discovery.relay,
+        &config.discovery.autonat,
+    );
 
     let event_loop = EventLoop::new(
         swarm,

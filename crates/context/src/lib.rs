@@ -535,7 +535,7 @@ impl ContextManager {
                             &key,
                             &ContextIdentityValue {
                                 private_key: None,
-                                sender_key: Some(*self.new_private_key()),
+                                sender_key: None,
                             },
                         )?;
                     }
