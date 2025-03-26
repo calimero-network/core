@@ -29,6 +29,8 @@ There are several ways you can contribute:
 Contributions are managed via Issues and Pull Requests (PRs). Here are some
 general guidelines:
 
+- Read the Rust style guide bellow!
+
 - Before creating a new Issue or PR, search for [existing ones][Issues].
 
 - Contributions should focus on either functionality or style in the PR, not
@@ -73,7 +75,102 @@ would like to work on an issue, please follow these steps:
 By following this process, we can avoid duplication of efforts and ensure clear
 communication among all contributors.
 
-### Creating a New Issue
+## Rust Style Guide
+
+### Formatting
+
+- Use rustfmt with nightly features to maintain consistent code formatting.
+- Sort Cargo.toml dependencies alphabetically.
+
+### Module Organization
+
+- We don't use the `mod.rs` pattern.
+- Instead, export modules from files named according to their context.
+
+For example:
+
+```
+crates/meroctl/src/cli/app.rs
+```
+
+Contains:
+
+```rust
+mod get;
+mod install;
+mod list;
+```
+
+And we would have these individual files:
+
+```
+crates/meroctl/src/cli/app/get.rs
+crates/meroctl/src/cli/app/install.rs
+crates/meroctl/src/cli/app/list.rs
+```
+
+### Error Handling
+
+- Almost no unwrapping (acceptable in tests and possibly when dealing with thread join handlers).
+- If unwrapping is absolutely necessary, explain why with a comment.
+- On values that may return errors, use `.map_err()` to map the error into the appropriate Error type used in that crate/module.
+
+### Code Efficiency
+
+- Try to limit unnecessary clones.
+- Use short-circuiting if statements:
+
+```rust
+// NOT RECOMMENDED:
+if some_condition {
+    // ... (lots of code)
+}
+
+// RECOMMENDED:
+if !some_condition {
+    return Err(YourError::Something);
+}
+// Continue with main code path...
+```
+
+- Extract values from options using `if let` when possible:
+
+```rust
+// RECOMMENDED:
+if let Some(value) = optional_value {
+    // Use value directly
+}
+
+// INSTEAD OF:
+match optional_value {
+    Some(value) => {
+        // Use value
+    },
+    None => {},
+}
+```
+
+### Code Organization
+
+- Break functions into smaller parts if they become too large.
+- Place reusable functions in a `commons.rs` file or similar.
+- Put structs needed by multiple parts of the codebase into `primitives` files.
+
+### Naming Conventions
+
+- Types shall be `UpperCamelCase`
+- Enum variants shall be `UpperCamelCase`
+- Struct fields shall be `snake_case`
+- Function and method names shall be `snake_case`
+- Local variables shall be `snake_case`
+- Macro names shall be `snake_case`
+- Constants (consts and immutable statics) shall be `SCREAMING_SNAKE_CASE`
+
+### General Guidelines
+
+- Try to use functional Rust patterns when they improve code readability and maintainability.
+
+## Creating a New Issue
 
 If no related issue exists, you can create a new one.
 
