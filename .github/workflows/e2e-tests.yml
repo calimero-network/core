@@ -24,6 +24,9 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        # Add version check
+      - name: Verify Rust installation
+        run: rustc --version
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -111,6 +114,9 @@ jobs:
       - name: Install dfx
         if: matrix.protocol == 'icp'
         uses: dfinity/setup-dfx@main
+      - name: Verify dfx installation
+        if: matrix.protocol == 'icp'
+        run: dfx --version
 
       - name: Deploy ICP Devnet
         if: matrix.protocol == 'icp'
@@ -177,6 +183,9 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
+      - name: Verify Foundry installation
+        if: matrix.protocol == 'ethereum'
+        run: forge --version
 
       - name: Deploy Ethereum Devnet
         if: matrix.protocol == 'ethereum'
@@ -219,6 +228,10 @@ jobs:
           name: e2e-test-report-${{ matrix.protocol }}
           path: e2e-tests/corpus/report.json
           retention-days: 1
+
+      - name: Verify Stellar CLI installation
+        if: matrix.protocol == 'stellar'
+        run: stellar --version
 
   comment:
     name: Comment on PR
