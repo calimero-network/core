@@ -1,7 +1,8 @@
 {
   "network": {
-    "nodeCount": 2,
+    "nodeCount": 3,
     "swarmHost": "0.0.0.0",
+    "serverHost": "127.0.0.1",
     "startSwarmPort": 2427,
     "startServerPort": 2527
   },
@@ -12,8 +13,8 @@
     {
       "protocol": "near",
       "config": {
-        "contextConfigContract": "./contracts/near/context-config/res/calimero_context_config_near.wasm",
-        "proxyLibContract": "./contracts/near/context-proxy/res/calimero_context_proxy_near.wasm"
+        "contextConfigContract": "./contracts/near/calimero_context_config_near.wasm",
+        "proxyLibContract": "./contracts/near/calimero_context_proxy_near.wasm"
       }
     },
     {

@@ -7,6 +7,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Instant;
 
+use libp2p::autonat::{NatStatus, DEFAULT_PROTOCOL_NAME as AUTONAT_PROTOCOL_NAME};
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;
 use libp2p::{Multiaddr, PeerId, StreamProtocol};
@@ -24,6 +25,22 @@ pub struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
+    autonat_index: BTreeSet<PeerId>,
+    autonat: AutonatStatus,
+}
+#[derive(Debug)]
+pub struct AutonatStatus {
+    status: NatStatus,
+    last_status_public: bool,
+}
+
+impl Default for AutonatStatus {
+    fn default() -> Self {
+        Self {
+            status: NatStatus::Unknown,
+            last_status_public: false,
+        }
+    }
 }
 
 impl DiscoveryState {
@@ -47,40 +64,20 @@ impl DiscoveryState {
             if protocol == &HOP_PROTOCOL_NAME {
                 let _ = self.relay_index.insert(*peer_id);
 
-                match self.peers.entry(*peer_id) {
-                    Entry::Occupied(mut entry) => {
-                        if entry.get().relay.is_none() {
-                            entry.get_mut().relay = Some(PeerRelayInfo::default());
-                        }
-                    }
-                    Entry::Vacant(entry) => {
-                        let _ = entry.insert(PeerInfo {
-                            addrs: HashSet::default(),
-                            discoveries: HashSet::default(),
-                            relay: Some(PeerRelayInfo::default()),
-                            rendezvous: None,
-                        });
-                    }
-                };
+                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let _ignored = peer_info.relay.get_or_insert_with(Default::default);
             }
             if protocol == &RENDEZVOUS_PROTOCOL_NAME {
                 let _ = self.rendezvous_index.insert(*peer_id);
 
-                match self.peers.entry(*peer_id) {
-                    Entry::Occupied(mut entry) => {
-                        if entry.get().rendezvous.is_none() {
-                            entry.get_mut().rendezvous = Some(PeerRendezvousInfo::default());
-                        }
-                    }
-                    Entry::Vacant(entry) => {
-                        let _ = entry.insert(PeerInfo {
-                            addrs: HashSet::default(),
-                            discoveries: HashSet::default(),
-                            relay: None,
-                            rendezvous: Some(PeerRendezvousInfo::default()),
-                        });
-                    }
-                };
+                let peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
+                let _ignored = peer_info.rendezvous.get_or_insert_with(Default::default);
+            }
+
+            if protocol == &AUTONAT_PROTOCOL_NAME {
+                let _ = self.autonat_index.insert(*peer_id);
+
+                let _peer_info = self.peers.entry(*peer_id).or_insert_with(Default::default);
             }
         }
     }
@@ -167,6 +164,10 @@ impl DiscoveryState {
         self.rendezvous_index.contains(peer_id)
     }
 
+    pub(crate) fn is_peer_autonat(&self, peer_id: &PeerId) -> bool {
+        self.autonat_index.contains(peer_id)
+    }
+
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "Cannot use saturating_add() due to non-specific integer type"
@@ -207,6 +208,28 @@ impl DiscoveryState {
                 })
             });
         sum < max
+    }
+
+    pub(crate) fn update_autonat_status(&mut self, status: NatStatus) {
+        if matches!(self.autonat.status, NatStatus::Public(_))
+            && matches!(status, NatStatus::Private)
+        {
+            self.autonat.last_status_public = true;
+        }
+
+        self.autonat.status = status
+    }
+
+    pub(crate) fn is_autonat_status_public(&self) -> bool {
+        matches!(self.autonat.status, NatStatus::Public(_))
+    }
+
+    pub(crate) fn is_autonat_status_private(&self) -> bool {
+        matches!(self.autonat.status, NatStatus::Private)
+    }
+
+    pub(crate) fn autonat_became_private(&self) -> bool {
+        self.autonat.last_status_public
     }
 }
 
