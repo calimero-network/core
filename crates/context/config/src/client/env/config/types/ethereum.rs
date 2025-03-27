@@ -151,7 +151,7 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
             let author_id: [u8; 32] = author_id.rt().expect("infallible conversion");
             let author_id_sol = B256::from_slice(&author_id);
 
-            let data_encode = SolValue::abi_encode(&(author_id_sol, sol_app));
+            let data_encode = (author_id_sol, sol_app).abi_encode();
             data_encode[32..].to_vec()
         }
         ContextRequestKind::AddMembers { members } => {
@@ -163,7 +163,7 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
                 .collect();
 
             // Encode the members array
-            SolValue::abi_encode(&sol_members)
+            sol_members.abi_encode()
         }
         ContextRequestKind::RemoveMembers { members } => {
             // For RemoveMembers, we need to encode bytes32[] members
@@ -174,7 +174,7 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
                 .collect();
 
             // Encode the members array
-            SolValue::abi_encode(&sol_members)
+            sol_members.abi_encode()
         }
         ContextRequestKind::Grant { capabilities } => {
             // For Grant, we need to encode the list of (member, capability) pairs
@@ -195,8 +195,8 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
             // This requires manual ABI encoding
 
             // First, encode each array separately
-            let encoded_members = SolValue::abi_encode(&members);
-            let encoded_capabilities = SolValue::abi_encode(&capability_values);
+            let encoded_members = members.abi_encode();
+            let encoded_capabilities = capability_values.abi_encode();
 
             // Now construct the tuple encoding
             let mut data = Vec::new();
@@ -243,8 +243,8 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
             // This requires manual ABI encoding
 
             // First, encode each array separately
-            let encoded_members = SolValue::abi_encode(&members);
-            let encoded_capabilities = SolValue::abi_encode(&capability_values);
+            let encoded_members = members.abi_encode();
+            let encoded_capabilities = capability_values.abi_encode();
 
             // Now construct the tuple encoding
             let mut data = Vec::new();

@@ -1,5 +1,9 @@
 use std::fmt::Debug;
 
+use alloy::primitives::{keccak256, B256};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::{Signature, SignerSync};
+use alloy_sol_types::SolValue;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{BytesN, Env};
@@ -7,8 +11,13 @@ use starknet::core::codec::Encode as StarknetEncode;
 use starknet::signers::SigningKey as StarknetSigningKey;
 use starknet_crypto::{poseidon_hash_many, Felt};
 
+pub mod methods;
+
+use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
 use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
+use crate::client::env::config::types::ethereum::ToSol;
 use crate::client::env::{utils, Method};
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -18,21 +27,11 @@ use crate::client::{CallClient, ClientError, Operation};
 use crate::icp::types::{ICRequest, ICSigned};
 use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::{
-    StellarRequest, StellarRequestKind, StellarSignedRequest, StellarSignedRequestPayload,
+    FromWithEnv, StellarRequest, StellarRequestKind, StellarSignedRequest,
+    StellarSignedRequestPayload,
 };
 use crate::types::Signed;
 use crate::{ContextIdentity, Request, RequestKind};
-pub mod methods;
-
-use alloy::primitives::{keccak256, B256};
-use alloy::signers::local::PrivateKeySigner;
-use alloy::signers::{Signature, SignerSync};
-use alloy_sol_types::SolValue;
-
-use super::types::ethereum::{SolRequest, SolRequestKind, SolSignedRequest};
-use crate::client::env::config::types::ethereum::ToSol;
-use crate::client::protocol::ethereum::Ethereum;
-use crate::stellar::stellar_types::FromWithEnv;
 
 #[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
@@ -233,7 +232,7 @@ impl<'a> Method<Ethereum> for Mutate<'a> {
             RequestKind::Context(req) => req.to_sol(),
         };
 
-        let encoded_request = SolValue::abi_encode(&context_request);
+        let encoded_request = context_request.abi_encode();
 
         let sol_request = SolRequest {
             signerId: ecdsa_public_key,
@@ -243,7 +242,7 @@ impl<'a> Method<Ethereum> for Mutate<'a> {
             data: encoded_request.into(),
         };
 
-        let request_message = SolValue::abi_encode(&sol_request);
+        let request_message = sol_request.abi_encode();
 
         let message_hash = keccak256(&request_message);
         let signature: Signature = signer.sign_message_sync(&message_hash.as_slice())?;
@@ -263,7 +262,7 @@ impl<'a> Method<Ethereum> for Mutate<'a> {
             v,
         };
 
-        let encoded = SolValue::abi_encode(&signed_request);
+        let encoded = signed_request.abi_encode();
 
         Ok(encoded)
     }

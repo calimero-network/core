@@ -235,7 +235,7 @@ impl Method<Ethereum> for Mutate {
             data: request_data.into(),
         };
 
-        let request_message = SolValue::abi_encode(&sol_request);
+        let request_message = sol_request.abi_encode();
 
         let message_hash = keccak256(&request_message);
         let signature: Signature = signer.sign_message_sync(&message_hash.as_slice())?;
@@ -255,7 +255,7 @@ impl Method<Ethereum> for Mutate {
             v,
         };
 
-        let encoded = SolValue::abi_encode(&signed_request);
+        let encoded = signed_request.abi_encode();
         Ok(encoded)
     }
 
