@@ -37,10 +37,10 @@ pub struct EthereumSandboxEnvironment {
 
 impl EthereumSandboxEnvironment {
     /// Initialize a new Ethereum sandbox environment
-    /// 
+    ///
     /// # Arguments
     /// * `config` - Configuration parameters for the Ethereum environment
-    /// 
+    ///
     /// # Returns
     /// * `EyreResult<Self>` - New instance or error if connection fails
     pub fn init(config: EthereumProtocolConfig) -> EyreResult<Self> {
@@ -69,7 +69,7 @@ impl EthereumSandboxEnvironment {
     }
 
     /// Generate node configuration arguments for Ethereum protocol
-    /// 
+    ///
     /// # Returns
     /// * `Vec<String>` - List of configuration arguments for the node
     pub fn node_args(&self) -> Vec<String> {
@@ -99,12 +99,12 @@ impl EthereumSandboxEnvironment {
     }
 
     /// Verify the state of an external contract by calling a specified method
-    /// 
+    ///
     /// # Arguments
     /// * `contract_id` - Address of the contract to verify
     /// * `method_name` - Name of the method to call
     /// * `args` - Arguments to pass to the method
-    /// 
+    ///
     /// # Returns
     /// * `EyreResult<Option<String>>` - Result of the contract call or error
     pub async fn verify_external_contract_state(
@@ -116,7 +116,7 @@ impl EthereumSandboxEnvironment {
         // Set up RPC connection
         let rpc_url = AlloyUrl::parse(&self.config.rpc_url)?;
         let address = contract_id.parse::<Address>()?;
-        
+
         // Prepare method call data
         let method_selector = &keccak256(method_name.as_bytes())[..4];
         let encoded_args = match args.len() {
