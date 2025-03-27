@@ -89,7 +89,7 @@ communication among all contributors.
 
 For example:
 
-```
+```bash
 crates/meroctl/src/cli/app.rs
 ```
 
@@ -103,7 +103,7 @@ mod list;
 
 And we would have these individual files:
 
-```
+```bash
 crates/meroctl/src/cli/app/get.rs
 crates/meroctl/src/cli/app/install.rs
 crates/meroctl/src/cli/app/list.rs
@@ -201,12 +201,13 @@ We use the ["fork-and-pull"][GitPR] Git workflow:
 
 7. Tag a maintainer to review your PR.
 
+8. Make sure your PR follows our PR template (has to consist of a `Description`, `Test plan` and `Documentation update`)
+
 ### Tips for a Quality Pull Request
 
 - Title your PR to clearly describe the work done.
 
-- Structure the description for easy reading, using bullet points and
-  screenshots if necessary.
+- Structure your description based on our PR template
 
 - Link to the related issue, if applicable.
 
