@@ -24,7 +24,7 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        # Add version check
+
       - name: Verify Rust installation
         run: rustc --version
 
@@ -259,20 +259,26 @@ jobs:
       - name: Combine reports
         run: |
           mkdir -p reports
+          
+          # List all found reports for debugging
+          echo "Found report files:"
+          find reports/ -type f -name "report.json" -ls
 
-          protocols=$(
-            find reports/ -type f -name "report.json" -ls \
-              | tee /dev/stderr \
-              | awk '{print $NF}' \
-              | xargs dirname \
-              | sort -u
-          )
+          # Create a single array of all protocol directories
+          mapfile -t protocols < <(find reports/ -type f -name "report.json" | sort | xargs dirname)
 
-          ./target/debug/e2e-tests combine ${protocols[@]} --output-dir reports
+          if [ ${#protocols[@]} -eq 0 ]; then
+            echo "No report files found!"
+            exit 1
+          fi
 
-          # Debug: Show final report content
-          echo "Combined report content:" >> /dev/stderr
-          cat reports/report.md >> /dev/stderr
+          echo "Found protocols: ${protocols[*]}"
+          
+          # Combine all reports into a single markdown file
+          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
+
+          echo "Combined report content:"
+          cat reports/report.md
 
       - name: Get PR number
         id: pr_number
