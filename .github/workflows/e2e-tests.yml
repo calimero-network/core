@@ -75,27 +75,20 @@ jobs:
         id: generate_ports
         run: |
           get_random_port() {
-            python3 -c '
-            import socket
-            s = socket.socket()
-            s.bind(("", 0))
-            port = s.getsockname()[1]
-            s.close()
-            print(port)
-            '
+            python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); port = s.getsockname()[1]; s.close(); print(port)'
           }
-
+          
           SWARM_PORT=$(get_random_port)
           SERVER_PORT=$(get_random_port)
           ICP_PORT=$(get_random_port)
           SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
-
+          
           # Set outputs for other steps
           echo "SWARM_PORT=$SWARM_PORT" >> $GITHUB_OUTPUT
           echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
           echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
           echo "SWARM_HOST=$SWARM_HOST" >> $GITHUB_OUTPUT
-
+          
           # Update config.json
           jq --arg swarmPort "$SWARM_PORT" \
             --arg serverPort "$SERVER_PORT" \
@@ -104,9 +97,9 @@ jobs:
             .network.startSwarmPort = ($swarmPort | tonumber) |
             .network.startServerPort = ($serverPort | tonumber)' \
             e2e-tests/config/config.json > updated_config.json
-
+          
           mv updated_config.json e2e-tests/config/config.json
-
+          
           # Print ports for debugging
           echo "Generated ports:"
           echo "SWARM_PORT: $SWARM_PORT"
