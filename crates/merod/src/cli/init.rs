@@ -343,8 +343,8 @@ impl InitCommand {
                 ClientConfigParams {
                     network: "sepolia".into(),
                     protocol: "ethereum".into(),
-                    contract_id: "0x0000000000000000000000000000000000000000".parse()?,
-                    signer: ClientSelectedSigner::Local,
+                    contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".parse()?,
+                    signer: ClientSelectedSigner::Relayer,
                 },
             );
 
@@ -355,7 +355,7 @@ impl InitCommand {
             let _ignored = local_config.signers.insert(
                 "sepolia".to_owned(),
                 generate_local_signer(
-                    "https://sepolia.infura.io/v3/167f8143e0174d2da4108663ff8e0164".parse()?,
+                    "https://sepolia.drpc.org".parse()?,
                     ConfigProtocol::Ethereum,
                 )?,
             );
