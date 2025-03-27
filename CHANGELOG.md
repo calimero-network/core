@@ -67,7 +67,8 @@ Integrations:
 - Starknet: reached feature parity with the NEAR implementation, allowing
   contexts to be created in association with the Starknet protocol.
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.4.0...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/calimero-network/core/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/calimero-network/core/compare/merod-0.3.1...0.4.0
 [0.3.1]:
   https://github.com/calimero-network/core/compare/merod-0.3.0...merod-0.3.1
