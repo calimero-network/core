@@ -235,7 +235,7 @@ impl Network {
         if !receipt.status() {
             return Err(EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: "Transaction failed".to_string(),
+                reason: "Transaction failed".to_owned(),
             });
         }
 
@@ -243,7 +243,7 @@ impl Network {
             .block_number()
             .ok_or_else(|| EthereumError::Custom {
                 operation: ErrorOperation::Mutate,
-                reason: "Failed to get block number".to_string(),
+                reason: "Failed to get block number".to_owned(),
             })?;
 
         let return_data = self

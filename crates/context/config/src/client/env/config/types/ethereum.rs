@@ -25,7 +25,9 @@ sol! {
       AddMembers,
       RemoveMembers,
       AddCapability,
-      RevokeCapability
+      RevokeCapability,
+      UpdateApplication,
+      UpdateProxyContract
   }
 
   enum SolRequestKind {
@@ -116,8 +118,8 @@ impl<'a> ToSol<SolContextRequestKind> for ContextRequestKind<'a> {
             ContextRequestKind::RemoveMembers { .. } => SolContextRequestKind::RemoveMembers,
             ContextRequestKind::Grant { .. } => SolContextRequestKind::AddCapability,
             ContextRequestKind::Revoke { .. } => SolContextRequestKind::RevokeCapability,
-            // Handle other variants as needed
-            _ => SolContextRequestKind::Add, // Default case
+            ContextRequestKind::UpdateApplication { .. } => SolContextRequestKind::UpdateApplication,
+            ContextRequestKind::UpdateProxyContract { .. } => SolContextRequestKind::UpdateProxyContract,
         }
     }
 }
@@ -271,8 +273,13 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
 
             data
         }
-        // For other kinds that don't need data
-        _ => Vec::new(),
+        ContextRequestKind::UpdateApplication { application } => {
+            let sol_app = application.to_sol();
+            sol_app.abi_encode()
+        },
+        ContextRequestKind::UpdateProxyContract => {
+            Vec::new()
+        }
     }
 }
 

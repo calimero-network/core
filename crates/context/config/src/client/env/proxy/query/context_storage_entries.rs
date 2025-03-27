@@ -169,7 +169,7 @@ impl Method<Ethereum> for ContextStorageEntriesRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         let decoded: Vec<alloy::primitives::Bytes> = SolValue::abi_decode(&response, false)?;
         let mut decoded = decoded.into_iter();
-        let mut entries = Vec::with_capacity(decoded.len() / 2);
+        let mut entries = Vec::with_capacity(decoded.len() >> 1);
         while let Some(key) = decoded.next() {
             let value = decoded
                 .next()

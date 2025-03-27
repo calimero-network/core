@@ -162,7 +162,8 @@ impl Method<Ethereum> for ProposalApprovalsRequest {
     const METHOD: &'static str = "getConfirmationsCount(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let proposal_id: [u8; 32] = self.proposal_id.rt().expect("infallible conversion");
+        let proposal_id: [u8; 32] = self.proposal_id.rt()
+            .map_err(|e| eyre::eyre!("Failed to convert proposal_id: {}", e))?;
 
         Ok(proposal_id.abi_encode())
     }

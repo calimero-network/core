@@ -326,7 +326,7 @@ impl TryFrom<ProposalAction> for SolProposalAction {
                 };
                 let amount = U256::from(deposit);
 
-                #[allow(deprecated)]
+                #[allow(deprecated, reason = "Using deprecated constant field")]
                 let function = Function {
                     name: method_name,
                     inputs,
