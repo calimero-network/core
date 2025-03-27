@@ -209,7 +209,11 @@ fn process_json_variables(value: &mut Value, ctx: &TestContext<'_>) -> EyreResul
                 process_json_variables(item, ctx)?;
             }
         }
-        _ => {}
+        Value::Null |
+        Value::Bool(_) |
+        Value::Number(_) => {
+            // These values don't contain variables, so no processing needed
+        }
     }
     Ok(())
 }

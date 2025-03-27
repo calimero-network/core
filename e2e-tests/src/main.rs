@@ -100,7 +100,7 @@ pub struct RootArgs {
 
 fn parse_scenario(s: &str) -> Result<String, String> {
     match s {
-        "ethereum" | "near" | "stellar" | "icp" => Ok(s.to_string()),
+        "ethereum" | "near" | "stellar" | "icp" => Ok(s.to_owned()),
         _ => Err(format!(
             "Invalid scenario. Must be one of: ethereum, near, stellar, icp. Got: {}",
             s

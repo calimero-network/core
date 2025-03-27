@@ -41,7 +41,7 @@ impl Test for GetProposalsStep {
         if let Some(proposals) = proposals.get("data").and_then(|data| data.as_array()) {
             for proposal in proposals {
                 if let Some(id) = proposal.get("id").and_then(|id| id.as_str()) {
-                    ids.push(id.to_string());
+                    ids.push(id.to_owned());
                 }
             }
         }

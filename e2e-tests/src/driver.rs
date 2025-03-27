@@ -151,7 +151,7 @@ impl Driver {
                                         }
                                     };
                                     if initialized_protocols
-                                        .insert(protocol_name.to_string(), sandbox_env)
+                                        .insert(protocol_name.to_owned(), sandbox_env)
                                         .is_some()
                                     {
                                         self.environment.output_writer.write_str(&format!(

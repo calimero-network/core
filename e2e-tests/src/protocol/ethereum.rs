@@ -141,6 +141,6 @@ impl EthereumSandboxEnvironment {
 
         // Decode and return the result
         let output: String = SolValue::abi_decode(&result, false)?;
-        Ok(Some(output.to_string()))
+        Ok(Some(output))
     }
 }
