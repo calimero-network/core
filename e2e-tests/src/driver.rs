@@ -634,7 +634,7 @@ impl PortBinding {
     async fn next_available(host: IpAddr, _port: &mut u16) -> EyreResult<PortBinding> {
         // Explicitly specify port as u16 and create SocketAddr
         let address: SocketAddr = (host, 0_u16).into();
-        
+
         match TcpListener::bind(address).await {
             Ok(listener) => {
                 let address = listener.local_addr()?;
