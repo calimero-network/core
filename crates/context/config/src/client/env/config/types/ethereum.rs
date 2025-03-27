@@ -118,8 +118,12 @@ impl<'a> ToSol<SolContextRequestKind> for ContextRequestKind<'a> {
             ContextRequestKind::RemoveMembers { .. } => SolContextRequestKind::RemoveMembers,
             ContextRequestKind::Grant { .. } => SolContextRequestKind::AddCapability,
             ContextRequestKind::Revoke { .. } => SolContextRequestKind::RevokeCapability,
-            ContextRequestKind::UpdateApplication { .. } => SolContextRequestKind::UpdateApplication,
-            ContextRequestKind::UpdateProxyContract { .. } => SolContextRequestKind::UpdateProxyContract,
+            ContextRequestKind::UpdateApplication { .. } => {
+                SolContextRequestKind::UpdateApplication
+            }
+            ContextRequestKind::UpdateProxyContract { .. } => {
+                SolContextRequestKind::UpdateProxyContract
+            }
         }
     }
 }
@@ -276,10 +280,8 @@ fn encode_context_request_data<'a>(kind: &ContextRequestKind<'a>) -> Vec<u8> {
         ContextRequestKind::UpdateApplication { application } => {
             let sol_app = application.to_sol();
             sol_app.abi_encode()
-        },
-        ContextRequestKind::UpdateProxyContract => {
-            Vec::new()
         }
+        ContextRequestKind::UpdateProxyContract => Vec::new(),
     }
 }
 

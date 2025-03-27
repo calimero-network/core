@@ -167,7 +167,9 @@ impl Method<Ethereum> for ProposalRequest {
     const METHOD: &'static str = "getProposal(bytes32)";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-        let proposal_id: [u8; 32] = self.proposal_id.rt()
+        let proposal_id: [u8; 32] = self
+            .proposal_id
+            .rt()
             .map_err(|e| eyre::eyre!("Failed to convert proposal_id: {}", e))?;
 
         Ok(proposal_id.abi_encode())
