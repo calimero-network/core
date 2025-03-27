@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-03-27
+- Added Ethereum integration
+- Decoupled contracts from core repository
+- Extended e2e tests to include proxy contract functionalities
+- Added autonat protocol
+
 ## [0.4.0] - 2025-02-18
 
 - Added Stellar integration
