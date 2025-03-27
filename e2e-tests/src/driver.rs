@@ -631,23 +631,16 @@ impl PortBinding {
         self.address
     }
 
-    async fn next_available(host: IpAddr, port: &mut u16) -> EyreResult<PortBinding> {
-        for _ in 0..100 {
-            let address = (host, *port).into();
-
-            let res = TcpListener::bind(address).await;
-
-            *port += 1;
-
-            if let Ok(listener) = res {
-                return Ok(PortBinding { address, listener });
+    async fn next_available(host: IpAddr, _port: &mut u16) -> EyreResult<PortBinding> {
+        // Explicitly specify port as u16 and create SocketAddr
+        let address: SocketAddr = (host, 0_u16).into();
+        
+        match TcpListener::bind(address).await {
+            Ok(listener) => {
+                let address = listener.local_addr()?;
+                Ok(PortBinding { address, listener })
             }
+            Err(e) => bail!("Failed to bind to random port: {}", e),
         }
-
-        bail!(
-            "unable to select a port in range {}..={}",
-            *port - 100,
-            *port - 1
-        );
     }
 }
