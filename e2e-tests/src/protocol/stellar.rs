@@ -149,26 +149,26 @@ impl StellarSandboxEnvironment {
         let result_str = match sc_val {
             ScVal::String(s) => Some(s.to_string()),
             ScVal::Symbol(s) => Some(s.to_string()),
-            ScVal::Bool(_) | 
-            ScVal::Void |
-            ScVal::Error(_) |
-            ScVal::U32(_) |
-            ScVal::I32(_) |
-            ScVal::U64(_) |
-            ScVal::I64(_) |
-            ScVal::Timepoint(_) |
-            ScVal::Duration(_) |
-            ScVal::U128(_) |
-            ScVal::I128(_) |
-            ScVal::U256(_) |
-            ScVal::I256(_) |
-            ScVal::Bytes(_) |
-            ScVal::Vec(_) |
-            ScVal::Map(_) |
-            ScVal::Address(_) |
-            ScVal::LedgerKeyContractInstance |
-            ScVal::LedgerKeyNonce(_) |
-            ScVal::ContractInstance(_) => None,
+            ScVal::Bool(_)
+            | ScVal::Void
+            | ScVal::Error(_)
+            | ScVal::U32(_)
+            | ScVal::I32(_)
+            | ScVal::U64(_)
+            | ScVal::I64(_)
+            | ScVal::Timepoint(_)
+            | ScVal::Duration(_)
+            | ScVal::U128(_)
+            | ScVal::I128(_)
+            | ScVal::U256(_)
+            | ScVal::I256(_)
+            | ScVal::Bytes(_)
+            | ScVal::Vec(_)
+            | ScVal::Map(_)
+            | ScVal::Address(_)
+            | ScVal::LedgerKeyContractInstance
+            | ScVal::LedgerKeyNonce(_)
+            | ScVal::ContractInstance(_) => None,
         };
 
         Ok(result_str)
