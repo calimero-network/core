@@ -11,12 +11,15 @@ use tokio::fs::read;
 pub struct NearProtocolConfig {
     pub context_config_contract: Utf8PathBuf,
     pub proxy_lib_contract: Utf8PathBuf,
+    pub mock_external_contract: Utf8PathBuf,
 }
 
+#[derive(Debug, Clone)]
 pub struct NearSandboxEnvironment {
     pub worker: Worker<Sandbox>,
     pub root_account: Account,
     pub contract: Contract,
+    pub mock_external_contract: Contract,
 }
 
 impl NearSandboxEnvironment {
@@ -39,10 +42,32 @@ impl NearSandboxEnvironment {
 
         let root_account = worker.root_account()?;
 
+        // Create a fixed-name account for the mock external contract
+        let mock_external_account = root_account
+            .create_subaccount("mock-external")
+            .initial_balance(NearToken::from_near(30))
+            .transact()
+            .await?
+            .into_result()?;
+
+        // Deploy to the fixed-name account
+        let mock_external_wasm = read(&config.mock_external_contract).await?;
+        let mock_external_contract = mock_external_account.deploy(&mock_external_wasm).await?;
+
+        let mock_external_contract = mock_external_contract.into_result()?;
+
+        // Initialize the counter contract with new()
+        mock_external_contract
+            .call("new")
+            .transact()
+            .await?
+            .into_result()?;
+
         Ok(Self {
             worker,
             root_account,
             contract: context_config_contract,
+            mock_external_contract,
         })
     }
 
@@ -79,5 +104,32 @@ impl NearSandboxEnvironment {
                 near_secret_key
             ),
         ])
+    }
+
+    pub async fn verify_external_contract_state(
+        &self,
+        _contract_id: &str,
+        method_name: &str,
+        args: &Vec<String>,
+    ) -> EyreResult<Option<String>> {
+        // Join all arguments into a single Vec<u8>
+        let arguments = args
+            .iter()
+            .flat_map(|arg| arg.as_bytes())
+            .copied()
+            .collect::<Vec<u8>>();
+
+        let result = self
+            .mock_external_contract
+            .call(method_name)
+            .args(arguments)
+            .transact()
+            .await?;
+
+        let result_value: u32 = result
+            .json()
+            .map_err(|e| eyre::eyre!("Failed to parse result as JSON: {}", e))?;
+
+        Ok(Some(result_value.to_string()))
     }
 }

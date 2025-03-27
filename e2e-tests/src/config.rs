@@ -2,6 +2,7 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::ethereum::EthereumProtocolConfig;
 use crate::protocol::icp::IcpProtocolConfig;
 use crate::protocol::near::NearProtocolConfig;
 use crate::protocol::stellar::StellarProtocolConfig;
@@ -36,4 +37,5 @@ pub enum ProtocolSandboxConfig {
     Near(NearProtocolConfig),
     Icp(IcpProtocolConfig),
     Stellar(StellarProtocolConfig),
+    Ethereum(EthereumProtocolConfig),
 }

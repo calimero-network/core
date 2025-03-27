@@ -10,7 +10,7 @@ needed) and run the e2e tests.
 Tests can be run for a single protocol or all supported protocols based on
 values in `--protocols` flag. For all protocols, don't set the flag. For a
 single protocol, set the flag to the protocol you want to test. Current
-supported protocols are: `near`, `icp`, `stellar`
+supported protocols are: `near`, `icp`, `stellar`, `ethereum`
 
 Build application:
 

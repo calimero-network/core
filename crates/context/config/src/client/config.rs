@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::client::protocol::ethereum::Credentials as EthereumCredentials;
 use crate::client::protocol::icp::Credentials as IcpCredentials;
 use crate::client::protocol::near::Credentials as NearCredentials;
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
-use crate::client::protocol::stellar::Credentials as StellarCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
@@ -71,5 +71,14 @@ pub enum Credentials {
     Near(NearCredentials),
     Starknet(StarknetCredentials),
     Icp(IcpCredentials),
-    Stellar(StellarCredentials),
+    Ethereum(EthereumCredentials),
+    Raw(RawCredentials),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RawCredentials {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub public_key: String,
+    pub secret_key: String,
 }

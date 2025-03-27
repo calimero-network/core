@@ -243,7 +243,7 @@ pub(crate) fn setup(
         )
         .route(
             "/dev/contexts/:context_id/proposals",
-            get(get_proposals_handler),
+            post(get_proposals_handler),
         )
         .route(
             "/dev/contexts/:context_id/proposals/:proposal_id",
