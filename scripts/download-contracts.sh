@@ -6,12 +6,21 @@ OUTPUT_DIR=${CALIMERO_CONTRACTS_DIR:-contracts}
 REPO_OWNER="calimero-network"
 REPO_NAME="contracts"
 
-API_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/tags/$TAG"
+if [ "$TAG" = "latest" ]; then
+  echo "Fetching latest release..."
+  API_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
+else
+  echo "Fetching release for tag: $TAG"
+  API_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/tags/$TAG"
+fi
+
 RELEASE_DATA=$(curl -s "$API_URL")
 ASSET_URLS=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | endswith(".tar.gz")) | .browser_download_url')
 
 if [ -z "$ASSET_URLS" ]; then
-  echo "No .tar.gz assets found for tag $TAG"
+  echo "No .tar.gz assets found for ${TAG}"
+  echo "API Response:"
+  echo "$RELEASE_DATA" | jq '.'
   exit 1
 fi
 

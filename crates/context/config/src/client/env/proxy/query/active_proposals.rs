@@ -1,10 +1,12 @@
 use std::io::Cursor;
 
+use alloy_sol_types::SolValue;
 use candid::{CandidType, Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal};
 
 use crate::client::env::Method;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -95,5 +97,20 @@ impl Method<Stellar> for ActiveProposalRequest {
             .map_err(|e| eyre::eyre!("Failed to convert to u64: {:?}", e))?;
 
         Ok(active_proposals_limit as u16)
+    }
+}
+
+impl Method<Ethereum> for ActiveProposalRequest {
+    type Returns = u16;
+
+    const METHOD: &'static str = "getActiveProposalsLimit()";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        Ok(().abi_encode())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let active_proposals_limit: Self::Returns = SolValue::abi_decode(&response, false)?;
+        Ok(active_proposals_limit)
     }
 }

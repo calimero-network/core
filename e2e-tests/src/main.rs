@@ -24,7 +24,7 @@ pub const EXAMPLES: &str = r"
   $ e2e-tests --input-dir ./e2e-tests/config
     --output-dir ./e2e-tests/corpus
     --merod-binary ./target/debug/merod
-    --meroctl-binary ./target/debug/meroctl
+    --meroctl-binary ./target/debug/meroctl 
 ";
 
 #[derive(Debug, Parser)]
@@ -92,9 +92,20 @@ pub struct RootArgs {
     #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
     pub output_format: OutputFormat,
 
-    /// Filter tests by protocols (e.g., "stellar near icp")
-    #[arg(long, value_name = "PROTOCOLS", num_args = 0..)]
-    pub protocols: Vec<String>,
+    /// Scenario to run ("ethereum", "near", "stellar", "icp")
+    #[arg(long, value_name = "SCENARIO")]
+    #[arg(value_parser = parse_scenario)]
+    pub scenario: String,
+}
+
+fn parse_scenario(s: &str) -> Result<String, String> {
+    match s {
+        "ethereum" | "near" | "stellar" | "icp" => Ok(s.to_owned()),
+        _ => Err(format!(
+            "Invalid scenario. Must be one of: ethereum, near, stellar, icp. Got: {}",
+            s
+        )),
+    }
 }
 
 #[derive(Debug)]
@@ -108,7 +119,7 @@ pub struct TestEnvironment {
     pub logs_dir: Utf8PathBuf,
     pub icp_dir: Utf8PathBuf,
     pub output_writer: OutputWriter,
-    pub protocols: Vec<String>,
+    pub scenario: String,
 }
 
 impl From<RootArgs> for TestEnvironment {
@@ -125,7 +136,7 @@ impl From<RootArgs> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            protocols: val.protocols,
+            scenario: val.scenario,
         }
     }
 }

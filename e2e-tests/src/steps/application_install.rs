@@ -1,5 +1,9 @@
+use std::io::Read;
+
 use eyre::{bail, Result as EyreResult};
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 
 use crate::driver::{Test, TestContext};
 use crate::meroctl::Meroctl;
@@ -11,11 +15,15 @@ pub struct ApplicationInstallStep {
     pub target: ApplicationInstallTarget,
 }
 
+/// Source location for an application that can be installed.
+/// Supports both local files and remote URLs with optional gzip compression.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ApplicationSource {
+    /// Local file path to a WASM application
     LocalFile(String),
-    // CalimeroRegistry(String),
+    /// Remote URL pointing to a WASM application, optionally gzip compressed (.gz extension)
+    Url(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -96,9 +104,49 @@ impl Test for ApplicationInstallStep {
 }
 
 impl ApplicationSource {
+    /// Installs the application from this source onto the specified node.
+    ///
+    /// For local files, directly installs the WASM file using meroctl.
+    /// For remote URLs, downloads the file (decompressing if it's gzipped),
+    /// temporarily stores it locally, installs it, and then cleans up.
+    ///
+    /// # Arguments
+    /// * `meroctl` - The meroctl instance to use for installation
+    /// * `node_name` - Name of the node to install the application on
+    ///
+    /// # Returns
+    /// * `String` - Installation result message
+    ///
+    /// # Errors
+    /// * If URL download fails
+    /// * If decompression fails for gzipped files
+    /// * If temporary file operations fail
+    /// * If the meroctl installation fails
     async fn install(&self, meroctl: &Meroctl, node_name: &str) -> EyreResult<String> {
         match self {
             Self::LocalFile(path) => meroctl.application_install(node_name, path).await,
+            Self::Url(url) => {
+                let response = reqwest::get(url).await?;
+                let bytes = response.bytes().await?;
+
+                let decoded_bytes = if url.ends_with(".gz") {
+                    let mut decoder = GzDecoder::new(&bytes[..]);
+                    let mut decompressed = Vec::new();
+                    decoder.read_to_end(&mut decompressed)?;
+                    decompressed
+                } else {
+                    bytes.to_vec()
+                };
+
+                let temp_path = "/tmp/app.wasm";
+                fs::write(&temp_path, decoded_bytes).await?;
+
+                let result = meroctl.application_install(node_name, &temp_path).await;
+
+                fs::remove_file(&temp_path).await?;
+
+                result
+            }
         }
     }
 }
