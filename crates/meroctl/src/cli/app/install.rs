@@ -146,9 +146,6 @@ impl InstallCommand {
             }
             .install_app(environment)
             .await?;
-            environment.output.write(&InfoLine(&format!(
-                "New file is in use with id {_application_id}"
-            )));
         }
         Ok(())
     }
