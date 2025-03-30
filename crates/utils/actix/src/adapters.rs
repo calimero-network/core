@@ -7,7 +7,7 @@ use actix::{
     WrapFuture,
 };
 use futures_util::stream::repeat;
-use futures_util::{Stream, StreamExt};
+use futures_util::{FutureExt, Stream, StreamExt, TryFutureExt};
 use tokio::sync::oneshot;
 
 pub trait AddrExt<A: Actor> {
@@ -64,14 +64,7 @@ where
             let tx = handler.map(|handler| {
                 let (tx, rx) = oneshot::channel();
 
-                let _ignored = ctx.spawn(
-                    async move {
-                        if let Ok(item) = rx.await {
-                            handler(item);
-                        }
-                    }
-                    .into_actor(act),
-                );
+                let _ignored = ctx.spawn(rx.map_ok(handler).map(|_| ()).into_actor(act));
 
                 tx
             });

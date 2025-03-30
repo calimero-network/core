@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use actix::prelude::*;
+use actix::prelude::{Actor, Context, Handler, Message, ResponseFuture};
 use calimero_primitives::context::ContextId;
 use calimero_utils_actix::global_runtime;
 use tokio::sync::Mutex;
