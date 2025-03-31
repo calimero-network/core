@@ -8,6 +8,7 @@ use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Bytes, Env, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
+use eyre::{Result, eyre};
 
 use crate::client::env::proxy::starknet::{
     CallData, ContextStorageEntriesResponse, StarknetContextStorageEntriesRequest,
@@ -31,14 +32,14 @@ impl Method<Near> for ContextStorageEntriesRequest {
 
     type Returns = Vec<ContextStorageEntry>;
 
-    fn encode(self) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> Result<Vec<u8>> {
         serde_json::to_vec(&self).map_err(Into::into)
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(response: Vec<u8>) -> Result<Self::Returns> {
         // Decode the response as Vec of tuples with boxed slices
         let entries: Vec<(Box<[u8]>, Box<[u8]>)> = serde_json::from_slice(&response)
-            .map_err(|e| eyre::eyre!("Failed to decode response: {}", e))?;
+            .map_err(|e| eyre!("Failed to decode response: {}", e))?;
 
         // Convert to ContextStorageEntry
         Ok(entries
@@ -56,7 +57,7 @@ impl Method<Starknet> for ContextStorageEntriesRequest {
 
     type Returns = Vec<ContextStorageEntry>;
 
-    fn encode(self) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> Result<Vec<u8>> {
         let req = StarknetContextStorageEntriesRequest {
             offset: Felt::from(self.offset as u64),
             length: Felt::from(self.limit as u64),
@@ -66,7 +67,7 @@ impl Method<Starknet> for ContextStorageEntriesRequest {
         Ok(call_data.0)
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(response: Vec<u8>) -> Result<Self::Returns> {
         if response.is_empty() {
             return Ok(vec![]);
         }
@@ -77,10 +78,10 @@ impl Method<Starknet> for ContextStorageEntriesRequest {
             .map(|chunk| {
                 let chunk_array: [u8; 32] = chunk
                     .try_into()
-                    .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+                    .map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?;
                 Ok(Felt::from_bytes_be(&chunk_array))
             })
-            .collect::<eyre::Result<Vec<Felt>>>()?;
+            .collect::<Result<Vec<Felt>>>()?;
 
         let response = ContextStorageEntriesResponse::decode_iter(&mut felts.iter())?;
 
@@ -93,16 +94,16 @@ impl Method<Icp> for ContextStorageEntriesRequest {
 
     type Returns = Vec<ContextStorageEntry>;
 
-    fn encode(self) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> Result<Vec<u8>> {
         // Encode offset and limit using Candid
         Encode!(&self.offset, &self.limit)
-            .map_err(|e| eyre::eyre!("Failed to encode request: {}", e))
+            .map_err(|e| eyre!("Failed to encode request: {}", e))
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(response: Vec<u8>) -> Result<Self::Returns> {
         // Decode the response as Vec of tuples
         let entries: Vec<(Vec<u8>, Vec<u8>)> = Decode!(&response, Vec<(Vec<u8>, Vec<u8>)>)
-            .map_err(|e| eyre::eyre!("Failed to decode response: {}", e))?;
+            .map_err(|e| eyre!("Failed to decode response: {}", e))?;
 
         // Convert to ContextStorageEntry
         Ok(entries
@@ -117,7 +118,7 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
 
     const METHOD: &'static str = "context_storage_entries";
 
-    fn encode(self) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> Result<Vec<u8>> {
         let env = Env::default();
         let offset_val: u32 = self.offset as u32;
         let limit_val: u32 = self.limit as u32;
@@ -128,7 +129,7 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
         Ok(xdr.to_alloc_vec())
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(response: Vec<u8>) -> Result<Self::Returns> {
         let cursor = Cursor::new(response);
         let mut limited = Limited::new(cursor, Limits::none());
 
@@ -158,7 +159,7 @@ impl Method<Ethereum> for ContextStorageEntriesRequest {
 
     const METHOD: &'static str = "contextStorageEntries(uint32,uint32)";
 
-    fn encode(self) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> Result<Vec<u8>> {
         let offset = u32::try_from(self.offset)
             .map_err(|e| eyre::eyre!("Offset too large for u32: {}", e))?;
         let limit =
@@ -166,7 +167,7 @@ impl Method<Ethereum> for ContextStorageEntriesRequest {
         Ok((offset, limit).abi_encode())
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(response: Vec<u8>) -> Result<Self::Returns> {
         // Define the struct type as a tuple
         let struct_type = "tuple(bytes,bytes)[]".parse::<DynSolType>()?;
         // Decode using dynamic ABI decoder
@@ -177,26 +178,27 @@ impl Method<Ethereum> for ContextStorageEntriesRequest {
                 .into_iter()
                 .map(|entry| {
                     if let DynSolValue::Tuple(fields) = entry {
-                        let all_bytes = fields[1].as_bytes().unwrap();
+                        let all_bytes = fields[1].as_bytes()
+                            .ok_or_else(|| eyre!("Failed to get bytes from field"))?;
 
                         // Get key
                         let key_len = all_bytes[31] as usize;
                         let key = all_bytes[32..32 + key_len].to_vec();
 
                         // Get value
+                        #[allow(clippy::integer_division, reason = "Need this for 32-byte alignment")]
                         let value_offset = 32 + ((key_len + 31) / 32) * 32;
                         let value_len = all_bytes[value_offset + 31] as usize;
-                        let value =
-                            all_bytes[value_offset + 32..value_offset + 32 + value_len].to_vec();
+                        let value = all_bytes[value_offset + 32..value_offset + 32 + value_len].to_vec();
 
                         Ok(ContextStorageEntry { key, value })
                     } else {
-                        Err(eyre::eyre!("Expected tuple"))
+                        Err(eyre!("Expected tuple"))
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?)
         } else {
-            Err(eyre::eyre!("Expected array"))
+            Err(eyre!("Expected array"))
         }
     }
 }

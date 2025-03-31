@@ -48,7 +48,7 @@ impl Test for GetProposalsStep {
         let Some(proposal_id) = proposal_id else {
             bail!("No proposal IDs found in response: {:?}", proposals);
         };
-        ctx.proposal_id = Some(proposal_id.to_string());
+        ctx.proposal_id = Some(proposal_id.to_owned());
 
         ctx.output_writer
             .write_str(&format!("Report: Get proposals on '{}' node", &ctx.inviter));
