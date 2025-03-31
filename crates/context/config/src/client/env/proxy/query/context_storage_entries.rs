@@ -1,8 +1,9 @@
 use std::io::Cursor;
 
+use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
-use eyre::OptionExt;
+use eyre::eyre;
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Bytes, Env, TryIntoVal};
@@ -38,7 +39,7 @@ impl Method<Near> for ContextStorageEntriesRequest {
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         // Decode the response as Vec of tuples with boxed slices
         let entries: Vec<(Box<[u8]>, Box<[u8]>)> = serde_json::from_slice(&response)
-            .map_err(|e| eyre::eyre!("Failed to decode response: {}", e))?;
+            .map_err(|e| eyre!("Failed to decode response: {}", e))?;
 
         // Convert to ContextStorageEntry
         Ok(entries
@@ -77,7 +78,7 @@ impl Method<Starknet> for ContextStorageEntriesRequest {
             .map(|chunk| {
                 let chunk_array: [u8; 32] = chunk
                     .try_into()
-                    .map_err(|e| eyre::eyre!("Failed to convert chunk to array: {}", e))?;
+                    .map_err(|e| eyre!("Failed to convert chunk to array: {}", e))?;
                 Ok(Felt::from_bytes_be(&chunk_array))
             })
             .collect::<eyre::Result<Vec<Felt>>>()?;
@@ -95,14 +96,13 @@ impl Method<Icp> for ContextStorageEntriesRequest {
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         // Encode offset and limit using Candid
-        Encode!(&self.offset, &self.limit)
-            .map_err(|e| eyre::eyre!("Failed to encode request: {}", e))
+        Encode!(&self.offset, &self.limit).map_err(|e| eyre!("Failed to encode request: {}", e))
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
         // Decode the response as Vec of tuples
         let entries: Vec<(Vec<u8>, Vec<u8>)> = Decode!(&response, Vec<(Vec<u8>, Vec<u8>)>)
-            .map_err(|e| eyre::eyre!("Failed to decode response: {}", e))?;
+            .map_err(|e| eyre!("Failed to decode response: {}", e))?;
 
         // Convert to ContextStorageEntry
         Ok(entries
@@ -113,9 +113,9 @@ impl Method<Icp> for ContextStorageEntriesRequest {
 }
 
 impl Method<Stellar> for ContextStorageEntriesRequest {
-    type Returns = Vec<ContextStorageEntry>;
-
     const METHOD: &'static str = "context_storage_entries";
+
+    type Returns = Vec<ContextStorageEntry>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let env = Env::default();
@@ -154,33 +154,51 @@ impl Method<Stellar> for ContextStorageEntriesRequest {
 }
 
 impl Method<Ethereum> for ContextStorageEntriesRequest {
-    type Returns = Vec<ContextStorageEntry>;
-
     const METHOD: &'static str = "contextStorageEntries(uint32,uint32)";
+
+    type Returns = Vec<ContextStorageEntry>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         let offset = u32::try_from(self.offset)
             .map_err(|e| eyre::eyre!("Offset too large for u32: {}", e))?;
         let limit =
             u32::try_from(self.limit).map_err(|e| eyre::eyre!("Limit too large for u32: {}", e))?;
-
         Ok((offset, limit).abi_encode())
     }
+
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded: Vec<alloy::primitives::Bytes> = SolValue::abi_decode(&response, false)?;
-        let mut decoded = decoded.into_iter();
-        let mut entries = Vec::with_capacity(decoded.len() >> 1);
-        while let Some(key) = decoded.next() {
-            let value = decoded
-                .next()
-                .ok_or_eyre("missing value for storage entry")?;
+        // Define the struct type as a tuple
+        let struct_type = "tuple(bytes,bytes)[]".parse::<DynSolType>()?;
+        // Decode using dynamic ABI decoder
+        let decoded = struct_type.abi_decode(&response)?;
+        // Convert the decoded value to our type
+        let DynSolValue::Array(entries) = decoded else {
+            return Err(eyre!("Expected array"));
+        };
 
-            entries.push(ContextStorageEntry {
-                key: key.into(),
-                value: value.into(),
-            });
-        }
+        Ok(entries
+            .into_iter()
+            .map(|entry| {
+                let DynSolValue::Tuple(fields) = entry else {
+                    return Err(eyre!("Expected tuple"));
+                };
 
-        Ok(entries)
+                let all_bytes = fields[1]
+                    .as_bytes()
+                    .ok_or_else(|| eyre!("Failed to get bytes from field"))?;
+
+                // Get key
+                let key_len = all_bytes[31] as usize;
+                let key = all_bytes[32..32 + key_len].to_vec();
+
+                // Get value
+                #[allow(clippy::integer_division, reason = "Need this for 32-byte alignment")]
+                let value_offset = 32 + ((key_len + 31) / 32) * 32;
+                let value_len = all_bytes[value_offset + 31] as usize;
+                let value = all_bytes[value_offset + 32..value_offset + 32 + value_len].to_vec();
+
+                Ok(ContextStorageEntry { key, value })
+            })
+            .collect::<Result<Vec<_>, _>>()?)
     }
 }

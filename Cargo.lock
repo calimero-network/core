@@ -1246,6 +1246,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compression"
+version = "0.4.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59a194f9d963d8099596278594b3107448656ba73831c9d8c783e613ce86da64"
+dependencies = [
+ "flate2",
+ "futures-core",
+ "memchr",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-io"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3090,13 +3103,14 @@ name = "e2e-tests"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "async-compression",
  "base64 0.22.1",
  "camino",
  "candid",
  "clap",
  "const_format",
  "eyre",
- "flate2",
+ "futures-util",
  "ic-agent",
  "near-workspaces",
  "nix 0.29.0",
@@ -3107,6 +3121,7 @@ dependencies = [
  "soroban-client",
  "soroban-sdk",
  "tokio",
+ "tokio-util",
  "url",
 ]
 

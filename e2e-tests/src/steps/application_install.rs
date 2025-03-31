@@ -1,9 +1,10 @@
-use std::io::Read;
-
+use async_compression::tokio::bufread::GzipDecoder;
 use eyre::{bail, Result as EyreResult};
-use flate2::read::GzDecoder;
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::fs;
+use tokio::fs::{self, File};
+use tokio::io::{self, AsyncWriteExt};
+use tokio_util::io::StreamReader;
 
 use crate::driver::{Test, TestContext};
 use crate::meroctl::Meroctl;
@@ -127,24 +128,22 @@ impl ApplicationSource {
             Self::LocalFile(path) => meroctl.application_install(node_name, path).await,
             Self::Url(url) => {
                 let response = reqwest::get(url).await?;
-                let bytes = response.bytes().await?;
-
-                let decoded_bytes = if url.ends_with(".gz") {
-                    let mut decoder = GzDecoder::new(&bytes[..]);
-                    let mut decompressed = Vec::new();
-                    decoder.read_to_end(&mut decompressed)?;
-                    decompressed
-                } else {
-                    bytes.to_vec()
-                };
-
                 let temp_path = "/tmp/app.wasm";
-                fs::write(&temp_path, decoded_bytes).await?;
+                let mut file = File::create(&temp_path).await?;
+                let stream = response.bytes_stream().map_err(io::Error::other);
+                let mut reader = StreamReader::new(stream);
+
+                if url.ends_with(".gz") {
+                    let mut decoder = GzipDecoder::new(reader);
+                    io::copy(&mut decoder, &mut file).await?;
+                } else {
+                    io::copy(&mut reader, &mut file).await?;
+                }
+
+                file.flush().await?;
 
                 let result = meroctl.application_install(node_name, &temp_path).await;
-
                 fs::remove_file(&temp_path).await?;
-
                 result
             }
         }
