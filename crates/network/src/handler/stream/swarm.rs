@@ -85,7 +85,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                         .add_peer_addr(peer_id, endpoint.get_remote_address());
 
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        let _ignored = sender.send(Ok(Some(())));
+                        let _ignored = sender.send(Ok(()));
                     }
                 }
             }

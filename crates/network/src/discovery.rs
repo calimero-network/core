@@ -1,3 +1,4 @@
+use calimero_network_primitives::config::{RelayConfig, RendezvousConfig};
 use eyre::{bail, ContextCompat, Result as EyreResult};
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
@@ -5,7 +6,6 @@ use multiaddr::Protocol;
 use tracing::{debug, error};
 
 use super::NetworkManager;
-use crate::config::{RelayConfig, RendezvousConfig};
 use crate::discovery::state::{
     DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
 };

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use calimero_network_primitives::config::NetworkConfig;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
@@ -8,8 +9,6 @@ use libp2p::{
 };
 use multiaddr::Protocol;
 use tracing::warn;
-
-use crate::config::NetworkConfig;
 
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/kad/1.0.0");

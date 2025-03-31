@@ -1,17 +1,7 @@
-use actix::{Context, Handler, Message};
-use libp2p::gossipsub::TopicHash;
+use actix::{Context, Handler};
+use calimero_network_primitives::messages::MeshPeerCount;
 
 use crate::NetworkManager;
-
-#[derive(Message, Clone, Debug)]
-#[rtype(usize)]
-pub struct MeshPeerCount(TopicHash);
-
-impl From<TopicHash> for MeshPeerCount {
-    fn from(topic: TopicHash) -> Self {
-        Self(topic)
-    }
-}
 
 impl Handler<MeshPeerCount> for NetworkManager {
     type Result = usize;

@@ -15,6 +15,7 @@ members = [
     "./crates/meroctl",
     "./crates/merod",
     "./crates/network",
+    "./crates/network/primitives",
     "./crates/node",
     "./crates/node-primitives",
     "./crates/primitives",
@@ -166,6 +167,7 @@ calimero-crypto = { path = "./crates/crypto" }
 meroctl = { path = "./crates/meroctl" }
 merod = { path = "./crates/merod" }
 calimero-network = { path = "./crates/network" }
+calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
 calimero-node-primitives = { path = "./crates/node-primitives" }
 calimero-primitives = { path = "./crates/primitives" }

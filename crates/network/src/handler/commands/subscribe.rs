@@ -1,18 +1,10 @@
-use actix::{Context, Handler, Message};
+use actix::{Context, Handler};
+use calimero_network_primitives::messages::Subscribe;
 use eyre::Result as EyreResult;
 use libp2p::gossipsub::IdentTopic;
 
 use crate::NetworkManager;
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<IdentTopic>")]
-pub struct Subscribe(IdentTopic);
-
-impl From<IdentTopic> for Subscribe {
-    fn from(topic: IdentTopic) -> Self {
-        Self(topic)
-    }
-}
 impl Handler<Subscribe> for NetworkManager {
     type Result = EyreResult<IdentTopic>;
 

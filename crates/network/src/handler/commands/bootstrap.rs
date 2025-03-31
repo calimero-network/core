@@ -1,15 +1,12 @@
-use actix::{Context, Handler, Message, Response};
+use actix::{Context, Handler, Response};
+use calimero_network_primitives::messages::Bootstrap;
 use eyre::{eyre, Result as EyreResult};
 use tokio::sync::oneshot;
 
 use crate::NetworkManager;
 
-#[derive(Message, Clone, Copy, Debug)]
-#[rtype("EyreResult<Option<()>>")]
-pub struct Bootstrap;
-
 impl Handler<Bootstrap> for NetworkManager {
-    type Result = Response<EyreResult<Option<()>>>;
+    type Result = Response<EyreResult<()>>;
 
     fn handle(&mut self, _msg: Bootstrap, _ctx: &mut Context<Self>) -> Self::Result {
         let (sender, receiver) = oneshot::channel();

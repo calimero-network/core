@@ -9,6 +9,9 @@
 use std::collections::hash_map::HashMap;
 
 use actix::{Actor, AsyncContext, Context};
+use calimero_network_primitives::client::NetworkClient;
+use calimero_network_primitives::config::NetworkConfig;
+use calimero_network_primitives::stream::CALIMERO_STREAM_PROTOCOL;
 use calimero_utils_actix::{actor, LazyRecipient};
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
@@ -21,29 +24,30 @@ use tokio_stream::wrappers::IntervalStream;
 use tracing::error;
 
 mod behaviour;
-pub mod client;
-pub mod config;
 mod discovery;
 mod handler;
-pub mod stream;
 pub mod types;
 
 use behaviour::Behaviour;
-use client::NetworkClient;
-use config::NetworkConfig;
 use discovery::Discovery;
 use handler::stream::incoming::FromIncoming;
 use handler::stream::rendezvous::RendezvousTick;
 use handler::stream::swarm::FromSwarm;
-use stream::CALIMERO_STREAM_PROTOCOL;
 use types::NetworkEvent;
 
 pub async fn run(
     config: &NetworkConfig,
 ) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>)> {
+    let mgr = LazyRecipient::new();
+
     let network_manager = NetworkManager::new(config, LazyRecipient::new())?;
 
-    let client = NetworkClient::new(network_manager.start());
+    let client = NetworkClient::new(mgr.clone());
+
+    let _ignored = Actor::create(|ctx| {
+        assert!(mgr.init(ctx));
+        network_manager
+    });
 
     client.bootstrap().await?;
 
@@ -60,8 +64,8 @@ pub struct NetworkManager {
     swarm: Box<Swarm<Behaviour>>,
     event_recipient: LazyRecipient<NetworkEvent>,
     discovery: Discovery,
-    pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<Option<()>>>>,
-    pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<Option<()>>>>,
+    pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<()>>>,
+    pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<()>>>,
 }
 
 impl NetworkManager {

@@ -1,19 +1,9 @@
-use actix::{Context, Handler, Message, ResponseFuture};
+use actix::{Context, Handler, ResponseFuture};
+use calimero_network_primitives::messages::OpenStream;
+use calimero_network_primitives::stream::{Stream, CALIMERO_STREAM_PROTOCOL};
 use eyre::{bail, Result as EyreResult};
-use libp2p::PeerId;
 
-use crate::stream::{Stream, CALIMERO_STREAM_PROTOCOL};
 use crate::NetworkManager;
-
-#[derive(Message, Clone, Copy, Debug)]
-#[rtype("EyreResult<Stream>")]
-pub struct OpenStream(PeerId);
-
-impl From<PeerId> for OpenStream {
-    fn from(peer_id: PeerId) -> Self {
-        Self(peer_id)
-    }
-}
 
 impl Handler<OpenStream> for NetworkManager {
     type Result = ResponseFuture<EyreResult<Stream>>;

@@ -1,18 +1,10 @@
-use actix::{Context, Handler, Message};
+use actix::{Context, Handler};
+use calimero_network_primitives::messages::Unsubscribe;
 use eyre::Result as EyreResult;
 use libp2p::gossipsub::IdentTopic;
 
 use crate::NetworkManager;
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<IdentTopic>")]
-pub struct Unsubscribe(IdentTopic);
-
-impl From<IdentTopic> for Unsubscribe {
-    fn from(topic: IdentTopic) -> Self {
-        Self(topic)
-    }
-}
 impl Handler<Unsubscribe> for NetworkManager {
     type Result = EyreResult<IdentTopic>;
 

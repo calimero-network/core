@@ -1,8 +1,8 @@
 use actix::StreamHandler;
+use calimero_network_primitives::stream::Stream;
 use libp2p::{PeerId, Stream as P2pStream};
 use tracing::debug;
 
-use crate::stream::Stream;
 use crate::types::NetworkEvent;
 use crate::NetworkManager;
 

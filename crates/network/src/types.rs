@@ -1,10 +1,9 @@
 use actix::Message as ActixMessage;
+use calimero_network_primitives::stream::Stream;
 use libp2p::core::transport::ListenerId;
 pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
 pub use libp2p::identity::PeerId;
 use multiaddr::Multiaddr;
-
-use crate::stream::Stream;
 
 #[derive(ActixMessage, Debug)]
 #[rtype("()")]

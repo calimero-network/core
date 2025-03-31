@@ -1,18 +1,9 @@
-use actix::{Context, Handler, Message};
-use libp2p::gossipsub::TopicHash;
+use actix::{Context, Handler};
+use calimero_network_primitives::messages::MeshPeers;
 use libp2p::PeerId;
 
 use crate::NetworkManager;
 
-#[derive(Message, Clone, Debug)]
-#[rtype("Vec<PeerId>")]
-pub struct MeshPeers(TopicHash);
-
-impl From<TopicHash> for MeshPeers {
-    fn from(topic: TopicHash) -> Self {
-        Self(topic)
-    }
-}
 impl Handler<MeshPeers> for NetworkManager {
     type Result = Vec<PeerId>;
 

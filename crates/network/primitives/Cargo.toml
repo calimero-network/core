@@ -1,5 +1,5 @@
 [package]
-name = "calimero-network"
+name = "calimero-network-primitives"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+bytes.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 libp2p = { workspace = true, features = [
@@ -27,16 +28,17 @@ libp2p = { workspace = true, features = [
     "tls",
     "yamux",
 ] }
-libp2p-stream.workspace = true
 multiaddr.workspace = true
-owo-colors.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros"] }
-tokio-stream = { workspace = true, features = ["time"] }
-tracing.workspace = true
+tokio-util = { workspace = true, features = ["codec", "compat"] }
 
-calimero-network-primitives.workspace = true
+calimero-primitives.workspace = true
 calimero-utils-actix.workspace = true
 
+[dev-dependencies]
+tokio-test.workspace = true
 
 [lints]
 workspace = true

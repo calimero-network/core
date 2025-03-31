@@ -1,18 +1,9 @@
-use actix::{Context, Handler, Message};
+use actix::{Context, Handler};
+use calimero_network_primitives::messages::ListenOn;
 use eyre::Result as EyreResult;
-use multiaddr::Multiaddr;
 
 use crate::NetworkManager;
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<()>")]
-pub struct ListenOn(Multiaddr);
-
-impl From<Multiaddr> for ListenOn {
-    fn from(addr: Multiaddr) -> Self {
-        Self(addr)
-    }
-}
 impl Handler<ListenOn> for NetworkManager {
     type Result = EyreResult<()>;
 
