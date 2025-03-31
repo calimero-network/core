@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
 use tokio::fs::{read, read_dir, write};
 use tokio::net::{TcpListener, TcpSocket};
-use tokio::{time, try_join};
+use tokio::time::{sleep, Duration};
+use tokio::try_join;
 
 use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
@@ -110,8 +111,13 @@ impl Driver {
 
                     if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str())
                     {
-                        // Skip if this isn't the requested scenario/protocol
-                        if protocol_name != self.environment.scenario {
+                        // Skip if this isn't one of the requested scenarios/protocols
+                        if !self
+                            .environment
+                            .scenarios
+                            .iter()
+                            .any(|s| s.to_string().to_lowercase() == protocol_name)
+                        {
                             continue;
                         }
 
@@ -303,7 +309,7 @@ impl Driver {
                     TcpSocket::new_v4()?.connect(swarm_addr),
                     TcpSocket::new_v4()?.connect(server_addr)
                 ) {
-                    time::sleep(time::Duration::from_secs(1)).await;
+                    sleep(Duration::from_secs(1)).await;
                 }
             }
         }
@@ -621,6 +627,26 @@ struct PortBinding {
 }
 
 impl PortBinding {
+    async fn next_available(host: IpAddr, port: &mut u16) -> EyreResult<PortBinding> {
+        for _ in 0..100 {
+            let address = (host, *port).into();
+
+            let res = TcpListener::bind(address).await;
+
+            *port += 1;
+
+            if let Ok(listener) = res {
+                return Ok(PortBinding { address, listener });
+            }
+        }
+
+        bail!(
+            "unable to select a port in range {}..={}",
+            *port - 100,
+            *port - 1
+        );
+    }
+
     fn port(&self) -> u16 {
         self.address.port()
     }
@@ -629,18 +655,5 @@ impl PortBinding {
     fn into_socket_addr(self) -> SocketAddr {
         drop(self.listener);
         self.address
-    }
-
-    async fn next_available(host: IpAddr, _port: &mut u16) -> EyreResult<PortBinding> {
-        // Explicitly specify port as u16 and create SocketAddr
-        let address: SocketAddr = (host, 0_u16).into();
-
-        match TcpListener::bind(address).await {
-            Ok(listener) => {
-                let address = listener.local_addr()?;
-                Ok(PortBinding { address, listener })
-            }
-            Err(e) => bail!("Failed to bind to random port: {}", e),
-        }
     }
 }

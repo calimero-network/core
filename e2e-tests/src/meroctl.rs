@@ -165,7 +165,7 @@ impl Meroctl {
         context_id: &str,
         args: &serde_json::Value,
     ) -> EyreResult<serde_json::Value> {
-        let args_json = serde_json::to_string(args).unwrap();
+        let args_json = serde_json::to_string(args)?;
         let json = self
             .run_cmd(
                 node_name,
@@ -198,7 +198,7 @@ impl Meroctl {
             [
                 "call",
                 context_id,
-                &method_name,
+                method_name,
                 "--args",
                 &args_json,
                 "--as",
