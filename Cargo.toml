@@ -17,16 +17,16 @@ members = [
     "./crates/network",
     "./crates/network/primitives",
     "./crates/node",
-    "./crates/node-primitives",
+    "./crates/node/primitives",
     "./crates/primitives",
     "./crates/runtime",
     "./crates/sdk",
     "./crates/sdk/libs/near",
     "./crates/sdk/macros",
     "./crates/server",
-    "./crates/server-primitives",
+    "./crates/server/primitives",
     "./crates/storage",
-    "./crates/storage-macros",
+    "./crates/storage/macros",
     "./crates/store",
     "./crates/store/blobs",
     "./crates/utils/actix",
@@ -169,16 +169,16 @@ merod = { path = "./crates/merod" }
 calimero-network = { path = "./crates/network" }
 calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
-calimero-node-primitives = { path = "./crates/node-primitives" }
+calimero-node-primitives = { path = "./crates/node/primitives" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-near = { path = "./crates/sdk/libs/near" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }
 calimero-server = { path = "./crates/server" }
-calimero-server-primitives = { path = "./crates/server-primitives" }
+calimero-server-primitives = { path = "./crates/server/primitives" }
 calimero-storage = { path = "./crates/storage" }
-calimero-storage-macros = { path = "./crates/storage-macros" }
+calimero-storage-macros = { path = "./crates/storage/macros" }
 calimero-store = { path = "./crates/store" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
