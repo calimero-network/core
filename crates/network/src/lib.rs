@@ -25,14 +25,14 @@ use tracing::error;
 
 mod behaviour;
 mod discovery;
-mod handler;
+mod handlers;
 pub mod types;
 
 use behaviour::Behaviour;
 use discovery::Discovery;
-use handler::stream::incoming::FromIncoming;
-use handler::stream::rendezvous::RendezvousTick;
-use handler::stream::swarm::FromSwarm;
+use handlers::stream::incoming::FromIncoming;
+use handlers::stream::rendezvous::RendezvousTick;
+use handlers::stream::swarm::FromSwarm;
 use types::NetworkEvent;
 
 pub async fn run(
