@@ -130,26 +130,17 @@ impl ApplicationSource {
                 let response = reqwest::get(url).await?;
                 let temp_path = "/tmp/app.wasm";
                 let mut file = File::create(&temp_path).await?;
+                let stream = response.bytes_stream().map_err(io::Error::other);
+                let mut reader = StreamReader::new(stream);
 
                 if url.ends_with(".gz") {
-                    let stream = response
-                        .bytes_stream()
-                        .map_err(io::Error::other);
-
-                    let reader = StreamReader::new(stream);
-
                     let mut decoder = GzipDecoder::new(reader);
                     io::copy(&mut decoder, &mut file).await?;
-                    file.flush().await?;
                 } else {
-                    let mut file = file;
-                    let stream = response
-                        .bytes_stream()
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
-                    let mut reader = StreamReader::new(stream);
                     io::copy(&mut reader, &mut file).await?;
-                    file.flush().await?;
                 }
+
+                file.flush().await?;
 
                 let result = meroctl.application_install(node_name, &temp_path).await;
                 fs::remove_file(&temp_path).await?;
