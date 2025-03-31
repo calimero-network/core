@@ -22,8 +22,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }
 reqwest.workspace = true
-tokio-util.workspace = true
 tokio-stream.workspace = true
+tokio-util.workspace = true
 url.workspace = true
 
 # Add ICP dependencies from workspace

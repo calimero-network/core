@@ -72,27 +72,6 @@ jobs:
         run: |
           chmod +x target/debug/e2e-tests target/debug/merod target/debug/meroctl
 
-      - name: Generate ports
-        id: generate_ports
-        run: |
-          # Generate unique random numbers
-          random_numbers=()
-          while [ ${#random_numbers[@]} -lt 3 ]; do
-            num=$((RANDOM%37001 + 3000))
-            if [[ ! " ${random_numbers[@]} " =~ " ${num} " ]]; then
-              random_numbers+=($num)
-            fi
-          done
-          echo "Random numbers: ${random_numbers[@]}"
-          SWARM_PORT="${random_numbers[0]}"
-          SERVER_PORT="${random_numbers[1]}"
-          ICP_PORT="${random_numbers[2]}"
-          
-          # Set outputs for other steps
-          echo "SWARM_PORT=$SWARM_PORT" >> $GITHUB_OUTPUT
-          echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
-          echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
-
       - name: Download Contracts
         run: |
           echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
@@ -108,7 +87,7 @@ jobs:
       - name: Deploy ICP Devnet
         if: matrix.protocol == 'icp'
         env:
-          ICP_PORT: ${{ steps.generate_ports.outputs.ICP_PORT }}
+          ICP_PORT: 4943
         run: |
           echo "ICP_PORT=$ICP_PORT"
           ./scripts/icp/deploy-devnet.sh
@@ -120,7 +99,7 @@ jobs:
       - name: Deploy Stellar Devnet
         if: matrix.protocol == 'stellar'
         env:
-          ICP_PORT: ${{ steps.generate_ports.outputs.ICP_PORT }}
+          ICP_PORT: 4943
         run: |
           echo "Installing stellar CLI..."
 
@@ -183,13 +162,9 @@ jobs:
         id: e2e-tests
         env:
           NO_COLOR: '1'
-          SWARM_PORT: ${{ steps.generate_ports.outputs.SWARM_PORT }}
-          SERVER_PORT: ${{ steps.generate_ports.outputs.SERVER_PORT }}
-          SWARM_HOST: ${{ steps.generate_ports.outputs.SWARM_HOST }}
         continue-on-error: true
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
-          echo "Using ports: SWARM_PORT=$SWARM_PORT, SERVER_PORT=$SERVER_PORT"
 
           ./target/debug/e2e-tests \
             --input-dir ./e2e-tests/config \

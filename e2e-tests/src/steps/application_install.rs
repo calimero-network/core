@@ -131,37 +131,18 @@ impl ApplicationSource {
             Self::Url(url) => {
                 let response = reqwest::get(url).await?;
                 let temp_path = "/tmp/app.wasm";
-                let file = File::create(&temp_path).await?;
+                let mut file = File::create(&temp_path).await?;
 
                 if url.ends_with(".gz") {
-                    let stream = response.bytes_stream();
-                    let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(1024);
+                    let stream = response
+                        .bytes_stream()
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
 
-                    let write_to_file = tokio::spawn(async move {
-                        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-                        let reader = StreamReader::new(stream);
-                        let mut decoder = GzipDecoder::new(BufReader::new(reader));
-                        let mut file = file;
-                        io::copy(&mut decoder, &mut file).await?;
-                        file.flush().await?;
-                        Ok::<_, io::Error>(())
-                    });
+                    let reader = StreamReader::new(stream);
 
-                    let process_input = tokio::spawn(async move {
-                        let mut stream = stream;
-                        while let Some(chunk) = stream.next().await {
-                            let chunk =
-                                chunk.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                            tx.send(Ok(chunk))
-                                .await
-                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                        }
-                        Ok::<_, io::Error>(())
-                    });
-
-                    let (write_result, process_result) = tokio::join!(write_to_file, process_input);
-                    write_result??;
-                    process_result??;
+                    let mut decoder = GzipDecoder::new(reader);
+                    io::copy(&mut decoder, &mut file).await?;
+                    file.flush().await?;
                 } else {
                     let mut file = file;
                     let stream = response
