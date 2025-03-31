@@ -209,7 +209,7 @@ jobs:
             --output-dir ./e2e-tests/corpus \
             --merod-binary ./target/debug/merod \
             --meroctl-binary ./target/debug/meroctl \
-            --scenario ${{ matrix.protocol }}
+            --scenarios ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
         uses: actions/upload-artifact@v4
