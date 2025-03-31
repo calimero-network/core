@@ -12,6 +12,7 @@ on:
       - '.github/workflows/e2e_tests.yml'
 
 env:
+  # Or you can use 'prerelease-{PR-NUMBER}'
   CALIMERO_CONTRACTS_VERSION: 'latest'
 
 jobs:
@@ -88,7 +89,6 @@ jobs:
           echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
           echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
           echo "SWARM_HOST=$SWARM_HOST" >> $GITHUB_OUTPUT
-          
           # Update config.json
           jq --arg swarmPort "$SWARM_PORT" \
             --arg serverPort "$SERVER_PORT" \

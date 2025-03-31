@@ -36,21 +36,19 @@ impl Test for GetProposalsStep {
             .get_proposals(&ctx.inviter, context_id, &self.args_json)
             .await?;
 
-        let mut ids = Vec::new();
-
-        if let Some(proposals) = proposals.get("data").and_then(|data| data.as_array()) {
+        let mut proposal_id = None;
+        if let Some(proposals) = proposals["data"].as_array() {
             for proposal in proposals {
-                if let Some(id) = proposal.get("id").and_then(|id| id.as_str()) {
-                    ids.push(id.to_owned());
+                if let Some(id) = proposal["id"].as_str() {
+                    proposal_id = Some(id);
+                    break;
                 }
             }
         }
-
-        if ids.is_empty() {
+        let Some(proposal_id) = proposal_id else {
             bail!("No proposal IDs found in response: {:?}", proposals);
-        }
-
-        ctx.proposal_id = Some(ids.first().unwrap().clone());
+        };
+        ctx.proposal_id = Some(proposal_id.to_string());
 
         ctx.output_writer
             .write_str(&format!("Report: Get proposals on '{}' node", &ctx.inviter));

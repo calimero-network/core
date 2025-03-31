@@ -110,8 +110,8 @@ impl Driver {
 
                     if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str())
                     {
-                        // Skip if this isn't the requested scenario/protocol
-                        if protocol_name != self.environment.scenario {
+                        // Skip if this isn't one of the requested scenarios/protocols
+                        if !self.environment.scenarios.iter().any(|s| s.to_string().to_lowercase() == protocol_name) {
                             continue;
                         }
 

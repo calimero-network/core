@@ -1,8 +1,8 @@
 use std::io::Cursor;
 
+use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
-use eyre::OptionExt;
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Bytes, Env, TryIntoVal};
@@ -163,24 +163,39 @@ impl Method<Ethereum> for ContextStorageEntriesRequest {
             .map_err(|e| eyre::eyre!("Offset too large for u32: {}", e))?;
         let limit =
             u32::try_from(self.limit).map_err(|e| eyre::eyre!("Limit too large for u32: {}", e))?;
-
         Ok((offset, limit).abi_encode())
     }
+
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let decoded: Vec<alloy::primitives::Bytes> = SolValue::abi_decode(&response, false)?;
-        let mut decoded = decoded.into_iter();
-        let mut entries = Vec::with_capacity(decoded.len() >> 1);
-        while let Some(key) = decoded.next() {
-            let value = decoded
-                .next()
-                .ok_or_eyre("missing value for storage entry")?;
-
-            entries.push(ContextStorageEntry {
-                key: key.into(),
-                value: value.into(),
-            });
+        // Define the struct type as a tuple
+        let struct_type = "tuple(bytes,bytes)[]".parse::<DynSolType>()?;
+        // Decode using dynamic ABI decoder
+        let decoded = struct_type.abi_decode(&response)?;        
+        // Convert the decoded value to our type
+        if let DynSolValue::Array(entries) = decoded {
+            Ok(entries
+                .into_iter()
+                .map(|entry| {
+                    if let DynSolValue::Tuple(fields) = entry {
+                        let all_bytes = fields[1].as_bytes().unwrap();
+                        
+                        // Get key
+                        let key_len = all_bytes[31] as usize;
+                        let key = all_bytes[32..32+key_len].to_vec();
+                        
+                        // Get value
+                        let value_offset = 32 + ((key_len + 31) / 32) * 32;
+                        let value_len = all_bytes[value_offset + 31] as usize;
+                        let value = all_bytes[value_offset + 32..value_offset + 32 + value_len].to_vec();
+                        
+                        Ok(ContextStorageEntry { key, value })
+                    } else {
+                        Err(eyre::eyre!("Expected tuple"))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?)
+        } else {
+            Err(eyre::eyre!("Expected array"))
         }
-
-        Ok(entries)
     }
 }
