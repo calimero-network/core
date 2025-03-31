@@ -134,7 +134,7 @@ impl ApplicationSource {
                 if url.ends_with(".gz") {
                     let stream = response
                         .bytes_stream()
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+                        .map_err(io::Error::other);
 
                     let reader = StreamReader::new(stream);
 
