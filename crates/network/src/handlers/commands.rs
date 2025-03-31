@@ -8,16 +8,16 @@ use calimero_network_primitives::messages::{
 
 use crate::NetworkManager;
 
-pub mod bootstrap;
-pub mod dial;
-pub mod listen;
-pub mod mesh_peer_count;
-pub mod mesh_peers;
-pub mod open_stream;
-pub mod peer_count;
-pub mod publish;
-pub mod subscribe;
-pub mod unsubscribe;
+mod bootstrap;
+mod dial;
+mod listen;
+mod mesh_peer_count;
+mod mesh_peers;
+mod open_stream;
+mod peer_count;
+mod publish;
+mod subscribe;
+mod unsubscribe;
 
 impl Handler<NetworkMessage> for NetworkManager
 where

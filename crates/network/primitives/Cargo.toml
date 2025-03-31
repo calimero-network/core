@@ -11,23 +11,7 @@ actix.workspace = true
 bytes.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
-libp2p = { workspace = true, features = [
-    "dcutr",
-    "gossipsub",
-    "identify",
-    "kad",
-    "macros",
-    "mdns",
-    "noise",
-    "ping",
-    "quic",
-    "rendezvous",
-    "relay",
-    "tokio",
-    "tcp",
-    "tls",
-    "yamux",
-] }
+libp2p = { workspace = true, features = ["gossipsub"] }
 multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
