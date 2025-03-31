@@ -1,12 +1,12 @@
+use async_compression::tokio::bufread::GzipDecoder;
 use eyre::{bail, Result as EyreResult};
+use futures_util::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File};
-use async_compression::tokio::bufread::GzipDecoder;
 use tokio::io::{self, AsyncWriteExt, BufReader};
-use futures_util::{TryStreamExt, StreamExt};
-use tokio_util::io::StreamReader;
 use tokio::sync::mpsc;
 use tokio_util::bytes::Bytes;
+use tokio_util::io::StreamReader;
 
 use crate::driver::{Test, TestContext};
 use crate::meroctl::Meroctl;
@@ -150,8 +150,11 @@ impl ApplicationSource {
                     let process_input = tokio::spawn(async move {
                         let mut stream = stream;
                         while let Some(chunk) = stream.next().await {
-                            let chunk = chunk.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                            tx.send(Ok(chunk)).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                            let chunk =
+                                chunk.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                            tx.send(Ok(chunk))
+                                .await
+                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
                         }
                         Ok::<_, io::Error>(())
                     });
@@ -161,7 +164,8 @@ impl ApplicationSource {
                     process_result??;
                 } else {
                     let mut file = file;
-                    let stream = response.bytes_stream()
+                    let stream = response
+                        .bytes_stream()
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
                     let mut reader = StreamReader::new(stream);
                     io::copy(&mut reader, &mut file).await?;

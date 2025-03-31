@@ -116,7 +116,6 @@ impl std::fmt::Display for Scenario {
     }
 }
 
-
 #[derive(Debug)]
 pub struct TestEnvironment {
     pub test_id: u32,
