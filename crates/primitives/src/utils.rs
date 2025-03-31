@@ -1,7 +1,9 @@
+use std::iter;
+
 pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
     let mut path = path;
 
-    std::iter::from_fn(move || {
+    iter::from_fn(move || {
         if path.is_empty() {
             return None;
         }
@@ -33,7 +35,7 @@ pub fn compact_path(path: &str) -> impl Iterator<Item = &str> {
 
 #[cfg(test)]
 mod tests {
-    use std::any::{type_name, type_name_of_val};
+    use core::any::{type_name, type_name_of_val};
 
     use super::compact_path;
 
