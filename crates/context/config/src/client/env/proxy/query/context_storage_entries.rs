@@ -3,12 +3,12 @@ use std::io::Cursor;
 use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
+use eyre::{eyre, Result};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{Bytes, Env, TryIntoVal};
 use starknet::core::codec::{Decode as StarknetDecode, Encode as StarknetEncode};
 use starknet_crypto::Felt;
-use eyre::{Result, eyre};
 
 use crate::client::env::proxy::starknet::{
     CallData, ContextStorageEntriesResponse, StarknetContextStorageEntriesRequest,
@@ -96,8 +96,7 @@ impl Method<Icp> for ContextStorageEntriesRequest {
 
     fn encode(self) -> Result<Vec<u8>> {
         // Encode offset and limit using Candid
-        Encode!(&self.offset, &self.limit)
-            .map_err(|e| eyre!("Failed to encode request: {}", e))
+        Encode!(&self.offset, &self.limit).map_err(|e| eyre!("Failed to encode request: {}", e))
     }
 
     fn decode(response: Vec<u8>) -> Result<Self::Returns> {
@@ -178,7 +177,8 @@ impl Method<Ethereum> for ContextStorageEntriesRequest {
                 .into_iter()
                 .map(|entry| {
                     if let DynSolValue::Tuple(fields) = entry {
-                        let all_bytes = fields[1].as_bytes()
+                        let all_bytes = fields[1]
+                            .as_bytes()
                             .ok_or_else(|| eyre!("Failed to get bytes from field"))?;
 
                         // Get key
@@ -186,10 +186,14 @@ impl Method<Ethereum> for ContextStorageEntriesRequest {
                         let key = all_bytes[32..32 + key_len].to_vec();
 
                         // Get value
-                        #[allow(clippy::integer_division, reason = "Need this for 32-byte alignment")]
+                        #[allow(
+                            clippy::integer_division,
+                            reason = "Need this for 32-byte alignment"
+                        )]
                         let value_offset = 32 + ((key_len + 31) / 32) * 32;
                         let value_len = all_bytes[value_offset + 31] as usize;
-                        let value = all_bytes[value_offset + 32..value_offset + 32 + value_len].to_vec();
+                        let value =
+                            all_bytes[value_offset + 32..value_offset + 32 + value_len].to_vec();
 
                         Ok(ContextStorageEntry { key, value })
                     } else {
