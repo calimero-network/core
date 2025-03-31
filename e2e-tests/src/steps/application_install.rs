@@ -1,11 +1,9 @@
 use async_compression::tokio::bufread::GzipDecoder;
 use eyre::{bail, Result as EyreResult};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File};
-use tokio::io::{self, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
-use tokio_util::bytes::Bytes;
+use tokio::io::{self, AsyncWriteExt};
 use tokio_util::io::StreamReader;
 
 use crate::driver::{Test, TestContext};

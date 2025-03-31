@@ -3121,7 +3121,6 @@ dependencies = [
  "soroban-client",
  "soroban-sdk",
  "tokio",
- "tokio-stream",
  "tokio-util",
  "url",
 ]
