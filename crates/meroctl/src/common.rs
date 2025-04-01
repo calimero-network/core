@@ -401,3 +401,27 @@ where
 
     Ok(ResolveResponse { alias, value })
 }
+
+
+pub async fn resolve_context(
+    multiaddr: &Multiaddr,
+    keypair: &Keypair,
+    context: Option<Alias<ContextId>>
+) -> EyreResult<ContextId> {
+    if let Some(alias) = context {
+        // If context is provided, resolve it
+        lookup_alias(multiaddr, keypair, alias, None)
+            .await
+            .and_then(|res| res.data.value.ok_or_else(|| eyre!("Context not found for alias")))
+    } else {
+        // Otherwise, use the default alias
+        let default_alias: Alias<ContextId> = "default".parse()
+            .expect("'default' is a valid alias name");
+            
+        lookup_alias(multiaddr, keypair, default_alias, None)
+            .await
+            .and_then(|res| res.data.value.ok_or_else(|| 
+                eyre!("No default context set. Please set one with 'context use <context-id>' or specify a context explicitly")
+            ))
+    }
+}

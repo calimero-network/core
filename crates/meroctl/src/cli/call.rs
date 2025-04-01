@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::cli::Environment;
 use crate::common::{
-    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
+    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_context,resolve_alias, RequestType,
 };
 use crate::output::Report;
 
@@ -29,7 +29,7 @@ pub const EXAMPLES: &str = r"
 ))]
 pub struct CallCommand {
     #[arg(value_name = "CONTEXT", help = "The context to call the method on")]
-    pub context: Alias<ContextId>,
+    pub context:Option<Alias<ContextId>>,
 
     #[arg(value_name = "METHOD", help = "The method to call")]
     pub method: String,
@@ -80,11 +80,8 @@ impl CallCommand {
 
         let multiaddr = fetch_multiaddr(&config)?;
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let context_id = resolve_context(multiaddr, &config.identity, self.context).await?;
+        
 
         let executor = resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
             .await?
