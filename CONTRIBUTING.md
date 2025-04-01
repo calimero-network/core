@@ -30,7 +30,7 @@ There are several ways you can contribute:
 Contributions are managed via Issues and Pull Requests (PRs). Here are some
 general guidelines:
 
-- Read the Rust style guide bellow!
+- Read the Rust style guide [STYLE]!
 
 - Before creating a new Issue or PR, search for [existing ones][Issues].
 
@@ -75,10 +75,6 @@ would like to work on an issue, please follow these steps:
 
 By following this process, we can avoid duplication of efforts and ensure clear
 communication among all contributors.
-
-## Rust style guide
-
-### Refer to [STYLE] for the complete Rust style conventions used in our codebase
 
 ## Creating a New Issue
 

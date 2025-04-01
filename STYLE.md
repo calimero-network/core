@@ -8,7 +8,7 @@
   cargo +nightly fmt
   ```
 
-### Sort Cargo.toml dependencies alphabetically
+### Sort `Cargo.toml` dependencies alphabetically
 
 ### Organize imports according to the `StdExternalCrate` pattern
 
@@ -96,17 +96,15 @@ crates/meroctl/src/cli/app/list.rs
 
 ### We use the eyre crate extensively in our code, and import it as follows
   
-  ```rust
-  use eyre::{Result as EyreResult};
-  ```
+```rust
+use eyre::{Result as EyreResult};
+```
 
-### Almost no unwrapping (acceptable in tests and possibly when dealing with thread join handlers)
+### Employ maximum caution dealing with panic points (.unwrap(), .expect(..), assert!, panic!, etc). Only introduce them when you have maximum confidence it will NEVER panic, or if it does, it's a fatal error from which we cannot recover and aborting the node is the best thing to do. In this case, introduce a comment stating why
 
 ### If unwrapping is absolutely necessary, explain why with a comment
 
 ### On values that may return errors, use `.map_err()` to map the error into the appropriate Error type used in that crate/module
-
-### Almost no unwrapping (it's only acceptable when the author is absolutely certain it won't fail (explain why with a comment))
 
 ## Code Efficiency
 
@@ -134,7 +132,7 @@ When using `if let..else` with the consequent block extending beyond just a coup
 
 ```rust
 // NOT RECOMMENDED:
-if let OK(val) = thing {
+if let Ok(val) = thing {
     func(val);
     do_ok_1;
     do_ok_2;
@@ -143,7 +141,6 @@ if let OK(val) = thing {
     do_else_1;
     return;
 }
-
 // RECOMMENDED:
 let Ok(val) = thing else {
     do_else_1;
@@ -178,19 +175,13 @@ File::open("data.txt")
 
 ## Naming Conventions
 
-### Types shall be `PascalCase`
-
-### Enum variants shall be `PascalCase`
-
-### Struct fields shall be `snake_case`
-
-### Function and method names shall be `snake_case`
-
-### Local variables shall be `snake_case`
-
-### Macro names shall be `snake_case`
-
-### Constants (consts and immutable statics) shall be `SCREAMING_SNAKE_CASE`
+- Types shall be `PascalCase`
+- Enum variants shall be `PascalCase`
+- Struct fields shall be `snake_case`
+- Function and method names shall be `snake_case`
+- Local variables shall be `snake_case`
+- Macro names shall be `snake_case`
+- Constants (consts and immutable statics) shall be `SCREAMING_SNAKE_CASE`
 
 ## General Guidelines
 
