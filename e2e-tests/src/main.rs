@@ -92,19 +92,27 @@ pub struct RootArgs {
     #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
     pub output_format: OutputFormat,
 
-    /// Scenario to run ("ethereum", "near", "stellar", "icp")
-    #[arg(long, value_name = "SCENARIO")]
-    #[arg(value_parser = parse_scenario)]
-    pub scenario: String,
+    /// Scenarios to run
+    #[arg(long, value_name = "SCENARIO", value_enum, num_args = 1.., value_delimiter = ',')]
+    pub scenarios: Vec<Scenario>,
 }
 
-fn parse_scenario(s: &str) -> Result<String, String> {
-    match s {
-        "ethereum" | "near" | "stellar" | "icp" => Ok(s.to_owned()),
-        _ => Err(format!(
-            "Invalid scenario. Must be one of: ethereum, near, stellar, icp. Got: {}",
-            s
-        )),
+#[derive(Debug, Clone, clap::ValueEnum, Copy)]
+pub enum Scenario {
+    Ethereum,
+    Near,
+    Stellar,
+    Icp,
+}
+
+impl std::fmt::Display for Scenario {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Scenario::Ethereum => write!(f, "ethereum"),
+            Scenario::Near => write!(f, "near"),
+            Scenario::Stellar => write!(f, "stellar"),
+            Scenario::Icp => write!(f, "icp"),
+        }
     }
 }
 
@@ -119,7 +127,7 @@ pub struct TestEnvironment {
     pub logs_dir: Utf8PathBuf,
     pub icp_dir: Utf8PathBuf,
     pub output_writer: OutputWriter,
-    pub scenario: String,
+    pub scenarios: Vec<Scenario>,
 }
 
 impl From<RootArgs> for TestEnvironment {
@@ -136,7 +144,7 @@ impl From<RootArgs> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            scenario: val.scenario,
+            scenarios: val.scenarios,
         }
     }
 }
