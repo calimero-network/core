@@ -30,7 +30,7 @@ There are several ways you can contribute:
 Contributions are managed via Issues and Pull Requests (PRs). Here are some
 general guidelines:
 
-- Read the Rust style guide [STYLE]!
+- Read our [Rust style guide][STYLE] to ensure compatibility with the rest of our codebase!
 
 - Before creating a new Issue or PR, search for [existing ones][Issues].
 

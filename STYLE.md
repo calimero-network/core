@@ -100,7 +100,9 @@ crates/meroctl/src/cli/app/list.rs
 use eyre::{Result as EyreResult};
 ```
 
-### Employ maximum caution dealing with panic points (.unwrap(), .expect(..), assert!, panic!, etc). Only introduce them when you have maximum confidence it will NEVER panic, or if it does, it's a fatal error from which we cannot recover and aborting the node is the best thing to do. In this case, introduce a comment stating why
+### Employ maximum caution dealing with panic points (.unwrap(), .expect(..), assert!, panic!, etc)
+
+Only introduce them when you have maximum confidence it will NEVER panic, or if it does, it's a fatal error from which we cannot recover and aborting the node is the best thing to do. In this case, introduce a comment stating why
 
 ### If unwrapping is absolutely necessary, explain why with a comment
 
