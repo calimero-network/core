@@ -1,13 +1,12 @@
-use actix::{Context, Handler};
+use actix::{Context, Handler, Message};
 use calimero_network_primitives::messages::ListenOn;
-use eyre::Result as EyreResult;
 
 use crate::NetworkManager;
 
 impl Handler<ListenOn> for NetworkManager {
-    type Result = EyreResult<()>;
+    type Result = <ListenOn as Message>::Result;
 
-    fn handle(&mut self, ListenOn(addr): ListenOn, _ctx: &mut Context<Self>) -> EyreResult<()> {
+    fn handle(&mut self, ListenOn(addr): ListenOn, _ctx: &mut Context<Self>) -> Self::Result {
         let _ignored = self.swarm.listen_on(addr)?;
 
         Ok(())

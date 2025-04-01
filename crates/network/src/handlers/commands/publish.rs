@@ -1,18 +1,16 @@
-use actix::{Context, Handler};
+use actix::{Context, Handler, Message};
 use calimero_network_primitives::messages::Publish;
-use eyre::Result as EyreResult;
-use libp2p::gossipsub::MessageId;
 
 use crate::NetworkManager;
 
 impl Handler<Publish> for NetworkManager {
-    type Result = EyreResult<MessageId>;
+    type Result = <Publish as Message>::Result;
 
     fn handle(
         &mut self,
         Publish { topic, data }: Publish,
         _ctx: &mut Context<Self>,
-    ) -> EyreResult<MessageId> {
+    ) -> Self::Result {
         self.swarm
             .behaviour_mut()
             .gossipsub

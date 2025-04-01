@@ -2,96 +2,124 @@ use actix::Message;
 use eyre::Result as EyreResult;
 use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
 use libp2p::{Multiaddr, PeerId};
+use tokio::sync::oneshot;
 
 use crate::stream::Stream;
 
-#[derive(Message, Clone, Copy, Debug)]
-#[rtype("EyreResult<()>")]
+#[derive(Debug, Message)]
+#[rtype("()")]
+pub enum NetworkMessage {
+    Dial {
+        request: Dial,
+        outcome: oneshot::Sender<<Dial as Message>::Result>,
+    },
+    ListenOn {
+        request: ListenOn,
+        outcome: oneshot::Sender<<ListenOn as Message>::Result>,
+    },
+    Bootstrap {
+        request: Bootstrap,
+        outcome: oneshot::Sender<<Bootstrap as Message>::Result>,
+    },
+    Subscribe {
+        request: Subscribe,
+        outcome: oneshot::Sender<<Subscribe as Message>::Result>,
+    },
+    Unsubscribe {
+        request: Unsubscribe,
+        outcome: oneshot::Sender<<Unsubscribe as Message>::Result>,
+    },
+    Publish {
+        request: Publish,
+        outcome: oneshot::Sender<<Publish as Message>::Result>,
+    },
+    OpenStream {
+        request: OpenStream,
+        outcome: oneshot::Sender<<OpenStream as Message>::Result>,
+    },
+    PeerCount {
+        request: PeerCount,
+        outcome: oneshot::Sender<<PeerCount as Message>::Result>,
+    },
+    MeshPeers {
+        request: MeshPeers,
+        outcome: oneshot::Sender<<MeshPeers as Message>::Result>,
+    },
+    MeshPeerCount {
+        request: MeshPeerCount,
+        outcome: oneshot::Sender<<MeshPeerCount as Message>::Result>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct Bootstrap;
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<()>")]
+impl Message for Bootstrap {
+    type Result = EyreResult<()>;
+}
+
+#[derive(Clone, Debug)]
 pub struct Dial(pub Multiaddr);
 
-impl From<Multiaddr> for Dial {
-    fn from(addr: Multiaddr) -> Self {
-        Self(addr)
-    }
+impl Message for Dial {
+    type Result = EyreResult<()>;
 }
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<()>")]
+#[derive(Clone, Debug)]
 pub struct ListenOn(pub Multiaddr);
 
-impl From<Multiaddr> for ListenOn {
-    fn from(addr: Multiaddr) -> Self {
-        Self(addr)
-    }
+impl Message for ListenOn {
+    type Result = EyreResult<()>;
 }
 
-#[derive(Message, Clone, Debug)]
-#[rtype(usize)]
+#[derive(Clone, Debug)]
 pub struct MeshPeerCount(pub TopicHash);
 
-impl From<TopicHash> for MeshPeerCount {
-    fn from(topic: TopicHash) -> Self {
-        Self(topic)
-    }
+impl Message for MeshPeerCount {
+    type Result = usize;
 }
 
-#[derive(Message, Clone, Debug)]
-#[rtype("Vec<PeerId>")]
+#[derive(Clone, Debug)]
 pub struct MeshPeers(pub TopicHash);
 
-impl From<TopicHash> for MeshPeers {
-    fn from(topic: TopicHash) -> Self {
-        Self(topic)
-    }
+impl Message for MeshPeers {
+    type Result = Vec<PeerId>;
 }
 
-#[derive(Message, Clone, Copy, Debug)]
-#[rtype("EyreResult<Stream>")]
+#[derive(Clone, Copy, Debug)]
 pub struct OpenStream(pub PeerId);
 
-impl From<PeerId> for OpenStream {
-    fn from(peer_id: PeerId) -> Self {
-        Self(peer_id)
-    }
+impl Message for OpenStream {
+    type Result = EyreResult<Stream>;
 }
 
-#[derive(Message, Clone, Copy, Debug)]
-#[rtype(usize)]
+#[derive(Clone, Copy, Debug)]
 pub struct PeerCount;
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<MessageId>")]
+impl Message for PeerCount {
+    type Result = usize;
+}
+
+#[derive(Clone, Debug)]
 pub struct Publish {
     pub topic: TopicHash,
     pub data: Vec<u8>,
 }
 
-impl From<(TopicHash, Vec<u8>)> for Publish {
-    fn from((topic, data): (TopicHash, Vec<u8>)) -> Self {
-        Self { topic, data }
-    }
+impl Message for Publish {
+    type Result = EyreResult<MessageId>;
 }
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<IdentTopic>")]
+#[derive(Clone, Debug)]
 pub struct Subscribe(pub IdentTopic);
 
-impl From<IdentTopic> for Subscribe {
-    fn from(topic: IdentTopic) -> Self {
-        Self(topic)
-    }
+impl Message for Subscribe {
+    type Result = EyreResult<IdentTopic>;
 }
 
-#[derive(Message, Clone, Debug)]
-#[rtype("EyreResult<IdentTopic>")]
+#[derive(Clone, Debug)]
 pub struct Unsubscribe(pub IdentTopic);
 
-impl From<IdentTopic> for Unsubscribe {
-    fn from(topic: IdentTopic) -> Self {
-        Self(topic)
-    }
+impl Message for Unsubscribe {
+    type Result = EyreResult<IdentTopic>;
 }

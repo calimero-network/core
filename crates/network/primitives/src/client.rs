@@ -1,13 +1,11 @@
-use actix::Message;
 use calimero_utils_actix::LazyRecipient;
-use eyre::Result as EyreResult;
 use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::oneshot;
 
 use crate::messages::{
-    Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, OpenStream, PeerCount, Publish, Subscribe,
-    Unsubscribe,
+    Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, NetworkMessage, OpenStream, PeerCount,
+    Publish, Subscribe, Unsubscribe,
 };
 use crate::stream::Stream;
 
@@ -16,62 +14,17 @@ pub struct NetworkClient {
     network_manager: LazyRecipient<NetworkMessage>,
 }
 
-#[derive(Debug, Message)]
-#[rtype("()")]
-pub enum NetworkMessage {
-    Dial {
-        request: Dial,
-        outcome: oneshot::Sender<EyreResult<()>>,
-    },
-    ListenOn {
-        request: ListenOn,
-        outcome: oneshot::Sender<EyreResult<()>>,
-    },
-    Bootstrap {
-        request: Bootstrap,
-        outcome: oneshot::Sender<EyreResult<()>>,
-    },
-    Subscribe {
-        request: Subscribe,
-        outcome: oneshot::Sender<EyreResult<IdentTopic>>,
-    },
-    Unsubscribe {
-        request: Unsubscribe,
-        outcome: oneshot::Sender<EyreResult<IdentTopic>>,
-    },
-    Publish {
-        request: Publish,
-        outcome: oneshot::Sender<EyreResult<MessageId>>,
-    },
-    OpenStream {
-        request: OpenStream,
-        outcome: oneshot::Sender<EyreResult<Stream>>,
-    },
-    PeerCount {
-        request: PeerCount,
-        outcome: oneshot::Sender<usize>,
-    },
-    MeshPeers {
-        request: MeshPeers,
-        outcome: oneshot::Sender<Vec<PeerId>>,
-    },
-    MeshPeerCount {
-        request: MeshPeerCount,
-        outcome: oneshot::Sender<usize>,
-    },
-}
-
 impl NetworkClient {
     pub const fn new(network_manager: LazyRecipient<NetworkMessage>) -> Self {
         Self { network_manager }
     }
 
-    pub async fn dial(&self, peer_addr: Multiaddr) -> EyreResult<()> {
+    pub async fn dial(&self, peer_addr: Multiaddr) -> eyre::Result<()> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
             .send(NetworkMessage::Dial {
-                request: Dial::from(peer_addr),
+                request: Dial(peer_addr),
                 outcome: tx,
             })
             .await
@@ -80,12 +33,12 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn listen_on(&self, addr: Multiaddr) -> EyreResult<()> {
+    pub async fn listen_on(&self, addr: Multiaddr) -> eyre::Result<()> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
             .send(NetworkMessage::ListenOn {
-                request: ListenOn::from(addr),
+                request: ListenOn(addr),
                 outcome: tx,
             })
             .await
@@ -94,7 +47,7 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn bootstrap(&self) -> EyreResult<()> {
+    pub async fn bootstrap(&self) -> eyre::Result<()> {
         let (tx, rx) = oneshot::channel();
 
         let _result = self
@@ -109,12 +62,12 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn subscribe(&self, topic: IdentTopic) -> EyreResult<IdentTopic> {
+    pub async fn subscribe(&self, topic: IdentTopic) -> eyre::Result<IdentTopic> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
             .send(NetworkMessage::Subscribe {
-                request: Subscribe::from(topic),
+                request: Subscribe(topic),
                 outcome: tx,
             })
             .await
@@ -123,12 +76,12 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn unsubscribe(&self, topic: IdentTopic) -> EyreResult<IdentTopic> {
+    pub async fn unsubscribe(&self, topic: IdentTopic) -> eyre::Result<IdentTopic> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
             .send(NetworkMessage::Unsubscribe {
-                request: Unsubscribe::from(topic),
+                request: Unsubscribe(topic),
                 outcome: tx,
             })
             .await
@@ -137,12 +90,12 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn publish(&self, topic: TopicHash, data: Vec<u8>) -> EyreResult<MessageId> {
+    pub async fn publish(&self, topic: TopicHash, data: Vec<u8>) -> eyre::Result<MessageId> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
             .send(NetworkMessage::Publish {
-                request: Publish::from((topic, data)),
+                request: Publish { topic, data },
                 outcome: tx,
             })
             .await
@@ -151,12 +104,12 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn open_stream(&self, peer_id: PeerId) -> EyreResult<Stream> {
+    pub async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<Stream> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
             .send(NetworkMessage::OpenStream {
-                request: OpenStream::from(peer_id),
+                request: OpenStream(peer_id),
                 outcome: tx,
             })
             .await
@@ -184,7 +137,7 @@ impl NetworkClient {
 
         self.network_manager
             .send(NetworkMessage::MeshPeerCount {
-                request: MeshPeerCount::from(topic),
+                request: MeshPeerCount(topic),
                 outcome: tx,
             })
             .await
@@ -198,7 +151,7 @@ impl NetworkClient {
 
         self.network_manager
             .send(NetworkMessage::MeshPeers {
-                request: MeshPeers::from(topic),
+                request: MeshPeers(topic),
                 outcome: tx,
             })
             .await

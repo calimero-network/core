@@ -1,18 +1,16 @@
-use actix::{Context, Handler};
+use actix::{Context, Handler, Message};
 use calimero_network_primitives::messages::Unsubscribe;
-use eyre::Result as EyreResult;
-use libp2p::gossipsub::IdentTopic;
 
 use crate::NetworkManager;
 
 impl Handler<Unsubscribe> for NetworkManager {
-    type Result = EyreResult<IdentTopic>;
+    type Result = <Unsubscribe as Message>::Result;
 
     fn handle(
         &mut self,
         Unsubscribe(topic): Unsubscribe,
         _ctx: &mut Context<Self>,
-    ) -> EyreResult<IdentTopic> {
+    ) -> Self::Result {
         let _ignored = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic)?;
 
         Ok(topic)

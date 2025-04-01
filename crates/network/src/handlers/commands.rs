@@ -1,9 +1,8 @@
 use actix::dev::MessageResponse;
 use actix::{Actor, Context, Handler};
-use calimero_network_primitives::client::NetworkMessage;
 use calimero_network_primitives::messages::{
-    Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, OpenStream, PeerCount, Publish, Subscribe,
-    Unsubscribe,
+    Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, NetworkMessage, OpenStream, PeerCount,
+    Publish, Subscribe, Unsubscribe,
 };
 
 use crate::NetworkManager;

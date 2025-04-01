@@ -1,15 +1,15 @@
 use std::collections::hash_map::Entry;
 
-use actix::{Context, Handler, Response};
+use actix::{Context, Handler, Message, Response};
 use calimero_network_primitives::messages::Dial;
-use eyre::{eyre, Result as EyreResult};
+use eyre::eyre;
 use multiaddr::Protocol;
 use tokio::sync::oneshot;
 
 use crate::NetworkManager;
 
 impl Handler<Dial> for NetworkManager {
-    type Result = Response<EyreResult<()>>;
+    type Result = Response<<Dial as Message>::Result>;
 
     fn handle(&mut self, Dial(mut peer_addr): Dial, _ctx: &mut Context<Self>) -> Self::Result {
         let Some(Protocol::P2p(peer_id)) = peer_addr.pop() else {

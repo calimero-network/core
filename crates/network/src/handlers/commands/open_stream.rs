@@ -1,12 +1,12 @@
-use actix::{Context, Handler, ResponseFuture};
+use actix::{Context, Handler, Message, ResponseFuture};
 use calimero_network_primitives::messages::OpenStream;
 use calimero_network_primitives::stream::{Stream, CALIMERO_STREAM_PROTOCOL};
-use eyre::{bail, Result as EyreResult};
+use eyre::bail;
 
 use crate::NetworkManager;
 
 impl Handler<OpenStream> for NetworkManager {
-    type Result = ResponseFuture<EyreResult<Stream>>;
+    type Result = ResponseFuture<<OpenStream as Message>::Result>;
 
     fn handle(
         &mut self,
