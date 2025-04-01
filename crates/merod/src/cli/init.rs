@@ -355,7 +355,7 @@ impl InitCommand {
             let _ignored = local_config.signers.insert(
                 "sepolia".to_owned(),
                 generate_local_signer(
-                    "https://sepolia.drpc.org".parse()?,
+                    "https://ethereum-sepolia-rpc.publicnode.com".parse()?,
                     ConfigProtocol::Ethereum,
                 )?,
             );
