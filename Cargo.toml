@@ -11,6 +11,7 @@ members = [
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
+    "./crates/context/primitives",
     "./crates/crypto",
     "./crates/meroctl",
     "./crates/merod",
@@ -163,6 +164,7 @@ axum-server-dual-protocol = "0.6.0"
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config" }
+calimero-context-primitives = { path = "./crates/context/primitives" }
 calimero-crypto = { path = "./crates/crypto" }
 meroctl = { path = "./crates/meroctl" }
 merod = { path = "./crates/merod" }

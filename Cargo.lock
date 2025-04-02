@@ -1165,6 +1165,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-context-primitives"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "calimero-blobstore",
+ "calimero-context-config",
+ "calimero-network-primitives",
+ "calimero-node-primitives",
+ "calimero-primitives",
+ "calimero-runtime",
+ "calimero-store",
+ "calimero-utils-actix",
+ "camino",
+ "eyre",
+ "futures-util",
+ "rand 0.8.5",
+ "reqwest 0.12.9",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio 1.41.1",
+ "tokio-util 0.7.12",
+ "tracing",
+]
+
+[[package]]
 name = "calimero-context-proxy-icp"
 version = "0.1.0"
 dependencies = [
