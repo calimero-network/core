@@ -16,7 +16,6 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 
 calimero-context-config = { workspace = true, features = ["client"] }
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
-calimero-runtime.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true
 

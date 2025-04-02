@@ -1,8 +1,8 @@
 use actix::Message;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_runtime::logic::Outcome;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
@@ -14,14 +14,33 @@ pub struct ExecuteRequest {
     pub public_key: PublicKey,
 }
 
-impl Message for ExecuteRequest {
-    type Result = Result<Outcome, ExecutionError>;
+#[derive(Debug)]
+pub struct ExecuteResponse {
+    pub returns: eyre::Result<Option<Vec<u8>>>,
+    pub logs: Vec<String>,
+    pub events: Vec<Event>,
+    pub root_hash: Option<Hash>,
+    pub artifact: Vec<u8>,
 }
 
+#[derive(Debug)]
+pub struct Event {
+    pub kind: String,
+    pub data: Vec<u8>,
+}
+
+impl Message for ExecuteRequest {
+    type Result = Result<ExecuteResponse, ExecuteError>;
+}
+
+// todo! these types should not be serialize
+// todo! the API should redefine its own types
+// todo! which should prevent unintentional
+// todo! changes to the API
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
-pub enum ExecutionError {
+pub enum ExecuteError {
     #[error("context not found")]
     ContextNotFound,
     #[error("cannot execute request as '{public_key}' on context '{context_id}'")]
