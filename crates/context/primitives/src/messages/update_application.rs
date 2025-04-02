@@ -7,7 +7,7 @@ use calimero_primitives::identity::PublicKey;
 pub struct UpdateApplicationRequest {
     pub context_id: ContextId,
     pub application_id: ApplicationId,
-    pub identity: PublicKey,
+    pub public_key: PublicKey,
 }
 
 impl Message for UpdateApplicationRequest {

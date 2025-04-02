@@ -16,7 +16,7 @@ pub struct ExternalConfigClient<'a, 'b> {
 }
 
 impl ExternalClient<'_> {
-    pub fn query(&self) -> ExternalConfigClient<'_, '_> {
+    pub fn config(&self) -> ExternalConfigClient<'_, '_> {
         ExternalConfigClient {
             nonce: None,
             client: self,

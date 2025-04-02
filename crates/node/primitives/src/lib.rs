@@ -1,2 +1,1 @@
-mod client;
-mod messages;
+pub mod client;
