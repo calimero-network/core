@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::marker::PhantomData;
 
 use actix::dev::{MessageResponse, ToEnvelope};
 use actix::fut::wrap_stream;
@@ -17,45 +18,32 @@ pub trait AddrExt<A: Actor> {
         handler: Option<F>,
     ) -> impl Future<Output = Result<(), MailboxError>> + Send
     where
-        A: Handler<M> + Handler<StreamMessage<S, F>>,
-        A::Context: ToEnvelope<A, StreamMessage<S, F>>,
-        M: Message,
+        A: Handler<StreamMessage<S, M, F>>,
+        A::Context: ToEnvelope<A, StreamMessage<S, M, F>>,
         S: Send + 'static,
-        F: Fn(M::Result) + Send + 'static;
+        M: Message + Send + 'static,
+        F: Fn(M::Result) + Send + Clone + 'static;
 }
 
 #[derive(Debug, Message)]
 #[rtype("()")]
-pub struct StreamMessage<S, F>
+pub struct StreamMessage<S, M, F>
 where
-    S: 'static,
-    F: 'static,
+    M: Message,
+    F: Fn(M::Result) + Send + Clone,
 {
     stream: S,
     handler: Option<F>,
+    _marker: PhantomData<M>,
 }
 
-impl<S, F> StreamMessage<S, F> {
-    pub fn returns(self) -> StreamMessageResponse<S, F> {
-        StreamMessageResponse {
-            stream: self.stream,
-            handler: self.handler,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct StreamMessageResponse<S, F> {
-    stream: S,
-    handler: Option<F>,
-}
-
-impl<A, M, S, F> MessageResponse<A, StreamMessage<S, F>> for StreamMessageResponse<S, F>
+impl<A, S, M, F> MessageResponse<A, Self> for StreamMessage<S, M, F>
 where
-    A: Actor<Context: AsyncContext<A>> + Handler<M>,
-    M: Message,
+    A: Actor + Handler<M>,
+    A::Context: AsyncContext<A>,
     S: Stream<Item = M> + 'static,
-    F: Fn(M::Result) + Send + Clone,
+    M: Message,
+    F: Fn(M::Result) + Send + Clone + 'static,
 {
     fn handle(self, ctx: &mut A::Context, tx: Option<oneshot::Sender<()>>) {
         let stream = self.stream.zip(repeat(self.handler));
@@ -80,15 +68,46 @@ where
     }
 }
 
+#[macro_export]
+macro_rules! impl_stream_sender {
+    ($($ty:path),*) => {
+        const _: () = {
+            use $crate::macros::__private::{Handler, Stream, Message};
+            use $crate::adapters::StreamMessage;
+
+            $(
+                impl<S, M, F> Handler<StreamMessage<S, M, F>> for $ty
+                where
+                    S: Stream<Item = M> + 'static,
+                    M: Message,
+                    F: Fn(M::Result) + Send + Clone + 'static,
+                    Self: Handler<M>,
+                {
+                    type Result = StreamMessage<S, M, F>;
+
+                    fn handle(&mut self, msg: StreamMessage<S, M, F>, _ctx: &mut Self::Context) -> Self::Result {
+                        msg
+                    }
+                }
+            )*
+        };
+    };
+}
+
 impl<A: Actor> AddrExt<A> for Addr<A> {
     async fn send_stream<S, M, F>(&self, stream: S, handler: Option<F>) -> Result<(), MailboxError>
     where
-        A: Handler<M> + Handler<StreamMessage<S, F>>,
-        A::Context: ToEnvelope<A, StreamMessage<S, F>>,
-        M: Message,
+        A: Handler<StreamMessage<S, M, F>>,
+        A::Context: ToEnvelope<A, StreamMessage<S, M, F>>,
         S: Send + 'static,
-        F: Fn(M::Result) + Send + 'static,
+        M: Message + Send + 'static,
+        F: Fn(M::Result) + Send + Clone + 'static,
     {
-        self.send(StreamMessage { stream, handler }).await
+        self.send(StreamMessage {
+            stream,
+            handler,
+            _marker: PhantomData,
+        })
+        .await
     }
 }
