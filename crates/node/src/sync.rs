@@ -55,17 +55,9 @@ async fn recv(
     let message_data = message?.data.into_owned();
 
     let data = match shared_key {
-        Some((key, nonce)) => {
-            match key.decrypt(
-                message_data,
-                nonce
-                    .try_into()
-                    .map_err(|_| eyre!("nonce must be 12 bytes"))?,
-            ) {
-                Some(data) => data,
-                None => bail!("decryption failed"),
-            }
-        }
+        Some((key, nonce)) => key
+            .decrypt(message_data, nonce)
+            .ok_or_eyre("decryption failed")?,
         None => message_data,
     };
 

@@ -412,9 +412,8 @@ where
             if let Some((store, this_id)) = &mut store {
                 for (that_id, item) in store.items.iter() {
                     if this_id == that_id {
-                        if let Some(resolver) = item.downcast_ref::<A>().upgrade() {
-                            if let Ok(resolver) =
-                                resolver.downcast_arc::<LazyResolver<Recipient<M>>>()
+                        if let Some(weak) = item.downcast_ref::<A>().upgrade() {
+                            if let Ok(resolver) = weak.downcast_arc::<LazyResolver<Recipient<M>>>()
                             {
                                 break 'done resolver;
                             }

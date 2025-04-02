@@ -139,6 +139,7 @@ impl Node {
             Some((shared_key, our_nonce)),
         )
         .await?;
+
         self.bidirectional_sync(
             context,
             our_identity,
