@@ -7,6 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+actix.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
@@ -21,7 +22,6 @@ calimero-context-config = { workspace = true, features = ["client"] }
 calimero-context-primitives.workspace = true
 calimero-blobstore.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
-calimero-network.workspace = true
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 
