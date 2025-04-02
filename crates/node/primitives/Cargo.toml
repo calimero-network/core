@@ -7,26 +7,19 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-actix.workspace = true
 camino.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 libp2p = { workspace = true, features = ["gossipsub"] }
 reqwest = { workspace = true, features = ["stream"] }
-serde = { workspace = true, features = ["derive"] }
-thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tokio-util.workspace = true
 tracing.workspace = true
 
 calimero-primitives.workspace = true
-# TODO: extract runtime primitives to a separate crate
-calimero-runtime.workspace = true
 calimero-blobstore.workspace = true
-# calimero-context-config = { workspace = true, features = ["client"] }
 calimero-network-primitives.workspace = true
 calimero-store.workspace = true
-calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true

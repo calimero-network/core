@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use calimero_primitives::alias::Alias;
 use calimero_primitives::hash::Hash;
-use calimero_store::key::{Alias as AliasKey, Aliasable, StoreScopeCompat};
+use calimero_store::key::{self as key, Aliasable, StoreScopeCompat};
 use eyre::{bail, OptionExt};
 
 use super::NodeClient;
@@ -19,14 +19,13 @@ impl NodeClient {
     {
         let mut handle = self.datastore.handle();
 
-        let alias_key =
-            AliasKey::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
+        let key = key::Alias::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
 
-        if handle.has(&alias_key)? {
+        if handle.has(&key)? {
             bail!("alias already exists");
         }
 
-        handle.put(&alias_key, &value.into())?;
+        handle.put(&key, &value.into())?;
 
         Ok(())
     }
@@ -37,10 +36,9 @@ impl NodeClient {
     {
         let mut handle = self.datastore.handle();
 
-        let alias_key =
-            AliasKey::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
+        let key = key::Alias::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
 
-        handle.delete(&alias_key)?;
+        handle.delete(&key)?;
 
         Ok(())
     }
@@ -55,10 +53,9 @@ impl NodeClient {
     {
         let handle = self.datastore.handle();
 
-        let alias_key =
-            AliasKey::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
+        let key = key::Alias::new(scope, alias).ok_or_eyre("alias requires scope to be present")?;
 
-        let Some(value) = handle.get(&alias_key)? else {
+        let Some(value) = handle.get(&key)? else {
             return Ok(None);
         };
 
@@ -90,11 +87,11 @@ impl NodeClient {
     {
         let handle = self.datastore.handle();
 
-        let mut iter = handle.iter::<AliasKey>()?;
+        let mut iter = handle.iter::<key::Alias>()?;
 
         let first = scope
             .map(|scope| {
-                iter.seek(AliasKey::new_unchecked::<T>(Some(scope), [0; 50]))
+                iter.seek(key::Alias::new_unchecked::<T>(Some(scope), [0; 50]))
                     .transpose()
                     .map(|k| (k, iter.read()))
             })

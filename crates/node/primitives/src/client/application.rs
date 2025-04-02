@@ -19,17 +19,21 @@ impl NodeClient {
     ) -> eyre::Result<Option<Application>> {
         let handle = self.datastore.handle();
 
-        let Some(application) = handle.get(&key::ApplicationMeta::new(*application_id))? else {
+        let key = key::ApplicationMeta::new(*application_id);
+
+        let Some(application) = handle.get(&key)? else {
             return Ok(None);
         };
 
-        Ok(Some(Application::new(
+        let application = Application::new(
             *application_id,
             application.blob.blob_id(),
             application.size,
             application.source.parse()?,
             application.metadata.into_vec(),
-        )))
+        );
+
+        Ok(Some(application))
     }
 
     pub async fn get_application_blob(
@@ -38,7 +42,9 @@ impl NodeClient {
     ) -> eyre::Result<Option<Vec<u8>>> {
         let handle = self.datastore.handle();
 
-        let Some(application) = handle.get(&key::ApplicationMeta::new(*application_id))? else {
+        let key = key::ApplicationMeta::new(*application_id);
+
+        let Some(application) = handle.get(&key)? else {
             return Ok(None);
         };
 
@@ -61,7 +67,9 @@ impl NodeClient {
     pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
 
-        if let Some(application) = handle.get(&key::ApplicationMeta::new(*application_id))? {
+        let key = key::ApplicationMeta::new(*application_id);
+
+        if let Some(application) = handle.get(&key)? {
             return self.has_blob(application.blob.blob_id());
         }
 
@@ -86,7 +94,9 @@ impl NodeClient {
 
         let mut handle = self.datastore.handle();
 
-        handle.put(&key::ApplicationMeta::new(application_id), &application)?;
+        let key = key::ApplicationMeta::new(application_id);
+
+        handle.put(&key, &application)?;
 
         Ok(application_id)
     }
@@ -140,9 +150,12 @@ impl NodeClient {
     }
 
     pub fn uninstall_application(&self, application_id: ApplicationId) -> eyre::Result<()> {
-        let application_meta_key = key::ApplicationMeta::new(application_id);
         let mut handle = self.datastore.handle();
-        handle.delete(&application_meta_key)?;
+
+        let key = key::ApplicationMeta::new(application_id);
+
+        handle.delete(&key)?;
+
         Ok(())
     }
 
