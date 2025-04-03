@@ -292,6 +292,7 @@ impl StartBootstrapCommand {
             url: Some("".to_owned()),
             metadata: Some("".to_owned()),
             hash: Some(Hash::new("hash".as_bytes())),
+            watch: false,
         };
 
         let application_id = install_command.install_app(environment).await?;

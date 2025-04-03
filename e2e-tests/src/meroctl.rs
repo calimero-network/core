@@ -159,6 +159,30 @@ impl Meroctl {
         Ok((public_key, private_key))
     }
 
+    pub async fn get_proposals(
+        &self,
+        node_name: &str,
+        context_id: &str,
+        args: &serde_json::Value,
+    ) -> EyreResult<serde_json::Value> {
+        let args_json = serde_json::to_string(args)?;
+        let json = self
+            .run_cmd(
+                node_name,
+                [
+                    "proxy",
+                    "get",
+                    "proposals",
+                    context_id,
+                    "--args",
+                    &args_json,
+                ],
+            )
+            .await?;
+
+        Ok(json)
+    }
+
     pub fn json_rpc_execute(
         &self,
         node_name: &str,

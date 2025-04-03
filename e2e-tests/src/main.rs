@@ -24,7 +24,7 @@ pub const EXAMPLES: &str = r"
   $ e2e-tests --input-dir ./e2e-tests/config
     --output-dir ./e2e-tests/corpus
     --merod-binary ./target/debug/merod
-    --meroctl-binary ./target/debug/meroctl
+    --meroctl-binary ./target/debug/meroctl 
 ";
 
 #[derive(Debug, Parser)]
@@ -92,9 +92,28 @@ pub struct RootArgs {
     #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
     pub output_format: OutputFormat,
 
-    /// Filter tests by protocols (e.g., "stellar near icp")
-    #[arg(long, value_name = "PROTOCOLS", num_args = 0..)]
-    pub protocols: Vec<String>,
+    /// Scenarios to run
+    #[arg(long, value_name = "SCENARIO", value_enum, num_args = 1.., value_delimiter = ',')]
+    pub scenarios: Vec<Scenario>,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum, Copy)]
+pub enum Scenario {
+    Ethereum,
+    Near,
+    Stellar,
+    Icp,
+}
+
+impl std::fmt::Display for Scenario {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Scenario::Ethereum => write!(f, "ethereum"),
+            Scenario::Near => write!(f, "near"),
+            Scenario::Stellar => write!(f, "stellar"),
+            Scenario::Icp => write!(f, "icp"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -108,7 +127,7 @@ pub struct TestEnvironment {
     pub logs_dir: Utf8PathBuf,
     pub icp_dir: Utf8PathBuf,
     pub output_writer: OutputWriter,
-    pub protocols: Vec<String>,
+    pub scenarios: Vec<Scenario>,
 }
 
 impl From<RootArgs> for TestEnvironment {
@@ -125,7 +144,7 @@ impl From<RootArgs> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            protocols: val.protocols,
+            scenarios: val.scenarios,
         }
     }
 }

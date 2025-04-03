@@ -1,6 +1,8 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 use std::io::Cursor;
 
+use alloy::primitives::Address as AlloyAddress;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode, Principal};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -10,6 +12,7 @@ use starknet_crypto::Felt;
 
 use crate::client::env::config::types::starknet::{CallData, FeltPair};
 use crate::client::env::Method;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -112,5 +115,23 @@ impl Method<Stellar> for ProxyContractRequest {
             .map_err(|e| eyre::eyre!("Failed to convert to address: {:?}", e))?;
 
         Ok(address.to_string().to_string())
+    }
+}
+
+impl Method<Ethereum> for ProxyContractRequest {
+    type Returns = String;
+
+    const METHOD: &'static str = "proxyContract(bytes32)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+
+        Ok(context_id.abi_encode())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let contract_address: AlloyAddress = SolValue::abi_decode(&response, false)?;
+
+        Ok(contract_address.to_string())
     }
 }

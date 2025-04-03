@@ -1,5 +1,7 @@
 use std::io::Cursor;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -12,6 +14,7 @@ use crate::client::env::proxy::types::starknet::{
     StarknetProposalId, StarknetProposalWithApprovals,
 };
 use crate::client::env::Method;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -20,7 +23,7 @@ use crate::icp::repr::ICRepr;
 use crate::icp::ICProposalWithApprovals;
 use crate::repr::ReprTransmute;
 use crate::stellar::StellarProposalWithApprovals;
-use crate::types::ProposalId;
+use crate::types::{Identity, ProposalId};
 use crate::{ProposalWithApprovals, Repr};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -150,5 +153,29 @@ impl Method<Stellar> for ProposalApprovalsRequest {
 
         // Use the From implementation to convert
         Ok(ProposalWithApprovals::from(stellar_proposal))
+    }
+}
+
+impl Method<Ethereum> for ProposalApprovalsRequest {
+    type Returns = ProposalWithApprovals;
+
+    const METHOD: &'static str = "getConfirmationsCount(bytes32)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let proposal_id: [u8; 32] = self
+            .proposal_id
+            .rt()
+            .map_err(|e| eyre::eyre!("Failed to convert proposal_id: {}", e))?;
+
+        Ok(proposal_id.abi_encode())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let (proposal_id, num_approvals): (B256, u32) = SolValue::abi_decode(&response, false)?;
+
+        Ok(ProposalWithApprovals {
+            proposal_id: Repr::new(ProposalId(Identity(proposal_id.0))),
+            num_approvals: num_approvals as usize,
+        })
     }
 }

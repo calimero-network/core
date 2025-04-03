@@ -2,6 +2,8 @@
 use core::mem;
 use std::io::Cursor;
 
+use alloy::primitives::B256;
+use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
 use serde::Serialize;
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
@@ -13,6 +15,7 @@ use crate::client::env::config::types::starknet::{
     CallData, StarknetMembers, StarknetMembersRequest,
 };
 use crate::client::env::Method;
+use crate::client::protocol::ethereum::Ethereum;
 use crate::client::protocol::icp::Icp;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
@@ -166,6 +169,32 @@ impl Method<Stellar> for MembersRequest {
         Ok(members
             .iter()
             .map(|id| id.to_array().rt().expect("infallible conversion"))
+            .collect())
+    }
+}
+
+impl Method<Ethereum> for MembersRequest {
+    type Returns = Vec<ContextIdentity>;
+
+    const METHOD: &'static str = "members(bytes32,uint256,uint256)";
+
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
+
+        let offset_val: u64 = self.offset as u64;
+        let length_val: u64 = self.length as u64;
+
+        Ok((context_id, offset_val, length_val).abi_encode())
+    }
+
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        // Decode Vec<B256> directly from response
+        let decoded: Vec<B256> = SolValue::abi_decode(&response, false)?;
+
+        // Convert each B256 to ContextIdentity
+        Ok(decoded
+            .into_iter()
+            .map(|b| b.rt().expect("infallible conversion"))
             .collect())
     }
 }
