@@ -251,7 +251,7 @@ pub(crate) fn setup(
         )
         .route("/dev/peers", get(get_peers_count_handler))
         .nest("/dev/alias", alias::service());
-        // .route_layer(from_fn(dev_mode_auth));
+    // .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()
         .merge(unprotected_router)
