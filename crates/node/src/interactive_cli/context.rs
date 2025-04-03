@@ -105,7 +105,7 @@ enum Commands {
     Use {
         /// The context id to set as default
         context_id: ContextId,
-    }
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -282,12 +282,13 @@ impl ContextCommand {
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
             Commands::Use { context_id } => {
                 // Create a "default" alias for the specified context ID
-                let default_alias: Alias<ContextId> = "default".parse()
-                    .expect("'default' is a valid alias name");
-                
+                let default_alias: Alias<ContextId> =
+                    "default".parse().expect("'default' is a valid alias name");
+
                 // Use the existing alias functionality
-                node.ctx_manager.create_alias(default_alias, None, context_id)?;
-                
+                node.ctx_manager
+                    .create_alias(default_alias, None, context_id)?;
+
                 println!("{} Default context set to: {}", ind, context_id);
             }
         }
@@ -333,10 +334,7 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
     Ok(())
 }
 
-fn resolve_context_id(
-    node: &Node, 
-    context: Option<Alias<ContextId>>
-) -> EyreResult<ContextId> {
+fn resolve_context_id(node: &Node, context: Option<Alias<ContextId>>) -> EyreResult<ContextId> {
     if let Some(alias) = context {
         // If context is provided, resolve it
         node.ctx_manager
@@ -344,9 +342,9 @@ fn resolve_context_id(
             .ok_or_eyre("Unable to resolve context alias")
     } else {
         // Otherwise, use the default alias
-        let default_alias: Alias<ContextId> = "default".parse()
-            .expect("'default' is a valid alias name");
-            
+        let default_alias: Alias<ContextId> =
+            "default".parse().expect("'default' is a valid alias name");
+
         node.ctx_manager
             .lookup_alias(default_alias, None)?
             .ok_or_eyre("No default context set. Please set one with 'context use <context-id>' or specify a context explicitly")

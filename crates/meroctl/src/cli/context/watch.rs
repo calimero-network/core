@@ -34,7 +34,6 @@ impl WatchCommand {
 
         let context_id = resolve_context(multiaddr, &config.identity, self.context).await?;
 
-
         let mut url = multiaddr_to_url(multiaddr, "ws")?;
         url.set_scheme("ws")
             .map_err(|()| eyre::eyre!("Failed to set URL scheme"))?;

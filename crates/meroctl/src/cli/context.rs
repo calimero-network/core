@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
+use crate::cli::context::alias::UseCommand;
 use crate::cli::context::create::CreateCommand;
 use crate::cli::context::delete::DeleteCommand;
 use crate::cli::context::get::GetCommand;
@@ -13,7 +14,6 @@ use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
 use crate::cli::context::update::UpdateCommand;
 use crate::cli::context::watch::WatchCommand;
-use crate::cli::context::use_command::UseCommand;
 use crate::cli::Environment;
 use crate::output::Report;
 
@@ -27,8 +27,6 @@ pub mod join;
 mod list;
 mod update;
 mod watch;
-mod use_command;
-
 
 pub const EXAMPLES: &str = r"
   # List all contexts
@@ -67,7 +65,8 @@ pub enum ContextSubCommands {
     Update(UpdateCommand),
     Identity(ContextIdentityCommand),
     Alias(ContextAliasCommand),
-    UseCommand(UseCommand),
+    #[command(name = "use")]
+    Use(UseCommand),
 }
 
 impl Report for Context {
@@ -91,8 +90,7 @@ impl ContextCommand {
             ContextSubCommands::Update(update) => update.run(environment).await,
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
-            ContextSubCommands::UseCommand(use_cmd) => use_cmd.run(environment).await,
-            }
+            ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
+        }
     }
 }
-

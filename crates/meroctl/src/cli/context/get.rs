@@ -23,7 +23,7 @@ pub struct GetCommand {
     pub command: GetSubcommand,
 
     #[arg(value_name = "CONTEXT", help = "Context we're operating on")]
-    pub context:  Option<Alias<ContextId>>,
+    pub context: Option<Alias<ContextId>>,
 }
 
 #[derive(Debug, Parser)]

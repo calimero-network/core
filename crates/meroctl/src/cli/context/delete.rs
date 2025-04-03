@@ -7,7 +7,8 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, resolve_context, RequestType,
+    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, resolve_context,
+    RequestType,
 };
 use crate::output::Report;
 
@@ -31,7 +32,7 @@ impl DeleteCommand {
 
         // Use resolve_context to get the actual context_id
         let context_id = resolve_context(multiaddr, &config.identity, self.context).await?;
-        
+
         let url = multiaddr_to_url(multiaddr, &format!("admin-api/dev/contexts/{}", context_id))?;
 
         let response: DeleteContextResponse = do_request(
