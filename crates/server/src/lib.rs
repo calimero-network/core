@@ -125,12 +125,10 @@ pub async fn start(
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
             app = app
                 .route(path, handler.clone())
-                .route_layer(JwtLayer::new(store.clone()))
                 .nest(
                     "/jsonrpc/dev",
                     Router::new()
                         .route("/", handler)
-                        .route_layer(from_fn(dev_mode_auth))
                         .layer(Extension(Arc::clone(&shared_state))),
                 );
 

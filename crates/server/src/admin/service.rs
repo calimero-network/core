@@ -141,7 +141,7 @@ pub(crate) fn setup(
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .route("/peers", get(get_peers_count_handler))
         .nest("/alias", alias::service())
-        .layer(AuthSignatureLayer::new(store))
+        // .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
 
     let unprotected_router = Router::new()
@@ -250,8 +250,8 @@ pub(crate) fn setup(
             get(get_proposal_handler),
         )
         .route("/dev/peers", get(get_peers_count_handler))
-        .nest("/dev/alias", alias::service())
-        .route_layer(from_fn(dev_mode_auth));
+        .nest("/dev/alias", alias::service());
+        // .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()
         .merge(unprotected_router)
