@@ -12,11 +12,11 @@
 
 ### Organize imports according to the `StdExternalCrate` pattern
 
-  1. Standard library
-  2. External crates
-  3. Symbols from local crate & parent module
-  4. Local modules definition
-  5. Symbols from local modules (optional)
+1. Standard library
+2. External crates
+3. Symbols from local crate & parent module
+4. Local modules definition
+5. Symbols from local modules (optional)
 
 ```rust
 // Standard library
