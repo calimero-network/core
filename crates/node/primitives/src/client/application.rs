@@ -36,7 +36,7 @@ impl NodeClient {
         Ok(Some(application))
     }
 
-    pub async fn get_application_blob(
+    pub async fn get_application_bytes(
         &self,
         application_id: &ApplicationId,
     ) -> eyre::Result<Option<Vec<u8>>> {
@@ -48,20 +48,11 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let Some(mut stream) = self.get_blob(application.blob.blob_id())? else {
+        let Some(bytes) = self.get_blob_bytes(application.blob.blob_id()).await? else {
             bail!("fatal: application points to dangling blob");
         };
 
-        // todo! we can preallocate the right capacity here
-        // todo! once `blob_manager::get` -> Blob{size}:Stream
-        let mut buf = vec![];
-
-        // todo! guard against loading excessively large blobs into memory
-        while let Some(chunk) = stream.try_next().await? {
-            buf.extend_from_slice(&chunk);
-        }
-
-        Ok(Some(buf))
+        Ok(Some(bytes))
     }
 
     pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {

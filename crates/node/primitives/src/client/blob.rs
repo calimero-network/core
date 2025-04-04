@@ -2,7 +2,7 @@ use calimero_blobstore::{Blob, Size};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use eyre::bail;
-use futures_util::AsyncRead;
+use futures_util::{io, AsyncRead, TryStreamExt};
 
 use super::NodeClient;
 
@@ -35,6 +35,20 @@ impl NodeClient {
         };
 
         Ok(Some(stream))
+    }
+
+    pub async fn get_blob_bytes(&self, blob_id: BlobId) -> eyre::Result<Option<Vec<u8>>> {
+        let Some(blob) = self.blobstore.get(blob_id)? else {
+            return Ok(None);
+        };
+
+        let mut blob = blob.map_err(io::Error::other).into_async_read();
+
+        let mut bytes = Vec::new();
+
+        let _ignored = io::copy(&mut blob, &mut bytes).await?;
+
+        Ok(Some(bytes))
     }
 
     pub fn has_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
