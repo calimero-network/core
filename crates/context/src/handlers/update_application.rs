@@ -64,7 +64,11 @@ pub async fn update_application_id(
         bail!("application with id '{}' has no blob", application_id);
     }
 
-    let Some(external_client) = context_client.external_client(&context_id)? else {
+    let Some(config_client) = context_client.context_config(&context_id)? else {
+        bail!("context '{}' does not exist", context_id);
+    };
+
+    let Some(external_client) = context_client.external_client(&context_id, config_client)? else {
         bail!("failed to initialize external client for '{}'", context_id);
     };
 
