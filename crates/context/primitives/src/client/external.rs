@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use calimero_context_config::client::AnyTransport;
 use calimero_primitives::context::{ContextConfigParams, ContextId};
 use calimero_store::key;
 
@@ -42,10 +43,16 @@ pub struct ExternalClient<'a> {
 }
 
 impl Deref for ExternalClient<'_> {
-    type Target = ContextClient;
+    type Target = calimero_context_config::client::Client<AnyTransport>;
 
     fn deref(&self) -> &Self::Target {
-        self.client
+        &self.client.external_client
+    }
+}
+
+impl ExternalClient<'_> {
+    fn context_client(&self) -> &ContextClient {
+        &self.client
     }
 }
 

@@ -29,12 +29,13 @@ impl ExternalProxyClient<'_, '_> {
 
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
         let private_key = identity.private_key()?;
 
-        let client = self.client.external_client.mutate::<ContextProxy>(
+        let client = self.client.mutate::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -57,12 +58,13 @@ impl ExternalProxyClient<'_, '_> {
 
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
         let private_key = identity.private_key()?;
 
-        let client = self.client.external_client.mutate::<ContextProxy>(
+        let client = self.client.mutate::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -77,7 +79,7 @@ impl ExternalProxyClient<'_, '_> {
     }
 
     pub async fn active_proposals(&self) -> eyre::Result<u16> {
-        let client = self.client.external_client.query::<ContextProxy>(
+        let client = self.client.query::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -93,7 +95,7 @@ impl ExternalProxyClient<'_, '_> {
     }
 
     pub async fn get_external_value(&self, stored_key: Vec<u8>) -> eyre::Result<Vec<u8>> {
-        let client = self.client.external_client.query::<ContextProxy>(
+        let client = self.client.query::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -105,7 +107,7 @@ impl ExternalProxyClient<'_, '_> {
     }
 
     pub async fn get_proposal(&self, proposal_id: &ProposalId) -> eyre::Result<Option<Proposal>> {
-        let client = self.client.external_client.query::<ContextProxy>(
+        let client = self.client.query::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -120,7 +122,7 @@ impl ExternalProxyClient<'_, '_> {
         &self,
         proposal_id: &ProposalId,
     ) -> eyre::Result<Vec<PublicKey>> {
-        let client = self.client.external_client.query::<ContextProxy>(
+        let client = self.client.query::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -137,7 +139,7 @@ impl ExternalProxyClient<'_, '_> {
     }
 
     pub async fn get_proposals(&self, offset: usize, limit: usize) -> eyre::Result<Vec<Proposal>> {
-        let client = self.client.external_client.query::<ContextProxy>(
+        let client = self.client.query::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -149,7 +151,7 @@ impl ExternalProxyClient<'_, '_> {
     }
 
     pub async fn proposal_approvals(&self, proposal_id: &ProposalId) -> eyre::Result<usize> {
-        let client = self.client.external_client.query::<ContextProxy>(
+        let client = self.client.query::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),

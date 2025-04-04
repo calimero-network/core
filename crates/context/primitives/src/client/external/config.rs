@@ -26,7 +26,7 @@ impl ExternalClient<'_> {
 
 impl ExternalConfigClient<'_, '_> {
     pub async fn fetch_nonce(&self, public_key: &PublicKey) -> eyre::Result<u64> {
-        let client = self.client.external_client.query::<ContextConfig>(
+        let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -84,13 +84,14 @@ impl ExternalConfigClient<'_, '_> {
     ) -> eyre::Result<()> {
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
         let private_key = identity.private_key()?;
 
         self.with_nonce(public_key, async |nonce| {
-            let client = self.client.external_client.mutate::<ContextConfig>(
+            let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
                 self.client.config.proxy_contract.as_ref().into(),
@@ -124,6 +125,7 @@ impl ExternalConfigClient<'_, '_> {
     ) -> eyre::Result<()> {
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
@@ -136,7 +138,7 @@ impl ExternalConfigClient<'_, '_> {
             .expect("infallible conversion");
 
         self.with_nonce(public_key, async |nonce| {
-            let client = self.client.external_client.mutate::<ContextConfig>(
+            let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
                 self.client.config.proxy_contract.as_ref().into(),
@@ -162,6 +164,7 @@ impl ExternalConfigClient<'_, '_> {
     ) -> eyre::Result<()> {
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
@@ -174,7 +177,7 @@ impl ExternalConfigClient<'_, '_> {
             .expect("infallible conversion");
 
         self.with_nonce(public_key, async |nonce| {
-            let client = self.client.external_client.mutate::<ContextConfig>(
+            let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
                 self.client.config.proxy_contract.as_ref().into(),
@@ -200,6 +203,7 @@ impl ExternalConfigClient<'_, '_> {
     ) -> eyre::Result<()> {
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
@@ -212,7 +216,7 @@ impl ExternalConfigClient<'_, '_> {
             .expect("infallible conversion");
 
         self.with_nonce(public_key, async |nonce| {
-            let client = self.client.external_client.mutate::<ContextConfig>(
+            let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
                 self.client.config.proxy_contract.as_ref().into(),
@@ -238,6 +242,7 @@ impl ExternalConfigClient<'_, '_> {
     ) -> eyre::Result<()> {
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
@@ -250,7 +255,7 @@ impl ExternalConfigClient<'_, '_> {
             .expect("infallible conversion");
 
         self.with_nonce(public_key, async |nonce| {
-            let client = self.client.external_client.mutate::<ContextConfig>(
+            let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
                 self.client.config.proxy_contract.as_ref().into(),
@@ -272,13 +277,14 @@ impl ExternalConfigClient<'_, '_> {
     pub async fn update_proxy_contract(&mut self, public_key: &PublicKey) -> eyre::Result<()> {
         let identity = self
             .client
+            .context_client()
             .get_identity(&self.client.context_id, public_key)?
             .ok_or_eyre("identity not found")?;
 
         let private_key = identity.private_key()?;
 
         self.with_nonce(public_key, async |nonce| {
-            let client = self.client.external_client.mutate::<ContextConfig>(
+            let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
                 self.client.config.proxy_contract.as_ref().into(),
@@ -295,7 +301,7 @@ impl ExternalConfigClient<'_, '_> {
     }
 
     pub async fn application(&self) -> eyre::Result<Application> {
-        let client = self.client.external_client.query::<ContextConfig>(
+        let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -317,7 +323,7 @@ impl ExternalConfigClient<'_, '_> {
     }
 
     pub async fn application_revision(&self) -> eyre::Result<u64> {
-        let client = self.client.external_client.query::<ContextConfig>(
+        let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -331,7 +337,7 @@ impl ExternalConfigClient<'_, '_> {
     }
 
     pub async fn members(&self, offset: usize, length: usize) -> eyre::Result<Vec<PublicKey>> {
-        let client = self.client.external_client.query::<ContextConfig>(
+        let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -354,7 +360,7 @@ impl ExternalConfigClient<'_, '_> {
     }
 
     pub async fn has_member(&self, identity: PublicKey) -> eyre::Result<bool> {
-        let client = self.client.external_client.query::<ContextConfig>(
+        let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -371,7 +377,7 @@ impl ExternalConfigClient<'_, '_> {
     }
 
     pub async fn members_revision(&self) -> eyre::Result<u64> {
-        let client = self.client.external_client.query::<ContextConfig>(
+        let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
@@ -389,7 +395,7 @@ impl ExternalConfigClient<'_, '_> {
     //     &self,
     //     identities: &[PublicKey],
     // ) -> eyre::Result<BTreeMap<PublicKey, Vec<Capability>>> {
-    //     let client = self.client.external_client.query::<ContextConfig>(
+    //     let client = self.client.query::<ContextConfig>(
     //         self.client.config.protocol.as_ref().into(),
     //         self.client.config.network_id.as_ref().into(),
     //         self.client.config.proxy_contract.as_ref().into(),
@@ -417,7 +423,7 @@ impl ExternalConfigClient<'_, '_> {
     // }
 
     pub async fn get_proxy_contract(&self) -> eyre::Result<String> {
-        let client = self.client.external_client.query::<ContextConfig>(
+        let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
             self.client.config.proxy_contract.as_ref().into(),
