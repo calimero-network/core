@@ -31,3 +31,15 @@ pub fn global_runtime() -> &'static Handle {
         .get()
         .expect("global runtime not initialized")
 }
+
+pub fn forward_handler<A, M>(
+    act: &mut A,
+    ctx: &mut A::Context,
+    msg: M,
+    receiver: oneshot::Sender<M::Result>,
+) where
+    A: Actor + Handler<M>,
+    M: Message,
+{
+    act.handle(msg, ctx).handle(ctx, Some(receiver))
+}

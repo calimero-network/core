@@ -1,9 +1,6 @@
-use actix::dev::MessageResponse;
-use actix::{Actor, Context, Handler};
-use calimero_network_primitives::messages::{
-    Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, NetworkMessage, OpenStream, PeerCount,
-    Publish, Subscribe, Unsubscribe,
-};
+use actix::Handler;
+use calimero_network_primitives::messages::NetworkMessage;
+use calimero_utils_actix::forward_handler;
 
 use crate::NetworkManager;
 
@@ -18,79 +15,40 @@ mod publish;
 mod subscribe;
 mod unsubscribe;
 
-impl Handler<NetworkMessage> for NetworkManager
-where
-    Self: Actor<Context = Context<Self>>,
-{
+impl Handler<NetworkMessage> for NetworkManager {
     type Result = ();
 
     fn handle(&mut self, msg: NetworkMessage, ctx: &mut Self::Context) -> Self::Result {
         match msg {
             NetworkMessage::Dial { request, outcome } => {
-                MessageResponse::<Self, Dial>::handle(self.handle(request, ctx), ctx, Some(outcome))
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::ListenOn { request, outcome } => {
-                MessageResponse::<Self, ListenOn>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::Bootstrap { request, outcome } => {
-                MessageResponse::<Self, Bootstrap>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::Subscribe { request, outcome } => {
-                MessageResponse::<Self, Subscribe>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::Unsubscribe { request, outcome } => {
-                MessageResponse::<Self, Unsubscribe>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::Publish { request, outcome } => {
-                MessageResponse::<Self, Publish>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::OpenStream { request, outcome } => {
-                MessageResponse::<Self, OpenStream>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::PeerCount { request, outcome } => {
-                MessageResponse::<Self, PeerCount>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::MeshPeers { request, outcome } => {
-                MessageResponse::<Self, MeshPeers>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
             NetworkMessage::MeshPeerCount { request, outcome } => {
-                MessageResponse::<Self, MeshPeerCount>::handle(
-                    self.handle(request, ctx),
-                    ctx,
-                    Some(outcome),
-                )
+                forward_handler(self, ctx, request, outcome);
             }
         }
     }
