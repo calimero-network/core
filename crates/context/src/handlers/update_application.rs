@@ -21,8 +21,6 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         }: UpdateApplicationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let node_client = self.node_client.clone();
-
         Box::pin(
             update_application_id(
                 self.node_client.clone(),
@@ -33,23 +31,11 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             )
             .into_actor(self)
             .and_then(move |res, act, _ctx| {
-                let context = act.contexts.get(&context_id).cloned();
-
-                async move {
-                    if let Some(context) = context {
-                        let mut context = context.lock().await;
-
-                        if context.blob.is_some() {
-                            context.blob = node_client
-                                .get_application_blob(&application_id)
-                                .await?
-                                .map(Vec::into_boxed_slice);
-                        }
-                    }
-
-                    Ok(res)
+                if let Some(context) = act.contexts.get_mut(&context_id) {
+                    context.application_id = application_id;
                 }
-                .into_actor(act)
+
+                async move { Ok(res) }.into_actor(act)
             }),
         )
     }
@@ -63,8 +49,12 @@ pub async fn update_application_id(
     public_key: PublicKey,
 ) -> eyre::Result<()> {
     let Some(application) = node_client.get_application(&application_id)? else {
-        bail!("Application with id '{}' not found", application_id);
+        bail!("application with id '{}' not found", application_id);
     };
+
+    if !node_client.has_blob(&application.blob)? {
+        bail!("application with id '{}' has no blob", application_id);
+    }
 
     let Some(external_client) = context_client.external_client(&context_id)? else {
         bail!("failed to initialize external client for '{}'", context_id);
@@ -75,7 +65,9 @@ pub async fn update_application_id(
         .update_application(&public_key, application)
         .await?;
 
-    external_client.update_application_id(&context_id, &application_id, &public_key);
+    context_client
+        .update_application_id(&context_id, &application_id, &public_key)
+        .await?;
 
     Ok(())
 }
