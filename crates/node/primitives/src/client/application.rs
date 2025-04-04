@@ -40,7 +40,7 @@ impl NodeClient {
     pub async fn get_application_bytes(
         &self,
         application_id: &ApplicationId,
-    ) -> eyre::Result<Option<Vec<u8>>> {
+    ) -> eyre::Result<Option<Box<[u8]>>> {
         let handle = self.datastore.handle();
 
         let key = key::ApplicationMeta::new(*application_id);

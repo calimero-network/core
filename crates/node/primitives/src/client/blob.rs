@@ -37,7 +37,7 @@ impl NodeClient {
         Ok(Some(stream))
     }
 
-    pub async fn get_blob_bytes(&self, blob_id: &BlobId) -> eyre::Result<Option<Vec<u8>>> {
+    pub async fn get_blob_bytes(&self, blob_id: &BlobId) -> eyre::Result<Option<Box<[u8]>>> {
         let Some(blob) = self.blobstore.get(*blob_id)? else {
             return Ok(None);
         };
@@ -48,7 +48,7 @@ impl NodeClient {
 
         let _ignored = io::copy(&mut blob, &mut bytes).await?;
 
-        Ok(Some(bytes))
+        Ok(Some(bytes.into_boxed_slice()))
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
