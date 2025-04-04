@@ -48,7 +48,7 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let Some(bytes) = self.get_blob_bytes(application.blob.blob_id()).await? else {
+        let Some(bytes) = self.get_blob_bytes(&application.blob.blob_id()).await? else {
             bail!("fatal: application points to dangling blob");
         };
 
@@ -61,7 +61,7 @@ impl NodeClient {
         let key = key::ApplicationMeta::new(*application_id);
 
         if let Some(application) = handle.get(&key)? {
-            return self.has_blob(application.blob.blob_id());
+            return self.has_blob(&application.blob.blob_id());
         }
 
         Ok(false)
@@ -69,13 +69,13 @@ impl NodeClient {
 
     fn install_application(
         &self,
-        blob_id: calimero_primitives::blobs::BlobId,
+        blob_id: &calimero_primitives::blobs::BlobId,
         size: u64,
         source: &ApplicationSource,
         metadata: Vec<u8>,
     ) -> eyre::Result<ApplicationId> {
         let application = types::ApplicationMeta::new(
-            key::BlobMeta::new(blob_id),
+            key::BlobMeta::new(*blob_id),
             size,
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
@@ -111,14 +111,14 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, size, &(uri.as_str().parse()?), metadata)
+        self.install_application(&blob_id, size, &(uri.as_str().parse()?), metadata)
     }
 
     pub async fn install_application_from_url(
         &self,
         url: Url,
         metadata: Vec<u8>,
-        expected_hash: Option<Hash>,
+        expected_hash: Option<&Hash>,
     ) -> eyre::Result<ApplicationId> {
         let uri = url.as_str().parse()?;
 
@@ -137,7 +137,7 @@ impl NodeClient {
             )
             .await?;
 
-        self.install_application(blob_id, size, &uri, metadata)
+        self.install_application(&blob_id, size, &uri, metadata)
     }
 
     pub fn uninstall_application(&self, application_id: ApplicationId) -> eyre::Result<()> {

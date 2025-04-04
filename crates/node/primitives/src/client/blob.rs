@@ -11,14 +11,14 @@ impl NodeClient {
         &self,
         stream: S,
         expected_size: Option<u64>,
-        expected_hash: Option<Hash>,
+        expected_hash: Option<&Hash>,
     ) -> eyre::Result<(BlobId, u64)> {
         let (blob_id, hash, size) = self
             .blobstore
             .put_sized(expected_size.map(Size::Exact), stream)
             .await?;
 
-        if matches!(expected_hash, Some(expected_hash) if hash != expected_hash) {
+        if matches!(expected_hash, Some(expected_hash) if hash != *expected_hash) {
             bail!("fatal: blob hash mismatch");
         }
 
@@ -29,16 +29,16 @@ impl NodeClient {
         Ok((blob_id, size))
     }
 
-    pub fn get_blob(&self, blob_id: BlobId) -> eyre::Result<Option<Blob>> {
-        let Some(stream) = self.blobstore.get(blob_id)? else {
+    pub fn get_blob(&self, blob_id: &BlobId) -> eyre::Result<Option<Blob>> {
+        let Some(stream) = self.blobstore.get(*blob_id)? else {
             return Ok(None);
         };
 
         Ok(Some(stream))
     }
 
-    pub async fn get_blob_bytes(&self, blob_id: BlobId) -> eyre::Result<Option<Vec<u8>>> {
-        let Some(blob) = self.blobstore.get(blob_id)? else {
+    pub async fn get_blob_bytes(&self, blob_id: &BlobId) -> eyre::Result<Option<Vec<u8>>> {
+        let Some(blob) = self.blobstore.get(*blob_id)? else {
             return Ok(None);
         };
 
@@ -51,7 +51,7 @@ impl NodeClient {
         Ok(Some(bytes))
     }
 
-    pub fn has_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
-        self.blobstore.has(blob_id)
+    pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
+        self.blobstore.has(*blob_id)
     }
 }
