@@ -25,23 +25,17 @@ impl From<[u8; 32]> for ContextId {
     }
 }
 
+impl AsRef<[u8; 32]> for ContextId {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 impl Deref for ContextId {
     type Target = [u8; 32];
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl From<ContextId> for Hash {
-    fn from(key: ContextId) -> Self {
-        key.0
-    }
-}
-
-impl From<Hash> for ContextId {
-    fn from(key: Hash) -> Self {
-        Self(key)
     }
 }
 

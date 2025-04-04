@@ -27,6 +27,12 @@ impl From<[u8; 32]> for BlobId {
     }
 }
 
+impl AsRef<[u8; 32]> for BlobId {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 impl Deref for BlobId {
     type Target = [u8; 32];
 

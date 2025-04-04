@@ -1,6 +1,7 @@
 use std::io;
 
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use camino::Utf8PathBuf;
@@ -69,7 +70,7 @@ impl NodeClient {
 
     fn install_application(
         &self,
-        blob_id: &calimero_primitives::blobs::BlobId,
+        blob_id: &BlobId,
         size: u64,
         source: &ApplicationSource,
         metadata: Vec<u8>,

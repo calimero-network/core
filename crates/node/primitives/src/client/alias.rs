@@ -1,7 +1,6 @@
 use std::str::FromStr;
 
 use calimero_primitives::alias::Alias;
-use calimero_primitives::hash::Hash;
 use calimero_store::key::{self as key, Aliasable, StoreScopeCompat};
 use eyre::{bail, OptionExt};
 
@@ -15,7 +14,7 @@ impl NodeClient {
         value: T,
     ) -> eyre::Result<()>
     where
-        T: Aliasable<Scope: StoreScopeCompat> + Into<Hash>,
+        T: Aliasable<Scope: StoreScopeCompat> + AsRef<[u8; 32]>,
     {
         let mut handle = self.datastore.handle();
 
@@ -25,7 +24,9 @@ impl NodeClient {
             bail!("alias already exists");
         }
 
-        handle.put(&key, &value.into())?;
+        let value = (*value.as_ref()).into();
+
+        handle.put(&key, &value)?;
 
         Ok(())
     }
@@ -49,7 +50,7 @@ impl NodeClient {
         scope: Option<T::Scope>,
     ) -> eyre::Result<Option<T>>
     where
-        T: Aliasable<Scope: StoreScopeCompat> + From<Hash>,
+        T: Aliasable<Scope: StoreScopeCompat> + From<[u8; 32]>,
     {
         let handle = self.datastore.handle();
 
@@ -59,7 +60,7 @@ impl NodeClient {
             return Ok(None);
         };
 
-        Ok(Some(value.into()))
+        Ok(Some((*value).into()))
     }
 
     pub fn resolve_alias<T>(
@@ -68,7 +69,7 @@ impl NodeClient {
         scope: Option<T::Scope>,
     ) -> eyre::Result<Option<T>>
     where
-        T: Aliasable<Scope: StoreScopeCompat> + From<Hash> + FromStr<Err: Into<eyre::Report>>,
+        T: Aliasable<Scope: StoreScopeCompat> + From<[u8; 32]> + FromStr<Err: Into<eyre::Report>>,
     {
         if let Some(value) = self.lookup_alias(alias, scope)? {
             return Ok(Some(value));
@@ -82,7 +83,7 @@ impl NodeClient {
         scope: Option<T::Scope>,
     ) -> eyre::Result<Vec<(Alias<T>, T, Option<T::Scope>)>>
     where
-        T: Aliasable + From<Hash>,
+        T: Aliasable + From<[u8; 32]>,
         T::Scope: Copy + PartialEq + StoreScopeCompat,
     {
         let handle = self.datastore.handle();
@@ -116,7 +117,7 @@ impl NodeClient {
                 continue;
             };
 
-            aliases.push((alias, v.into(), k.scope::<T>()));
+            aliases.push((alias, (*v).into(), k.scope::<T>()));
         }
 
         Ok(aliases)
