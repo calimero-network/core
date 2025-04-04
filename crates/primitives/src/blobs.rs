@@ -7,7 +7,7 @@ use thiserror::Error as ThisError;
 
 use crate::hash::{Hash, HashError};
 
-#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Ord, Hash, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)

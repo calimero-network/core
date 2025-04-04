@@ -24,6 +24,7 @@ calimero-blobstore.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true

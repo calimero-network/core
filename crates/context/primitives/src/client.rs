@@ -10,7 +10,7 @@ use futures_util::{stream, Stream};
 use crate::messages::ContextMessage;
 
 mod crypto;
-mod external;
+pub mod external;
 
 #[derive(Clone, Debug)]
 pub struct ContextClient {
