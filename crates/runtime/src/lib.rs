@@ -29,7 +29,7 @@ type ExecuteResponse = Option<(RuntimeResult<Outcome>, Box<dyn Storage + Send>)>
 pub struct ExecuteRequest {
     pub blob: Vec<u8>,
     pub method_name: String,
-    pub context: VMContext,
+    pub context: VMContext<'static>,
     pub storage: Box<dyn Storage + Send>,
 }
 
@@ -91,7 +91,7 @@ impl Handler<ExecuteRequest> for RuntimeManager {
 pub fn run(
     code: &[u8],
     method_name: &str,
-    context: VMContext,
+    context: VMContext<'_>,
     storage: &mut dyn Storage,
     limits: &VMLimits,
 ) -> RuntimeResult<Outcome> {

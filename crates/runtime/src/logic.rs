@@ -26,15 +26,15 @@ pub type VMLogicResult<T, E = VMLogicError> = Result<T, E>;
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct VMContext {
-    pub input: Vec<u8>,
+pub struct VMContext<'a> {
+    pub input: &'a [u8],
     pub context_id: [u8; 32],
     pub executor_public_key: [u8; 32],
 }
 
-impl VMContext {
+impl<'a> VMContext<'a> {
     #[must_use]
-    pub const fn new(input: Vec<u8>, context_id: [u8; 32], executor_public_key: [u8; 32]) -> Self {
+    pub const fn new(input: &'a [u8], context_id: [u8; 32], executor_public_key: [u8; 32]) -> Self {
         Self {
             input,
             context_id,
@@ -67,7 +67,7 @@ pub struct VMLimits {
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,
-    context: VMContext,
+    context: VMContext<'a>,
     limits: &'a VMLimits,
     registers: Registers,
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
@@ -80,7 +80,7 @@ pub struct VMLogic<'a> {
 }
 
 impl<'a> VMLogic<'a> {
-    pub fn new(storage: &'a mut dyn Storage, context: VMContext, limits: &'a VMLimits) -> Self {
+    pub fn new(storage: &'a mut dyn Storage, context: VMContext<'a>, limits: &'a VMLimits) -> Self {
         VMLogic {
             storage,
             memory: None,
@@ -272,7 +272,7 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(logic.limits, register_id, &*logic.context.input)
+                .set(logic.limits, register_id, logic.context.input)
         })?;
 
         Ok(())

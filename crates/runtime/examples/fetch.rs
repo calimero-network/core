@@ -43,14 +43,12 @@ fn main() -> EyreResult<()> {
         max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
     };
 
-    let cx = VMContext::new(
-        to_json_vec(&json!({
-            "block_height": 167_345_193,
-            "account_id": "nearkat.testnet",
-        }))?,
-        [0; 32],
-        [0; 32],
-    );
+    let input = to_json_vec(&json!({
+        "block_height": 167_345_193,
+        "account_id": "nearkat.testnet",
+    }))?;
+
+    let cx = VMContext::new(&input, [0; 32], [0; 32]);
     let get_outcome = run(&file, "view_account", cx, &mut storage, &limits)?;
     let returns = String::from_utf8(get_outcome.returns.unwrap().unwrap()).unwrap();
     println!("{returns}");
