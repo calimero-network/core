@@ -111,3 +111,28 @@ impl<A: Actor> AddrExt<A> for Addr<A> {
         .await
     }
 }
+
+pub trait ActorExt: Actor {
+    fn forward_handler<M>(
+        &mut self,
+        ctx: &mut Self::Context,
+        msg: M,
+        receiver: oneshot::Sender<M::Result>,
+    ) where
+        Self: Handler<M>,
+        M: Message;
+}
+
+impl<A: Actor> ActorExt for A {
+    fn forward_handler<M>(
+        &mut self,
+        ctx: &mut Self::Context,
+        msg: M,
+        receiver: oneshot::Sender<M::Result>,
+    ) where
+        Self: Handler<M>,
+        M: Message,
+    {
+        self.handle(msg, ctx).handle(ctx, Some(receiver))
+    }
+}

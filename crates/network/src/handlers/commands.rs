@@ -1,6 +1,6 @@
 use actix::Handler;
 use calimero_network_primitives::messages::NetworkMessage;
-use calimero_utils_actix::forward_handler;
+use calimero_utils_actix::adapters::ActorExt;
 
 use crate::NetworkManager;
 
@@ -21,34 +21,34 @@ impl Handler<NetworkMessage> for NetworkManager {
     fn handle(&mut self, msg: NetworkMessage, ctx: &mut Self::Context) -> Self::Result {
         match msg {
             NetworkMessage::Dial { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::ListenOn { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::Bootstrap { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::Subscribe { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::Unsubscribe { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::Publish { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::OpenStream { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::PeerCount { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::MeshPeers { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::MeshPeerCount { request, outcome } => {
-                forward_handler(self, ctx, request, outcome);
+                self.forward_handler(ctx, request, outcome)
             }
         }
     }
