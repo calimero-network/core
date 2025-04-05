@@ -8,10 +8,10 @@ use thiserror::Error as ThisError;
 
 #[derive(Debug)]
 pub struct ExecuteRequest {
-    pub context_id: ContextId,
+    pub context: ContextId,
     pub method: String,
     pub payload: Vec<u8>,
-    pub public_key: PublicKey,
+    pub executor: PublicKey,
 }
 
 #[derive(Debug)]
