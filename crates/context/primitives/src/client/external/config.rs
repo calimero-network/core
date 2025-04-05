@@ -79,8 +79,8 @@ impl ExternalConfigClient<'_, '_> {
 
     pub async fn add_context(
         &mut self,
+        context_secret: &PrivateKey,
         identity: &PublicKey,
-        identity_secret: &PrivateKey,
         application: &Application,
     ) -> eyre::Result<()> {
         let client = self.client.mutate::<ContextConfig>(
@@ -101,7 +101,7 @@ impl ExternalConfigClient<'_, '_> {
                     types::ApplicationMetadata(Repr::new(application.metadata.as_slice().into())),
                 ),
             )
-            .send(**identity_secret, 0)
+            .send(**context_secret, 0)
             .await?;
 
         Ok(())
