@@ -1,8 +1,9 @@
 use core::any::{type_name, TypeId};
 use core::marker::PhantomData;
-use core::mem::{transmute, ManuallyDrop};
+use core::mem::transmute;
 use core::ptr;
 use std::rc::Rc;
+use std::sync::Arc;
 
 // https://github.com/sagebind/castaway/pull/14
 
@@ -30,7 +31,7 @@ fn non_static_type_id<T: ?Sized>() -> TypeId {
     })
 }
 
-pub trait Reflect: DynReflect {
+pub trait Reflect {
     fn type_id(&self) -> TypeId {
         non_static_type_id::<Self>()
     }
@@ -38,113 +39,113 @@ pub trait Reflect: DynReflect {
     fn type_name(&self) -> &'static str {
         type_name::<Self>()
     }
+
+    fn as_dyn_ref<'a>(&self) -> &(dyn Reflect + 'a)
+    where
+        Self: 'a;
+
+    fn as_dyn_mut<'a>(&mut self) -> &mut (dyn Reflect + 'a)
+    where
+        Self: 'a;
+
+    fn as_dyn_box<'a>(self: Box<Self>) -> Box<dyn Reflect + 'a>
+    where
+        Self: 'a;
+
+    fn as_dyn_rc<'a>(self: Rc<Self>) -> Rc<dyn Reflect + 'a>
+    where
+        Self: 'a;
+
+    fn as_dyn_arc<'a>(self: Arc<Self>) -> Arc<dyn Reflect + 'a>
+    where
+        Self: 'a;
 }
 
-impl dyn Reflect + '_ {
-    pub fn is<T: Reflect>(&self) -> bool {
+impl<T> Reflect for T {
+    fn as_dyn_ref<'a>(&self) -> &(dyn Reflect + 'a)
+    where
+        T: 'a,
+    {
+        self
+    }
+
+    fn as_dyn_mut<'a>(&mut self) -> &mut (dyn Reflect + 'a)
+    where
+        T: 'a,
+    {
+        self
+    }
+
+    fn as_dyn_box<'a>(self: Box<Self>) -> Box<dyn Reflect + 'a>
+    where
+        T: 'a,
+    {
+        self
+    }
+
+    fn as_dyn_rc<'a>(self: Rc<Self>) -> Rc<dyn Reflect + 'a>
+    where
+        T: 'a,
+    {
+        self
+    }
+
+    fn as_dyn_arc<'a>(self: Arc<Self>) -> Arc<dyn Reflect + 'a>
+    where
+        T: 'a,
+    {
+        self
+    }
+}
+
+pub trait ReflectExt: Reflect {
+    fn is<T: Reflect + ?Sized>(&self) -> bool {
         self.type_id() == non_static_type_id::<T>()
     }
 
-    pub fn downcast_ref<T: Reflect>(&self) -> Option<&T> {
+    fn type_id() -> TypeId {
+        non_static_type_id::<Self>()
+    }
+
+    fn downcast_ref<T: Reflect>(&self) -> Option<&T> {
         if self.is::<T>() {
-            return Some(unsafe { &*ptr::from_ref::<dyn Reflect>(self).cast::<T>() });
+            return Some(unsafe { &*ptr::from_ref(self).cast() });
         }
 
         None
     }
 
-    pub fn downcast_box<T: Reflect>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
+    fn downcast_mut<T: Reflect>(&mut self) -> Option<&mut T> {
         if self.is::<T>() {
-            return Ok(unsafe { Box::from_raw(Box::into_raw(self).cast::<T>()) });
+            return Some(unsafe { &mut *ptr::from_mut(self).cast() });
         }
+
+        None
+    }
+
+    fn downcast_box<T: Reflect>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
+        if (&*self).is::<T>() {
+            return Ok(unsafe { Box::from_raw(Box::into_raw(self).cast()) });
+        }
+
         Err(self)
     }
 
-    pub fn downcast_rc<T: Reflect>(self: Rc<Self>) -> Result<Rc<T>, Rc<Self>> {
-        if self.is::<T>() {
-            return Ok(unsafe { Rc::from_raw(Rc::into_raw(self) as *mut T) });
+    fn downcast_rc<T: Reflect>(self: Rc<Self>) -> Result<Rc<T>, Rc<Self>> {
+        if (&*self).is::<T>() {
+            return Ok(unsafe { Rc::from_raw(Rc::into_raw(self).cast()) });
+        }
+
+        Err(self)
+    }
+
+    fn downcast_arc<T: Reflect>(self: Arc<Self>) -> Result<Arc<T>, Arc<Self>> {
+        if (&*self).is::<T>() {
+            return Ok(unsafe { Arc::from_raw(Arc::into_raw(self).cast()) });
         }
 
         Err(self)
     }
 }
 
-impl<T> Reflect for T {}
-
-pub trait DynReflect {
-    fn as_dyn<'a>(&self) -> &(dyn Reflect + 'a)
-    where
-        Self: 'a;
-
-    fn as_dyn_box<'a>(self: Box<Self>) -> Box<dyn Reflect + 'a>
-    where
-        Self: 'a;
-
-    fn as_dyn_rc<'a>(self: Rc<Self>) -> Rc<dyn Reflect + 'a>
-    where
-        Self: 'a;
-}
-
-impl<T> DynReflect for T {
-    fn as_dyn<'a>(&self) -> &(dyn Reflect + 'a)
-    where
-        T: 'a,
-    {
-        self
-    }
-
-    fn as_dyn_box<'a>(self: Box<Self>) -> Box<dyn Reflect + 'a>
-    where
-        T: 'a,
-    {
-        self
-    }
-
-    fn as_dyn_rc<'a>(self: Rc<Self>) -> Rc<dyn Reflect + 'a>
-    where
-        T: 'a,
-    {
-        self
-    }
-}
-
-pub trait ReflectExt<'a>: Reflect
-where
-    Self: 'a,
-{
-    fn with_boxed<
-        T: Reflect,
-        F: FnOnce(Box<dyn Reflect + 'a>) -> Result<Box<T>, Box<dyn Reflect + 'a>>,
-    >(
-        self: Box<Self>,
-        f: F,
-    ) -> Result<Box<T>, Box<Self>> {
-        let ptr = Box::into_raw(self);
-        match f(unsafe { Box::from_raw(ptr) }.as_dyn_box()) {
-            Ok(value) => Ok(value),
-            Err(value) => {
-                let _ignore = ManuallyDrop::new(value);
-                Err(unsafe { Box::from_raw(ptr) })
-            }
-        }
-    }
-
-    fn with_rc<
-        T: Reflect,
-        F: FnOnce(Rc<dyn Reflect + 'a>) -> Result<Rc<T>, Rc<dyn Reflect + 'a>>,
-    >(
-        self: Rc<Self>,
-        f: F,
-    ) -> Result<Rc<T>, Rc<Self>> {
-        let ptr = Rc::into_raw(self);
-        match f(unsafe { Rc::from_raw(ptr) }.as_dyn_rc()) {
-            Ok(value) => Ok(value),
-            Err(value) => {
-                let _ignore = ManuallyDrop::new(value);
-                Err(unsafe { Rc::from_raw(ptr) })
-            }
-        }
-    }
-}
-
-impl<'a, T: Reflect + ?Sized + 'a> ReflectExt<'a> for T {}
+impl<T: Reflect + ?Sized> ReflectExt for T {}

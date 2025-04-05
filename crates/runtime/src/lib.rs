@@ -1,9 +1,11 @@
-use wasmer::{Engine, Instance, Module, NativeEngineExt, Store};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use crate::errors::{FunctionCallError, VMRuntimeError};
-use crate::logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
-use crate::memory::WasmerTunables;
-use crate::store::Storage;
+use actix::prelude::{Actor, Context, Handler, Message, ResponseFuture};
+use calimero_primitives::context::ContextId;
+use calimero_utils_actix::global_runtime;
+use tokio::sync::Mutex;
+use wasmer::{Engine, Instance, Module, NativeEngineExt, Store};
 
 mod constraint;
 pub mod errors;
@@ -12,23 +14,99 @@ mod memory;
 pub mod store;
 
 pub use constraint::Constraint;
+use errors::{FunctionCallError, VMRuntimeError};
+use logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
+use memory::WasmerTunables;
+use store::Storage;
 
 pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
+type ExecuteResponse = Option<(RuntimeResult<Outcome>, Box<dyn Storage + Send>)>;
+
+#[expect(missing_debug_implementations, reason = "not needed")]
+#[derive(Message)]
+#[rtype(ExecuteResponse)]
+pub struct ExecuteRequest {
+    pub blob: Vec<u8>,
+    pub method_name: String,
+    pub context: VMContext<'static>,
+    pub storage: Box<dyn Storage + Send>,
+}
+
+#[derive(Debug)]
+pub struct RuntimeManager {
+    pub tasks: BTreeMap<ContextId, Arc<Mutex<()>>>,
+    pub limits: VMLimits,
+}
+
+impl Actor for RuntimeManager {
+    type Context = Context<Self>;
+}
+
+impl RuntimeManager {
+    pub fn new(limits: VMLimits) -> Self {
+        RuntimeManager {
+            tasks: BTreeMap::new(),
+            limits,
+        }
+    }
+}
+
+impl Handler<ExecuteRequest> for RuntimeManager {
+    type Result = ResponseFuture<ExecuteResponse>;
+
+    fn handle(&mut self, msg: ExecuteRequest, _ctx: &mut Self::Context) -> Self::Result {
+        let mutex = self
+            .tasks
+            .entry(msg.context.context_id.into())
+            .or_default()
+            .clone();
+
+        let limits = self.limits.clone();
+
+        let future = async move {
+            let _lock = mutex.lock().await;
+
+            let handle = global_runtime().spawn_blocking(move || {
+                let mut msg = msg;
+
+                let result = run(
+                    &msg.blob,
+                    &msg.method_name,
+                    msg.context,
+                    &limits,
+                    &mut *msg.storage,
+                );
+
+                (result, msg.storage)
+            });
+
+            handle.await.ok()
+        };
+
+        Box::pin(future)
+    }
+}
+
+// todo! introduce RuntimeInstance { Engine }::{
+//     compile() -> Bytes;
+//     run_aot() -> Outcome;
+//     run_jit() -> (Outcome, Bytes);
+//     run(Module, ..) -> Outcome;
+// }
+
 pub fn run(
     code: &[u8],
-    method_name: &str,
-    context: VMContext,
-    storage: &mut dyn Storage,
+    method: &str,
+    context: VMContext<'_>,
     limits: &VMLimits,
+    storage: &mut dyn Storage,
 ) -> RuntimeResult<Outcome> {
     // todo! calculate storage key for cached precompiled
     // todo! module, execute that, instead of recompiling
     let mut engine = Engine::default();
 
     engine.set_tunables(WasmerTunables::new(limits));
-
-    let mut store = Store::new(engine);
 
     let mut logic = VMLogic::new(storage, context, limits);
 
@@ -42,10 +120,12 @@ pub fn run(
     // todo!     - remove memory section
     // todo! cache the compiled module in storage for later
 
-    let module = match Module::new(&store, code) {
+    let module = match Module::new(&engine, code) {
         Ok(module) => module,
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
+
+    let mut store = Store::new(engine);
 
     let imports = logic.imports(&mut store);
 
@@ -60,7 +140,7 @@ pub fn run(
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
 
-    let function = match instance.exports.get_function(method_name) {
+    let function = match instance.exports.get_function(method) {
         Ok(function) => function,
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
@@ -70,7 +150,7 @@ pub fn run(
     if !(signature.params().is_empty() && signature.results().is_empty()) {
         return Ok(logic.finish(Some(FunctionCallError::MethodResolutionError(
             errors::MethodResolutionError::InvalidSignature {
-                name: method_name.to_owned(),
+                name: method.to_owned(),
             },
         ))));
     }
