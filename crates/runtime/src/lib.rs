@@ -74,8 +74,8 @@ impl Handler<ExecuteRequest> for RuntimeManager {
                     &msg.blob,
                     &msg.method_name,
                     msg.context,
-                    &mut *msg.storage,
                     &limits,
+                    &mut *msg.storage,
                 );
 
                 (result, msg.storage)
@@ -88,20 +88,25 @@ impl Handler<ExecuteRequest> for RuntimeManager {
     }
 }
 
+// todo! introduce RuntimeInstance { Engine }::{
+//     compile() -> Bytes;
+//     run_aot() -> Outcome;
+//     run_jit() -> (Outcome, Bytes);
+//     run(Module, ..) -> Outcome;
+// }
+
 pub fn run(
     code: &[u8],
-    method_name: &str,
+    method: &str,
     context: VMContext<'_>,
-    storage: &mut dyn Storage,
     limits: &VMLimits,
+    storage: &mut dyn Storage,
 ) -> RuntimeResult<Outcome> {
     // todo! calculate storage key for cached precompiled
     // todo! module, execute that, instead of recompiling
     let mut engine = Engine::default();
 
     engine.set_tunables(WasmerTunables::new(limits));
-
-    let mut store = Store::new(engine);
 
     let mut logic = VMLogic::new(storage, context, limits);
 
@@ -115,10 +120,12 @@ pub fn run(
     // todo!     - remove memory section
     // todo! cache the compiled module in storage for later
 
-    let module = match Module::new(&store, code) {
+    let module = match Module::new(&engine, code) {
         Ok(module) => module,
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
+
+    let mut store = Store::new(engine);
 
     let imports = logic.imports(&mut store);
 
@@ -133,7 +140,7 @@ pub fn run(
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
 
-    let function = match instance.exports.get_function(method_name) {
+    let function = match instance.exports.get_function(method) {
         Ok(function) => function,
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
@@ -143,7 +150,7 @@ pub fn run(
     if !(signature.params().is_empty() && signature.results().is_empty()) {
         return Ok(logic.finish(Some(FunctionCallError::MethodResolutionError(
             errors::MethodResolutionError::InvalidSignature {
-                name: method_name.to_owned(),
+                name: method.to_owned(),
             },
         ))));
     }
