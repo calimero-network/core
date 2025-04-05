@@ -33,6 +33,14 @@ pub enum ContextIdentitySubcommand {
     },
     #[command(about = "Manage identity aliases")]
     Alias(ContextIdentityAliasCommand),
+    #[command(about = "Set default identity for a context", name = "use")]
+    Use {
+        #[arg(help = "The identity to set as default")]
+        identity: PublicKey,
+        #[arg(help = "The context to set the identity for (omit to use default context)")]
+        #[arg(long, short)]
+        context: Option<Alias<ContextId>>,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -52,7 +60,7 @@ pub enum ContextIdentityAliasSubcommand {
         identity: PublicKey,
 
         #[arg(help = "The context that the identity is a member of (omit to use default context)")]
-        #[clap(long = "context", short = 'c')]
+        #[arg(long, short)]
         context: Option<Alias<ContextId>>,
     },
 
@@ -65,7 +73,7 @@ pub enum ContextIdentityAliasSubcommand {
         identity: Alias<PublicKey>,
 
         #[arg(help = "The context that the identity is a member of (omit to use default context)")]
-        #[clap(long = "context", short = 'c')]
+        #[arg(long, short)]
         context: Option<Alias<ContextId>>,
     },
 
@@ -75,7 +83,7 @@ pub enum ContextIdentityAliasSubcommand {
         identity: Alias<PublicKey>,
 
         #[arg(help = "The context that the identity is a member of (omit to use default context)")]
-        #[clap(long = "context", short = 'c')]
+        #[arg(long, short)]
         context: Option<Alias<ContextId>>,
     },
 }
@@ -99,6 +107,24 @@ impl ContextIdentityCommand {
                 .await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
+            ContextIdentitySubcommand::Use { identity, context } => {
+                let context_id = resolve_context(multiaddr, &config.identity, context).await?;
+
+                let default_alias: Alias<PublicKey> =
+                    "default".parse().expect("'default' is a valid alias name");
+
+                let res = create_alias(
+                    multiaddr,
+                    &config.identity,
+                    default_alias,
+                    Some(context_id),
+                    identity,
+                )
+                .await?;
+
+                environment.output.write(&res);
+                Ok(())
+            }
         }
     }
 }

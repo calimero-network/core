@@ -31,6 +31,14 @@ enum IdentitySubcommands {
         #[command(subcommand)]
         command: AliasSubcommands,
     },
+    /// Set default identity for a context
+    Use {
+        /// The identity to set as default
+        identity: PublicKey,
+        /// The context to set the default identity for (omit to use default context)
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -44,9 +52,8 @@ enum AliasSubcommands {
         name: Alias<PublicKey>,
         /// The identity to create an alias for
         identity: PublicKey,
-
-        #[clap(long, short, default_value = "default")]
-        context: Option<Alias<ContextId>>,
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
     /// Remove an alias
     #[command(
@@ -55,20 +62,20 @@ enum AliasSubcommands {
     )]
     Remove {
         identity: Alias<PublicKey>,
-        /// The context that the identity is a member of (must be specified, use "default" for the default context)
-        #[clap(long, short, required = true)]
+        /// The context whose alias we're removing
+        #[arg(long, short)]
         context: Alias<ContextId>,
     },
     #[command(about = "Resolve the alias to a context identity")]
     Get {
         /// Name of the alias to look up
         identity: Alias<PublicKey>,
-        #[clap(long, short, default_value = "default")]
-        context: Option<Alias<ContextId>>,
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
     #[command(about = "List context identity aliases", alias = "ls")]
     List {
-        #[clap(long, short, default_value = "default")]
+        #[arg(long, short, default_value = "default")]
         context: Option<Alias<ContextId>>,
     },
 }
@@ -86,6 +93,22 @@ impl IdentityCommand {
             }
             IdentitySubcommands::Alias { command } => {
                 handle_alias_command(node, command, &ind.to_string())?;
+            }
+            IdentitySubcommands::Use { identity, context } => {
+                let context_id = resolve_context_id(node, Some(context))?;
+
+                let default_alias: Alias<PublicKey> =
+                    "default".parse().expect("'default' is a valid alias name");
+
+                node.ctx_manager
+                    .create_alias(default_alias, Some(context_id), identity)?;
+
+                println!(
+                    "{} Default identity set to: {} for context {}",
+                    ind,
+                    identity.cyan(),
+                    context_id.cyan()
+                );
             }
         }
 
@@ -145,7 +168,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             identity,
             context,
         } => {
-            let context_id = resolve_context_id(node, context)?;
+            let context_id = resolve_context_id(node, Some(context))?;
 
             node.ctx_manager
                 .create_alias(name, Some(context_id), identity)?;
@@ -163,7 +186,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             println!("{ind} Successfully removed alias '{}'", identity.cyan());
         }
         AliasSubcommands::Get { identity, context } => {
-            let context_id = resolve_context_id(node, context)?;
+            let context_id = resolve_context_id(node, Some(context))?;
 
             let Some(identity_id) = node.ctx_manager.lookup_alias(identity, Some(context_id))?
             else {
@@ -219,12 +242,10 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
 // Helper function to resolve context from alias or use default
 fn resolve_context_id(node: &Node, context: Option<Alias<ContextId>>) -> EyreResult<ContextId> {
     if let Some(alias) = context {
-        // If context is provided, resolve it
         node.ctx_manager
             .resolve_alias(alias, None)?
             .ok_or_eyre("Unable to resolve context alias")
     } else {
-        // Otherwise, use the default alias
         let default_alias: Alias<ContextId> =
             "default".parse().expect("'default' is a valid alias name");
 

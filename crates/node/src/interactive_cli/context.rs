@@ -90,7 +90,6 @@ enum Commands {
     },
     /// Update the proxy for a context
     UpdateProxy {
-        /// The context to update the proxy for (omit to use default context)
         #[clap(long = "context", short = 'c')]
         context: Option<Alias<ContextId>>,
         #[clap(long = "as")]
@@ -103,8 +102,7 @@ enum Commands {
         command: AliasCommands,
     },
     Use {
-        /// The context id to set as default
-        context_id: ContextId,
+        context: Alias<ContextId>,
     },
 }
 
@@ -280,16 +278,23 @@ impl ContextCommand {
                 println!("{ind} Updated proxy for context {context_id}");
             }
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
-            Commands::Use { context_id } => {
-                // Create a "default" alias for the specified context ID
+            Commands::Use { context } => {
                 let default_alias: Alias<ContextId> =
                     "default".parse().expect("'default' is a valid alias name");
 
-                // Use the existing alias functionality
-                node.ctx_manager
-                    .create_alias(default_alias, None, context_id)?;
+                let resolved_context_id = resolve_context_id(node, Some(context.clone()))?;
 
-                println!("{} Default context set to: {}", ind, context_id);
+                node.ctx_manager
+                    .create_alias(default_alias, None, resolved_context_id)?;
+
+                if context.as_str() != resolved_context_id.to_string() {
+                    println!(
+                        "{} Default context set to: {} (from alias '{}')",
+                        ind, resolved_context_id, context
+                    );
+                } else {
+                    println!("{} Default context set to: {}", ind, resolved_context_id);
+                }
             }
         }
         Ok(())
