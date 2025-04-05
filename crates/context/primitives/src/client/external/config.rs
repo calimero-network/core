@@ -2,7 +2,7 @@ use calimero_context_config::client::env::config::ContextConfig;
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{self as types, Capability};
 use calimero_primitives::application::Application;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::{bail, OptionExt};
 
 use super::ExternalClient;
@@ -16,7 +16,7 @@ pub struct ExternalConfigClient<'a, 'b> {
 }
 
 impl ExternalClient<'_> {
-    pub fn config(&self) -> ExternalConfigClient<'_, '_> {
+    pub const fn config(&self) -> ExternalConfigClient<'_, '_> {
         ExternalConfigClient {
             nonce: None,
             client: self,
@@ -77,10 +77,40 @@ impl ExternalConfigClient<'_, '_> {
         bail!("max retries exceeded");
     }
 
+    pub async fn add_context(
+        &mut self,
+        identity: &PublicKey,
+        identity_secret: &PrivateKey,
+        application: &Application,
+    ) -> eyre::Result<()> {
+        let client = self.client.mutate::<ContextConfig>(
+            self.client.config.protocol.as_ref().into(),
+            self.client.config.network_id.as_ref().into(),
+            self.client.config.proxy_contract.as_ref().into(),
+        );
+
+        client
+            .add_context(
+                self.client.context_id.rt().expect("infallible conversion"),
+                identity.rt().expect("infallible conversion"),
+                types::Application::new(
+                    application.id.rt().expect("infallible conversion"),
+                    application.blob.rt().expect("infallible conversion"),
+                    application.size,
+                    types::ApplicationSource(application.source.to_string().into()),
+                    types::ApplicationMetadata(Repr::new(application.metadata.as_slice().into())),
+                ),
+            )
+            .send(**identity_secret, 0)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn update_application(
         &mut self,
         public_key: &PublicKey,
-        application: Application,
+        application: &Application,
     ) -> eyre::Result<()> {
         let identity = self
             .client

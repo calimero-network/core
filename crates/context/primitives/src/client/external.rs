@@ -51,21 +51,21 @@ impl Deref for ExternalClient<'_> {
 }
 
 impl ExternalClient<'_> {
-    fn context_client(&self) -> &ContextClient {
+    const fn context_client(&self) -> &ContextClient {
         &self.client
     }
 }
 
 impl ContextClient {
-    pub fn external_client<'a>(
+    pub const fn external_client<'a>(
         &'a self,
         context_id: &ContextId,
         config: ContextConfigParams<'a>,
-    ) -> eyre::Result<Option<ExternalClient<'a>>> {
-        Ok(Some(ExternalClient {
+    ) -> eyre::Result<ExternalClient<'a>> {
+        Ok(ExternalClient {
             context_id: *context_id,
             client: self,
             config,
-        }))
+        })
     }
 }

@@ -20,6 +20,14 @@ pub struct ContextClient {
 }
 
 impl ContextClient {
+    pub fn has_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextMeta::new(*context_id);
+
+        Ok(handle.has(&key)?)
+    }
+
     pub fn get_context(&self, context_id: &ContextId) -> eyre::Result<Option<Context>> {
         let handle = self.datastore.handle();
 
