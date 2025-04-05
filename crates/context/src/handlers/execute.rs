@@ -8,12 +8,13 @@ use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_utils_actix::global_runtime;
 use eyre::Context;
-use storage::ContextStorage;
 use tokio::sync::Mutex;
 
 use crate::ContextManager;
 
-mod storage;
+pub mod storage;
+
+use storage::ContextStorage;
 
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ResponseFuture<<ExecuteRequest as Message>::Result>;

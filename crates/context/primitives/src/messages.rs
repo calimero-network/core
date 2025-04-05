@@ -1,6 +1,8 @@
 use actix::Message;
+use create_context::CreateContextRequest;
 use tokio::sync::oneshot;
 
+pub mod create_context;
 pub mod execute;
 pub mod update_application;
 
@@ -13,6 +15,10 @@ pub enum ContextMessage {
     Execute {
         request: ExecuteRequest,
         outcome: oneshot::Sender<<ExecuteRequest as Message>::Result>,
+    },
+    CreateContext {
+        request: CreateContextRequest,
+        outcome: oneshot::Sender<<CreateContextRequest as Message>::Result>,
     },
     UpdateApplication {
         request: UpdateApplicationRequest,

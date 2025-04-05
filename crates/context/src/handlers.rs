@@ -4,9 +4,9 @@ use calimero_utils_actix::adapters::ActorExt;
 
 use crate::ContextManager;
 
+pub mod create_context;
 pub mod execute;
 pub mod update_application;
-// pub mod create_context;
 // pub mod list_contexts;
 // pub mod delete_context;
 
