@@ -39,7 +39,7 @@ impl ContextClient {
 pub struct ExternalClient<'a> {
     context_id: ContextId,
     client: &'a ContextClient,
-    config: ContextConfigParams<'a>,
+    config: &'a ContextConfigParams<'a>,
 }
 
 impl Deref for ExternalClient<'_> {
@@ -60,7 +60,7 @@ impl ContextClient {
     pub const fn external_client<'a>(
         &'a self,
         context_id: &ContextId,
-        config: ContextConfigParams<'a>,
+        config: &'a ContextConfigParams<'a>,
     ) -> eyre::Result<ExternalClient<'a>> {
         Ok(ExternalClient {
             context_id: *context_id,

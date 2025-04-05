@@ -68,13 +68,13 @@ pub async fn update_application_id(
         bail!("context '{}' does not exist", context_id);
     };
 
-    let external_client = context_client.external_client(&context_id, config_client)?;
+    let external_client = context_client.external_client(&context_id, &config_client)?;
 
     let blob_id = application.blob;
 
     external_client
         .config()
-        .update_application(&public_key, application)
+        .update_application(&public_key, &application)
         .await?;
 
     context_client
