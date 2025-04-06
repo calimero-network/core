@@ -8,7 +8,7 @@ use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_utils_actix::global_runtime;
 use eyre::Context;
-use tokio::sync::Mutex;
+use tokio::sync::MutexGuard;
 
 use crate::ContextManager;
 
@@ -25,20 +25,20 @@ impl Handler<ExecuteRequest> for ContextManager {
 }
 
 pub async fn execute(
-    context: Arc<Mutex<ContextId>>,
+    context: &MutexGuard<'_, ContextId>,
     blob: Arc<impl AsRef<[u8]> + Send + Sync + 'static>,
     method: impl AsRef<str> + Send + 'static,
     input: impl AsRef<[u8]> + Send + 'static,
     executor: PublicKey,
     mut storage: ContextStorage,
 ) -> eyre::Result<(Outcome, ContextStorage)> {
-    let context_id = context.lock_owned().await;
+    let context_id = **context;
 
     let limits = default_limits()?;
 
     global_runtime()
         .spawn_blocking(move || {
-            let context = VMContext::new(input.as_ref(), **context_id, *executor);
+            let context = VMContext::new(input.as_ref(), *context_id, *executor);
 
             let outcome = calimero_runtime::run(
                 (*blob).as_ref(),

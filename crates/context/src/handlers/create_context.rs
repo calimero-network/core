@@ -226,15 +226,10 @@ async fn create_context(
 
     let storage = ContextStorage::from(datastore, context.id);
 
-    let (outcome, storage) = execute(
-        lock.clone(),
-        blob.clone(),
-        "init",
-        init_params,
-        identity,
-        storage,
-    )
-    .await?;
+    let guard = lock.lock().await;
+
+    let (outcome, storage) =
+        execute(&guard, blob.clone(), "init", init_params, identity, storage).await?;
 
     if let Some(res) = outcome.returns? {
         bail!(
@@ -287,6 +282,8 @@ async fn create_context(
             sender_key: Some(*sender_key),
         },
     )?;
+
+    drop(guard);
 
     Ok((context, lock, blob))
 }
