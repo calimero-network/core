@@ -422,7 +422,7 @@ export class NodeDataSource implements NodeApi {
         getNearEnvironment(),
       );
       const response = await this.client.get<ContextUsersList>(
-        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/users`,
+        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
         headers ?? {},
       );
       return response;
