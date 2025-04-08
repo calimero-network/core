@@ -25,13 +25,11 @@ export interface ContextClientKeysList {
 }
 
 export interface ContextUsersList {
-  contextUsers: User[];
+  identities: string[];
 }
 
-export interface User {
-  userId: string;
-  joinedAt: number;
-  contextId: string;
+export interface Identity {
+  identity: string;
 }
 
 export interface Application {
