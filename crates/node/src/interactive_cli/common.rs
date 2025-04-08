@@ -5,8 +5,9 @@ use owo_colors::OwoColorize;
 
 pub fn pretty_alias<T: fmt::Display>(alias: Option<Alias<T>>, value: &T) -> String {
     let Some(alias) = alias else {
-        return value.to_string().cyan().to_string();
+        return value.cyan().to_string();
     };
 
     format!("{} ({})", alias.cyan(), value.cyan())
 }
+
