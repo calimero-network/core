@@ -293,6 +293,26 @@ impl ContextCommand {
 fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreResult<()> {
     match command {
         AliasCommands::Add { alias, context_id } => {
+            let handle = node.store.handle();
+            let mut context_exists = false;
+
+            for (k, _v) in handle.iter::<ContextMetaKey>()?.entries() {
+                let k = k?;
+                if k.context_id() == context_id {
+                    context_exists = true;
+                    break;
+                }
+            }
+
+            if !context_exists {
+                println!(
+                    "{ind} Error: Context with ID '{}' does not exist.",
+                    context_id.cyan()
+                );
+                return Ok(());
+            }
+
+            // Create the alias if the context exists
             node.ctx_manager.create_alias(alias, None, context_id)?;
             println!("{ind} Successfully created alias '{}'", alias.cyan());
         }
