@@ -65,7 +65,6 @@ pub enum ContextSubCommands {
     Update(UpdateCommand),
     Identity(ContextIdentityCommand),
     Alias(ContextAliasCommand),
-    #[command(name = "use")]
     Use(UseCommand),
 }
 
