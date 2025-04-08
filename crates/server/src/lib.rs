@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
-use axum::middleware::from_fn;
 use axum::{Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
@@ -24,8 +23,6 @@ use tracing::warn;
 
 use crate::admin::service::{setup, site};
 use crate::certificates::get_certificate;
-use crate::middleware::dev_auth::dev_mode_auth;
-use crate::middleware::jwt::JwtLayer;
 
 pub mod certificates;
 
