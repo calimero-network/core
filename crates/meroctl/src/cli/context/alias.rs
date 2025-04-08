@@ -82,7 +82,7 @@ impl UseCommand {
 
         // Resolve the input (whether it's an alias or a context ID)
         let lookup_response =
-            lookup_alias(multiaddr, &config.identity, self.context_id.clone(), None)
+            lookup_alias(multiaddr, &config.identity, self.context_id, None)
                 .await
                 .wrap_err("Failed to resolve context alias")?;
 
