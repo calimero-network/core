@@ -1,10 +1,15 @@
+use std::sync::Arc;
+
 use calimero_blobstore::{Blob, Size};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use eyre::bail;
-use futures_util::{io, AsyncRead, TryStreamExt};
+use futures_util::AsyncRead;
+use tokio::sync::oneshot;
 
 use super::NodeClient;
+use crate::messages::get_blob_bytes::GetBlobBytesRequest;
+use crate::messages::NodeMessage;
 
 impl NodeClient {
     pub async fn add_blob<S: AsyncRead>(
@@ -37,18 +42,20 @@ impl NodeClient {
         Ok(Some(stream))
     }
 
-    pub async fn get_blob_bytes(&self, blob_id: &BlobId) -> eyre::Result<Option<Box<[u8]>>> {
-        let Some(blob) = self.blobstore.get(*blob_id)? else {
-            return Ok(None);
-        };
+    pub async fn get_blob_bytes(&self, blob_id: &BlobId) -> eyre::Result<Option<Arc<[u8]>>> {
+        let (tx, rx) = oneshot::channel();
 
-        let mut blob = blob.map_err(io::Error::other).into_async_read();
+        self.node_manager
+            .send(NodeMessage::GetBlobBytes {
+                request: GetBlobBytesRequest { blob_id: *blob_id },
+                outcome: tx,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
 
-        let mut bytes = Vec::new();
+        let res = rx.await.expect("Mailbox not to be dropped")?;
 
-        let _ignored = io::copy(&mut blob, &mut bytes).await?;
-
-        Ok(Some(bytes.into_boxed_slice()))
+        Ok(res.bytes)
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {

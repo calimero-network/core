@@ -82,7 +82,7 @@ impl Handler<CreateContextRequest> for ContextManager {
                 init_params,
             ))
             .into_actor(self)
-            .and_then(move |(context, lock, blob), act, _ctx| {
+            .map_ok(move |(context, lock, blob), act, _ctx| {
                 if let Some(meta) = act.contexts.get_mut(&context.id) {
                     // this should almost always exist, but with an LruCache, it
                     // may not. And if it's been evicted, the next execution will
@@ -94,13 +94,10 @@ impl Handler<CreateContextRequest> for ContextManager {
 
                 let _ignored = act.blobs.entry(blob_id).or_insert(blob);
 
-                async move {
-                    Ok(CreateContextResponse {
-                        context_id: context.id,
-                        identity: prepared.identity,
-                    })
+                CreateContextResponse {
+                    context_id: context.id,
+                    identity: prepared.identity,
                 }
-                .into_actor(act)
             }),
         )
     }

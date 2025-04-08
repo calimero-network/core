@@ -2,8 +2,11 @@ use calimero_blobstore::BlobManager;
 use calimero_network_primitives::client::NetworkClient;
 use calimero_primitives::context::ContextId;
 use calimero_store::Store;
+use calimero_utils_actix::LazyRecipient;
 use libp2p::gossipsub::IdentTopic;
 use tracing::info;
+
+use crate::messages::NodeMessage;
 
 mod alias;
 mod application;
@@ -14,6 +17,7 @@ pub struct NodeClient {
     datastore: Store,
     blobstore: BlobManager,
     network_manager: NetworkClient,
+    node_manager: LazyRecipient<NodeMessage>,
 }
 
 impl NodeClient {

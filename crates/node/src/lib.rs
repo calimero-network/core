@@ -4,11 +4,14 @@
     reason = "TODO: Check if this is necessary"
 )]
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use actix::Actor;
 use calimero_blobstore::BlobManager;
-use calimero_context::ContextManager;
-use calimero_network::client::NetworkClient;
-use calimero_network::NetworkManager;
+use calimero_context_primitives::client::ContextClient;
+use calimero_network_primitives::client::NetworkClient;
+use calimero_primitives::blobs::BlobId;
 use calimero_store::Store;
 
 pub mod handlers;
@@ -28,6 +31,11 @@ pub struct NodeManager {
 
     pub context_manager: ContextClient,
     pub network_manager: NetworkClient,
+
+    // -- blobs --
+    // todo! potentially make this a dashmap::DashMap
+    // todo! use cached::TimedSizedCache with a gc task
+    blob_cache: BTreeMap<BlobId, Arc<[u8]>>,
 }
 
 impl Actor for NodeManager {
