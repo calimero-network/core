@@ -62,7 +62,7 @@ pub struct AdminConfig {
 impl AdminConfig {
     #[must_use]
     pub const fn new(enabled: bool) -> Self {
-        Self { 
+        Self {
             enabled,
             auth_enabled: false,
         }
