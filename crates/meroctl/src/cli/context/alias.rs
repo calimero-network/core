@@ -66,7 +66,7 @@ impl ContextAliasCommand {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "use", about = "Set the default context")]
+#[command(about = "Set the default context")]
 pub struct UseCommand {
     pub context_id: Alias<ContextId>,
 }
