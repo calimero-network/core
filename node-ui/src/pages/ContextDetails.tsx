@@ -126,9 +126,11 @@ export default function ContextDetailsPage() {
         }
 
         if (contextClientUsers.data) {
-          setContextUsers(contextClientUsers.data.identities.map(identity => ({
-            identity: identity
-          })));
+          setContextUsers(
+            contextClientUsers.data.identities.map((identity) => ({
+              identity: identity,
+            })),
+          );
         } else {
           setContextUsersError(contextClientUsers.error?.message);
         }
