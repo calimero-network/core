@@ -35,9 +35,9 @@ enum IdentitySubcommands {
 #[derive(Debug, Subcommand)]
 enum AliasSubcommands {
     #[command(
-    about = "Add new alias for an identity in a context",
-    aliases = ["create", "new"]
-  )]
+        about = "Add new alias for an identity in a context",
+        aliases = ["create", "new"],
+    )]
     Add {
         /// Name for the alias
         name: Alias<PublicKey>,
@@ -150,35 +150,12 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                 .ctx_manager
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve context alias")?;
-            let mut identity_exists = false;
-            let handle = node.store.handle();
-            let mut iter = handle.iter::<ContextIdentityKey>()?;
 
-            let first = 'first: {
-                let Some(k) = iter
-                    .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
-                    .transpose()
-                else {
-                    break 'first None;
-                };
-
-                Some((k, iter.read()))
-            };
-
-            for (k, v) in first.into_iter().chain(iter.entries()) {
-                let (k, _v) = (k?, v?);
-
-                if k.context_id() != context_id {
-                    break;
-                }
-
-                if k.public_key() == identity {
-                    identity_exists = true;
-                    break;
-                }
-            }
-
-            if !identity_exists {
+            // Use the has_context_identity method directly instead of manually iterating
+            if !node
+                .ctx_manager
+                .has_context_identity(context_id, identity)?
+            {
                 println!(
                     "{ind} Error: Identity '{}' does not exist in context '{}'.",
                     identity.cyan(),

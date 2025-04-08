@@ -105,23 +105,31 @@ impl ContextIdentityAliasCommand {
         let multiaddr = fetch_multiaddr(&config)?;
 
         match self.command {
-            ContextIdentityAliasSubcommand::Add { name, identity, context } => {
-                // Check if the identity exists in the context
+            ContextIdentityAliasSubcommand::Add {
+                name,
+                identity,
+                context,
+            } => {
                 if !identity_exists_in_context(
                     &multiaddr,
                     &Client::new(),
                     &config.identity,
                     &context,
-                    &identity
-                ).await? {
-                    println!("Error: Identity '{}' does not exist in context '{}'", identity, context);
+                    &identity,
+                )
+                .await?
+                {
+                    use crate::output::ErrorLine;
+                    environment.output.write(&ErrorLine(&format!(
+                        "Identity '{}' does not exist in context '{}'",
+                        identity, context
+                    )));
                     return Ok(());
                 }
-                
-                // Proceed with alias creation since the identity exists
+
                 let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
                 let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
-                
+
                 let res = create_alias(
                     multiaddr,
                     &config.identity,
@@ -130,7 +138,7 @@ impl ContextIdentityAliasCommand {
                     identity,
                 )
                 .await?;
-            
+
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Remove { identity, context } => {
@@ -205,13 +213,13 @@ async fn identity_exists_in_context(
 
     let endpoint = format!("admin-api/dev/contexts/{}/identities", context_id);
     let url = multiaddr_to_url(multiaddr, &endpoint)?;
-    
+
     let response: GetContextIdentitiesResponse = reqwest::Client::new()
         .get(url)
         .send()
         .await?
         .json::<GetContextIdentitiesResponse>()
         .await?;
-    
+
     Ok(response.data.identities.contains(target_identity))
 }

@@ -56,9 +56,10 @@ impl ContextAliasCommand {
                     println!("Error: Context with ID '{}' does not exist", context_id);
                     return Ok(());
                 }
-                
+
                 // Proceed with alias creation since the context exists
-                let res = create_alias(multiaddr, &config.identity, alias, None, context_id).await?;
+                let res =
+                    create_alias(multiaddr, &config.identity, alias, None, context_id).await?;
                 environment.output.write(&res);
             }
             ContextAliasSubcommand::Remove { alias } => {
@@ -77,8 +78,11 @@ impl ContextAliasCommand {
     }
 }
 
-
-async fn context_exists(multiaddr: &Multiaddr, identity: &Keypair, target_id: &ContextId) -> EyreResult<bool> {
+async fn context_exists(
+    multiaddr: &Multiaddr,
+    identity: &Keypair,
+    target_id: &ContextId,
+) -> EyreResult<bool> {
     let response: GetContextsResponse = do_request(
         &Client::new(),
         multiaddr_to_url(multiaddr, "admin-api/dev/contexts")?,
@@ -87,7 +91,11 @@ async fn context_exists(multiaddr: &Multiaddr, identity: &Keypair, target_id: &C
         RequestType::Get,
     )
     .await?;
-    
+
     // Check if the target context exists in the response
-    Ok(response.data.contexts.iter().any(|ctx| &ctx.id == target_id))
+    Ok(response
+        .data
+        .contexts
+        .iter()
+        .any(|ctx| &ctx.id == target_id))
 }
