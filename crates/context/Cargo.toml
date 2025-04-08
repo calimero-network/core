@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 actix.workspace = true
 camino = { workspace = true, features = ["serde1"] }
+either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 rand.workspace = true

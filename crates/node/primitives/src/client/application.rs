@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Arc;
 
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
@@ -40,7 +41,7 @@ impl NodeClient {
     pub async fn get_application_bytes(
         &self,
         application_id: &ApplicationId,
-    ) -> eyre::Result<Option<Box<[u8]>>> {
+    ) -> eyre::Result<Option<Arc<[u8]>>> {
         let handle = self.datastore.handle();
 
         let key = key::ApplicationMeta::new(*application_id);

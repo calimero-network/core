@@ -1,9 +1,8 @@
-use std::sync::Arc;
-
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_node_primitives::messages::get_blob_bytes::{
     GetBlobBytesRequest, GetBlobBytesResponse,
 };
+use either::Either;
 use futures_util::{io, TryStreamExt};
 
 use crate::NodeManager;
@@ -16,36 +15,58 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
         GetBlobBytesRequest { blob_id }: GetBlobBytesRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        if let bytes @ Some(_) = self.blob_cache.get(&blob_id).cloned() {
-            return ActorResponse::reply(Ok(GetBlobBytesResponse { bytes }));
-        }
+        let blob = self.blob_cache.entry(blob_id).or_default();
 
-        let maybe_blob = match self.blobstore.get(blob_id) {
-            Ok(res) => res,
-            Err(err) => return ActorResponse::reply(Err(err.into())),
+        let guard = match blob.clone().try_lock_owned() {
+            Ok(guard) => {
+                if let bytes @ Some(_) = guard.clone() {
+                    return ActorResponse::reply(Ok(GetBlobBytesResponse { bytes }));
+                }
+
+                Either::Left(guard)
+            }
+            Err(_) => Either::Right(blob.clone().lock_owned()),
         };
 
-        let Some(blob) = maybe_blob else {
-            return ActorResponse::reply(Ok(GetBlobBytesResponse { bytes: None }));
-        };
+        let blobstore = self.blobstore.clone();
 
-        let fut = Box::pin(async {
+        let task = Box::pin(async move {
+            let mut guard = match guard {
+                Either::Left(guard) => guard,
+                Either::Right(task) => {
+                    let guard = task.await;
+
+                    if let Some(bytes) = guard.clone() {
+                        return Ok(Some(bytes));
+                    }
+
+                    guard
+                }
+            };
+
+            let Some(blob) = blobstore.get(blob_id)? else {
+                return Ok(None);
+            };
+
             let mut blob = blob.map_err(io::Error::other).into_async_read();
 
             let mut bytes = Vec::new();
 
             let _ignored = io::copy(&mut blob, &mut bytes).await?;
 
-            Ok(bytes.into())
+            *guard = Some(bytes.into());
+
+            Ok(guard.clone())
         });
 
-        ActorResponse::r#async(fut.into_actor(self).map_ok(move |bytes, act, _ctx| {
-            // blob bytes are content-addressed, so if it previously existed, it will be the same thing making it
-            // safe to discard the new one in favor of the cached one. Though this should only happen if some other
-            // task was already in progress of reading the blob while this request was made which already resolved
-            let bytes = act.blob_cache.entry(blob_id).or_insert(bytes).clone();
+        ActorResponse::r#async(
+            task.into_actor(self)
+                .map_ok(move |bytes, _act, _ctx| GetBlobBytesResponse { bytes })
+                .map_err(move |err, act, _ctx| {
+                    let _ignored = act.blob_cache.remove(&blob_id);
 
-            GetBlobBytesResponse { bytes: Some(bytes) }
-        }))
+                    err
+                }),
+        )
     }
 }
