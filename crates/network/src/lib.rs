@@ -11,6 +11,7 @@ use std::collections::hash_map::HashMap;
 use actix::{Actor, AsyncContext, Context};
 use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::config::NetworkConfig;
+use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::stream::CALIMERO_STREAM_PROTOCOL;
 use calimero_utils_actix::{actor, LazyRecipient};
 use eyre::Result as EyreResult;
@@ -26,14 +27,12 @@ use tracing::error;
 mod behaviour;
 mod discovery;
 mod handlers;
-pub mod types;
 
 use behaviour::Behaviour;
 use discovery::Discovery;
 use handlers::stream::incoming::FromIncoming;
 use handlers::stream::rendezvous::RendezvousTick;
 use handlers::stream::swarm::FromSwarm;
-use types::NetworkEvent;
 
 pub async fn run(
     config: &NetworkConfig,

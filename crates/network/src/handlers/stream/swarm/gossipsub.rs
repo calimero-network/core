@@ -1,9 +1,9 @@
+use calimero_network_primitives::messages::NetworkEvent;
 use libp2p::gossipsub::Event;
 use owo_colors::OwoColorize;
 use tracing::debug;
 
 use super::{EventHandler, NetworkManager};
-use crate::types::NetworkEvent;
 
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {

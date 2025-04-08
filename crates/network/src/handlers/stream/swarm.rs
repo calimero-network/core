@@ -1,4 +1,5 @@
 use actix::StreamHandler;
+use calimero_network_primitives::messages::NetworkEvent;
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
 use libp2p::swarm::SwarmEvent;
@@ -8,7 +9,6 @@ use tracing::{debug, trace, warn};
 
 use crate::behaviour::BehaviourEvent;
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
-use crate::types::NetworkEvent;
 use crate::NetworkManager;
 
 mod dcutr;
