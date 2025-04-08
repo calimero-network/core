@@ -188,7 +188,13 @@ impl ContextCommand {
                 }
             }
             Commands::Leave { context } => {
-                let context_id = resolve_context_id(node, context)?;
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(
+                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                        None,
+                    )?
+                    .ok_or_eyre("unable to resolve context")?;
                 if node.ctx_manager.delete_context(&context_id).await? {
                     println!("{ind} Successfully deleted context {context_id}");
                 } else {
@@ -240,7 +246,13 @@ impl ContextCommand {
                 inviter,
                 invitee_id,
             } => {
-                let context_id = resolve_context_id(node, context)?;
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(
+                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                        None,
+                    )?
+                    .ok_or_eyre("unable to resolve context")?;
                 let inviter_id = node
                     .ctx_manager
                     .resolve_alias(inviter, Some(context_id))?
@@ -261,12 +273,24 @@ impl ContextCommand {
                 }
             }
             Commands::Delete { context } => {
-                let context_id = resolve_context_id(node, context)?;
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(
+                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                        None,
+                    )?
+                    .ok_or_eyre("unable to resolve context")?;
                 let _ = node.ctx_manager.delete_context(&context_id).await?;
                 println!("{ind} Deleted context {context_id}");
             }
             Commands::UpdateProxy { context, identity } => {
-                let context_id = resolve_context_id(node, context)?;
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(
+                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                        None,
+                    )?
+                    .ok_or_eyre("unable to resolve context")?;
                 let public_key = node
                     .ctx_manager
                     .resolve_alias(identity, Some(context_id))?
@@ -282,18 +306,21 @@ impl ContextCommand {
                 let default_alias: Alias<ContextId> =
                     "default".parse().expect("'default' is a valid alias name");
 
-                let resolved_context_id = resolve_context_id(node, Some(context.clone()))?;
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
 
                 node.ctx_manager
-                    .create_alias(default_alias, None, resolved_context_id)?;
+                    .create_alias(default_alias, None, context_id)?;
 
-                if context.as_str() != resolved_context_id.to_string() {
+                if context.as_str() != context_id.to_string() {
                     println!(
                         "{} Default context set to: {} (from alias '{}')",
-                        ind, resolved_context_id, context
+                        ind, context_id, context
                     );
                 } else {
-                    println!("{} Default context set to: {}", ind, resolved_context_id);
+                    println!("{} Default context set to: {}", ind, context_id);
                 }
             }
         }
@@ -337,21 +364,4 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
     }
 
     Ok(())
-}
-
-fn resolve_context_id(node: &Node, context: Option<Alias<ContextId>>) -> EyreResult<ContextId> {
-    if let Some(alias) = context {
-        // If context is provided, resolve it
-        node.ctx_manager
-            .resolve_alias(alias, None)?
-            .ok_or_eyre("Unable to resolve context alias")
-    } else {
-        // Otherwise, use the default alias
-        let default_alias: Alias<ContextId> =
-            "default".parse().expect("'default' is a valid alias name");
-
-        node.ctx_manager
-            .lookup_alias(default_alias, None)?
-            .ok_or_eyre("No default context set. Please set one with 'context use <context-id>' or specify a context explicitly")
-    }
 }

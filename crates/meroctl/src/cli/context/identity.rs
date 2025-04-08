@@ -11,7 +11,7 @@ use reqwest::Client;
 use crate::cli::Environment;
 use crate::common::{
     create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, make_request,
-    multiaddr_to_url, resolve_alias, resolve_context, RequestType,
+    multiaddr_to_url, resolve_alias, RequestType,
 };
 
 #[derive(Debug, Parser)]
@@ -108,8 +108,18 @@ impl ContextIdentityCommand {
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Use { identity, context } => {
-                let context_id = resolve_context(multiaddr, &config.identity, context).await?;
+                let resolve_response = resolve_alias(
+                    multiaddr,
+                    &config.identity,
+                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                    None,
+                )
+                .await?;
 
+                let context_id = resolve_response
+                    .value()
+                    .cloned()
+                    .ok_or_eyre("Failed to resolve context: no value found")?;
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
 
@@ -140,9 +150,18 @@ impl ContextIdentityAliasCommand {
                 identity,
                 context,
             } => {
-                // Use resolve_context to get the context_id (will use default if None)
-                let context_id = resolve_context(multiaddr, &config.identity, context).await?;
+                let resolve_response = resolve_alias(
+                    multiaddr,
+                    &config.identity,
+                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                    None,
+                )
+                .await?;
 
+                let context_id = resolve_response
+                    .value()
+                    .cloned()
+                    .ok_or_eyre("Failed to resolve context: no value found")?;
                 let res = create_alias(
                     multiaddr,
                     &config.identity,
@@ -155,18 +174,36 @@ impl ContextIdentityAliasCommand {
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Remove { identity, context } => {
-                // Use resolve_context to get the context_id (will use default if None)
-                let context_id = resolve_context(multiaddr, &config.identity, context).await?;
+                let resolve_response = resolve_alias(
+                    multiaddr,
+                    &config.identity,
+                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                    None,
+                )
+                .await?;
 
+                let context_id = resolve_response
+                    .value()
+                    .cloned()
+                    .ok_or_eyre("Failed to resolve context: no value found")?;
                 let res =
                     delete_alias(multiaddr, &config.identity, identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Get { identity, context } => {
-                // Use resolve_context to get the context_id (will use default if None)
-                let context_id = resolve_context(multiaddr, &config.identity, context).await?;
+                let resolve_response = resolve_alias(
+                    multiaddr,
+                    &config.identity,
+                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+                    None,
+                )
+                .await?;
 
+                let context_id = resolve_response
+                    .value()
+                    .cloned()
+                    .ok_or_eyre("Failed to resolve context: no value found")?;
                 let res =
                     lookup_alias(multiaddr, &config.identity, identity, Some(context_id)).await?;
 
@@ -186,8 +223,18 @@ async fn list_identities(
     context: Option<Alias<ContextId>>,
     owned: bool,
 ) -> EyreResult<()> {
-    // Use resolve_context to get the context_id (will use default if None)
-    let context_id = resolve_context(multiaddr, keypair, context).await?;
+    let resolve_response = resolve_alias(
+        multiaddr,
+        keypair,
+        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+        None,
+    )
+    .await?;
+
+    let context_id = resolve_response
+        .value()
+        .cloned()
+        .ok_or_eyre("Failed to resolve context: no value found")?;
 
     let endpoint = if owned {
         format!("admin-api/dev/contexts/{}/identities-owned", context_id)

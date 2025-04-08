@@ -12,7 +12,7 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_context, RequestType,
+    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
 };
 use crate::output::Report;
 
@@ -22,8 +22,12 @@ pub struct GetCommand {
     #[command(subcommand)]
     pub command: GetSubcommand,
 
-    #[arg(value_name = "CONTEXT", help = "Context we're operating on")]
-    pub context: Option<Alias<ContextId>>,
+    #[arg(
+        value_name = "CONTEXT",
+        help = "Context we're operating on",
+        default_value = "default"
+    )]
+    pub context: Alias<ContextId>,
 }
 
 #[derive(Debug, Parser)]
@@ -79,7 +83,13 @@ impl GetCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
-        let context_id = resolve_context(multiaddr, &config.identity, self.context).await?;
+        let resolve_response =
+            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
+
+        let context_id = resolve_response
+            .value()
+            .cloned()
+            .ok_or_eyre("Failed to resolve context: no value found")?;
 
         match self.command {
             GetSubcommand::Info => {

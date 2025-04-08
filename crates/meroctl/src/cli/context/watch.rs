@@ -8,7 +8,7 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
-use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_context};
+use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias};
 use crate::output::{InfoLine, Report};
 
 #[derive(Debug, Parser)]
@@ -32,7 +32,19 @@ impl WatchCommand {
 
         let multiaddr = fetch_multiaddr(&config)?;
 
-        let context_id = resolve_context(multiaddr, &config.identity, self.context).await?;
+        let resolve_response = resolve_alias(
+            multiaddr,
+            &config.identity,
+            self.context
+                .unwrap_or_else(|| "default".parse().expect("valid alias")),
+            None,
+        )
+        .await?;
+
+        let context_id = resolve_response
+            .value()
+            .cloned()
+            .ok_or_eyre("Failed to resolve context: no value found")?;
 
         let mut url = multiaddr_to_url(multiaddr, "ws")?;
         url.set_scheme("ws")
