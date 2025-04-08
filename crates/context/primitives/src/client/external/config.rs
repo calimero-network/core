@@ -78,7 +78,7 @@ impl ExternalConfigClient<'_, '_> {
     }
 
     pub async fn add_context(
-        &mut self,
+        &self,
         context_secret: &PrivateKey,
         identity: &PublicKey,
         application: &Application,

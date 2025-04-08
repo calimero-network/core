@@ -8,7 +8,7 @@ use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_utils_actix::global_runtime;
 use eyre::Context;
-use tokio::sync::MutexGuard;
+use tokio::sync::OwnedMutexGuard;
 
 use crate::ContextManager;
 
@@ -25,7 +25,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 }
 
 pub async fn execute(
-    context: &MutexGuard<'_, ContextId>,
+    context: &OwnedMutexGuard<ContextId>,
     blob: Arc<[u8]>,
     method: impl AsRef<str> + Send + 'static,
     input: impl AsRef<[u8]> + Send + 'static,

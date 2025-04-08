@@ -19,7 +19,7 @@ pub mod handlers;
 struct ContextMeta {
     meta: Context,
     blob: BlobId,
-    lock: Option<Arc<Mutex<ContextId>>>,
+    lock: Arc<Mutex<ContextId>>,
 }
 
 #[derive(Debug)]
