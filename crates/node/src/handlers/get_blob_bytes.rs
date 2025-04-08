@@ -36,11 +36,14 @@ impl Handler<GetBlobBytesRequest> for NodeManager {
 
             let _ignored = io::copy(&mut blob, &mut bytes).await?;
 
-            Ok(Arc::<[u8]>::from(bytes))
+            Ok(bytes.into())
         });
 
         ActorResponse::r#async(fut.into_actor(self).map_ok(move |bytes, act, _ctx| {
-            let _ignored = act.blob_cache.insert(blob_id, bytes.clone());
+            // blob bytes are content-addressed, so if it previously existed, it will be the same thing making it
+            // safe to discard the new one in favor of the cached one. Though this should only happen if some other
+            // task was already in progress of reading the blob while this request was made which already resolved
+            let bytes = act.blob_cache.entry(blob_id).or_insert(bytes).clone();
 
             GetBlobBytesResponse { bytes: Some(bytes) }
         }))

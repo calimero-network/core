@@ -49,8 +49,6 @@ impl Handler<CreateContextRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        let cached_blob = self.blobs.get(&prepared.application.blob).cloned();
-
         let context = Context::new(prepared.context, prepared.application.id, Hash::default());
 
         let _ignored = self.contexts.insert(
@@ -64,8 +62,6 @@ impl Handler<CreateContextRequest> for ContextManager {
 
         let datastore = self.datastore.clone();
 
-        let blob_id = prepared.application.blob;
-
         ActorResponse::r#async(
             Box::pin(create_context(
                 datastore,
@@ -78,11 +74,10 @@ impl Handler<CreateContextRequest> for ContextManager {
                 prepared.identity,
                 prepared.identity_secret,
                 prepared.sender_key,
-                cached_blob,
                 init_params,
             ))
             .into_actor(self)
-            .map_ok(move |(context, lock, blob), act, _ctx| {
+            .map_ok(move |(context, lock), act, _ctx| {
                 if let Some(meta) = act.contexts.get_mut(&context.id) {
                     // this should almost always exist, but with an LruCache, it
                     // may not. And if it's been evicted, the next execution will
@@ -91,8 +86,6 @@ impl Handler<CreateContextRequest> for ContextManager {
                     meta.meta.root_hash = context.root_hash;
                     meta.lock = Some(lock);
                 }
-
-                let _ignored = act.blobs.entry(blob_id).or_insert(blob);
 
                 CreateContextResponse {
                     context_id: context.id,
@@ -205,18 +198,14 @@ async fn create_context(
     identity: PublicKey,
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
-    cached_blob: Option<Arc<Box<[u8]>>>,
     init_params: Vec<u8>,
-) -> eyre::Result<(Context, Arc<Mutex<ContextId>>, Arc<Box<[u8]>>)> {
-    let blob = match cached_blob {
-        Some(blob) => blob,
-        None => {
-            let Some(blob) = node_client.get_blob_bytes(&application.blob).await? else {
-                bail!("fatal: application points to dangling blob, blob store may be corrupted");
-            };
-
-            Arc::new(blob)
-        }
+) -> eyre::Result<(Context, Arc<Mutex<ContextId>>)> {
+    let Some(blob) = node_client.get_blob_bytes(&application.blob).await? else {
+        bail!(
+            "missing blob `{}` for application `{}`",
+            application.blob,
+            application.id
+        );
     };
 
     let lock = Arc::new(Mutex::new(context.id));
@@ -282,5 +271,5 @@ async fn create_context(
 
     drop(guard);
 
-    Ok((context, lock, blob))
+    Ok((context, lock))
 }

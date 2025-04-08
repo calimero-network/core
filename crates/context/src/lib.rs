@@ -25,17 +25,39 @@ struct ContextMeta {
 #[derive(Debug)]
 pub struct ContextManager {
     datastore: Store,
-    // todo! use LruCache with a task interval for garbage collection
-    blobs: BTreeMap<BlobId, Arc<Box<[u8]>>>,
-    contexts: BTreeMap<ContextId, ContextMeta>,
-    // todo! when runtime let's us compile blobs separate
-    // todo! from execution, we can introduce an LruCache here
-    // runtimes: Vec<Arc<Mutex<RuntimeInstance>>>,
+
     node_client: NodeClient,
     context_client: ContextClient,
     external_config: ExternalClientConfig,
+
+    // -- contexts --
+    // todo! potentially make this a dashmap::DashMap
+    // todo! use cached::TimedSizedCache with a gc task
+    contexts: BTreeMap<ContextId, ContextMeta>,
+    // todo! when runtime let's us compile blobs separate from its
+    // todo! execution, we can introduce a cached::TimedSizedCache
+    // runtimes: TimedSizedCache<Exclusive<RuntimeInstance>>,
 }
 
 impl Actor for ContextManager {
     type Context = actix::Context<Self>;
 }
+
+// objectives:
+//   keep up to N items, refresh entries as they are used
+//   garbage collect entries as they expire, or as needed
+//   share across tasks efficiently, not prolonging locks
+//   managed mutation, so guards aren't held for too long
+//
+// result: this should help us share data between clients
+//         and their actors,
+//
+// pub struct SharedCache<K, V> {
+//     cache: DashMap<Key<K>, V>,
+//     index: ArcTimedSizedCache<K, Key<K>>,
+// }
+//
+// struct Key<K>(K);
+// struct Cached<V: Copy>(..);
+//        ^- aids read without locking
+//           downside: Copy on every write

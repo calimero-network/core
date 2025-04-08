@@ -26,7 +26,7 @@ impl Handler<ExecuteRequest> for ContextManager {
 
 pub async fn execute(
     context: &MutexGuard<'_, ContextId>,
-    blob: Arc<impl AsRef<[u8]> + Send + Sync + 'static>,
+    blob: Arc<[u8]>,
     method: impl AsRef<str> + Send + 'static,
     input: impl AsRef<[u8]> + Send + 'static,
     executor: PublicKey,
@@ -40,13 +40,8 @@ pub async fn execute(
         .spawn_blocking(move || {
             let context = VMContext::new(input.as_ref(), *context_id, *executor);
 
-            let outcome = calimero_runtime::run(
-                (*blob).as_ref(),
-                method.as_ref(),
-                context,
-                &limits,
-                &mut storage,
-            )?;
+            let outcome =
+                calimero_runtime::run(&blob, method.as_ref(), context, &limits, &mut storage)?;
 
             Ok((outcome, storage))
         })

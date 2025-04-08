@@ -27,8 +27,8 @@ type ExecuteResponse = Option<(RuntimeResult<Outcome>, Box<dyn Storage + Send>)>
 #[derive(Message)]
 #[rtype(ExecuteResponse)]
 pub struct ExecuteRequest {
-    pub blob: Vec<u8>,
-    pub method_name: String,
+    pub blob: Arc<[u8]>,
+    pub method: String,
     pub context: VMContext<'static>,
     pub storage: Box<dyn Storage + Send>,
 }
@@ -72,7 +72,7 @@ impl Handler<ExecuteRequest> for RuntimeManager {
 
                 let result = run(
                     &msg.blob,
-                    &msg.method_name,
+                    &msg.method,
                     msg.context,
                     &limits,
                     &mut *msg.storage,
