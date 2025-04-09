@@ -119,7 +119,9 @@ pub async fn start(
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, router)) = jsonrpc::service(&config, server_sender.clone(), store.clone()) {
+        if let Some((path, router)) =
+            jsonrpc::service(&config, server_sender.clone(), store.clone())
+        {
             app = app.nest(path, router);
             serviced = true;
         }

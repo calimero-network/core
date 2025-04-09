@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use axum::middleware::from_fn;
 use axum::routing::{post, Router};
-use axum::{Extension, Json, middleware::from_fn};
+use axum::{Extension, Json};
 use calimero_node_primitives::{CallError as PrimitiveCallError, ExecutionRequest, ServerSender};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -18,8 +19,8 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
 use crate::config::ServerConfig;
-use crate::middleware::jwt::JwtLayer;
 use crate::middleware::dev_auth::dev_mode_auth;
+use crate::middleware::jwt::JwtLayer;
 
 mod execute;
 
