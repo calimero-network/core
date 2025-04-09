@@ -23,9 +23,9 @@ pub struct JwtLayer {
 }
 
 impl JwtLayer {
-  pub const fn new(store: Store) -> Self {
-      Self { store }
-  }
+    pub const fn new(store: Store) -> Self {
+        Self { store }
+    }
 }
 
 impl<S> Layer<S> for JwtLayer {
