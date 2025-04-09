@@ -25,12 +25,17 @@ mod execute;
 pub struct JsonRpcConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+    #[serde(skip)]
+    pub auth_enabled: bool,
 }
 
 impl JsonRpcConfig {
     #[must_use]
     pub const fn new(enabled: bool) -> Self {
-        Self { enabled }
+        Self {
+            enabled,
+            auth_enabled: false,
+        }
     }
 }
 

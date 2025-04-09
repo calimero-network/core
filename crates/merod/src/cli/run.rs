@@ -39,6 +39,10 @@ impl RunCommand {
             admin.auth_enabled = self.auth;
         }
 
+        if let Some(jsonrpc) = &mut server_config.jsonrpc {
+            jsonrpc.auth_enabled = self.auth;
+        }
+
         start(NodeConfig::new(
             path.clone(),
             config.identity.clone(),
