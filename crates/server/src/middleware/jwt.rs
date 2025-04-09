@@ -22,6 +22,12 @@ pub struct JwtLayer {
     store: Store,
 }
 
+impl JwtLayer {
+  pub const fn new(store: Store) -> Self {
+      Self { store }
+  }
+}
+
 impl<S> Layer<S> for JwtLayer {
     type Service = JwtMiddleware<S>;
 

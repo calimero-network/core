@@ -55,7 +55,7 @@ use crate::AdminState;
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
-    #[serde(default = "calimero_primitives::common::bool_false")]
+    #[serde(skip)]
     pub auth_enabled: bool,
 }
 

@@ -5,11 +5,6 @@ pub const fn bool_true() -> bool {
     true
 }
 
-#[must_use]
-pub const fn bool_false() -> bool {
-    false
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(remote = "Result")]
 #[expect(clippy::exhaustive_enums, reason = "This cannot have more variants")]

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
+use axum::middleware::from_fn;
 use axum::{Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
@@ -14,6 +15,8 @@ use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
+use middleware::dev_auth::dev_mode_auth;
+use middleware::jwt::JwtLayer;
 use multiaddr::Protocol;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -120,13 +123,21 @@ pub async fn start(
     #[cfg(feature = "jsonrpc")]
     {
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
-            app = app.route(path, handler.clone()).nest(
-                "/jsonrpc/dev",
-                Router::new()
-                    .route("/", handler)
-                    .layer(Extension(Arc::clone(&shared_state))),
-            );
+            let mut jsonrpc_router = Router::new().route("/", handler.clone());
 
+            if config.admin.as_ref().map_or(false, |admin| admin.auth_enabled) {
+                jsonrpc_router = jsonrpc_router.route_layer(JwtLayer::new(store.clone()));
+            }
+
+            let mut dev_router = Router::new()
+                .route("/", handler)
+                .layer(Extension(Arc::clone(&shared_state)));
+
+            if config.admin.as_ref().map_or(false, |admin| admin.auth_enabled) {
+                dev_router = dev_router.route_layer(from_fn(dev_mode_auth));
+            }
+
+            app = app.nest(path, jsonrpc_router).nest("/jsonrpc/dev", dev_router);
             serviced = true;
         }
     }
