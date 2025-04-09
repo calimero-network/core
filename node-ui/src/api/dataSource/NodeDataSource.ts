@@ -25,13 +25,11 @@ export interface ContextClientKeysList {
 }
 
 export interface ContextUsersList {
-  contextUsers: User[];
+  identities: string[];
 }
 
-export interface User {
-  userId: string;
-  joinedAt: number;
-  contextId: string;
+export interface Identity {
+  identity: string;
 }
 
 export interface Application {
@@ -422,7 +420,7 @@ export class NodeDataSource implements NodeApi {
         getNearEnvironment(),
       );
       const response = await this.client.get<ContextUsersList>(
-        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/users`,
+        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
         headers ?? {},
       );
       return response;

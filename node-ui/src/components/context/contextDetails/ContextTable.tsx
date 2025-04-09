@@ -71,10 +71,10 @@ export default function ContextTable(props: ContextTableProps) {
         )}
         {props.currentOption === DetailsOptions.USERS && (
           <ListTable<User>
-            numOfColumns={2}
+            numOfColumns={1}
             listItems={props.contextUsers || []}
             error={props.contextUsersError ?? ''}
-            listHeaderItems={['USER ID', 'JOINED']}
+            listHeaderItems={['Identity']}
             rowItem={userRowItem}
             roundTopItem={true}
             noItemsText={t.noUsersText}

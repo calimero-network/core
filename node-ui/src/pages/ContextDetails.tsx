@@ -126,7 +126,11 @@ export default function ContextDetailsPage() {
         }
 
         if (contextClientUsers.data) {
-          setContextUsers(contextClientUsers.data.contextUsers);
+          setContextUsers(
+            contextClientUsers.data.identities.map((identity) => ({
+              identity: identity,
+            })),
+          );
         } else {
           setContextUsersError(contextClientUsers.error?.message);
         }
@@ -151,7 +155,7 @@ export default function ContextDetailsPage() {
           {
             name: 'Users',
             id: DetailsOptions.USERS,
-            count: contextClientUsers.data?.contextUsers?.length ?? 0,
+            count: contextClientUsers.data?.identities?.length ?? 0,
           },
         ]);
       }
