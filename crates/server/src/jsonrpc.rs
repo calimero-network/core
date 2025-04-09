@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use axum::routing::{post, MethodRouter};
-use axum::{Extension, Json};
+use axum::routing::{post, Router};
+use axum::{Extension, Json, middleware::from_fn};
 use calimero_node_primitives::{CallError as PrimitiveCallError, ExecutionRequest, ServerSender};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -9,6 +9,7 @@ use calimero_server_primitives::jsonrpc::{
     Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
     ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
+use calimero_store::Store;
 use eyre::{eyre, Error as EyreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value as from_json_value, to_value as to_json_value, Value};
@@ -17,6 +18,8 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
 use crate::config::ServerConfig;
+use crate::middleware::jwt::JwtLayer;
+use crate::middleware::dev_auth::dev_mode_auth;
 
 mod execute;
 
@@ -46,8 +49,9 @@ pub(crate) struct ServiceState {
 pub(crate) fn service(
     config: &ServerConfig,
     server_sender: ServerSender,
-) -> Option<(&'static str, MethodRouter)> {
-    let _config = match &config.jsonrpc {
+    store: Store,
+) -> Option<(&'static str, Router)> {
+    let jsonrpc_config = match &config.jsonrpc {
         Some(config) if config.enabled => config,
         _ => {
             info!("JSON RPC server is disabled");
@@ -62,8 +66,25 @@ pub(crate) fn service(
     }
 
     let state = Arc::new(ServiceState { server_sender });
+    let handler = post(handle_request).layer(Extension(state.clone()));
 
-    Some((path, post(handle_request).layer(Extension(state))))
+    let mut router = Router::new().route("/", handler.clone());
+
+    if jsonrpc_config.auth_enabled {
+        router = router.route_layer(JwtLayer::new(store));
+    }
+
+    let mut dev_router = Router::new()
+        .route("/", handler)
+        .layer(Extension(Arc::clone(&state)));
+
+    if jsonrpc_config.auth_enabled {
+        dev_router = dev_router.route_layer(from_fn(dev_mode_auth));
+    }
+
+    router = router.nest("/dev", dev_router);
+
+    Some((path, router))
 }
 
 async fn handle_request(
