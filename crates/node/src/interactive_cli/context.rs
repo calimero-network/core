@@ -184,7 +184,7 @@ impl ContextCommand {
                 context,
                 identity,
             } => {
-                let _public_key = private_key.public_key();
+                
 
                 let response = node
                     .ctx_manager
