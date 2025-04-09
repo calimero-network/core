@@ -125,7 +125,11 @@ pub async fn start(
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
             let mut jsonrpc_router = Router::new().route("/", handler.clone());
 
-            if config.jsonrpc.as_ref().map_or(false, |jsonrpc| jsonrpc.auth_enabled) {
+            if config
+                .jsonrpc
+                .as_ref()
+                .map_or(false, |jsonrpc| jsonrpc.auth_enabled)
+            {
                 jsonrpc_router = jsonrpc_router.route_layer(JwtLayer::new(store.clone()));
             }
 
@@ -133,11 +137,17 @@ pub async fn start(
                 .route("/", handler)
                 .layer(Extension(Arc::clone(&shared_state)));
 
-            if config.jsonrpc.as_ref().map_or(false, |jsonrpc| jsonrpc.auth_enabled) {
+            if config
+                .jsonrpc
+                .as_ref()
+                .map_or(false, |jsonrpc| jsonrpc.auth_enabled)
+            {
                 dev_router = dev_router.route_layer(from_fn(dev_mode_auth));
             }
 
-            app = app.nest(path, jsonrpc_router).nest("/jsonrpc/dev", dev_router);
+            app = app
+                .nest(path, jsonrpc_router)
+                .nest("/jsonrpc/dev", dev_router);
             serviced = true;
         }
     }
