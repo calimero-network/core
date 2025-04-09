@@ -13,7 +13,7 @@ use crate::cli::RootArgs;
 /// Run a node
 #[derive(Debug, Parser)]
 pub struct RunCommand {
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t)]
     pub auth: bool,
 }
 
