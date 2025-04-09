@@ -216,7 +216,7 @@ impl StartBootstrapCommand {
         let join_command = JoinCommand {
             private_key: invitee_private_key,
             invitation_payload,
-            name: None,
+            context: None,
             identity: None,
         };
         join_command.run(invitee_environment).await?;

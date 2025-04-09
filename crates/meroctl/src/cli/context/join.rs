@@ -24,10 +24,9 @@ pub struct JoinCommand {
         value_name = "INVITE",
         help = "The invitation payload for joining the context"
     )]
-    // Is it any useful here?
-    #[clap(long = "name", help = "The alias for the context")]
-    pub name: Option<Alias<ContextId>>,
     pub invitation_payload: ContextInvitationPayload,
+    #[clap(long = "name", help = "The alias for the context")]
+    pub context: Option<Alias<ContextId>>,
     #[clap(long = "as", help = "The alias for the invitee")]
     pub identity: Option<Alias<PublicKey>>,
 }
@@ -64,6 +63,12 @@ impl JoinCommand {
         environment.output.write(&response);
 
         if let Some(ref payload) = response.data {
+            if let Some(context) = self.context {
+                let context_id = payload.context_id;
+                let res =
+                    create_alias(multiaddr, &config.identity, context, None, context_id).await?;
+                environment.output.write(&res);
+            }
             if let Some(identity) = self.identity {
                 let context_id = payload.context_id;
                 let public_key = payload.member_public_key;

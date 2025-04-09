@@ -71,7 +71,7 @@ pub struct CreateCommand {
     identity: Option<Alias<PublicKey>>,
 
     #[clap(long = "name", help = "Create an alias for the context")]
-    name: Option<Alias<ContextId>>,
+    context: Option<Alias<ContextId>>,
 }
 
 impl Report for CreateContextResponse {
@@ -102,7 +102,7 @@ impl CreateCommand {
                 params,
                 protocol,
                 identity,
-                name,
+                context,
             } => {
                 let _ = create_context(
                     environment,
@@ -114,7 +114,7 @@ impl CreateCommand {
                     &config.identity,
                     protocol,
                     identity,
-                    name,
+                    context,
                 )
                 .await?;
             }
@@ -126,7 +126,7 @@ impl CreateCommand {
                 params,
                 protocol,
                 identity,
-                name,
+                context,
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
@@ -150,7 +150,7 @@ impl CreateCommand {
                     &config.identity,
                     protocol,
                     identity,
-                    name,
+                    context,
                 )
                 .await?;
 
@@ -183,7 +183,7 @@ pub async fn create_context(
     keypair: &Keypair,
     protocol: String,
     identity: Option<Alias<PublicKey>>,
-    name: Option<Alias<ContextId>>,
+    context: Option<Alias<ContextId>>,
 ) -> EyreResult<(ContextId, PublicKey)> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
@@ -229,11 +229,11 @@ pub async fn create_context(
 
         environment.output.write(&alias_response);
     }
-    if let Some(name_alias) = name {
+    if let Some(context_alias) = context {
         let res = create_alias(
             base_multiaddr,
             keypair,
-            name_alias,
+            context_alias,
             None,
             response.data.context_id,
         )
