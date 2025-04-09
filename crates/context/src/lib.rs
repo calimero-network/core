@@ -28,12 +28,16 @@ pub struct ContextManager {
 
     node_client: NodeClient,
     context_client: ContextClient,
+
+    runtime_engine: calimero_runtime::Engine,
+
     external_config: ExternalClientConfig,
 
     // -- contexts --
     // todo! potentially make this a dashmap::DashMap
     // todo! use cached::TimedSizedCache with a gc task
     contexts: BTreeMap<ContextId, ContextMeta>,
+    //
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
     // runtimes: TimedSizedCache<Exclusive<RuntimeInstance>>,

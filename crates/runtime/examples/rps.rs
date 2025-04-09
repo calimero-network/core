@@ -92,8 +92,8 @@ fn main() -> EyreResult<()> {
         "seed": joe_seed,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let create_keypair_outcome = run(&file, "create_keypair", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let create_keypair_outcome = run(&file, "create_keypair", cx, &limits, &mut storage)?;
     dbg!(&create_keypair_outcome);
 
     let joe_keypair = from_json_slice::<KeyComponents>(
@@ -114,8 +114,8 @@ fn main() -> EyreResult<()> {
         "seed": melissa_seed,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let create_keypair_outcome = run(&file, "create_keypair", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let create_keypair_outcome = run(&file, "create_keypair", cx, &limits, &mut storage)?;
     dbg!(&create_keypair_outcome);
 
     let melissa_keypair = from_json_slice::<KeyComponents>(
@@ -135,8 +135,8 @@ fn main() -> EyreResult<()> {
         "public_key": joe_keypair.pk,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let join_outcome = run(&file, "join", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let join_outcome = run(&file, "join", cx, &limits, &mut storage)?;
     dbg!(&join_outcome);
 
     let joe_idx =
@@ -153,8 +153,8 @@ fn main() -> EyreResult<()> {
         "public_key": melissa_keypair.pk,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let join_outcome = run(&file, "join", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let join_outcome = run(&file, "join", cx, &limits, &mut storage)?;
     dbg!(&join_outcome);
 
     let melissa_idx =
@@ -169,8 +169,8 @@ fn main() -> EyreResult<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext::new(&[], [0; 32], [0; 32]);
-    let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
+    let cx = VMContext::new((&[]).into(), [0; 32], [0; 32]);
+    let state_outcome = run(&file, "state", cx, &limits, &mut storage)?;
     dbg!(&state_outcome);
 
     let game_state = from_json_slice::<[Option<(String, State)>; 2]>(
@@ -192,8 +192,8 @@ fn main() -> EyreResult<()> {
         "nonce": joe_nonce,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let prepare_outcome = run(&file, "prepare", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let prepare_outcome = run(&file, "prepare", cx, &limits, &mut storage)?;
     dbg!(&prepare_outcome);
 
     let (joe_commitment, joe_signature) = from_json_slice::<(String, String)>(
@@ -215,8 +215,8 @@ fn main() -> EyreResult<()> {
         "nonce": melissa_nonce,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let prepare_outcome = run(&file, "prepare", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let prepare_outcome = run(&file, "prepare", cx, &limits, &mut storage)?;
     dbg!(&prepare_outcome);
 
     let (melissa_commitment, melissa_signature) = from_json_slice::<(String, String)>(
@@ -235,8 +235,8 @@ fn main() -> EyreResult<()> {
         "signature": joe_signature,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let commit_outcome = run(&file, "commit", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let commit_outcome = run(&file, "commit", cx, &limits, &mut storage)?;
     dbg!(&commit_outcome);
 
     from_json_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
@@ -251,8 +251,8 @@ fn main() -> EyreResult<()> {
         "signature": melissa_signature,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let commit_outcome = run(&file, "commit", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let commit_outcome = run(&file, "commit", cx, &limits, &mut storage)?;
     dbg!(&commit_outcome);
 
     from_json_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
@@ -266,8 +266,8 @@ fn main() -> EyreResult<()> {
         "nonce": joe_nonce,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let reveal_outcome = run(&file, "reveal", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let reveal_outcome = run(&file, "reveal", cx, &limits, &mut storage)?;
     dbg!(&reveal_outcome);
 
     from_json_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
@@ -281,8 +281,8 @@ fn main() -> EyreResult<()> {
         "nonce": melissa_nonce,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let reveal_outcome = run(&file, "reveal", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let reveal_outcome = run(&file, "reveal", cx, &limits, &mut storage)?;
     dbg!(&reveal_outcome);
 
     from_json_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
@@ -294,8 +294,8 @@ fn main() -> EyreResult<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext::new(&[], [0; 32], [0; 32]);
-    let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
+    let cx = VMContext::new((&[]).into(), [0; 32], [0; 32]);
+    let state_outcome = run(&file, "state", cx, &limits, &mut storage)?;
     dbg!(&state_outcome);
 
     let game_state = from_json_slice::<[Option<(String, State)>; 2]>(
@@ -320,14 +320,14 @@ fn main() -> EyreResult<()> {
         "signature": melissa_signature,
     }))?;
 
-    let cx = VMContext::new(&input, [0; 32], [0; 32]);
-    let reset_outcome = run(&file, "reset", cx, &mut storage, &limits)?;
+    let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+    let reset_outcome = run(&file, "reset", cx, &limits, &mut storage)?;
     dbg!(&reset_outcome);
 
     from_json_slice::<()>(&reset_outcome.returns?.expect("Expected a return value"))?;
 
-    let cx = VMContext::new(&[], [0; 32], [0; 32]);
-    let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
+    let cx = VMContext::new((&[]).into(), [0; 32], [0; 32]);
+    let state_outcome = run(&file, "state", cx, &limits, &mut storage)?;
     dbg!(&state_outcome);
 
     let game_state = from_json_slice::<[Option<(String, State)>; 2]>(

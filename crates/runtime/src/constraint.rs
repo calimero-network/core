@@ -3,10 +3,21 @@ use core::ops::Deref;
 
 use thiserror::Error as ThisError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Constrained<T, R> {
     value: T,
     _phantom: PhantomData<R>,
+}
+
+impl<T: Copy, R> Copy for Constrained<T, R> {}
+
+impl<T: Clone, R> Clone for Constrained<T, R> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<T, R> Deref for Constrained<T, R> {

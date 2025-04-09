@@ -85,9 +85,9 @@ fn main() -> EyreResult<()> {
             .transpose()?
             .unwrap_or_default();
 
-        let cx = VMContext::new(&input, [0; 32], [0; 32]);
+        let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
 
-        let outcome = run(&file, name, cx, &mut storage, &limits)?;
+        let outcome = run(&file, name, cx, &limits, &mut storage)?;
 
         // dbg!(&outcome);
 

@@ -7,7 +7,6 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-actix.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 fragile.workspace = true
 ouroboros.workspace = true
@@ -15,13 +14,11 @@ owo-colors = { workspace = true, optional = true }
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
-tokio.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
 
 calimero-primitives.workspace = true
-calimero-utils-actix.workspace = true
 
 [[example]]
 name = "demo"

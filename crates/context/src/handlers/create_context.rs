@@ -64,6 +64,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             self.datastore.clone(),
             self.node_client.clone(),
             self.context_client.clone(),
+            self.runtime_engine.clone(),
             prepared.external_config,
             prepared.context.meta,
             prepared.context_secret,
@@ -219,6 +220,7 @@ async fn create_context(
     datastore: Store,
     node_client: NodeClient,
     context_client: ContextClient,
+    engine: calimero_runtime::Engine,
     external_config: ContextConfigParams<'_>,
     mut context: Context,
     context_secret: PrivateKey,
@@ -239,8 +241,17 @@ async fn create_context(
 
     let storage = ContextStorage::from(datastore, context.id);
 
-    let (outcome, storage) =
-        execute(&guard, blob.clone(), "init", init_params, identity, storage).await?;
+    let module = engine.compile(&blob)?;
+
+    let (outcome, storage) = execute(
+        &guard,
+        module,
+        "init".into(),
+        init_params.into(),
+        identity,
+        storage,
+    )
+    .await?;
 
     if let Some(res) = outcome.returns? {
         bail!(
