@@ -67,7 +67,7 @@ pub(crate) fn service(
     }
 
     let state = Arc::new(ServiceState { server_sender });
-    let handler = post(handle_request).layer(Extension(state.clone()));
+    let handler = post(handle_request).layer(Extension(Arc::clone(&state)));
 
     let mut router = Router::new().route("/", handler.clone());
 
