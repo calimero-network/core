@@ -34,7 +34,7 @@ impl Default for ZkSyncTransaction {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "Used for type safety and future extensibility")]
 pub struct ZkSyncBlockConfig {
     pub block_number: BlockNumber,
     pub confirmations: u64,
@@ -50,7 +50,7 @@ impl Default for ZkSyncBlockConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "Used for type safety and future extensibility")]
 pub struct ZkSyncGasConfig {
     pub gas_limit: Option<U256>,
     pub max_fee_per_gas: Option<U256>,

@@ -184,7 +184,10 @@ impl TryFrom<ProxyMutateRequest> for ZkSyncProxyTransaction {
                             block_number: BlockNumber::Latest,
                         })
                     }
-                    _ => bail!("Unsupported proposal action type"),
+                    ProposalAction::SetNumApprovals { .. } |
+                    ProposalAction::SetActiveProposalsLimit { .. } |
+                    ProposalAction::SetContextValue { .. } |
+                    ProposalAction::DeleteProposal { .. } => bail!("Unsupported proposal action type"),
                 }
             }
             ProxyMutateRequest::Approve { .. } => {
