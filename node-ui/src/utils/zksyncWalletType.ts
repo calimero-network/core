@@ -53,4 +53,4 @@ export const getNetworkExplorerUrl = (chainId: number): string => {
     default:
       throw new Error(`Unsupported zkSync network: ${chainId}`);
   }
-}; 
+};
