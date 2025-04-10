@@ -1,6 +1,6 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::GetContextsResponse;
+use calimero_server_primitives::admin::GetContextResponse;
 use clap::Parser;
 use eyre::Result as EyreResult;
 use libp2p::identity::Keypair;
@@ -83,19 +83,27 @@ async fn context_exists(
     identity: &Keypair,
     target_id: &ContextId,
 ) -> EyreResult<bool> {
-    let response: GetContextsResponse = do_request(
+    let url = multiaddr_to_url(multiaddr, &format!("admin-api/dev/contexts/{}", target_id))?;
+
+    let result = do_request::<_, GetContextResponse>(
         &Client::new(),
-        multiaddr_to_url(multiaddr, "admin-api/dev/contexts")?,
+        url,
         None::<()>,
         identity,
         RequestType::Get,
     )
-    .await?;
+    .await;
 
-    // Check if the target context exists in the response
-    Ok(response
-        .data
-        .contexts
-        .iter()
-        .any(|ctx| &ctx.id == target_id))
+    match result {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            // Check if the error is a 404 Not Found
+            if let Some(status) = err.downcast_ref::<reqwest::StatusCode>() {
+                if *status == reqwest::StatusCode::NOT_FOUND {
+                    return Ok(false);
+                }
+            }
+            Err(err)
+        }
+    }
 }

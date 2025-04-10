@@ -13,6 +13,7 @@ use crate::common::{
     create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, make_request,
     multiaddr_to_url, resolve_alias, RequestType,
 };
+use crate::output::ErrorLine;
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context identities")]
@@ -119,7 +120,6 @@ impl ContextIdentityAliasCommand {
                 )
                 .await?
                 {
-                    use crate::output::ErrorLine;
                     environment.output.write(&ErrorLine(&format!(
                         "Identity '{}' does not exist in context '{}'",
                         identity, context
