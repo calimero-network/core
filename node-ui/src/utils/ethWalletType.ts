@@ -10,6 +10,8 @@ export const getNetworkType = (chainId: string): WalletType => {
       return WalletType.ETH({ chainId: 42161 });
     case '0x144':
       return WalletType.ETH({ chainId: 324 });
+    case '0x118':
+      return WalletType.ETH({ chainId: 280 });
     default:
       return WalletType.ETH({ chainId: 1 });
   }

@@ -61,6 +61,8 @@ const getMetamaskType = (chainId: number): Network => {
       return Network.ARB;
     case 324:
       return Network.ZK;
+    case 280:
+      return Network.ZKSYNC;
     default:
       return Network.ETH;
   }

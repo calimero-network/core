@@ -18,6 +18,7 @@ export enum Network {
   ZK = 'ZK',
   STARKNET = 'STARKNET',
   ICP = 'ICP',
+  ZKSYNC = 'ZKSYNC',
 }
 
 export interface ContextClientKeysList {

@@ -21,6 +21,7 @@ mod utils {
     use crate::client::protocol::near::Near;
     use crate::client::protocol::starknet::Starknet;
     use crate::client::protocol::stellar::Stellar;
+    use crate::client::protocol::zk_sync::ZkSync;
     use crate::client::protocol::Protocol;
     use crate::client::transport::Transport;
     use crate::client::{CallClient, ClientError, Operation};
@@ -36,6 +37,7 @@ mod utils {
         M: Method<Icp, Returns = R>,
         M: Method<Stellar, Returns = R>,
         M: Method<Ethereum, Returns = R>,
+        M: Method<ZkSync, Returns = R>,
     {
         match &*client.protocol {
             Near::PROTOCOL => client.send::<Near, _>(params).await,
@@ -43,6 +45,7 @@ mod utils {
             Icp::PROTOCOL => client.send::<Icp, _>(params).await,
             Stellar::PROTOCOL => client.send::<Stellar, _>(params).await,
             Ethereum::PROTOCOL => client.send::<Ethereum, _>(params).await,
+            ZkSync::PROTOCOL => client.send::<ZkSync, _>(params).await,
             unsupported_protocol => Err(ClientError::UnsupportedProtocol {
                 found: unsupported_protocol.to_owned(),
                 expected: vec![
@@ -50,6 +53,8 @@ mod utils {
                     Starknet::PROTOCOL.into(),
                     Icp::PROTOCOL.into(),
                     Stellar::PROTOCOL.into(),
+                    Ethereum::PROTOCOL.into(),
+                    ZkSync::PROTOCOL.into(),
                 ]
                 .into(),
             }),
