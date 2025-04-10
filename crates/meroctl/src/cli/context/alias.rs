@@ -1,7 +1,7 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
-use eyre::{Result as EyreResult, WrapErr};
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 
 use crate::cli::Environment;
 use crate::common::{
@@ -88,7 +88,7 @@ impl UseCommand {
         let resolved_context_id = resolve_response
             .value()
             .cloned()
-            .ok_or_else(|| eyre::eyre!("Failed to resolve context: no value found"))?;
+            .ok_or_eyre("Failed to resolve context: no value found")?;
 
         let res = create_alias(
             multiaddr,
@@ -102,13 +102,12 @@ impl UseCommand {
 
         environment.output.write(&res);
 
-        let input = self.context.to_string();
-        if input == resolved_context_id.to_string() {
+        if self.context.as_str() == resolved_context_id.as_str() {
             println!("Default context set to: {}", resolved_context_id);
         } else {
             println!(
                 "Default context set to: {} (from alias '{}')",
-                resolved_context_id, input
+                resolved_context_id, self.context
             );
         }
 

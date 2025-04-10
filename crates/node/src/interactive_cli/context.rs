@@ -61,8 +61,8 @@ enum Commands {
     /// Invite a user to a context
     Invite {
         /// The context to invite the user to (omit to use default context)
-        #[clap(long = "context", short = 'c')]
-        context: Option<Alias<ContextId>>,
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
         /// The identity inviting the other
         #[clap(long = "as")]
         inviter: Alias<PublicKey>,
@@ -79,19 +79,19 @@ enum Commands {
     /// Leave a context
     Leave {
         /// The context to leave (omit to use default context)
-        #[clap(long = "context", short = 'c')]
-        context: Option<Alias<ContextId>>,
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
     /// Delete a context
     Delete {
-        /// The context to delete (omit to use default context)
-        #[clap(long = "context", short = 'c')]
-        context: Option<Alias<ContextId>>,
+        /// The context to delete
+        #[clap(long, short)]
+        context: Alias<ContextId>,
     },
     /// Update the proxy for a context
     UpdateProxy {
-        #[clap(long = "context", short = 'c')]
-        context: Option<Alias<ContextId>>,
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
         #[clap(long = "as")]
         /// The identity requesting the update
         identity: Alias<PublicKey>,
@@ -190,10 +190,7 @@ impl ContextCommand {
             Commands::Leave { context } => {
                 let context_id = node
                     .ctx_manager
-                    .resolve_alias(
-                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                        None,
-                    )?
+                    .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve context")?;
                 if node.ctx_manager.delete_context(&context_id).await? {
                     println!("{ind} Successfully deleted context {context_id}");
@@ -248,10 +245,7 @@ impl ContextCommand {
             } => {
                 let context_id = node
                     .ctx_manager
-                    .resolve_alias(
-                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                        None,
-                    )?
+                    .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve context")?;
                 let inviter_id = node
                     .ctx_manager
@@ -275,10 +269,7 @@ impl ContextCommand {
             Commands::Delete { context } => {
                 let context_id = node
                     .ctx_manager
-                    .resolve_alias(
-                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                        None,
-                    )?
+                    .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve context")?;
                 let _ = node.ctx_manager.delete_context(&context_id).await?;
                 println!("{ind} Deleted context {context_id}");
@@ -286,10 +277,7 @@ impl ContextCommand {
             Commands::UpdateProxy { context, identity } => {
                 let context_id = node
                     .ctx_manager
-                    .resolve_alias(
-                        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                        None,
-                    )?
+                    .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve context")?;
                 let public_key = node
                     .ctx_manager
@@ -314,7 +302,7 @@ impl ContextCommand {
                 node.ctx_manager
                     .create_alias(default_alias, None, context_id)?;
 
-                if context.as_str() != context_id.to_string() {
+                if context.as_str() != context_id.as_str() {
                     println!(
                         "{} Default context set to: {} (from alias '{}')",
                         ind, context_id, context

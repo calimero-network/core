@@ -25,21 +25,23 @@ pub struct ContextIdentityCommand {
 pub enum ContextIdentitySubcommand {
     #[command(about = "List identities in a context", alias = "ls")]
     List {
-        #[arg(help = "The context whose identities we're listing (omit to use default context)")]
-        #[clap(long = "context", short = 'c')]
-        context: Option<Alias<ContextId>>,
+        #[arg(
+            help = "The context whose identities we're listing (omit to use default context)",
+            default_value = "default"
+        )]
+        context: Alias<ContextId>,
         #[arg(long, help = "Show only owned identities")]
         owned: bool,
     },
     #[command(about = "Manage identity aliases")]
     Alias(ContextIdentityAliasCommand),
-    #[command(about = "Set default identity for a context", name = "use")]
+    #[command(about = "Set default identity for a context")]
     Use {
         #[arg(help = "The identity to set as default")]
         identity: PublicKey,
-        #[arg(help = "The context to set the identity for (omit to use default context)")]
-        #[arg(long, short)]
-        context: Option<Alias<ContextId>>,
+        #[arg(help = "The context to set the identity for")]
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
 }
 
@@ -60,8 +62,8 @@ pub enum ContextIdentityAliasSubcommand {
         identity: PublicKey,
 
         #[arg(help = "The context that the identity is a member of (omit to use default context)")]
-        #[arg(long, short)]
-        context: Option<Alias<ContextId>>,
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
 
     #[command(
@@ -72,9 +74,9 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "Name of the alias to remove")]
         identity: Alias<PublicKey>,
 
-        #[arg(help = "The context that the identity is a member of (omit to use default context)")]
+        #[arg(help = "The context that the identity is a member of ")]
         #[arg(long, short)]
-        context: Option<Alias<ContextId>>,
+        context: Alias<ContextId>,
     },
 
     #[command(about = "Resolve the alias to a context identity")]
@@ -82,9 +84,9 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "Name of the alias to look up")]
         identity: Alias<PublicKey>,
 
-        #[arg(help = "The context that the identity is a member of (omit to use default context)")]
+        #[arg(help = "The context that the identity is a member of ")]
         #[arg(long, short)]
-        context: Option<Alias<ContextId>>,
+        context: Alias<ContextId>,
     },
 }
 
@@ -101,20 +103,15 @@ impl ContextIdentityCommand {
                     &multiaddr,
                     &client,
                     &config.identity,
-                    context,
+                    Some(context),
                     owned,
                 )
                 .await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Use { identity, context } => {
-                let resolve_response = resolve_alias(
-                    multiaddr,
-                    &config.identity,
-                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                    None,
-                )
-                .await?;
+                let resolve_response =
+                    resolve_alias(multiaddr, &config.identity, context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -150,13 +147,8 @@ impl ContextIdentityAliasCommand {
                 identity,
                 context,
             } => {
-                let resolve_response = resolve_alias(
-                    multiaddr,
-                    &config.identity,
-                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                    None,
-                )
-                .await?;
+                let resolve_response =
+                    resolve_alias(multiaddr, &config.identity, context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -174,13 +166,8 @@ impl ContextIdentityAliasCommand {
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Remove { identity, context } => {
-                let resolve_response = resolve_alias(
-                    multiaddr,
-                    &config.identity,
-                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                    None,
-                )
-                .await?;
+                let resolve_response =
+                    resolve_alias(multiaddr, &config.identity, context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -192,13 +179,8 @@ impl ContextIdentityAliasCommand {
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Get { identity, context } => {
-                let resolve_response = resolve_alias(
-                    multiaddr,
-                    &config.identity,
-                    context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-                    None,
-                )
-                .await?;
+                let resolve_response =
+                    resolve_alias(multiaddr, &config.identity, context, None).await?;
 
                 let context_id = resolve_response
                     .value()
