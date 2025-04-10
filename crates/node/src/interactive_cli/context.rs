@@ -184,8 +184,6 @@ impl ContextCommand {
                 context,
                 identity,
             } => {
-                
-
                 let response = node
                     .ctx_manager
                     .join_context(private_key, invitation_payload)
@@ -428,4 +426,3 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
 
     Ok(())
 }
-
