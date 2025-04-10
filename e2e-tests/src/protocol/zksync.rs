@@ -150,4 +150,4 @@ impl ZkSyncSandboxEnvironment {
 
         Ok(Some(format!("0x{}", hex::encode(bytes))))
     }
-} 
+}

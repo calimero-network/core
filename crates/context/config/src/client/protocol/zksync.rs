@@ -130,9 +130,7 @@ impl ProtocolTransport for ZkSyncTransport<'_> {
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
         let Some(network) = self.networks.get(&request.network_id) else {
-            return Err(ZkSyncError::UnknownNetwork(
-                request.network_id.into_owned(),
-            ));
+            return Err(ZkSyncError::UnknownNetwork(request.network_id.into_owned()));
         };
 
         let contract_id = request.contract_id.into_owned();
@@ -242,4 +240,4 @@ impl Network {
 
         Ok(receipt.logs_bloom().as_slice().to_vec())
     }
-} 
+}
