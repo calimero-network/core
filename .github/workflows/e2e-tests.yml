@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        protocol: [near, icp, stellar, ethereum]
+        protocol: [near, icp, stellar, ethereum, zksync]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -145,13 +145,45 @@ jobs:
             e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
       - name: Install Foundry
-        if: matrix.protocol == 'ethereum'
+        if: matrix.protocol == 'ethereum' || matrix.protocol == 'zksync'
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
       - name: Verify Foundry installation
-        if: matrix.protocol == 'ethereum'
+        if: matrix.protocol == 'ethereum' || matrix.protocol == 'zksync'
         run: forge --version
+
+      - name: Install zkSync CLI
+        if: matrix.protocol == 'zksync'
+        run: |
+          echo "Installing zkSync CLI..."
+          curl -L https://github.com/matter-labs/zksync-era/releases/download/v0.1.0/zksync-cli-linux-amd64 -o zksync-cli
+          chmod +x zksync-cli
+          sudo mv zksync-cli /usr/local/bin/
+
+      - name: Start zkSync local node
+        if: matrix.protocol == 'zksync'
+        run: |
+          echo "Starting zkSync local node..."
+          zksync-cli local up
+          sleep 10 # Wait for node to start
+
+      - name: Deploy contracts
+        if: matrix.protocol == 'zksync'
+        run: |
+          echo "Deploying contracts..."
+          cd contracts/zksync
+          forge build
+          forge script script/Deploy.s.sol:DeployScript --rpc-url http://localhost:3050 --broadcast
+
+      - name: Update config with deployed contract addresses
+        if: matrix.protocol == 'zksync'
+        run: |
+          echo "Updating config with deployed contract addresses..."
+          CONTRACT_ID=$(cat contracts/zksync/deployments/localhost/ContextConfig.json | jq -r '.address')
+          jq --arg contractId "$CONTRACT_ID" \
+            '.protocolSandboxes[4].config.contextConfigContractId = $contractId' \
+            e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
       - name: Deploy Ethereum Devnet
         if: matrix.protocol == 'ethereum'

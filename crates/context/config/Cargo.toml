@@ -35,17 +35,20 @@ starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 url = { workspace = true, optional = true }
+zksync-web3-rs = { version = "0.2.0", optional = true }
 
 [lints]
 workspace = true
 
 [features]
+default = ["near", "starknet", "ethereum", "stellar", "icp", "zksync"]
 client = [
   "near_client",
   "icp_client",
   "starknet_client",
   "stellar_client",
   "ethereum_client",
+  "zksync_client",
   "dep:either",
   "dep:eyre",
   "reqwest/json",
@@ -53,22 +56,19 @@ client = [
 ]
 
 near_client = ["dep:near-crypto", "dep:near-jsonrpc-client", "dep:near-jsonrpc-primitives", "dep:near-primitives"]
+near = ["near_client"]
 
 icp = ["candid"]
-
 icp_client = ["icp", "dep:ic-agent", "dep:ed25519-consensus"]
 
+starknet = ["starknet_client"]
 starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starknet-types-core"]
 
-stellar = ["dep:soroban-sdk"]
+stellar = ["stellar_client"]
+stellar_client = ["dep:soroban-sdk"]
 
-ethereum = [
-  "alloy",
-  "alloy-sol-types",
-  "ethabi"
-]
+ethereum = ["ethereum_client"]
+ethereum_client = ["alloy", "alloy-sol-types", "ethabi"]
 
-ethereum_client = [
-  "ethereum"
-]
-stellar_client = ["stellar"]
+zksync = ["zksync_client"]
+zksync_client = ["alloy", "alloy-sol-types", "ethabi", "dep:zksync-web3-rs"]

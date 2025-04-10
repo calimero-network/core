@@ -15,7 +15,7 @@ use calimero_context_config::client::config::{
 };
 use calimero_context_config::client::protocol::{
     ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,
-    starknet as starknet_protocol,
+    starknet as starknet_protocol, zksync as zksync_protocol,
 };
 use calimero_network::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
@@ -51,6 +51,7 @@ pub enum ConfigProtocol {
     Icp,
     Stellar,
     Ethereum,
+    ZkSync,
 }
 
 /// Initialize node configuration
@@ -365,6 +366,31 @@ impl InitCommand {
                 .insert("ethereum".to_owned(), local_config);
         }
 
+        {
+            let _ignored = client_params.insert(
+                "zksync".to_owned(),
+                ClientConfigParams {
+                    network: "sepolia".into(),
+                    protocol: "zksync".into(),
+                    contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".parse()?,
+                    signer: ClientSelectedSigner::Relayer,
+                },
+            );
+
+            let mut local_config = ClientLocalConfig {
+                signers: Default::default(),
+            };
+
+            let _ignored = local_config.signers.insert(
+                "sepolia".to_owned(),
+                generate_local_signer("https://sepolia.drpc.org".parse()?, ConfigProtocol::ZkSync)?,
+            );
+
+            let _ignored = local_signers
+                .protocols
+                .insert("zksync".to_owned(), local_config);
+        }
+
         let relayer = self
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
@@ -497,6 +523,21 @@ fn generate_local_signer(
             Ok(ClientLocalSigner {
                 rpc_url,
                 credentials: Credentials::Ethereum(ethereum_protocol::Credentials {
+                    account_id: address.to_string(),
+                    secret_key: secret_key_hex,
+                }),
+            })
+        }
+
+        ConfigProtocol::ZkSync => {
+            let secp = PrivateKeySigner::random();
+            let address = secp.address();
+            let secret_key = secp.to_bytes();
+            let secret_key_hex = encode(secret_key);
+
+            Ok(ClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::ZkSync(zksync_protocol::Credentials {
                     account_id: address.to_string(),
                     secret_key: secret_key_hex,
                 }),

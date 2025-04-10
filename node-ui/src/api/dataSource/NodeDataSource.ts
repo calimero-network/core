@@ -179,51 +179,20 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {
 interface IcpWalletType extends WalletTypeBase<'ICP'> {
   canisterId: string;
 }
-// TODO: Legacy code, refacture to be used as Interface
-export type WalletType =
-  | ETHWalletType
-  | NEARWalletType
-  | SNWalletType
-  | IcpWalletType;
 
-// eslint-disable-next-line @typescript-eslint/no-redeclare
-export namespace WalletType {
-  export function NEAR({
-    networkId = 'mainnet',
-  }: {
-    networkId?: string;
-  }): WalletType {
-    return { type: 'NEAR', networkId } as NEARWalletType;
-  }
+export enum WalletType {
+  ETH = 'ETH',
+  NEAR = 'NEAR',
+  ICP = 'ICP',
+  STELLAR = 'STELLAR',
+  ZKSYNC = 'ZKSYNC',
+}
 
-  export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
-    return { type: 'ETH', chainId } as ETHWalletType;
-  }
-
-  export function STARKNET({
-    walletName = 'MS',
-  }: {
-    walletName?: string;
-  }): WalletType {
-    return { type: 'STARKNET', walletName } as SNWalletType;
-  }
-
-  // ID of production ICP canister used for signing messages
-  const IcpCanisterId = 'rdmx6-jaaaa-aaaaa-aaadq-cai';
-
-  export function ICP({
-    canisterId = IcpCanisterId,
-    walletName = 'II',
-  }: {
-    canisterId?: string;
-    walletName?: string;
-  }): WalletType {
-    return {
-      type: 'ICP',
-      canisterId,
-      walletName,
-    } as IcpWalletType;
-  }
+export interface WalletConfig {
+  type: WalletType;
+  chainId?: number;
+  rpcUrl?: string;
+  explorerUrl?: string;
 }
 
 export interface WalletMetadata {
