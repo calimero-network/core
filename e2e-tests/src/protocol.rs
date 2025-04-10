@@ -3,11 +3,27 @@ use eyre::Result as EyreResult;
 use icp::IcpSandboxEnvironment;
 use near::NearSandboxEnvironment;
 use stellar::StellarSandboxEnvironment;
+use zksync::ZksyncSandboxEnvironment;
 
 pub mod ethereum;
 pub mod icp;
 pub mod near;
 pub mod stellar;
+pub mod zksync;
+
+/// Trait defining the interface for protocol sandbox environments
+pub trait SandboxEnvironment {
+    /// Generate node configuration arguments for the protocol
+    fn node_args(&self) -> Vec<String>;
+
+    /// Verify the state of an external contract
+    async fn verify_external_contract_state(
+        &self,
+        contract_id: &str,
+        method_name: &str,
+        args: &Vec<String>,
+    ) -> EyreResult<Option<String>>;
+}
 
 #[derive(Debug, Clone)]
 pub enum ProtocolSandboxEnvironment {
@@ -15,6 +31,7 @@ pub enum ProtocolSandboxEnvironment {
     Icp(IcpSandboxEnvironment),
     Stellar(StellarSandboxEnvironment),
     Ethereum(EthereumSandboxEnvironment),
+    Zksync(ZksyncSandboxEnvironment),
 }
 
 impl ProtocolSandboxEnvironment {
@@ -24,6 +41,7 @@ impl ProtocolSandboxEnvironment {
             Self::Icp(env) => Ok(env.node_args()),
             Self::Stellar(env) => Ok(env.node_args()),
             Self::Ethereum(env) => Ok(env.node_args()),
+            Self::Zksync(env) => env.node_args().await,
         }
     }
 
@@ -33,6 +51,7 @@ impl ProtocolSandboxEnvironment {
             Self::Icp(_) => "icp",
             Self::Stellar(_) => "stellar",
             Self::Ethereum(_) => "ethereum",
+            Self::Zksync(_) => "zksync",
         }
     }
 
@@ -56,6 +75,10 @@ impl ProtocolSandboxEnvironment {
                     .await
             }
             Self::Ethereum(env) => {
+                env.verify_external_contract_state(contract_id, method_name, args)
+                    .await
+            }
+            Self::Zksync(env) => {
                 env.verify_external_contract_state(contract_id, method_name, args)
                     .await
             }

@@ -3218,6 +3218,7 @@ dependencies = [
  "const_format",
  "eyre",
  "futures-util",
+ "hex",
  "ic-agent",
  "near-workspaces",
  "nix 0.29.0",
@@ -3230,6 +3231,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "zksync-web3-rs",
 ]
 
 [[package]]

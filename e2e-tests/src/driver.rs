@@ -22,6 +22,7 @@ use crate::protocol::ethereum::EthereumSandboxEnvironment;
 use crate::protocol::icp::IcpSandboxEnvironment;
 use crate::protocol::near::NearSandboxEnvironment;
 use crate::protocol::stellar::StellarSandboxEnvironment;
+use crate::protocol::zksync::ZksyncSandboxEnvironment;
 use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
 use crate::TestEnvironment;
@@ -130,6 +131,7 @@ impl Driver {
                                     ProtocolSandboxConfig::Near(_) => "near",
                                     ProtocolSandboxConfig::Icp(_) => "icp",
                                     ProtocolSandboxConfig::Ethereum(_) => "ethereum",
+                                    ProtocolSandboxConfig::Zksync(_) => "zksync",
                                 };
 
                                 if config_protocol_name == protocol_name {
@@ -153,6 +155,11 @@ impl Driver {
                                         ProtocolSandboxConfig::Ethereum(config) => {
                                             ProtocolSandboxEnvironment::Ethereum(
                                                 EthereumSandboxEnvironment::init(config.clone())?,
+                                            )
+                                        }
+                                        ProtocolSandboxConfig::Zksync(config) => {
+                                            ProtocolSandboxEnvironment::Zksync(
+                                                ZksyncSandboxEnvironment::init(config.clone())?,
                                             )
                                         }
                                     };

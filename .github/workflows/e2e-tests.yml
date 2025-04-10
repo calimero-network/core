@@ -153,36 +153,17 @@ jobs:
         if: matrix.protocol == 'ethereum' || matrix.protocol == 'zksync'
         run: forge --version
 
-      - name: Install zkSync CLI
+      - name: Deploy zkSync Devnet
         if: matrix.protocol == 'zksync'
         run: |
-          echo "Installing zkSync CLI..."
-          curl -L https://github.com/matter-labs/zksync-era/releases/download/v0.1.0/zksync-cli-linux-amd64 -o zksync-cli
-          chmod +x zksync-cli
-          sudo mv zksync-cli /usr/local/bin/
-
-      - name: Start zkSync local node
-        if: matrix.protocol == 'zksync'
-        run: |
-          echo "Starting zkSync local node..."
-          zksync-cli local up
-          sleep 10 # Wait for node to start
-
-      - name: Deploy contracts
-        if: matrix.protocol == 'zksync'
-        run: |
-          echo "Deploying contracts..."
-          cd contracts/zksync
-          forge build
-          forge script script/Deploy.s.sol:DeployScript --rpc-url http://localhost:3050 --broadcast
-
-      - name: Update config with deployed contract addresses
-        if: matrix.protocol == 'zksync'
-        run: |
-          echo "Updating config with deployed contract addresses..."
-          CONTRACT_ID=$(cat contracts/zksync/deployments/localhost/ContextConfig.json | jq -r '.address')
+          ./scripts/zksync/deploy-devnet.sh > env_output.txt
+          CONTRACT_ID=$(grep "Contract ID:" env_output.txt | awk '{print $3}')
+          echo "Updating config with contract ID: $CONTRACT_ID"
           jq --arg contractId "$CONTRACT_ID" \
-            '.protocolSandboxes[4].config.contextConfigContractId = $contractId' \
+            '.protocolSandboxes[4].config.contextConfigContractId = $contractId |
+             .protocolSandboxes[4].config.rpcUrl = "http://127.0.0.1:8011" |
+             .protocolSandboxes[4].config.accountId = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" |
+             .protocolSandboxes[4].config.secretKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"' \
             e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
       - name: Deploy Ethereum Devnet
@@ -197,6 +178,8 @@ jobs:
         continue-on-error: true
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
+          echo "Current config:"
+          cat e2e-tests/config/config.json
 
           ./target/debug/e2e-tests \
             --input-dir ./e2e-tests/config \
