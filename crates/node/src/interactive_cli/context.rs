@@ -190,10 +190,9 @@ impl ContextCommand {
                     .await?;
 
                 if let Some((context_id, public_key)) = response {
-                  
                     // Create context alias if --name is specified
                     if let Some(context) = context.as_ref() {
-                        if let Err(e) = node.ctx_manager.create_alias(context, None, context_id) {
+                        if let Err(e) = node.ctx_manager.create_alias(*context, None, context_id) {
                             eprintln!(
                                 "{} Failed to create alias '{}' for '{}': {e}",
                                 ind,
