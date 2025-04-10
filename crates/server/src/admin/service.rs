@@ -55,12 +55,17 @@ use crate::AdminState;
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+    #[serde(skip)]
+    pub auth_enabled: bool,
 }
 
 impl AdminConfig {
     #[must_use]
     pub const fn new(enabled: bool) -> Self {
-        Self { enabled }
+        Self {
+            enabled,
+            auth_enabled: false,
+        }
     }
 }
 
@@ -141,8 +146,13 @@ pub(crate) fn setup(
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .route("/peers", get(get_peers_count_handler))
         .nest("/alias", alias::service())
-        .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
+
+    let protected_router = if config.admin.as_ref().map_or(false, |c| c.auth_enabled) {
+        protected_router.layer(AuthSignatureLayer::new(store))
+    } else {
+        protected_router
+    };
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))
@@ -250,8 +260,13 @@ pub(crate) fn setup(
             get(get_proposal_handler),
         )
         .route("/dev/peers", get(get_peers_count_handler))
-        .nest("/dev/alias", alias::service())
-        .route_layer(from_fn(dev_mode_auth));
+        .nest("/dev/alias", alias::service());
+
+    let dev_router = if config.admin.as_ref().map_or(false, |c| c.auth_enabled) {
+        dev_router.route_layer(from_fn(dev_mode_auth))
+    } else {
+        dev_router
+    };
 
     let admin_router = Router::new()
         .merge(unprotected_router)
