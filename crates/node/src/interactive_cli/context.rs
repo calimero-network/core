@@ -190,7 +190,25 @@ impl ContextCommand {
                     .await?;
 
                 if let Some((context_id, public_key)) = response {
-                    // Create identity alias in the context if --name is provided
+                  
+                    // Create context alias if --name is specified
+                    if let Some(context) = context.as_ref() {
+                        if let Err(e) = node.ctx_manager.create_alias(context, None, context_id) {
+                            eprintln!(
+                                "{} Failed to create alias '{}' for '{}': {e}",
+                                ind,
+                                context.cyan(),
+                                context_id.cyan(),
+                            );
+                        } else {
+                            println!(
+                                "{} Created identity alias '{}' for '{}'",
+                                ind,
+                                context.cyan(),
+                                context_id.cyan(),
+                            );
+                        }
+                    }
                     if let Some(identity) = identity.as_ref() {
                         if let Err(e) =
                             node.ctx_manager
