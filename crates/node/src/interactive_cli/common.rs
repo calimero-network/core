@@ -10,4 +10,3 @@ pub fn pretty_alias<T: fmt::Display>(alias: Option<Alias<T>>, value: &T) -> Stri
 
     format!("{} ({})", alias.cyan(), value.cyan())
 }
-
