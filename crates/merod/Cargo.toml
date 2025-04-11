@@ -36,7 +36,7 @@ url = { workspace = true, features = ["serde"] }
 calimero-blobstore.workspace = true
 calimero-config.workspace = true
 calimero-context.workspace = true
-calimero-context-config = { workspace = true, features = ["client", "zksync"] }
+calimero-context-config = { workspace = true, features = ["client"] }
 calimero-node.workspace = true
 calimero-network.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }

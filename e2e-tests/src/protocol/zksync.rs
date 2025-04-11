@@ -141,6 +141,7 @@ impl ZksyncSandboxEnvironment {
         Ok(Some(format!("0x{}", encode(result))))
     }
 
+    #[allow(dead_code)]
     pub async fn deploy_contract(&self, bytecode: &[u8]) -> EyreResult<String> {
         let http = Http::new(Url::parse(&self.config.rpc_url)?);
         let provider = Provider::new(http);
