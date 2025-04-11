@@ -1,4 +1,5 @@
 use core::error::Error as CoreError;
+use std::fmt::{Debug, Display};
 
 use serde::{Serialize, Serializer};
 
@@ -14,8 +15,11 @@ where
 
 impl Error {
     #[must_use]
-    pub fn msg(s: &str) -> Self {
-        Self(s.to_owned().into())
+    pub fn msg<M>(msg: M) -> Self
+    where
+        M: Display,
+    {
+        Self(msg.to_string().into())
     }
 }
 
