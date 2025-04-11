@@ -16,6 +16,21 @@ if ! docker info &> /dev/null; then
     exit 1
 fi
 
+# Function to cleanup on exit
+cleanup() {
+    echo "Cleaning up..."
+    if [ -n "$NODE_PID" ] && ps -p "$NODE_PID" > /dev/null; then
+        echo "Stopping zkSync node (PID: $NODE_PID)..."
+        kill "$NODE_PID" 2>/dev/null || true
+    fi
+    # Additional cleanup if needed
+    docker ps -q --filter "name=zksync" | xargs -r docker stop
+    docker ps -a -q --filter "name=zksync" | xargs -r docker rm
+}
+
+# Set up trap to ensure cleanup runs on script exit
+trap cleanup EXIT
+
 echo "Installing zkSync CLI..."
 npm install -g zksync-cli
 zksync-cli --version
@@ -32,7 +47,6 @@ while ! curl -s http://localhost:8011 > /dev/null; do
     if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
         echo "Error: Timeout waiting for zkSync node to be ready"
         cat zksync_output.log
-        kill $NODE_PID
         exit 1
     fi
     echo "Waiting for node to be ready... ($(($MAX_RETRIES - $RETRY_COUNT)) seconds remaining)"
