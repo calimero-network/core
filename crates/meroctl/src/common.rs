@@ -183,7 +183,7 @@ pub(crate) trait UrlFragment: ScopedAlias + AliasKind {
 
     fn create(self) -> Self::Value;
 
-    fn scoped(scope: &Self::Scope) -> Option<&str>;
+    fn scoped(scope: Option<&Self::Scope>) -> Option<&str>;
 }
 
 impl UrlFragment for ContextId {
@@ -193,7 +193,7 @@ impl UrlFragment for ContextId {
         CreateContextIdAlias { context_id: self }
     }
 
-    fn scoped(_: &Self::Scope) -> Option<&str> {
+    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
         None
     }
 }
@@ -205,8 +205,10 @@ impl UrlFragment for PublicKey {
         CreateContextIdentityAlias { identity: self }
     }
 
-    fn scoped(context: &Self::Scope) -> Option<&str> {
-        Some(context.as_str())
+    fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
+        let s = context.expect("PublicKey MUST have a scope");
+
+        Some(s.as_str())
     }
 }
 
@@ -219,7 +221,7 @@ impl UrlFragment for ApplicationId {
         }
     }
 
-    fn scoped(_: &Self::Scope) -> Option<&str> {
+    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
         None
     }
 }
@@ -245,10 +247,8 @@ where
 
     let kind = T::KIND;
 
-    let scope = scope
-        .as_ref()
-        .and_then(T::scoped)
-        .map_or_else(Default::default, |scope| format!("/{}", scope));
+    let scope =
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
     let body = CreateAliasRequest {
         alias,
@@ -286,10 +286,8 @@ where
 
     let kind = T::KIND;
 
-    let scope = scope
-        .as_ref()
-        .and_then(T::scoped)
-        .map_or_else(Default::default, |scope| format!("{}/", scope));
+    let scope =
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
     let response: DeleteAliasResponse = do_request(
         &Client::new(),
@@ -316,10 +314,8 @@ where
 
     let kind = T::KIND;
 
-    let scope = scope
-        .as_ref()
-        .and_then(T::scoped)
-        .map_or_else(Default::default, |scope| format!("{}/", scope));
+    let scope =
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
     let response = do_request(
         &Client::new(),
