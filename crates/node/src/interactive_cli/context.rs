@@ -90,6 +90,7 @@ enum Commands {
     },
     /// Update the proxy for a context
     UpdateProxy {
+        /// The context to update the proxy for
         #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         #[clap(long = "as")]

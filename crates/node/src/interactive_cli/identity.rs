@@ -52,6 +52,7 @@ enum AliasSubcommands {
         name: Alias<PublicKey>,
         /// The identity to create an alias for
         identity: PublicKey,
+        /// The context that the identity is a member of
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
@@ -87,7 +88,7 @@ impl IdentityCommand {
 
         match self.subcommand {
             IdentitySubcommands::List { context } => {
-                list_identities(node, context, &ind.to_string())?;
+                list_identities(node, Some(context), &ind.to_string())?;
             }
             IdentitySubcommands::New => {
                 create_new_identity(node, &ind.to_string());
@@ -125,12 +126,14 @@ impl IdentityCommand {
     }
 }
 
-fn list_identities(node: &Node, context: Alias<ContextId>, ind: &str) -> EyreResult<()> {
-    let context_id = if let ctx = context {
+fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) -> EyreResult<()> {
+    let context_id = if let Some(ctx) = context {
+        // User specified a context - resolve it
         node.ctx_manager
             .resolve_alias(ctx, None)?
             .ok_or_eyre("unable to resolve context")?
     } else {
+        // No context specified fall back to default
         let default_alias: Alias<ContextId> =
             "default".parse().expect("'default' is a valid alias name");
 

@@ -15,8 +15,12 @@ use crate::output::{InfoLine, Report};
 #[command(about = "Watch events from a context")]
 pub struct WatchCommand {
     /// ContextId to stream events from
-    #[arg(value_name = "CONTEXT", help = "Context to stream events from")]
-    pub context: Option<Alias<ContextId>>,
+    #[arg(
+        value_name = "CONTEXT",
+        help = "Context to stream events from",
+        default_value = "default"
+    )]
+    pub context: Alias<ContextId>,
 }
 
 impl Report for Response {
@@ -32,14 +36,8 @@ impl WatchCommand {
 
         let multiaddr = fetch_multiaddr(&config)?;
 
-        let resolve_response = resolve_alias(
-            multiaddr,
-            &config.identity,
-            self.context
-                .unwrap_or_else(|| "default".parse().expect("valid alias")),
-            None,
-        )
-        .await?;
+        let resolve_response =
+            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
 
         let context_id = resolve_response
             .value()
