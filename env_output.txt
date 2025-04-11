@@ -1,0 +1,14 @@
+Installing zkSync CLI...
+
+added 215 packages in 10s
+
+85 packages are looking for funding
+  run `npm fund` for details
+1.10.2
+Starting zkSync local node...
+? Node to use (Use arrow keys)
+❯ anvil-zksync - Quick startup, no persisted state, only L2 node - 
+zkcli-in-memory-node 
+  Dockerized node - Persistent state, includes L1 and L2 nodes - 
+zkcli-dockerized-node 
+  + Add new chain [18D[18C

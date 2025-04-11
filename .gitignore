@@ -4,6 +4,11 @@ corpus/
 certs/
 contracts/*
 !contracts/.gitkeep
+!contracts/zksync/
+!contracts/zksync/src/
+!contracts/zksync/script/
+!contracts/zksync/lib/
+!contracts/zksync/foundry.toml
 
 # rust
 **/res/*
