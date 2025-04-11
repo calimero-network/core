@@ -1,3 +1,5 @@
+#[macro_use]
+mod transport_macro;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::ops::Deref;
@@ -24,11 +26,22 @@ type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
 type MaybeStellar = Option<stellar::StellarTransport<'static>>;
 type MaybeEthereum = Option<ethereum::EthereumTransport<'static>>;
+transport! {
+    pub type LocalTransports = (
+        MaybeNear,
+        MaybeStarknet,
+        MaybeIcp,
+        MaybeStellar,
+        MaybeEthereum
+    );
+}
 
-pub type LocalTransports =
-    Both<MaybeNear, Both<MaybeStarknet, Both<MaybeIcp, Both<MaybeStellar, MaybeEthereum>>>>;
-
-pub type AnyTransport = Both<LocalTransports, relayer::RelayerTransport>;
+transport! {
+    pub type AnyTransport = (
+        LocalTransports,
+        relayer::RelayerTransport
+    );
+}
 
 #[derive(Clone, Debug)]
 pub struct Client<T> {
@@ -50,10 +63,7 @@ impl Client<AnyTransport> {
 
         let local = Self::from_local_config(&config).expect("validation error");
 
-        let transport = Both {
-            left: local.transport,
-            right: relayer,
-        };
+        let transport = transport!(local.transport, relayer);
 
         Self::new(transport)
     }
@@ -247,19 +257,13 @@ impl Client<AnyTransport> {
             }
         }
 
-        let all_transports = Both {
-            left: near_transport,
-            right: Both {
-                left: starknet_transport,
-                right: Both {
-                    left: icp_transport,
-                    right: Both {
-                        left: stellar_transport,
-                        right: ethereum_transport,
-                    },
-                },
-            },
-        };
+        let all_transports = transport!(
+            near_transport,
+            starknet_transport,
+            icp_transport,
+            stellar_transport,
+            ethereum_transport
+        );
 
         Ok(Client::new(all_transports))
     }
@@ -402,3 +406,4 @@ pub trait Environment<'a, T> {
     fn query(client: CallClient<'a, T>) -> Self::Query;
     fn mutate(client: CallClient<'a, T>) -> Self::Mutate;
 }
+
