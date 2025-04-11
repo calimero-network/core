@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
+use crate::cli::context::alias::UseCommand;
 use crate::cli::context::create::CreateCommand;
 use crate::cli::context::delete::DeleteCommand;
 use crate::cli::context::get::GetCommand;
@@ -64,6 +65,7 @@ pub enum ContextSubCommands {
     Update(UpdateCommand),
     Identity(ContextIdentityCommand),
     Alias(ContextAliasCommand),
+    Use(UseCommand),
 }
 
 impl Report for Context {
@@ -87,6 +89,7 @@ impl ContextCommand {
             ContextSubCommands::Update(update) => update.run(environment).await,
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
+            ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
         }
     }
 }

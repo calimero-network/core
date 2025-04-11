@@ -1,10 +1,12 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 
 use crate::cli::Environment;
-use crate::common::{create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias};
+use crate::common::{
+    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, resolve_alias,
+};
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context aliases")]
@@ -59,6 +61,54 @@ impl ContextAliasCommand {
 
                 environment.output.write(&res);
             }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(about = "Set the default context")]
+pub struct UseCommand {
+    pub context: Alias<ContextId>,
+}
+
+impl UseCommand {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let multiaddr = fetch_multiaddr(&config)?;
+
+        let default_alias: Alias<ContextId> =
+            "default".parse().expect("'default' is a valid alias name");
+
+        let resolve_response = resolve_alias(multiaddr, &config.identity, self.context, None)
+            .await
+            .wrap_err("Failed to resolve context")?;
+
+        let resolved_context_id = resolve_response
+            .value()
+            .cloned()
+            .ok_or_eyre("Failed to resolve context: no value found")?;
+
+        let res = create_alias(
+            multiaddr,
+            &config.identity,
+            default_alias,
+            None,
+            resolved_context_id,
+        )
+        .await
+        .wrap_err("Failed to set default context")?;
+
+        environment.output.write(&res);
+
+        if self.context.as_str() == resolved_context_id.as_str() {
+            println!("Default context set to: {}", resolved_context_id);
+        } else {
+            println!(
+                "Default context set to: {} (from alias '{}')",
+                resolved_context_id, self.context
+            );
         }
 
         Ok(())
