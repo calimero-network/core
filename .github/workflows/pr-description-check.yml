@@ -12,6 +12,7 @@ jobs:
   check-description:
     name: Check Description
     runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
     outputs:
       comment_action: ${{ steps.validate_description.outputs.comment_action }}
       comment_content: ${{ steps.validate_description.outputs.comment_content }}
