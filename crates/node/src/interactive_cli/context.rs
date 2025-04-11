@@ -60,7 +60,7 @@ enum Commands {
     },
     /// Invite a user to a context
     Invite {
-        /// The context to invite the user to 
+        /// The context to invite the user to
         #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         /// The identity inviting the other
@@ -78,7 +78,7 @@ enum Commands {
     },
     /// Leave a context
     Leave {
-        /// The context to leave 
+        /// The context to leave
         #[clap(long, short)]
         context: Alias<ContextId>,
     },

@@ -20,7 +20,7 @@ enum IdentitySubcommands {
     /// List identities in a context
     #[clap(alias = "ls")]
     List {
-        /// The context whose identities we're listing 
+        /// The context whose identities we're listing
         #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },

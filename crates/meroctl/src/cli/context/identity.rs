@@ -27,7 +27,9 @@ pub enum ContextIdentitySubcommand {
     List {
         #[arg(
             help = "The context whose identities we're listing",
-            long, short, default_value = "default"
+            long,
+            short,
+            default_value = "default"
         )]
         context: Alias<ContextId>,
         #[arg(long, help = "Show only owned identities")]
@@ -61,7 +63,7 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "The identity to create an alias for")]
         identity: PublicKey,
 
-        #[arg(help = "The context that the identity is a member of ")]
+        #[arg(help = "The context that the identity is a member of")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
