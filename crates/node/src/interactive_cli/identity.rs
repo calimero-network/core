@@ -20,7 +20,7 @@ enum IdentitySubcommands {
     /// List identities in a context
     #[clap(alias = "ls")]
     List {
-        /// The context whose identities we're listing (omit to use default context)
+        /// The context whose identities we're listing 
         #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
@@ -87,7 +87,7 @@ impl IdentityCommand {
 
         match self.subcommand {
             IdentitySubcommands::List { context } => {
-                list_identities(node, Some(context), &ind.to_string())?;
+                list_identities(node, context, &ind.to_string())?;
             }
             IdentitySubcommands::New => {
                 create_new_identity(node, &ind.to_string());
@@ -125,8 +125,8 @@ impl IdentityCommand {
     }
 }
 
-fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) -> EyreResult<()> {
-    let context_id = if let Some(ctx) = context {
+fn list_identities(node: &Node, context: Alias<ContextId>, ind: &str) -> EyreResult<()> {
+    let context_id = if let ctx = context {
         node.ctx_manager
             .resolve_alias(ctx, None)?
             .ok_or_eyre("unable to resolve context")?
