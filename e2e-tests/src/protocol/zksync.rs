@@ -185,56 +185,18 @@ impl ZksyncSandboxEnvironment {
 
 impl SandboxEnvironment for ZksyncSandboxEnvironment {
     fn node_args(&self) -> Vec<String> {
-        vec![
-            // Protocol and network configuration
-            format!("context.config.zksync.protocol=\"{}\"", "zksync"),
-            format!("context.config.zksync.network=\"{}\"", "local"),
-            format!(
-                "context.config.zksync.contract_id=\"{}\"",
-                self.config.context_config_contract_id
-            ),
-            // Signer configuration
-            format!("context.config.zksync.signer=\"{}\"", "self"),
-            format!(
-                "context.config.signer.self.zksync.local.rpc_url=\"{}\"",
-                self.config.rpc_url
-            ),
-            format!(
-                "context.config.signer.self.zksync.local.account_id=\"{}\"",
-                self.config.account_id
-            ),
-            format!(
-                "context.config.signer.self.zksync.local.secret_key=\"{}\"",
-                self.config.secret_key
-            ),
-        ]
+        // Block on the async call
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { self.node_args().await.unwrap_or_default() })
     }
 
     async fn verify_external_contract_state(
         &self,
         contract_id: &str,
         method_name: &str,
-        _args: &Vec<String>,
+        args: &Vec<String>,
     ) -> EyreResult<Option<String>> {
-        let http = Http::new(Url::parse(&self.config.rpc_url)?);
-        let provider = Provider::new(http);
-        let signer = LocalWallet::from_str(&self.config.secret_key)?;
-
-        let address = Address::from_str(contract_id)?;
-        let data = keccak256(method_name.as_bytes());
-        let result = provider
-            .call(
-                &Eip1559TransactionRequest {
-                    from: Some(signer.address()),
-                    to: Some(NameOrAddress::Address(address)),
-                    data: Some(Bytes::from(data.to_vec())),
-                    ..Default::default()
-                }
-                .into(),
-                None,
-            )
-            .await?;
-
-        Ok(Some(format!("0x{}", encode(result))))
+        self.verify_external_contract_state(contract_id, method_name, args).await
     }
 }

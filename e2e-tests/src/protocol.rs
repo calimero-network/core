@@ -12,13 +12,12 @@ pub mod stellar;
 pub mod zksync;
 
 /// Trait defining the interface for protocol sandbox environments
+#[allow(dead_code)]
 pub trait SandboxEnvironment {
     /// Generate node configuration arguments for the protocol
-    #[allow(dead_code, reason = "Trait method required for interface consistency")]
     fn node_args(&self) -> Vec<String>;
 
     /// Verify the state of an external contract
-    #[allow(dead_code, reason = "Trait method required for interface consistency")]
     async fn verify_external_contract_state(
         &self,
         contract_id: &str,

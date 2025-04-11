@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use alloy_sol_types::sol;
 use eyre::{bail, Context};
-use serde::{Deserialize, Serialize};
+use serde::{};
 use zksync_web3_rs::eip712::{Eip712Meta, Eip712TransactionRequest};
 use zksync_web3_rs::types::{Address, BlockNumber, U256};
 
@@ -195,38 +195,6 @@ impl TryFrom<ProxyMutateRequest> for ZkSyncProxyTransaction {
             ProxyMutateRequest::Approve { .. } => {
                 bail!("Approve requests do not generate transactions")
             }
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Copy)]
-pub struct ZkSyncProxyBlockConfig {
-    pub block_number: BlockNumber,
-    pub confirmations: u64,
-}
-
-impl Default for ZkSyncProxyBlockConfig {
-    fn default() -> Self {
-        Self {
-            block_number: BlockNumber::Latest,
-            confirmations: 1,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Copy)]
-pub struct ZkSyncProxyGasConfig {
-    pub gas_limit: Option<U256>,
-    pub max_fee_per_gas: Option<U256>,
-    pub max_priority_fee_per_gas: Option<U256>,
-}
-
-impl Default for ZkSyncProxyGasConfig {
-    fn default() -> Self {
-        Self {
-            gas_limit: None,
-            max_fee_per_gas: None,
-            max_priority_fee_per_gas: None,
         }
     }
 }

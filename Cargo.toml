@@ -144,6 +144,7 @@ wasmer-types = "4.2.5"
 web3 = "0.19.0"
 rcgen = "0.13.1"
 x509-parser = "0.16.0"
+zksync-web3-rs = "0.2.0"
 
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
