@@ -34,23 +34,11 @@ pub struct Request<'a> {
 impl<'a> Request<'a> {
     #[must_use]
     pub fn new(signer_id: SignerId, kind: RequestKind<'a>, nonce: u64) -> Self {
-        Self {
+        Request {
             signer_id: Repr::new(signer_id),
             kind,
             nonce,
         }
-    }
-
-    pub fn signer_id(&self) -> SignerId {
-        self.signer_id.into_inner()
-    }
-
-    pub fn kind(&self) -> &RequestKind<'a> {
-        &self.kind
-    }
-
-    pub fn nonce(&self) -> u64 {
-        self.nonce
     }
 }
 
@@ -185,7 +173,7 @@ pub struct Proposal {
     pub actions: Vec<ProposalAction>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalApprovalWithSigner {
     pub proposal_id: Repr<ProposalId>,
@@ -206,7 +194,7 @@ pub enum ProxyMutateRequest {
     },
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(PartialEq, Serialize, Deserialize, Copy, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub struct ProposalWithApprovals {
