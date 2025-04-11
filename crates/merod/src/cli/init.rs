@@ -370,7 +370,7 @@ impl InitCommand {
             let _ignored = client_params.insert(
                 "zksync".to_owned(),
                 ClientConfigParams {
-                    network: "sepolia".into(),
+                    network: "mainnet".into(),
                     protocol: "zksync".into(),
                     contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".parse()?,
                     signer: ClientSelectedSigner::Relayer,
@@ -382,8 +382,18 @@ impl InitCommand {
             };
 
             let _ignored = local_config.signers.insert(
-                "sepolia".to_owned(),
-                generate_local_signer("https://sepolia.drpc.org".parse()?, ConfigProtocol::ZkSync)?,
+                "mainnet".to_owned(),
+                generate_local_signer("https://mainnet.era.zksync.io".parse()?, ConfigProtocol::ZkSync)?,
+            );
+
+            let _ignored = local_config.signers.insert(
+                "testnet".to_owned(),
+                generate_local_signer("https://testnet.era.zksync.dev".parse()?, ConfigProtocol::ZkSync)?,
+            );
+
+            let _ignored = local_config.signers.insert(
+                "lens".to_owned(),
+                generate_local_signer("https://lens.xyz".parse()?, ConfigProtocol::ZkSync)?,
             );
 
             let _ignored = local_signers
