@@ -21,7 +21,9 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    create_alias, do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType,
+};
 use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
@@ -67,6 +69,9 @@ pub struct CreateCommand {
 
     #[clap(long = "as", help = "Create an alias for the context identity")]
     identity: Option<Alias<PublicKey>>,
+
+    #[clap(long = "name", help = "Create an alias for the context")]
+    context: Option<Alias<ContextId>>,
 }
 
 impl Report for CreateContextResponse {
@@ -97,6 +102,7 @@ impl CreateCommand {
                 params,
                 protocol,
                 identity,
+                context,
             } => {
                 let _ = create_context(
                     environment,
@@ -108,6 +114,7 @@ impl CreateCommand {
                     &config.identity,
                     protocol,
                     identity,
+                    context,
                 )
                 .await?;
             }
@@ -119,6 +126,7 @@ impl CreateCommand {
                 params,
                 protocol,
                 identity,
+                context,
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
@@ -142,6 +150,7 @@ impl CreateCommand {
                     &config.identity,
                     protocol,
                     identity,
+                    context,
                 )
                 .await?;
 
@@ -174,6 +183,7 @@ pub async fn create_context(
     keypair: &Keypair,
     protocol: String,
     identity: Option<Alias<PublicKey>>,
+    context: Option<Alias<ContextId>>,
 ) -> EyreResult<(ContextId, PublicKey)> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
@@ -219,7 +229,17 @@ pub async fn create_context(
 
         environment.output.write(&alias_response);
     }
-
+    if let Some(context_alias) = context {
+        let res = create_alias(
+            base_multiaddr,
+            keypair,
+            context_alias,
+            None,
+            response.data.context_id,
+        )
+        .await?;
+        environment.output.write(&res);
+    }
     Ok((response.data.context_id, response.data.member_public_key))
 }
 
