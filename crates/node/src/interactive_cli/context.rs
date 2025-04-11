@@ -201,7 +201,7 @@ impl ContextCommand {
                             );
                         } else {
                             println!(
-                                "{} Created identity alias '{}' for '{}'",
+                                "{} Created context alias '{}' for '{}'",
                                 ind,
                                 context.cyan(),
                                 context_id.cyan(),
