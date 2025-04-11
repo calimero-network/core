@@ -7,12 +7,12 @@ pub mod state;
 mod sys;
 pub mod types;
 
-use core::result::Result as CoreResult;
-
-pub type Result<T> = CoreResult<T, types::Error>;
-
 pub mod app {
-    pub use calimero_sdk_macros::{destroy, emit, event, init, logic, state};
+    use super::types::Error;
+
+    pub type Result<T, E = Error> = core::result::Result<T, E>;
+
+    pub use calimero_sdk_macros::{bail, destroy, emit, event, init, logic, state};
 }
 
 #[doc(hidden)]
