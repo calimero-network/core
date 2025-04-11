@@ -151,7 +151,6 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve context alias")?;
 
-            // Use the has_context_identity method directly instead of manually iterating
             if !node
                 .ctx_manager
                 .has_context_identity(context_id, identity)?

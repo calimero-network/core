@@ -205,7 +205,7 @@ async fn identity_exists_in_context(
     context: &Alias<ContextId>,
     target_identity: &PublicKey,
 ) -> EyreResult<bool> {
-    let context_id = resolve_alias(multiaddr, keypair, context.clone(), None)
+    let context_id = resolve_alias(multiaddr, keypair, *context, None)
         .await?
         .value()
         .cloned()
