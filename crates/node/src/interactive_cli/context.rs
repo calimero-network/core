@@ -10,6 +10,7 @@ use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
+use crate::interactive_cli::common::pretty_alias;
 use crate::Node;
 
 /// Manage contexts
@@ -49,12 +50,18 @@ enum Commands {
     Create {
         /// The application to create the context with
         application: Alias<ApplicationId>,
+        /// Name alias for the new context
+        #[clap(long = "name")]
+        context: Option<Alias<ContextId>>,
+        /// Identity alias for the creator
+        #[clap(long = "as")]
+        author: Option<Alias<PublicKey>>,
         /// The initialization parameters for the context
         params: Option<Value>,
         /// The seed for the context (to derive a deterministic context ID)
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
-        /// The protocol to use for the context - possible values: near|starknet|icp|stellar|ethereum
+        /// The protocol to use for the context
         #[clap(long, value_enum)]
         protocol: Protocol,
     },
@@ -65,6 +72,9 @@ enum Commands {
         /// The identity inviting the other
         #[clap(long = "as")]
         inviter: Alias<PublicKey>,
+        /// The name for the invitee
+        #[clap(long)]
+        name: Option<Alias<PublicKey>>,
         /// The identity being invited
         invitee_id: PublicKey,
     },
@@ -74,6 +84,12 @@ enum Commands {
         private_key: PrivateKey,
         /// The invitation payload from the inviter
         invitation_payload: ContextInvitationPayload,
+        /// Alias for the newly joined context
+        #[clap(long = "name")]
+        context: Option<Alias<ContextId>>,
+        /// Alias for the newly joined identity
+        #[clap(long = "as")]
+        identity: Option<Alias<PublicKey>>,
     },
     /// Leave a context
     Leave {
@@ -165,44 +181,104 @@ impl ContextCommand {
             Commands::Join {
                 private_key,
                 invitation_payload,
+                context,
+                identity,
             } => {
                 let response = node
                     .ctx_manager
                     .join_context(private_key, invitation_payload)
                     .await?;
 
-                if let Some((context_id, identity)) = response {
+                if let Some((context_id, public_key)) = response {
+                    // Create context alias if --name is specified
+                    if let Some(context) = context.as_ref() {
+                        if let Err(e) = node.ctx_manager.create_alias(*context, None, context_id) {
+                            eprintln!(
+                                "{} Failed to create alias '{}' for '{}': {e}",
+                                ind,
+                                context.cyan(),
+                                context_id.cyan(),
+                            );
+                        } else {
+                            println!(
+                                "{} Created context alias '{}' for '{}'",
+                                ind,
+                                context.cyan(),
+                                context_id.cyan(),
+                            );
+                        }
+                    }
+                    if let Some(identity) = identity.as_ref() {
+                        if let Err(e) =
+                            node.ctx_manager
+                                .create_alias(*identity, Some(context_id), public_key)
+                        {
+                            eprintln!(
+                                "{} Failed to create alias '{}' for '{}' in '{}': {e}",
+                                ind,
+                                identity.cyan(),
+                                public_key.cyan(),
+                                pretty_alias(context, &context_id),
+                            );
+                        } else {
+                            println!(
+                                "{} Created identity alias '{}' for '{}' in context '{}'",
+                                ind,
+                                identity.cyan(),
+                                public_key.cyan(),
+                                pretty_alias(context, &context_id)
+                            );
+                        }
+                    }
+
                     println!(
-                        "{ind} Joined context {context_id} as {identity}, waiting for catchup to complete..."
+                        "{} Joined context '{}' as '{}'",
+                        ind,
+                        pretty_alias(context, &context_id),
+                        pretty_alias(identity, &public_key)
                     );
                 } else {
                     println!(
-                        "{ind} Unable to join context at this time, a catchup is in progress."
+                        "{} Unable to join context at this time, a catchup is in progress.",
+                        ind
                     );
                 }
             }
+
             Commands::Leave { context } => {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve")?;
                 if node.ctx_manager.delete_context(&context_id).await? {
-                    println!("{ind} Successfully deleted context {context_id}");
+                    println!(
+                        "{ind} Successfully deleted context '{}'",
+                        pretty_alias(Some(context), &context_id)
+                    );
                 } else {
-                    println!("{ind} Failed to delete context {context_id}");
+                    println!(
+                        "{ind} Failed to delete context '{}'",
+                        pretty_alias(Some(context), &context_id)
+                    );
                 }
-                println!("{ind} Left context {context_id}");
+                println!(
+                    "{ind} Left context '{}'",
+                    pretty_alias(Some(context), &context_id)
+                );
             }
             Commands::Create {
                 application,
                 params,
                 context_seed,
                 protocol,
+                context,
+                author,
             } => {
                 let application_id = node
                     .ctx_manager
                     .resolve_alias(application, None)?
                     .ok_or_eyre("unable to resolve")?;
+                let ctx_manager = node.ctx_manager.clone();
 
                 let (tx, rx) = oneshot::channel();
 
@@ -222,7 +298,31 @@ impl ContextCommand {
                 let _ignored = tokio::spawn(async move {
                     let err: eyre::Report = match rx.await {
                         Ok(Ok((context_id, identity))) => {
-                            println!("{ind} Created context {context_id} with identity {identity}");
+                            // Create context alias if --name provided
+                            if let Some(name_alias) = context {
+                                if let Err(e) =
+                                    ctx_manager.create_alias(name_alias, None, context_id)
+                                {
+                                    eprintln!("{} Failed to create context alias: {e}", ind);
+                                }
+                            }
+                            // Handle identity alias creation
+                            if let Some(identity_alias) = author {
+                                if let Err(e) = ctx_manager.create_alias(
+                                    identity_alias,
+                                    Some(context_id),
+                                    identity,
+                                ) {
+                                    eprintln!("{} Failed to create identity alias: {e}", ind);
+                                }
+                            }
+
+                            println!(
+                                "{} Created context '{}' as '{}'",
+                                ind,
+                                pretty_alias(context, &context_id),
+                                pretty_alias(author, &identity)
+                            );
                             return;
                         }
                         Ok(Err(err)) => err,
@@ -235,6 +335,7 @@ impl ContextCommand {
             Commands::Invite {
                 context,
                 inviter,
+                name,
                 invitee_id,
             } => {
                 let context_id = node
@@ -251,12 +352,21 @@ impl ContextCommand {
                     .invite_to_context(context_id, inviter_id, invitee_id)
                     .await?
                 {
-                    println!("{ind} Invited {} to context {}", invitee_id, context_id);
+                    if let Some(alias) = name {
+                        node.ctx_manager
+                            .create_alias(alias, Some(context_id), invitee_id)?;
+                    }
+                    println!(
+                        "{ind} Invited '{}' to '{}'",
+                        pretty_alias(name, &invitee_id),
+                        pretty_alias(Some(context), &context_id)
+                    );
                     println!("{ind} Invitation Payload: {invitation_payload}");
                 } else {
                     println!(
-                        "{ind} Unable to invite {} to context {}",
-                        invitee_id, context_id
+                        "{ind} Unable to invite '{}' to context '{}'",
+                        invitee_id,
+                        pretty_alias(Some(context), &context_id)
                     );
                 }
             }
@@ -267,7 +377,10 @@ impl ContextCommand {
                     .ok_or_eyre("unable to resolve")?;
 
                 let _ = node.ctx_manager.delete_context(&context_id).await?;
-                println!("{ind} Deleted context {context_id}");
+                println!(
+                    "{ind} Deleted context '{}'",
+                    pretty_alias(Some(context), &context_id)
+                );
             }
             Commands::UpdateProxy { context, identity } => {
                 let context_id = node
@@ -282,7 +395,10 @@ impl ContextCommand {
                 node.ctx_manager
                     .update_context_proxy(context_id, public_key)
                     .await?;
-                println!("{ind} Updated proxy for context {context_id}");
+                println!(
+                    "{ind} Updated proxy for context '{}'",
+                    pretty_alias(Some(context), &context_id)
+                );
             }
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
         }
@@ -318,7 +434,7 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
             };
 
             println!(
-                "{ind} Alias '{}' resolves to: {}",
+                "{ind} Alias '{}' resolves to: '{}'",
                 alias.cyan(),
                 context.to_string().cyan()
             );
