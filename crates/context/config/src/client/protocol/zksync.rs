@@ -51,9 +51,18 @@ impl std::fmt::Display for CredentialsError {
 
 impl std::error::Error for CredentialsError {}
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ChainConfig {
+    pub chain_id: u64,
+    pub chain_name: String,
+    pub rpc_url: Url,
+    pub explorer_url: Option<Url>,
+    pub native_token_symbol: String,
+}
+
 #[derive(Debug)]
 pub struct NetworkConfig {
-    pub rpc_url: Url,
+    pub chain: ChainConfig,
     pub account_id: String,
     pub access_key: PrivateKeySigner,
 }
@@ -83,7 +92,7 @@ impl<'a> ZkSyncTransport<'a> {
 
             let provider: DynProvider<EthereumNetwork> = ProviderBuilder::new()
                 .wallet(wallet)
-                .on_http(network_config.rpc_url.clone())
+                .on_http(network_config.chain.rpc_url.clone())
                 .erased();
 
             let _ignored = networks.insert(network_id.clone(), Network { provider });
