@@ -26,6 +26,7 @@ enum Protocol {
     Icp,
     Stellar,
     Ethereum,
+    ZkSync,
 }
 
 impl Protocol {
@@ -36,6 +37,7 @@ impl Protocol {
             Protocol::Icp => "icp",
             Protocol::Stellar => "stellar",
             Protocol::Ethereum => "ethereum",
+            Protocol::ZkSync => "zksync",
         }
     }
 }

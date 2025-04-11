@@ -1,6 +1,6 @@
 Installing zkSync CLI...
 
-added 215 packages in 10s
+changed 215 packages in 2s
 
 85 packages are looking for funding
   run `npm fund` for details
@@ -12,3 +12,6 @@ zkcli-in-memory-node
   Dockerized node - Persistent state, includes L1 and L2 nodes - 
 zkcli-dockerized-node 
   + Add new chain [18D[18C
+Deploying contracts...
+Compiling 24 files with Solc 0.8.28
+Solc 0.8.28 finished in 212.92ms
