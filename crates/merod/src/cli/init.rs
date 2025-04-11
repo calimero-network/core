@@ -383,12 +383,18 @@ impl InitCommand {
 
             let _ignored = local_config.signers.insert(
                 "mainnet".to_owned(),
-                generate_local_signer("https://mainnet.era.zksync.io".parse()?, ConfigProtocol::ZkSync)?,
+                generate_local_signer(
+                    "https://mainnet.era.zksync.io".parse()?,
+                    ConfigProtocol::ZkSync,
+                )?,
             );
 
             let _ignored = local_config.signers.insert(
                 "testnet".to_owned(),
-                generate_local_signer("https://testnet.era.zksync.dev".parse()?, ConfigProtocol::ZkSync)?,
+                generate_local_signer(
+                    "https://testnet.era.zksync.dev".parse()?,
+                    ConfigProtocol::ZkSync,
+                )?,
             );
 
             let _ignored = local_config.signers.insert(
