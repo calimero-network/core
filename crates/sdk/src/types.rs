@@ -127,18 +127,18 @@ pub mod __private {
 mod tests {
     use super::__private::*;
     use super::*;
-    use crate::app;
+    use crate::{__bail__ as bail, app};
 
     fn _case1() -> app::Result<()> {
-        app::bail!("something happened");
+        bail!("something happened");
     }
 
     fn _case2() -> app::Result<()> {
-        app::bail!(Errorlike);
+        bail!(Errorlike);
     }
 
     fn _case3() -> app::Result<()> {
-        app::bail!(SerializableError {
+        bail!(SerializableError {
             name: "something happened".to_string()
         });
     }
@@ -146,11 +146,11 @@ mod tests {
     fn _case4() -> app::Result<()> {
         let arg = "happened";
 
-        app::bail!(format_args!("something {arg}"));
+        bail!(format_args!("something {arg}"));
     }
 
     // fn _case5() -> app::Result<()> {
-    //     app::bail!(Displayable("something happened"));
+    //     bail!(Displayable("something happened"));
     // }
 
     macro_rules! into_error {
