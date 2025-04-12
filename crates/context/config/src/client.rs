@@ -1,4 +1,3 @@
-mod macros;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::ops::Deref;
@@ -6,11 +5,11 @@ use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
 use eyre::Context;
-use macros::transport;
 use thiserror::Error;
 
 pub mod config;
 pub mod env;
+mod macros;
 pub mod protocol;
 pub mod relayer;
 pub mod transport;
@@ -18,6 +17,7 @@ pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use env::Method;
+use macros::transport;
 use protocol::{ethereum, icp, near, starknet, stellar, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
