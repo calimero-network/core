@@ -40,6 +40,8 @@ where
 
 #[doc(hidden)]
 pub mod __private {
+    use std::fmt::{self, Arguments};
+
     use serde::Serialize;
 
     use super::Error;
@@ -51,7 +53,7 @@ pub mod __private {
         fn into_error(&self) -> Error;
     }
 
-    impl ViaStr for &&Wrap<&str> {
+    impl ViaStr for &&&Wrap<&str> {
         fn into_error(&self) -> Error {
             let Wrap(value) = self;
             Error {
@@ -59,6 +61,26 @@ pub mod __private {
                 #[cfg(test)]
                 flag: 0,
             }
+        }
+    }
+
+    pub trait ViaArguments {
+        fn into_error(&self) -> Error;
+    }
+
+    impl ViaArguments for &&Wrap<Arguments<'_>> {
+        fn into_error(&self) -> Error {
+            let Wrap(value) = self;
+
+            let Some(msg) = value.as_str() else {
+                return Error {
+                    error: fmt::format(*value).into(),
+                    #[cfg(test)]
+                    flag: 1,
+                };
+            };
+
+            (&&&&Wrap(msg)).into_error()
         }
     }
 
@@ -75,7 +97,7 @@ pub mod __private {
             Error {
                 error: serde_json::json!(value),
                 #[cfg(test)]
-                flag: 1,
+                flag: 2,
             }
         }
     }
@@ -93,7 +115,7 @@ pub mod __private {
             Error {
                 error: value.to_string().into(),
                 #[cfg(test)]
-                flag: 2,
+                flag: 3,
             }
         }
     }
@@ -103,10 +125,35 @@ pub mod __private {
 mod tests {
     use super::__private::*;
     use super::*;
+    use crate::app;
+
+    fn _case1() -> app::Result<()> {
+        app::bail!("something happened");
+    }
+
+    fn _case2() -> app::Result<()> {
+        app::bail!(Errorlike);
+    }
+
+    fn _case3() -> app::Result<()> {
+        app::bail!(SerializableError {
+            name: "something happened".to_string()
+        });
+    }
+
+    fn _case4() -> app::Result<()> {
+        let arg = "happened";
+
+        app::bail!(format_args!("something {arg}"));
+    }
+
+    // fn _case5() -> app::Result<()> {
+    //     app::bail!(Displayable("something happened"));
+    // }
 
     macro_rules! into_error {
         ($err:expr) => {
-            (&&&Wrap($err)).into_error()
+            (&&&&Wrap($err)).into_error()
         };
     }
 
@@ -119,17 +166,7 @@ mod tests {
         dbg!(&error);
         assert_eq!(error.flag, 0); // used `ViaStr`
 
-        #[derive(Debug, Serialize)]
-        struct SerializableError {
-            name: String,
-        }
-
-        impl core::error::Error for SerializableError {}
-        impl fmt::Display for SerializableError {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "SerializableError")
-            }
-        }
+        // ---
 
         let err = SerializableError {
             name: "felota".to_string(),
@@ -138,24 +175,73 @@ mod tests {
         let error = into_error!(err);
 
         dbg!(&error);
-        assert_eq!(error.flag, 1); // used `ViaSerialize`
+        assert_eq!(error.flag, 2); // used `ViaSerialize`
 
-        #[derive(Debug)]
-        struct Errorlike;
-
-        impl core::error::Error for Errorlike {}
-
-        impl fmt::Display for Errorlike {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "Errorlike")
-            }
-        }
+        // ---
 
         let err = Errorlike;
 
         let error = into_error!(err);
 
         dbg!(&error);
-        assert_eq!(error.flag, 2); // used `ViaError`
+        assert_eq!(error.flag, 3); // used `ViaError`
+
+        // ---
+
+        let err = format_args!("beratna");
+
+        let error = into_error!(err);
+
+        dbg!(&error);
+        assert_eq!(error.flag, 0); // used `ViaStr` via `ViaArguments`
+
+        // ---
+
+        let field = Displayable("bosmang");
+
+        let error = into_error!(format_args!("{field}"));
+
+        dbg!(&error);
+        assert_eq!(error.flag, 1); // used `ViaArguments`
+
+        // ---
+
+        let field = Displayable("ke");
+
+        let error = into_error!(format_args!("sasa {}", field));
+
+        dbg!(&error);
+        assert_eq!(error.flag, 1); // used `ViaArguments`
+    }
+
+    #[derive(Debug, Serialize)]
+    struct SerializableError {
+        name: String,
+    }
+
+    impl core::error::Error for SerializableError {}
+    impl fmt::Display for SerializableError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "SerializableError")
+        }
+    }
+
+    #[derive(Debug)]
+    struct Errorlike;
+
+    impl core::error::Error for Errorlike {}
+
+    impl fmt::Display for Errorlike {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "Errorlike")
+        }
+    }
+
+    struct Displayable(&'static str);
+
+    impl fmt::Display for Displayable {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.pad(self.0)
+        }
     }
 }
