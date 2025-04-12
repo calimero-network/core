@@ -58,7 +58,7 @@ impl OnlyPeers {
     pub fn posts(&self) -> app::Result<Vec<Post>> {
         app::log!("Getting all posts");
 
-        Ok(self.posts.entries()?.collect())
+        Ok(self.posts.iter()?.collect())
     }
 
     pub fn create_post(&mut self, title: String, content: String) -> app::Result<Post> {
