@@ -24,23 +24,17 @@ impl From<[u8; 32]> for ApplicationId {
     }
 }
 
+impl AsRef<[u8; 32]> for ApplicationId {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 impl Deref for ApplicationId {
     type Target = [u8; 32];
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl From<ApplicationId> for Hash {
-    fn from(key: ApplicationId) -> Self {
-        key.0
-    }
-}
-
-impl From<Hash> for ApplicationId {
-    fn from(key: Hash) -> Self {
-        Self(key)
     }
 }
 

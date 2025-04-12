@@ -18,6 +18,8 @@ ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
 
+calimero-primitives.workspace = true
+
 [[example]]
 name = "demo"
 
