@@ -102,3 +102,10 @@ pub fn bail(input: TokenStream) -> TokenStream {
 
     quote!(::calimero_sdk::__bail__!(#input)).into()
 }
+
+#[proc_macro]
+pub fn log(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as TokenStream2);
+
+    quote!(::calimero_sdk::__log__!(#input)).into()
+}
