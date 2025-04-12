@@ -74,11 +74,12 @@ impl UpdateCommand {
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let executor_id = resolve_alias(multiaddr, &config.identity, self.executor, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let executor_id =
+            resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
+                .await?
+                .value()
+                .cloned()
+                .ok_or_eyre("unable to resolve")?;
 
         match self {
             Self {
