@@ -15,6 +15,7 @@ pub mod protocol;
 pub mod relayer;
 pub mod transport;
 pub mod utils;
+pub mod transport_macro;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use env::Method;
