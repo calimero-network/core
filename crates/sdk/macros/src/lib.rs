@@ -5,6 +5,7 @@
 
 use macros::parse_macro_input;
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
 use syn::{Expr, ItemImpl};
 
@@ -86,4 +87,11 @@ pub fn emit(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as Expr);
 
     quote!(::calimero_sdk::event::emit(#input)).into()
+}
+
+#[proc_macro]
+pub fn bail(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as TokenStream2);
+
+    quote!(::calimero_sdk::__bail__!(#input)).into()
 }

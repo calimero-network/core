@@ -1,7 +1,7 @@
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __bail {
-    ($msg:literal) => {{
+macro_rules! __bail__ {
+    ($msg:literal $(,)?) => {{
         use $crate::types::__private::*;
         return Err((&&&&$crate::types::__private::Wrap(::std::format_args!($msg))).into_error());
     }};

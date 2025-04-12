@@ -13,9 +13,7 @@ pub mod app {
 
     pub type Result<T, E = Error> = core::result::Result<T, E>;
 
-    pub use calimero_sdk_macros::{destroy, emit, event, init, logic, state};
-
-    pub use super::__bail as bail;
+    pub use calimero_sdk_macros::{bail, destroy, emit, event, init, logic, state};
 }
 
 #[doc(hidden)]
