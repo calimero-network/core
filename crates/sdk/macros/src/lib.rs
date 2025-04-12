@@ -87,3 +87,22 @@ pub fn emit(input: TokenStream) -> TokenStream {
 
     quote!(::calimero_sdk::event::emit(#input)).into()
 }
+
+#[proc_macro]
+pub fn bail(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as Expr);
+
+    if let Expr::Lit(lit) = &input {
+        if let syn::Lit::Str(str) = &lit.lit {
+            return quote! {
+                return Err(::calimero_sdk::types::Error::msg(#str));
+            }
+            .into();
+        }
+    }
+
+    quote! {
+        return Err(::calimero_sdk::types::Error::from(#input));
+    }
+    .into()
+}

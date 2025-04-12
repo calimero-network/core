@@ -199,6 +199,7 @@ impl StartBootstrapCommand {
             context: context_id.as_str().parse()?,
             inviter: inviter_public_key.as_str().parse()?,
             invitee_id: invitee_private_key.public_key(),
+            name: None,
         };
         let invitation_payload = invite_command.invite(invitor_environment).await?;
 
@@ -215,6 +216,8 @@ impl StartBootstrapCommand {
         let join_command = JoinCommand {
             private_key: invitee_private_key,
             invitation_payload,
+            context: None,
+            identity: None,
         };
         join_command.run(invitee_environment).await?;
         println!(
@@ -292,6 +295,7 @@ impl StartBootstrapCommand {
             url: Some("".to_owned()),
             metadata: Some("".to_owned()),
             hash: Some(Hash::new("hash".as_bytes())),
+            watch: false,
         };
 
         let application_id = install_command.install_app(environment).await?;
@@ -305,6 +309,7 @@ impl StartBootstrapCommand {
             None,
             &config.identity,
             protocol,
+            None,
             None,
         )
         .await?;
