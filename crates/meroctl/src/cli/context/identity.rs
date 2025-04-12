@@ -13,6 +13,7 @@ use crate::common::{
     create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, make_request,
     multiaddr_to_url, resolve_alias, RequestType,
 };
+use crate::output::ErrorLine;
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context identities")]
@@ -110,8 +111,23 @@ impl ContextIdentityAliasCommand {
                 identity,
                 context,
             } => {
-                let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
+                if !identity_exists_in_context(
+                    &multiaddr,
+                    &Client::new(),
+                    &config.identity,
+                    &context,
+                    &identity,
+                )
+                .await?
+                {
+                    environment.output.write(&ErrorLine(&format!(
+                        "Identity '{}' does not exist in context '{}'",
+                        identity, context
+                    )));
+                    return Ok(());
+                }
 
+                let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
                 let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
 
                 let res = create_alias(
@@ -181,4 +197,29 @@ async fn list_identities(
         RequestType::Get,
     )
     .await
+}
+async fn identity_exists_in_context(
+    multiaddr: &Multiaddr,
+    client: &Client,
+    keypair: &Keypair,
+    context: &Alias<ContextId>,
+    target_identity: &PublicKey,
+) -> EyreResult<bool> {
+    let context_id = resolve_alias(multiaddr, keypair, *context, None)
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve alias")?;
+
+    let endpoint = format!("admin-api/dev/contexts/{}/identities", context_id);
+    let url = multiaddr_to_url(multiaddr, &endpoint)?;
+
+    let response: GetContextIdentitiesResponse = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await?
+        .json::<GetContextIdentitiesResponse>()
+        .await?;
+
+    Ok(response.data.identities.contains(target_identity))
 }
