@@ -8,7 +8,8 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
+    create_alias, do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias,
+    RequestType,
 };
 use crate::output::Report;
 
@@ -32,6 +33,9 @@ pub struct InviteCommand {
 
     #[clap(value_name = "INVITEE", help = "The identifier of the invitee")]
     pub invitee_id: PublicKey,
+
+    #[clap(value_name = "ALIAS", help = "The alias for the invitee")]
+    pub name: Option<Alias<PublicKey>>,
 }
 
 impl Report for InviteToContextResponse {
@@ -86,6 +90,18 @@ impl InviteCommand {
         let invitation_payload = response
             .data
             .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
+
+        if let Some(name) = self.name {
+            let res = create_alias(
+                multiaddr,
+                &config.identity,
+                name,
+                Some(context_id),
+                self.invitee_id,
+            )
+            .await?;
+            environment.output.write(&res);
+        }
 
         Ok(invitation_payload)
     }
