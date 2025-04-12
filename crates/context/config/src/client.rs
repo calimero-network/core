@@ -1,5 +1,4 @@
-#[macro_use]
-mod transport_macro;
+mod macros;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::ops::Deref;
@@ -7,6 +6,7 @@ use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
 use eyre::Context;
+use macros::transport;
 use thiserror::Error;
 
 pub mod config;
@@ -26,6 +26,7 @@ type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
 type MaybeStellar = Option<stellar::StellarTransport<'static>>;
 type MaybeEthereum = Option<ethereum::EthereumTransport<'static>>;
+
 transport! {
     pub type LocalTransports = (
         MaybeNear,
@@ -406,4 +407,3 @@ pub trait Environment<'a, T> {
     fn query(client: CallClient<'a, T>) -> Self::Query;
     fn mutate(client: CallClient<'a, T>) -> Self::Mutate;
 }
-

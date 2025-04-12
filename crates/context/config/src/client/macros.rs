@@ -1,12 +1,11 @@
-#[macro_export]
 macro_rules! transport {
     // Type declaration
     (
         $(#[$meta:meta])*
-        pub type $name:ident = ( $($t:ty),* $(,)? );
+        $($pub:vis)? type $name:ident = ( $($t:ty),* $(,)? );
     ) => {
         $(#[$meta])*
-        pub type $name = transport!(@nest_types $($t),*);
+        $($pub)? type $name = transport!(@nest_types $($t),*);
     };
 
     (@nest_types $first:ty, $($rest:ty),*) => {
@@ -27,3 +26,4 @@ macro_rules! transport {
     }};
     (@nest_instances $last:expr) => { $last };
 }
+pub(crate) use transport;
