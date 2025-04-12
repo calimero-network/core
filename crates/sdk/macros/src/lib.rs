@@ -92,17 +92,13 @@ pub fn emit(input: TokenStream) -> TokenStream {
 pub fn bail(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as Expr);
 
-    if let Expr::Lit(lit) = &input {
-        if let syn::Lit::Str(str) = &lit.lit {
-            return quote! {
-                return Err(::calimero_sdk::types::Error::msg(#str));
-            }
-            .into();
-        }
-    }
+    quote! {{
+        let wrapped = ::calimero_sdk::types::__private::Wrap(#input);
 
-    quote! {
-        return Err(::calimero_sdk::types::Error::from(#input));
-    }
+        {
+            use ::calimero_sdk::types::__private::*;
+            return ::core::result::Result::Err(wrapped.into_error());
+        }
+    }}
     .into()
 }
