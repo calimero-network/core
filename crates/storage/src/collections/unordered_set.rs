@@ -6,10 +6,8 @@ use core::fmt;
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeSeq;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
-use super::Collection;
-use crate::address::Id;
+use super::{compute_id, Collection};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::{MainStorage, StorageAdaptor};
@@ -43,14 +41,6 @@ where
         }
     }
 
-    /// Compute the ID for a value in the set.
-    fn compute_id(&self, value: &[u8]) -> Id {
-        let mut hasher = Sha256::new();
-        hasher.update(self.inner.id().as_bytes());
-        hasher.update(value);
-        Id::new(hasher.finalize().into())
-    }
-
     /// Insert a value pair into the set collection if the element does not already exist.
     ///
     /// # Errors
@@ -63,7 +53,7 @@ where
     where
         V: AsRef<[u8]> + PartialEq,
     {
-        let id = self.compute_id(value.as_ref());
+        let id = compute_id(self.inner.id(), value.as_ref());
 
         if self.inner.get_mut(id)?.is_some() {
             return Ok(false);
@@ -74,7 +64,7 @@ where
         Ok(true)
     }
 
-    /// Get an iterator over the entries in the set.
+    /// Get an iterator over the items in the set.
     ///
     /// # Errors
     ///
@@ -82,11 +72,11 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
+    pub fn iter(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
         Ok(self.inner.entries()?.flatten().fuse())
     }
 
-    /// Get the number of entries in the set.
+    /// Get the number of items in the set.
     ///
     /// # Errors
     ///
@@ -111,9 +101,9 @@ where
         V: Borrow<Q>,
         Q: PartialEq + ?Sized + AsRef<[u8]>,
     {
-        let id = self.compute_id(value.as_ref());
+        let id = compute_id(self.inner.id(), value.as_ref());
 
-        Ok(self.inner.get(id)?.is_some())
+        self.inner.contains(id)
     }
 
     /// Remove a key from the set, returning the value at the key if it previously existed.
@@ -129,7 +119,7 @@ where
         V: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = self.compute_id(value.as_ref());
+        let id = compute_id(self.inner.id(), value.as_ref());
 
         let Some(entry) = self.inner.get_mut(id)? else {
             return Ok(false);
@@ -140,7 +130,7 @@ where
         Ok(true)
     }
 
-    /// Clear the set, removing all entries.
+    /// Clear the set, removing all items.
     ///
     /// # Errors
     ///
@@ -161,8 +151,8 @@ where
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
+        let l = self.iter().unwrap();
+        let r = other.iter().unwrap();
 
         l.eq(r)
     }
@@ -174,8 +164,8 @@ where
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
+        let l = self.iter().unwrap();
+        let r = other.iter().unwrap();
 
         l.cmp(r)
     }
@@ -186,8 +176,8 @@ where
     V: PartialOrd + BorshSerialize + BorshDeserialize,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.entries().ok()?;
-        let r = other.entries().ok()?;
+        let l = self.iter().ok()?;
+        let r = other.iter().ok()?;
 
         l.partial_cmp(r)
     }
@@ -201,10 +191,10 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_struct("UnorderedSet")
-                .field("entries", &self.inner)
+                .field("items", &self.inner)
                 .finish()
         } else {
-            f.debug_set().entries(self.entries().unwrap()).finish()
+            f.debug_set().entries(self.iter().unwrap()).finish()
         }
     }
 }
@@ -231,11 +221,43 @@ where
 
         let mut seq = serializer.serialize_seq(Some(len))?;
 
-        for v in self.entries().map_err(serde::ser::Error::custom)? {
+        for v in self.iter().map_err(serde::ser::Error::custom)? {
             seq.serialize_element(&v)?;
         }
 
         seq.end()
+    }
+}
+
+impl<V, S> Extend<V> for UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    S: StorageAdaptor,
+{
+    fn extend<I: IntoIterator<Item = V>>(&mut self, iter: I) {
+        let parent = self.inner.id();
+
+        let iter = iter.into_iter().map(|v| {
+            let id = compute_id(parent, v.as_ref());
+
+            (Some(id), v)
+        });
+
+        self.inner.extend(iter);
+    }
+}
+
+impl<V, S> FromIterator<V> for UnorderedSet<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    S: StorageAdaptor,
+{
+    fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Self {
+        let mut map = UnorderedSet::new_internal();
+
+        map.extend(iter);
+
+        map
     }
 }
 
@@ -303,20 +325,20 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_set_entries() {
+    fn test_unordered_set_items() {
         let mut set = Root::new(|| UnorderedSet::new());
 
         assert!(set.insert("value1".to_string()).expect("insert failed"));
         assert!(set.insert("value2".to_string()).expect("insert failed"));
 
-        let entries: Vec<String> = set.entries().expect("entries failed").collect();
+        let items: Vec<String> = set.iter().expect("items failed").collect();
 
-        assert_eq!(entries.len(), 2);
-        assert!(entries.contains(&"value1".to_string()));
-        assert!(entries.contains(&"value2".to_string()));
+        assert_eq!(items.len(), 2);
+        assert!(items.contains(&"value1".to_string()));
+        assert!(items.contains(&"value2".to_string()));
 
         assert!(set.remove("value1").expect("remove failed"));
-        let entries: Vec<String> = set.entries().expect("entries failed").collect();
-        assert_eq!(entries.len(), 1);
+        let items: Vec<String> = set.iter().expect("items failed").collect();
+        assert_eq!(items.len(), 1);
     }
 }

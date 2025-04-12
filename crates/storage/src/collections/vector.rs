@@ -112,7 +112,7 @@ where
         Ok(Some(old))
     }
 
-    /// Get an iterator over the entries in the vector.
+    /// Get an iterator over the items in the vector.
     ///
     /// # Errors
     ///
@@ -120,7 +120,7 @@ where
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn entries(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
+    pub fn iter(&self) -> Result<impl Iterator<Item = V> + '_, StoreError> {
         Ok(self.inner.entries()?.flatten().fuse())
     }
 
@@ -140,7 +140,7 @@ where
         self.inner.get(last)
     }
 
-    /// Get the number of entries in the vector.
+    /// Get the number of items in the vector.
     ///
     /// # Errors
     ///
@@ -166,7 +166,7 @@ where
         V: Borrow<Q>,
         Q: PartialEq,
     {
-        for entry in self.entries()? {
+        for entry in self.iter()? {
             if value == entry.borrow() {
                 return Ok(true);
             }
@@ -175,7 +175,7 @@ where
         Ok(false)
     }
 
-    /// Clear the vector, removing all entries.
+    /// Clear the vector, removing all items.
     ///
     /// # Errors
     ///
@@ -196,8 +196,8 @@ where
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn eq(&self, other: &Self) -> bool {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
+        let l = self.iter().unwrap();
+        let r = other.iter().unwrap();
 
         l.eq(r)
     }
@@ -209,8 +209,8 @@ where
 {
     #[expect(clippy::unwrap_used, reason = "'tis fine")]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let l = self.entries().unwrap();
-        let r = other.entries().unwrap();
+        let l = self.iter().unwrap();
+        let r = other.iter().unwrap();
 
         l.cmp(r)
     }
@@ -221,8 +221,8 @@ where
     V: PartialOrd + BorshSerialize + BorshDeserialize,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let l = self.entries().ok()?;
-        let r = other.entries().ok()?;
+        let l = self.iter().ok()?;
+        let r = other.iter().ok()?;
 
         l.partial_cmp(r)
     }
@@ -236,10 +236,10 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_struct("Vector")
-                .field("entries", &self.inner)
+                .field("items", &self.inner)
                 .finish()
         } else {
-            f.debug_list().entries(self.entries().unwrap()).finish()
+            f.debug_list().entries(self.iter().unwrap()).finish()
         }
     }
 }
@@ -267,11 +267,37 @@ where
 
         let mut seq = serializer.serialize_seq(Some(len))?;
 
-        for entry in self.entries().map_err(serde::ser::Error::custom)? {
+        for entry in self.iter().map_err(serde::ser::Error::custom)? {
             seq.serialize_element(&entry)?;
         }
 
         seq.end()
+    }
+}
+
+impl<V, S> Extend<V> for Vector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    S: StorageAdaptor,
+{
+    fn extend<I: IntoIterator<Item = V>>(&mut self, iter: I) {
+        let iter = iter.into_iter().map(|v| (None, v));
+
+        self.inner.extend(iter);
+    }
+}
+
+impl<V, S> FromIterator<V> for Vector<V, S>
+where
+    V: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    S: StorageAdaptor,
+{
+    fn from_iter<I: IntoIterator<Item = V>>(iter: I) -> Self {
+        let mut map = Vector::new_internal();
+
+        map.extend(iter);
+
+        map
     }
 }
 
@@ -334,15 +360,15 @@ mod tests {
     }
 
     #[test]
-    fn test_vector_entries() {
+    fn test_vector_items() {
         let mut vector = Root::new(|| Vector::new());
 
         let value1 = "test_data1".to_string();
         let value2 = "test_data2".to_string();
         let _ = vector.push(value1.clone()).unwrap();
         let _ = vector.push(value2.clone()).unwrap();
-        let entries: Vec<String> = vector.entries().unwrap().collect();
-        assert_eq!(entries, vec![value1, value2]);
+        let items: Vec<String> = vector.iter().unwrap().collect();
+        assert_eq!(items, vec![value1, value2]);
     }
 
     #[test]
