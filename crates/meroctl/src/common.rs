@@ -205,6 +205,10 @@ impl UrlFragment for PublicKey {
         CreateContextIdentityAlias { identity: self }
     }
 
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "this is the meroctl, and this is a fatal error"
+    )]
     fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
         let s = context.expect("PublicKey MUST have a scope");
 
