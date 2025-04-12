@@ -1,6 +1,5 @@
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::Serialize;
-use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
 use calimero_storage::collections::Vector;
 
@@ -50,23 +49,24 @@ impl OnlyPeers {
         OnlyPeers::default()
     }
 
-    pub fn post(&self, id: usize) -> Result<Option<Post>, Error> {
-        env::log(&format!("Getting post with id: {:?}", id));
+    pub fn post(&self, id: usize) -> app::Result<Option<Post>> {
+        app::log!("Getting post with id: {:?}", id);
 
         Ok(self.posts.get(id)?)
     }
 
-    pub fn posts(&self) -> Result<Vec<Post>, Error> {
-        env::log("Getting all posts");
+    pub fn posts(&self) -> app::Result<Vec<Post>> {
+        app::log!("Getting all posts");
 
-        Ok(self.posts.entries()?.collect())
+        Ok(self.posts.iter()?.collect())
     }
 
-    pub fn create_post(&mut self, title: String, content: String) -> Result<Post, Error> {
-        env::log(&format!(
+    pub fn create_post(&mut self, title: String, content: String) -> app::Result<Post> {
+        app::log!(
             "Creating post with title: {:?} and content: {:?}",
-            title, content
-        ));
+            title,
+            content
+        );
 
         app::emit!(Event::PostCreated {
             id: self.posts.len()?,
@@ -93,11 +93,13 @@ impl OnlyPeers {
         post_id: usize,
         user: String, // todo! expose executor identity to app context
         text: String,
-    ) -> Result<Option<Comment>, Error> {
-        env::log(&format!(
+    ) -> app::Result<Option<Comment>> {
+        app::log!(
             "Creating comment under post with id: {:?} as user: {:?} with text: {:?}",
-            post_id, user, text
-        ));
+            post_id,
+            user,
+            text
+        );
 
         let Some(mut post) = self.posts.get(post_id)? else {
             return Ok(None);

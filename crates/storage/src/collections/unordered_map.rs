@@ -7,10 +7,8 @@ use std::mem;
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::ser::SerializeMap;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
-use super::{Collection, StorageAdaptor};
-use crate::address::Id;
+use super::{compute_id, Collection, StorageAdaptor};
 use crate::collections::error::StoreError;
 use crate::entities::Data;
 use crate::store::MainStorage;
@@ -46,14 +44,6 @@ where
         }
     }
 
-    /// Compute the ID for a key.
-    fn compute_id(&self, key: &[u8]) -> Id {
-        let mut hasher = Sha256::new();
-        hasher.update(self.inner.id().as_bytes());
-        hasher.update(key);
-        Id::new(hasher.finalize().into())
-    }
-
     /// Insert a key-value pair into the map.
     ///
     /// # Errors
@@ -66,7 +56,7 @@ where
     where
         K: AsRef<[u8]> + PartialEq,
     {
-        let id = self.compute_id(key.as_ref());
+        let id = compute_id(self.inner.id(), key.as_ref());
 
         if let Some(mut entry) = self.inner.get_mut(id)? {
             let (_, v) = &mut *entry;
@@ -116,7 +106,7 @@ where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = self.compute_id(key.as_ref());
+        let id = compute_id(self.inner.id(), key.as_ref());
 
         Ok(self.inner.get(id)?.map(|(_, v)| v))
     }
@@ -134,7 +124,9 @@ where
         K: Borrow<Q> + PartialEq,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        self.get(key).map(|v| v.is_some())
+        let id = compute_id(self.inner.id(), key.as_ref());
+
+        self.inner.contains(id)
     }
 
     /// Remove a key from the map, returning the value at the key if it previously existed.
@@ -150,7 +142,7 @@ where
         K: Borrow<Q>,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
-        let id = self.compute_id(key.as_ref());
+        let id = compute_id(self.inner.id(), key.as_ref());
 
         let Some(entry) = self.inner.get_mut(id)? else {
             return Ok(None);
@@ -244,8 +236,8 @@ where
 
 impl<K, V, S> Default for UnorderedMap<K, V, S>
 where
-    K: Default + BorshSerialize + BorshDeserialize,
-    V: Default + BorshSerialize + BorshDeserialize,
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
     S: StorageAdaptor,
 {
     fn default() -> Self {
@@ -272,6 +264,40 @@ where
         }
 
         seq.end()
+    }
+}
+
+impl<K, V, S> Extend<(K, V)> for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
+        let parent = self.inner.id();
+
+        let iter = iter.into_iter().map(|(k, v)| {
+            let id = compute_id(parent, k.as_ref());
+
+            (Some(id), (k, v))
+        });
+
+        self.inner.extend(iter);
+    }
+}
+
+impl<K, V, S> FromIterator<(K, V)> for UnorderedMap<K, V, S>
+where
+    K: BorshSerialize + BorshDeserialize + AsRef<[u8]>,
+    V: BorshSerialize + BorshDeserialize,
+    S: StorageAdaptor,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let mut map = UnorderedMap::new_internal();
+
+        map.extend(iter);
+
+        map
     }
 }
 
