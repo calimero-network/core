@@ -2,10 +2,10 @@ macro_rules! transport {
     // Type declaration
     (
         $(#[$meta:meta])*
-        $( $($pub:vis)? )? type $name:ident = ( $($t:ty),* $(,)? );
+        pub type $name:ident = ( $($t:ty),* $(,)? );
     ) => {
         $(#[$meta])*
-        $($pub)? type $name = transport!(@nest_types $($t),*);
+        pub type $name = transport!(@nest_types $($t),*);
     };
 
     (@nest_types $first:ty, $($rest:ty),*) => {
