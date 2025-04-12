@@ -90,6 +90,13 @@ pub fn emit(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
+pub fn err(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as TokenStream2);
+
+    quote!(::calimero_sdk::__err__!(#input)).into()
+}
+
+#[proc_macro]
 pub fn bail(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as TokenStream2);
 

@@ -4,9 +4,11 @@ use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, Serialize)]
+#[serde(transparent)]
 pub struct Error {
     error: Value,
     #[cfg(test)]
+    #[serde(skip)]
     flag: u8,
 }
 
