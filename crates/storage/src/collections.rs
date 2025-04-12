@@ -426,6 +426,7 @@ impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Parti
 impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Extend<(Option<Id>, T)>
     for Collection<T, S>
 {
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
     fn extend<I: IntoIterator<Item = (Option<Id>, T)>>(&mut self, iter: I) {
         let path = self.path();
 
