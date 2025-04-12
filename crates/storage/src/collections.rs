@@ -1,15 +1,15 @@
 //! High-level data structures for storage.
 
-use core::fmt;
-use std::cell::RefCell;
+use core::cell::RefCell;
+use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
+use core::{fmt, ptr};
 use std::collections::BTreeMap;
-use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
-use std::ptr;
 use std::sync::LazyLock;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use indexmap::IndexSet;
+use sha2::{Digest, Sha256};
 
 pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
@@ -30,6 +30,14 @@ use crate::entities::{ChildInfo, Data, Element};
 use crate::interface::{Interface, StorageError};
 use crate::store::{MainStorage, StorageAdaptor};
 use crate::{AtomicUnit, Collection};
+
+/// Compute the ID for a key.
+fn compute_id(parent: Id, key: &[u8]) -> Id {
+    let mut hasher = Sha256::new();
+    hasher.update(parent.as_bytes());
+    hasher.update(key);
+    Id::new(hasher.finalize().into())
+}
 
 mod compat {
     use std::collections::BTreeMap;
@@ -161,6 +169,10 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
         let entry = <Interface<S>>::find_by_id::<Entry<_>>(id)?;
 
         Ok(entry.map(|entry| entry.item))
+    }
+
+    fn contains(&self, id: Id) -> StoreResult<bool> {
+        Ok(self.children_cache()?.contains(&id))
     }
 
     fn get_mut(&mut self, id: Id) -> StoreResult<Option<EntryMut<'_, T, S>>> {
@@ -408,5 +420,37 @@ impl<T: PartialOrd + BorshSerialize + BorshDeserialize, S: StorageAdaptor> Parti
         let r = other.entries().ok()?.flatten();
 
         l.partial_cmp(r)
+    }
+}
+
+impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Extend<(Option<Id>, T)>
+    for Collection<T, S>
+{
+    #[expect(clippy::expect_used, reason = "fatal error if it happens")]
+    fn extend<I: IntoIterator<Item = (Option<Id>, T)>>(&mut self, iter: I) {
+        let path = self.path();
+
+        let mut collection = CollectionMut::new(self);
+
+        for (id, item) in iter {
+            let mut entry = Entry {
+                item,
+                storage: Element::new(&path, id),
+            };
+
+            collection
+                .insert(&mut entry)
+                .expect("collection extension failed");
+        }
+    }
+}
+
+impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> FromIterator<(Option<Id>, T)>
+    for Collection<T, S>
+{
+    fn from_iter<I: IntoIterator<Item = (Option<Id>, T)>>(iter: I) -> Self {
+        let mut collection = Collection::new(None);
+        collection.extend(iter);
+        collection
     }
 }
