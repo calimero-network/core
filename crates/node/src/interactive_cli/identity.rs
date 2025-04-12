@@ -48,10 +48,7 @@ enum AliasSubcommands {
         context: Alias<ContextId>,
     },
     /// Remove an alias
-    #[command(
-        about = "Remove an identity alias from a context",
-        aliases = ["rm", "del", "delete"],
-    )]
+    #[command(about = "Remove an identity alias from a context", aliases = ["rm", "del", "delete"])]
     Remove {
         /// Name of the alias to remove
         identity: Alias<PublicKey>,
@@ -126,7 +123,7 @@ fn list_identities(node: &Node, context: Alias<ContextId>, ind: &str) -> EyreRes
         let entry = format!(
             "{:44} | {}",
             k.public_key(),
-            if v.private_key.is_some() { "Yes" } else { "No" },
+            if v.private_key.is_some() { "Yes" } else { "No" }
         );
         for line in entry.lines() {
             println!("{ind} {}", line.cyan());
@@ -152,7 +149,19 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             let context_id = node
                 .ctx_manager
                 .resolve_alias(context, None)?
-                .ok_or_eyre("unable to resolve")?;
+                .ok_or_eyre("unable to resolve context alias")?;
+
+            if !node
+                .ctx_manager
+                .has_context_identity(context_id, identity)?
+            {
+                println!(
+                    "{ind} Error: Identity '{}' does not exist in context '{}'.",
+                    identity.cyan(),
+                    context_id.cyan()
+                );
+                return Ok(());
+            }
 
             node.ctx_manager
                 .create_alias(name, Some(context_id), identity)?;
@@ -163,7 +172,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             let context_id = node
                 .ctx_manager
                 .resolve_alias(context, None)?
-                .ok_or_eyre("unable to resolve")?;
+                .ok_or_eyre("unable to resolve context alias")?;
 
             node.ctx_manager.delete_alias(identity, Some(context_id))?;
 
@@ -173,7 +182,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             let context_id = node
                 .ctx_manager
                 .resolve_alias(context, None)?
-                .ok_or_eyre("unable to resolve")?;
+                .ok_or_eyre("unable to resolve context alias")?;
 
             let Some(identity_id) = node.ctx_manager.lookup_alias(identity, Some(context_id))?
             else {
