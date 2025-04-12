@@ -15,16 +15,18 @@ use crate::output::Report;
 #[derive(Debug, Parser)]
 #[command(about = "Create invitation to a context")]
 pub struct InviteCommand {
-    #[clap(
+    #[arg(
         value_name = "CONTEXT",
-        help = "The context for which invitation is created"
+        help = "The context for which invitation is created (omit to use default context)",
+        default_value = "default"
     )]
     pub context: Alias<ContextId>,
 
     #[clap(
         long = "as",
         value_name = "INVITER",
-        help = "The identifier of the inviter"
+        help = "The identifier of the inviter",
+        default_value = "default"
     )]
     pub inviter: Alias<PublicKey>,
 

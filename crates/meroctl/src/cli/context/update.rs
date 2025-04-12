@@ -26,7 +26,12 @@ use crate::output::{ErrorLine, InfoLine};
 #[derive(Debug, Parser)]
 #[command(about = "Update app in context")]
 pub struct UpdateCommand {
-    #[clap(long, short = 'c', help = "Context to update")]
+    #[clap(
+        long,
+        short = 'c',
+        help = "Context to update",
+        default_value = "default"
+    )]
     context: Alias<ContextId>,
 
     #[clap(
@@ -58,7 +63,11 @@ pub struct UpdateCommand {
     )]
     watch: bool,
 
-    #[arg(long = "as", help = "Public key of the executor")]
+    #[arg(
+        long = "as",
+        help = "Public key of the executor",
+        default_value = "default"
+    )]
     pub executor: Alias<PublicKey>,
 }
 
