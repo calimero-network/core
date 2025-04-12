@@ -29,6 +29,11 @@ where
     T: core::error::Error,
 {
     fn from(error: T) -> Self {
+        // we can maybe introduce specialized behaviour for `T: Error`
+        // where (IF) the error is being serialized as a return type,
+        // we can force a log of it's Debug representation, while we
+        // serialize it's Display representation
+        // ? but what if the dev already called `env::log` explicitly?
         Self::msg(error)
     }
 }
@@ -46,7 +51,7 @@ pub mod __private {
         fn into_error(&self) -> Error;
     }
 
-    impl ViaStr for &&&Wrap<&str> {
+    impl ViaStr for &&Wrap<&str> {
         fn into_error(&self) -> Error {
             let Wrap(value) = self;
             Error {
@@ -61,7 +66,7 @@ pub mod __private {
         fn into_error(&self) -> Error;
     }
 
-    impl<T> ViaSerialize for &&Wrap<T>
+    impl<T> ViaSerialize for &Wrap<T>
     where
         T: Serialize,
     {
@@ -79,7 +84,7 @@ pub mod __private {
         fn into_error(&self) -> Error;
     }
 
-    impl<T> ViaError for &Wrap<T>
+    impl<T> ViaError for Wrap<T>
     where
         T: core::error::Error,
     {
@@ -92,24 +97,6 @@ pub mod __private {
             }
         }
     }
-
-    pub trait ViaDisplay {
-        fn into_error(&self) -> Error;
-    }
-
-    impl<T> ViaDisplay for Wrap<T>
-    where
-        T: std::fmt::Display,
-    {
-        fn into_error(&self) -> Error {
-            let Wrap(value) = self;
-            Error {
-                error: value.to_string().into(),
-                #[cfg(test)]
-                flag: 3,
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -119,7 +106,7 @@ mod tests {
 
     macro_rules! into_error {
         ($err:expr) => {
-            (&&&&Wrap($err)).into_error()
+            (&&&Wrap($err)).into_error()
         };
     }
 
@@ -131,39 +118,6 @@ mod tests {
 
         dbg!(&error);
         assert_eq!(error.flag, 0); // used `ViaStr`
-
-        struct Displayable;
-
-        impl fmt::Display for Displayable {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "Displayable")
-            }
-        }
-
-        let err = Displayable;
-
-        let error = into_error!(err);
-
-        dbg!(&error);
-        assert_eq!(error.flag, 3); // used `ViaDisplay`
-
-        #[derive(Debug)]
-        struct Errorlike;
-
-        impl core::error::Error for Errorlike {}
-
-        impl fmt::Display for Errorlike {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "Errorlike")
-            }
-        }
-
-        let err = Errorlike;
-
-        let error = into_error!(err);
-
-        dbg!(&error);
-        assert_eq!(error.flag, 2); // used `ViaError`
 
         #[derive(Debug, Serialize)]
         struct SerializableError {
@@ -185,5 +139,23 @@ mod tests {
 
         dbg!(&error);
         assert_eq!(error.flag, 1); // used `ViaSerialize`
+
+        #[derive(Debug)]
+        struct Errorlike;
+
+        impl core::error::Error for Errorlike {}
+
+        impl fmt::Display for Errorlike {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "Errorlike")
+            }
+        }
+
+        let err = Errorlike;
+
+        let error = into_error!(err);
+
+        dbg!(&error);
+        assert_eq!(error.flag, 2); // used `ViaError`
     }
 }
