@@ -44,6 +44,11 @@ jobs:
         run: |
           cargo test
 
+      - name: Cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources
+
   nodejs:
     name: NodeJS
     runs-on: ubuntu-latest
