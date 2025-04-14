@@ -7,7 +7,7 @@ set -e
 
 # Define variables
 RPC_URL="http://localhost:8011"
-PRIVATE_KEY="0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110" # First rich account's private key
+PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" # First rich account's private key from config
 
 # Set contract artifact paths
 CONTRACTS_DIR=${CALIMERO_CONTRACTS_DIR:-contracts}
@@ -44,14 +44,22 @@ ENCODED_ARGS=${ENCODED_ARGS#0x}
 DEPLOY_BYTECODE="${BYTECODE}${ENCODED_ARGS}"
 
 # Deploy ContextConfig
-cast send --private-key $PRIVATE_KEY --rpc-url $RPC_URL --create $DEPLOY_BYTECODE 
+RESULT=$(cast send --private-key $PRIVATE_KEY --rpc-url $RPC_URL --create $DEPLOY_BYTECODE)
+CONTEXT_CONFIG_DEPLOYED_ADDRESS=$(echo "$RESULT" | grep "contractAddress" | awk '{print $2}')
+echo "ContextConfig deployed at: $CONTEXT_CONFIG_DEPLOYED_ADDRESS"
 
 # Get proxy bytecode
 PROXY_BYTECODE=$(jq -r '.bytecode.object' "$PROXY_ARTIFACT")
 # Set proxy code
-cast send $CONTEXT_CONFIG_ADDRESS "setProxyCode(bytes)" $PROXY_BYTECODE --rpc-url $RPC_URL --private-key $PRIVATE_KEY
+cast send $CONTEXT_CONFIG_DEPLOYED_ADDRESS "setProxyCode(bytes)" $PROXY_BYTECODE --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
 # Deploy MockExternalContract
 echo "Deploying MockExternalContract..."
 MOCK_BYTECODE=$(jq -r '.bytecode.object' "$MOCK_ARTIFACT")
-cast send --private-key $PRIVATE_KEY --rpc-url $RPC_URL --create $MOCK_BYTECODE
+RESULT=$(cast send --private-key $PRIVATE_KEY --rpc-url $RPC_URL --create $MOCK_BYTECODE)
+MOCK_CONTRACT_DEPLOYED_ADDRESS=$(echo "$RESULT" | grep "contractAddress" | awk '{print $2}')
+echo "MockExternalContract deployed at: $MOCK_CONTRACT_DEPLOYED_ADDRESS"
+
+echo "Deployment complete. Please update the following addresses in e2e-tests/config/config.json:"
+echo "ContextConfig: $CONTEXT_CONFIG_DEPLOYED_ADDRESS"
+echo "MockExternalContract: $MOCK_CONTRACT_DEPLOYED_ADDRESS"

@@ -200,7 +200,7 @@ async fn list_identities(
 }
 async fn identity_exists_in_context(
     multiaddr: &Multiaddr,
-    client: &Client,
+    _client: &Client,
     keypair: &Keypair,
     context: &Alias<ContextId>,
     target_identity: &PublicKey,
@@ -214,7 +214,7 @@ async fn identity_exists_in_context(
     let endpoint = format!("admin-api/dev/contexts/{}/identities", context_id);
     let url = multiaddr_to_url(multiaddr, &endpoint)?;
 
-    let response: GetContextIdentitiesResponse = reqwest::Client::new()
+    let response: GetContextIdentitiesResponse = Client::new()
         .get(url)
         .send()
         .await?

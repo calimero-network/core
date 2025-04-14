@@ -18,7 +18,7 @@ pub mod utils;
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
 use env::Method;
 use macros::transport;
-use protocol::{ethereum, icp, near, starknet, stellar, Protocol};
+use protocol::{ethereum, icp, near, starknet, stellar, zksync, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 type MaybeNear = Option<near::NearTransport<'static>>;
@@ -26,6 +26,7 @@ type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
 type MaybeStellar = Option<stellar::StellarTransport<'static>>;
 type MaybeEthereum = Option<ethereum::EthereumTransport<'static>>;
+type MaybeZkSync = Option<zksync::ZkSyncTransport<'static>>;
 
 transport! {
     pub type LocalTransports = (
@@ -33,7 +34,8 @@ transport! {
         MaybeStarknet,
         MaybeIcp,
         MaybeStellar,
-        MaybeEthereum
+        MaybeEthereum,
+        MaybeZkSync
     );
 }
 
@@ -232,6 +234,7 @@ impl Client<AnyTransport> {
                 let mut config = ethereum::EthereumConfig {
                     networks: Default::default(),
                 };
+
                 for (network, signer) in &ethereum_config.signers {
                     let Credentials::Ethereum(credentials) = &signer.credentials else {
                         eyre::bail!(
@@ -240,16 +243,15 @@ impl Client<AnyTransport> {
                         )
                     };
 
-                    let access_key: PrivateKeySigner =
-                        PrivateKeySigner::from_str(&credentials.secret_key)
-                            .wrap_err("failed to convert secret key to PrivateKeySigner")?;
+                    let key = PrivateKeySigner::from_str(&credentials.secret_key)
+                        .wrap_err("invalid ethereum private key")?;
 
                     let _ignored = config.networks.insert(
                         network.clone().into(),
                         ethereum::NetworkConfig {
                             rpc_url: signer.rpc_url.clone(),
                             account_id: credentials.account_id.clone(),
-                            access_key,
+                            access_key: key,
                         },
                     );
                 }
@@ -258,12 +260,53 @@ impl Client<AnyTransport> {
             }
         }
 
+        let mut zksync_transport = None;
+
+        'skipped: {
+            if let Some(zksync_config) = config.signer.local.protocols.get("zksync") {
+                let Some(e) = config.params.get("zksync") else {
+                    eyre::bail!("missing config specification for `{}` signer", "zksync");
+                };
+
+                if !matches!(e.signer, ClientSelectedSigner::Local) {
+                    break 'skipped;
+                }
+
+                let mut config = zksync::ZkSyncConfig {
+                    networks: Default::default(),
+                };
+
+                for (network, signer) in &zksync_config.signers {
+                    let credentials = match &signer.credentials {
+                        Credentials::Zksync(creds) => creds,
+                        Credentials::Ethereum(creds) => creds,
+                        _ => eyre::bail!("expected Zksync or Ethereum credentials but got {:?}", signer.credentials)
+                    };
+
+                    let key = PrivateKeySigner::from_str(&credentials.secret_key)
+                        .wrap_err("invalid zksync private key")?;
+
+                    let _ignored = config.networks.insert(
+                        network.clone().into(),
+                        zksync::NetworkConfig {
+                            rpc_url: signer.rpc_url.clone(),
+                            account_id: credentials.account_id.clone(),
+                            access_key: key,
+                        },
+                    );
+                }
+
+                zksync_transport = Some(zksync::ZkSyncTransport::new(&config));
+            }
+        }
+
         let all_transports = transport!(
             near_transport,
             starknet_transport,
             icp_transport,
             stellar_transport,
-            ethereum_transport
+            ethereum_transport,
+            zksync_transport
         );
 
         Ok(Client::new(all_transports))

@@ -21,3 +21,5 @@ dist/
 lib/
 node_modules/
 output/*
+
+anvil-zksync.log

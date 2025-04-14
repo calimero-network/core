@@ -8,6 +8,7 @@ use crate::client::protocol::ethereum::Credentials as EthereumCredentials;
 use crate::client::protocol::icp::Credentials as IcpCredentials;
 use crate::client::protocol::near::Credentials as NearCredentials;
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
+use crate::client::protocol::zksync::Credentials as ZkSyncCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
@@ -72,6 +73,7 @@ pub enum Credentials {
     Starknet(StarknetCredentials),
     Icp(IcpCredentials),
     Ethereum(EthereumCredentials),
+    Zksync(ZkSyncCredentials),
     Raw(RawCredentials),
 }
 
