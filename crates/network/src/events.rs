@@ -12,6 +12,7 @@ use super::*;
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
 use crate::types::NetworkEvent;
 
+mod autonat;
 mod dcutr;
 mod gossipsub;
 mod identify;
@@ -36,6 +37,7 @@ impl EventLoop {
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match event {
             SwarmEvent::Behaviour(event) => match event {
+                BehaviourEvent::Autonat(event) => EventHandler::handle(self, event).await,
                 BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event).await,
                 BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event).await,
                 BehaviourEvent::Identify(event) => EventHandler::handle(self, event).await,

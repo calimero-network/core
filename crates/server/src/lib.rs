@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
-use axum::middleware::from_fn;
-use axum::{Extension, Router};
+use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context::ContextManager;
@@ -24,8 +23,6 @@ use tracing::warn;
 
 use crate::admin::service::{setup, site};
 use crate::certificates::get_certificate;
-use crate::middleware::dev_auth::dev_mode_auth;
-use crate::middleware::jwt::JwtLayer;
 
 pub mod certificates;
 
@@ -122,18 +119,10 @@ pub async fn start(
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
-            app = app
-                .route(path, handler.clone())
-                .route_layer(JwtLayer::new(store.clone()))
-                .nest(
-                    "/jsonrpc/dev",
-                    Router::new()
-                        .route("/", handler)
-                        .route_layer(from_fn(dev_mode_auth))
-                        .layer(Extension(Arc::clone(&shared_state))),
-                );
-
+        if let Some((path, router)) =
+            jsonrpc::service(&config, server_sender.clone(), store.clone())
+        {
+            app = app.nest(path, router);
             serviced = true;
         }
     }

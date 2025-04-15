@@ -12,7 +12,8 @@ on:
       - '.github/workflows/e2e_tests.yml'
 
 env:
-  CALIMERO_CONTRACTS_VERSION: '0.4.0' # Or you can use 'prerelease-{PR-NUMBER}'
+  # Or you can use 'prerelease-{PR-NUMBER}'
+  CALIMERO_CONTRACTS_VERSION: 'latest'
 
 jobs:
   build:
@@ -24,6 +25,9 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
 
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -53,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        protocol: [near, icp, stellar]
+        protocol: [near, icp, stellar, ethereum]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -68,41 +72,6 @@ jobs:
         run: |
           chmod +x target/debug/e2e-tests target/debug/merod target/debug/meroctl
 
-      - name: Generate ports
-        id: generate_ports
-        run: |
-          # Generate unique random numbers
-          random_numbers=()
-          while [ ${#random_numbers[@]} -lt 3 ]; do
-            num=$((RANDOM%37001 + 3000))
-            if [[ ! " ${random_numbers[@]} " =~ " ${num} " ]]; then
-              random_numbers+=($num)
-            fi
-          done
-
-          echo "Random numbers: ${random_numbers[@]}"
-
-          SWARM_PORT="${random_numbers[0]}"
-          SERVER_PORT="${random_numbers[1]}"
-          ICP_PORT="${random_numbers[2]}"
-          SWARM_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
-
-          echo "SWARM_PORT=$SWARM_PORT" >> $GITHUB_OUTPUT
-          echo "SERVER_PORT=$SERVER_PORT" >> $GITHUB_OUTPUT
-          echo "ICP_PORT=$ICP_PORT" >> $GITHUB_OUTPUT
-          echo "SWARM_HOST=$SWARM_HOST" >> $GITHUB_OUTPUT
-
-          # Update config.json
-          jq --arg swarmPort "$SWARM_PORT" \
-            --arg serverPort "$SERVER_PORT" \
-            --arg swarmHost "$SWARM_HOST" \
-            '.network.swarmHost = ($swarmHost) |
-            .network.startSwarmPort = ($swarmPort | tonumber) |
-            .network.startServerPort = ($serverPort | tonumber)' \
-            e2e-tests/config/config.json > updated_config.json
-
-          mv updated_config.json e2e-tests/config/config.json
-
       - name: Download Contracts
         run: |
           echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
@@ -111,11 +80,14 @@ jobs:
       - name: Install dfx
         if: matrix.protocol == 'icp'
         uses: dfinity/setup-dfx@main
+      - name: Verify dfx installation
+        if: matrix.protocol == 'icp'
+        run: dfx --version
 
       - name: Deploy ICP Devnet
         if: matrix.protocol == 'icp'
         env:
-          ICP_PORT: ${{ steps.generate_ports.outputs.ICP_PORT }}
+          ICP_PORT: 4943
         run: |
           echo "ICP_PORT=$ICP_PORT"
           ./scripts/icp/deploy-devnet.sh
@@ -127,7 +99,7 @@ jobs:
       - name: Deploy Stellar Devnet
         if: matrix.protocol == 'stellar'
         env:
-          ICP_PORT: ${{ steps.generate_ports.outputs.ICP_PORT }}
+          ICP_PORT: 4943
         run: |
           echo "Installing stellar CLI..."
 
@@ -172,6 +144,20 @@ jobs:
              .protocolSandboxes[2].config.secretKey = $secretKey' \
             e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
+      - name: Install Foundry
+        if: matrix.protocol == 'ethereum'
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Verify Foundry installation
+        if: matrix.protocol == 'ethereum'
+        run: forge --version
+
+      - name: Deploy Ethereum Devnet
+        if: matrix.protocol == 'ethereum'
+        run: |
+          ./scripts/ethereum/deploy-devnet.sh
+
       - name: Run e2e Tests
         id: e2e-tests
         env:
@@ -185,7 +171,7 @@ jobs:
             --output-dir ./e2e-tests/corpus \
             --merod-binary ./target/debug/merod \
             --meroctl-binary ./target/debug/meroctl \
-            --protocols ${{ matrix.protocol }}
+            --scenarios ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
         uses: actions/upload-artifact@v4
@@ -207,6 +193,10 @@ jobs:
           name: e2e-test-report-${{ matrix.protocol }}
           path: e2e-tests/corpus/report.json
           retention-days: 1
+
+      - name: Verify Stellar CLI installation
+        if: matrix.protocol == 'stellar'
+        run: stellar --version
 
   comment:
     name: Comment on PR
@@ -234,20 +224,26 @@ jobs:
       - name: Combine reports
         run: |
           mkdir -p reports
+          
+          # List all found reports for debugging
+          echo "Found report files:"
+          find reports/ -type f -name "report.json" -ls
 
-          protocols=$(
-            find reports/ -type f -name "report.json" -ls \
-              | tee /dev/stderr \
-              | awk '{print $NF}' \
-              | xargs dirname \
-              | sort -u
-          )
+          # Create a single array of all protocol directories
+          mapfile -t protocols < <(find reports/ -type f -name "report.json" | sort | xargs dirname)
 
-          ./target/debug/e2e-tests combine ${protocols[@]} --output-dir reports
+          if [ ${#protocols[@]} -eq 0 ]; then
+            echo "No report files found!"
+            exit 1
+          fi
 
-          # Debug: Show final report content
-          echo "Combined report content:" >> /dev/stderr
-          cat reports/report.md >> /dev/stderr
+          echo "Found protocols: ${protocols[*]}"
+          
+          # Combine all reports into a single markdown file
+          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
+
+          echo "Combined report content:"
+          cat reports/report.md
 
       - name: Get PR number
         id: pr_number

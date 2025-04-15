@@ -24,6 +24,7 @@ get_account_id() {
 CONTRACTS_DIR=${1:-contracts/icp}
 CONTEXT_CONFIG_CONTRACT="calimero_context_config_icp"
 CONTEXT_PROXY_CONTRACT="calimero_context_proxy_icp"
+MOCK_EXTERNAL_CONTRACT="calimero_mock_external_icp"
 
 if ! command -v dfx &> /dev/null; then
     echo "dfx is required but not installed. Please install dfx: https://internetcomputer.org/docs/current/developer-docs/setup/install/" >&2
@@ -62,6 +63,11 @@ cat <<EOL >dfx.json
       "type": "custom",
       "candid": "https://raw.githubusercontent.com/dfinity/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/rs/ledger_suite/icp/ledger.did",
       "wasm": "https://download.dfinity.systems/ic/aba60ffbc46acfc8990bf4d5685c1360bd7026b9/canisters/ledger-canister.wasm.gz"
+    },
+    "mock_external_contract": {
+      "type": "custom",
+      "wasm": "$MOCK_EXTERNAL_CONTRACT.wasm",
+      "candid": "$MOCK_EXTERNAL_CONTRACT.did"
     }
   },
   "defaults": {
@@ -124,11 +130,12 @@ dfx identity new --storage-mode=plaintext minting || true
 echo "Creating and deploying canister..."
 dfx canister create context_contract
 dfx canister create ledger
-
+dfx canister create mock_external_contract
 # Get the context ID
 CONTEXT_ID=$(dfx canister id context_contract)
 # Get the wallet ID and seed it
 WALLET_ID=$(dfx identity get-wallet)
+MOCK_EXTERNAL_ID=$(dfx canister id mock_external_contract)
 
 # abricate cycles for the wallet
 dfx ledger fabricate-cycles --canister $WALLET_ID --amount 2000000
@@ -185,6 +192,9 @@ dfx canister call context_contract set_proxy_code --argument-file <(
   )"
 )
 
+# Install mock external contract
+dfx canister install mock_external_contract --mode=install --argument "(principal \"${LEDGER_ID}\")"
+
 # Print all relevant information at the end
 echo -e "\n=== Deployment Summary ==="
 echo "Context Contract ID: ${CONTEXT_ID}"
@@ -194,4 +204,5 @@ echo "Minting Account: ${MINTING_ACCOUNT}"
 echo "Initial Account: ${INITIAL_ACCOUNT}"
 echo "Archive Principal: ${ARCHIVE_PRINCIPAL}"
 echo "Recipient Principal: ${RECIPIENT_PRINCIPAL}"
+echo "Mock External Contract ID: ${MOCK_EXTERNAL_ID}"
 echo -e "\nDeployment completed successfully!"
