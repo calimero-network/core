@@ -4,6 +4,7 @@
     reason = "TODO: Check if this is necessary"
 )]
 
+pub mod admin_dashboard;
 mod applications;
 pub mod call;
 pub mod common;
@@ -12,7 +13,6 @@ pub mod identity;
 pub mod peers;
 pub mod state;
 pub mod store;
-pub mod admin_dashboard;
 
 use clap::{Parser, Subcommand};
 
@@ -24,8 +24,6 @@ use crate::Node;
 pub struct RootCommand {
     #[command(subcommand)]
     pub action: SubCommand,
-    #[command(name = "admin-dashboard")]
-    AdminDashboard(admin_dashboard::AdminDashboardCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -39,7 +37,8 @@ pub enum SubCommand {
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
-
+    #[command(name = "admin-dashboard")]
+    AdminDashboard(admin_dashboard::AdminDashboardCommand),
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {

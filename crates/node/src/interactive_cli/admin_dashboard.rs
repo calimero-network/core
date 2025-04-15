@@ -11,8 +11,7 @@ pub struct AdminDashboardCommand {
 impl AdminDashboardCommand {
     pub fn run(&self) -> Result<()> {
         let url = format!("http://localhost:{}/admin-dashboard", self.port);
-        webbrowser::open(&url)
-            .map_err(|e| eyre::eyre!("Failed to open browser: {}", e))?;
+        webbrowser::open(&url).map_err(|e| eyre::eyre!("Failed to open browser: {}", e))?;
         println!("Opened admin dashboard at {}", url);
         Ok(())
     }
