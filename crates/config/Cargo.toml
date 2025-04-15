@@ -16,6 +16,7 @@ libp2p-identity = { workspace = true, features = ["peerid", "serde"] }
 multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
+webbrowser = "0.8"
 
 calimero-context.workspace = true
 calimero-server = { workspace = true, features = ["admin", "jsonrpc", "websocket"] }
