@@ -18,7 +18,7 @@ use crate::output::Report;
 pub struct InviteCommand {
     #[arg(
         value_name = "CONTEXT",
-        help = "The context for which invitation is created (omit to use default context)",
+        help = "The context for which invitation is created",
         default_value = "default"
     )]
     pub context: Alias<ContextId>,

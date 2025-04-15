@@ -20,7 +20,7 @@ pub struct CallCommand {
     #[clap(long, value_parser = serde_value)]
     args: Option<Value>,
     /// The identity of the executor
-    #[clap(long = "as")]
+    #[clap(long = "as", default_value = "default")]
     executor: Alias<PublicKey>,
 }
 
