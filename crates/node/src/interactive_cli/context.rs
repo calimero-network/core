@@ -4,6 +4,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
+use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
 use owo_colors::OwoColorize;
@@ -107,6 +108,27 @@ enum Commands {
         context: Alias<ContextId>,
         #[clap(long = "as")]
         /// The identity requesting the update
+        identity: Alias<PublicKey>,
+    },
+    Update {
+        /// The context to update
+        #[clap(long, short)]
+        context: Alias<ContextId>,
+
+        /// The application ID to update in the context
+        #[clap(long, short = 'a', conflicts_with = "path")]
+        application_id: Option<ApplicationId>,
+
+        /// Path to the application file to install locally
+        #[clap(long, conflicts_with = "application_id")]
+        path: Option<Utf8PathBuf>,
+
+        /// Metadata needed for the application installation
+        #[clap(long, conflicts_with = "application_id")]
+        metadata: Option<String>,
+
+        /// The identity requesting the update
+        #[clap(long = "as")]
         identity: Alias<PublicKey>,
     },
     /// Manage context aliases
@@ -399,6 +421,60 @@ impl ContextCommand {
                     "{ind} Updated proxy for context '{}'",
                     pretty_alias(Some(context), &context_id)
                 );
+            }
+            Commands::Update {
+                context,
+                application_id,
+                path,
+                metadata,
+                identity,
+            } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+                let public_key = node
+                    .ctx_manager
+                    .resolve_alias(identity, Some(context_id))?
+                    .ok_or_eyre("unable to resolve identity")?;
+
+                match (application_id, path) {
+                    // Update with application ID
+                    (Some(app_id), None) => {
+                        node.ctx_manager
+                            .update_application_id(context_id, app_id, public_key)
+                            .await?;
+                        println!(
+                            "{ind} Updated application for context '{}'",
+                            pretty_alias(Some(context), &context_id)
+                        );
+                    }
+
+                    // Install application from path
+                    (None, Some(app_path)) => {
+                        let metadata_bytes = metadata.map(String::into_bytes).unwrap_or_default();
+
+                        let application_id = node
+                            .ctx_manager
+                            .install_application_from_path(app_path, metadata_bytes)
+                            .await?;
+
+                        node.ctx_manager
+                            .update_application_id(context_id, application_id, public_key)
+                            .await?;
+
+                        println!(
+                            "{ind} Installed and updated application for context '{}'",
+                            pretty_alias(Some(context), &context_id)
+                        );
+                    }
+
+                    _ => {
+                        return Err(eyre::eyre!(
+                            "Either application_id or path must be provided"
+                        ));
+                    }
+                }
             }
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
         }
