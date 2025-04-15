@@ -63,7 +63,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Identity(identity) => identity.run(node)?,
         SubCommand::Peers(peers) => peers.run(node).await?,
         SubCommand::State(state) => state.run(node)?,
-        SubCommand::AdminDashboard(cmd) => cmd.run(node)?,
+        SubCommand::AdminDashboard(cmd) => cmd.run()?,
         // SubCommand::Store(store) => store.run(node)?,
     }
 
