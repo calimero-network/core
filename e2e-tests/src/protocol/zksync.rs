@@ -3,7 +3,7 @@ use core::time::Duration;
 use std::net::TcpStream;
 use serde::{Deserialize, Serialize};
 use url::Url;
-use zksync_web3_rs::types::{H160, U256, U64, NameOrAddress, TransactionRequest, BlockId, H256, BlockNumber};
+use zksync_web3_rs::types::{H160, U256, U64, NameOrAddress, TransactionRequest, BlockId, H256, BlockNumber, Bytes};
 use zksync_web3_rs::types::transaction::eip2718::TypedTransaction;
 use zksync_web3_rs::providers::Middleware;
 use zksync_web3_rs::utils;
@@ -90,65 +90,27 @@ impl ZkSyncSandboxEnvironment {
         method_name: &str,
         args: &Vec<String>,
     ) -> EyreResult<Option<String>> {
-        // Create web3 provider
+        // Set up RPC connection
         let provider = zksync_web3_rs::providers::Provider::try_from(&self.config.rpc_url)?;
-        
-        // Parse contract address
         let contract_address = contract_id.parse::<H160>()?;
-        let from_address = self.config.account_id.parse::<H160>()?;
 
-        // Create the function call data
+        // Prepare method call data
         let method_selector = &utils::keccak256(method_name.as_bytes())[..4];
-        
-        // Encode the arguments
-        let mut encoded_args = Vec::new();
-        for arg in args {
-            // Encode each string argument
-            let encoded = encode(&[Token::String(arg.clone())]);
-            encoded_args.extend(encoded);
-        }
-        
-        // Combine selector and encoded arguments
+        let encoded_args = match args.len() {
+            1 => encode(&[Token::String(args[0].clone())]),
+            _ => bail!("Unsupported number of arguments: {}", args.len()),
+        };
         let call_data = [method_selector, &encoded_args].concat();
 
-        // Create the transaction request
-        let tx_request = TransactionRequest {
-            from: Some(from_address),
-            to: Some(NameOrAddress::Address(contract_address)),
-            gas: Some(U256::from(3000000)),
-            gas_price: Some(U256::from(1000000000)),
-            value: Some(U256::zero()),
-            data: Some(call_data.into()),
-            nonce: None,
-            chain_id: None,
-        };
+        // Prepare and execute the call
+        let request = TransactionRequest::default()
+            .to(contract_address)
+            .data(Bytes::from(call_data));
+        let typed_tx: TypedTransaction = request.into();
+        let result = provider.call(&typed_tx, Some(BlockId::Number(BlockNumber::Number(U64::from(0))))).await?;
 
-        // Convert to TypedTransaction
-        let typed_tx: TypedTransaction = tx_request.into();
-
-        // For read operations, just call
-        if method_name.starts_with("get") || method_name.starts_with("is") {
-            let result = provider.call(&typed_tx, Some(BlockId::Number(BlockNumber::Number(U64::from(0))))).await?;
-            let decoded = decode(&[ParamType::String], &result.0)?;
-            Ok(Some(decoded[0].to_string()))
-        } else {
-            // For write operations, send transaction and wait for receipt
-            let pending_tx = provider.send_transaction(typed_tx.clone(), None).await?;
-            let tx_hash = pending_tx.tx_hash();
-            
-            let receipt = provider
-                .get_transaction_receipt(tx_hash)
-                .await?
-                .ok_or_else(|| eyre::eyre!("Transaction receipt not found"))?;
-
-            if receipt.status != Some(U64::from(1)) {
-                bail!("Transaction failed");
-            }
-
-            // Get the return data from the transaction
-            let result = provider.call(&typed_tx, Some(BlockId::Number(BlockNumber::Number(U64::from(0))))).await?;
-            let decoded = decode(&[ParamType::String], &result.0)?;
-            Ok(Some(decoded[0].to_string()))
-        }
+        // Decode and return the result
+        let decoded = decode(&[ParamType::String], &result.0)?;
+        Ok(Some(decoded[0].to_string()))
     }
 }
