@@ -12,6 +12,7 @@ pub mod identity;
 pub mod peers;
 pub mod state;
 pub mod store;
+pub mod admin_dashboard;
 
 use clap::{Parser, Subcommand};
 
@@ -23,6 +24,8 @@ use crate::Node;
 pub struct RootCommand {
     #[command(subcommand)]
     pub action: SubCommand,
+    #[command(name = "admin-dashboard")]
+    AdminDashboard(admin_dashboard::AdminDashboardCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -36,6 +39,7 @@ pub enum SubCommand {
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
+
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
@@ -60,6 +64,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Identity(identity) => identity.run(node)?,
         SubCommand::Peers(peers) => peers.run(node).await?,
         SubCommand::State(state) => state.run(node)?,
+        SubCommand::AdminDashboard(cmd) => cmd.run(node)?,
         // SubCommand::Store(store) => store.run(node)?,
     }
 
