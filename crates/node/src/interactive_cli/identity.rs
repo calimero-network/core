@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::ContextIdentity as ContextIdentityKey;
 use clap::{Parser, Subcommand};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use owo_colors::OwoColorize;
 
 use crate::Node;
@@ -21,6 +21,7 @@ enum IdentitySubcommands {
     #[clap(alias = "ls")]
     List {
         /// The context whose identities we're listing
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
     /// Create a new identity
@@ -29,6 +30,14 @@ enum IdentitySubcommands {
     Alias {
         #[command(subcommand)]
         command: AliasSubcommands,
+    },
+    /// Set default identity for a context
+    Use {
+        /// The identity to set as default
+        identity: Alias<PublicKey>,
+        /// The context to set the default identity for
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
 }
 
@@ -44,10 +53,9 @@ enum AliasSubcommands {
         /// The identity to create an alias for
         identity: PublicKey,
         /// The context that the identity is a member of
-        #[arg(long, short)]
+        #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
-    /// Remove an alias
     #[command(about = "Remove an identity alias from a context", aliases = ["rm", "del", "delete"])]
     Remove {
         /// Name of the alias to remove
@@ -77,7 +85,7 @@ impl IdentityCommand {
 
         match self.subcommand {
             IdentitySubcommands::List { context } => {
-                list_identities(node, context, &ind.to_string())?;
+                list_identities(node, Some(context), &ind.to_string())?;
             }
             IdentitySubcommands::New => {
                 create_new_identity(node, &ind.to_string());
@@ -85,17 +93,52 @@ impl IdentityCommand {
             IdentitySubcommands::Alias { command } => {
                 handle_alias_command(node, command, &ind.to_string())?;
             }
+            IdentitySubcommands::Use { identity, context } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                let identity_id = node
+                    .ctx_manager
+                    .lookup_alias(identity, Some(context_id))?
+                    .ok_or_eyre("unable to resolve identity")?;
+
+                let default_alias: Alias<PublicKey> = "default"
+                    .parse()
+                    .wrap_err("'default' is a valid alias name")?;
+
+                node.ctx_manager
+                    .create_alias(default_alias, Some(context_id), identity_id)?;
+
+                println!(
+                    "{} Default identity set to: {} for context {}",
+                    ind,
+                    identity.cyan(),
+                    context_id.cyan()
+                );
+            }
         }
 
         Ok(())
     }
 }
 
-fn list_identities(node: &Node, context: Alias<ContextId>, ind: &str) -> EyreResult<()> {
-    let context_id = node
-        .ctx_manager
-        .resolve_alias(context, None)?
-        .ok_or_eyre("unable to resolve")?;
+fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) -> EyreResult<()> {
+    let context_id = if let Some(ctx) = context {
+        // User specified a context - resolve it
+        node.ctx_manager
+            .resolve_alias(ctx, None)?
+            .ok_or_eyre("unable to resolve context")?
+    } else {
+        // No context specified fall back to default
+        let default_alias: Alias<ContextId> =
+            "default".parse().expect("'default' is a valid alias name");
+
+        node.ctx_manager
+            .lookup_alias(default_alias, None)?
+            .ok_or_eyre("unable to resolve default context")?
+    };
 
     let handle = node.store.handle();
     let mut iter = handle.iter::<ContextIdentityKey>()?;
@@ -204,14 +247,22 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                 c2 = "Identity",
                 c3 = "Alias",
             );
+            let context_id = if let Some(ctx) = context {
+                node.ctx_manager
+                    .resolve_alias(ctx, None)?
+                    .ok_or_eyre("unable to resolve context")?
+            } else {
+                let default_alias: Alias<ContextId> =
+                    "default".parse().expect("'default' is a valid alias name");
 
-            let context_id = context
-                .map(|context| node.ctx_manager.resolve_alias(context, None))
-                .transpose()?
-                .flatten();
+                node.ctx_manager
+                    .lookup_alias(default_alias, None)?
+                    .ok_or_eyre("unable to resolve default context")?
+            };
 
-            for (alias, identity, scope) in
-                node.ctx_manager.list_aliases::<PublicKey>(context_id)?
+            for (alias, identity, scope) in node
+                .ctx_manager
+                .list_aliases::<PublicKey>(Some(context_id))?
             {
                 let context = scope.as_ref().map_or("---", |s| s.as_str());
 

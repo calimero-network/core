@@ -12,6 +12,7 @@ use crate::Node;
 #[derive(Debug, Parser)]
 pub struct CallCommand {
     /// The context to call the method on
+    #[clap(default_value = "default")]
     context: Alias<ContextId>,
     /// The method to call
     method: String,
@@ -19,7 +20,7 @@ pub struct CallCommand {
     #[clap(long, value_parser = serde_value)]
     args: Option<Value>,
     /// The identity of the executor
-    #[clap(long = "as")]
+    #[clap(long = "as", default_value = "default")]
     executor: Alias<PublicKey>,
 }
 
