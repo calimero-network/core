@@ -76,7 +76,7 @@ pub struct CreateCommand {
 
 impl Report for CreateContextResponse {
     fn report(&self) {
-        println!("id: {}", self.data.context_id);
+        println!("context_id: {}", self.data.context_id);
         println!("member_public_key: {}", self.data.member_public_key);
     }
 }
