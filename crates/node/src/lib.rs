@@ -102,7 +102,7 @@ pub struct Node {
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
-    pub server_config: ServerConfig,
+    server_config: ServerConfig,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -131,7 +131,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     #[expect(trivial_casts, reason = "Necessary here")]
     let mut server = Box::pin(calimero_server::start(
-        server_config,
+        config.server.clone(),
         server_sender,
         ctx_manager.clone(),
         node_events.clone(),

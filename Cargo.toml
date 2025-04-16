@@ -141,10 +141,11 @@ url = "2.5.2"
 velcro = "0.5.4"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
+webbrowser = "1.0.4" 
 web3 = "0.19.0"
 rcgen = "0.13.1"
 x509-parser = "0.16.0"
-webbrowser = "1.0.4" 
+
 
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
