@@ -364,10 +364,12 @@
     "componentErrorText": "useWalletSelector must be used within a WalletSelectorContextProvider"
   },
   "appLoginPopup": {
+    "applicationError": "Application with given ID is not installed, please install the application or verify the application ID.",
     "createTokenError": "Error creating token, please try again",
     "selectContext": {
       "title": "Application Sign-in Request",
       "detailsText": "Details",
+      "backButton": "Back to application",
       "websiteText": "From site: ",
       "appIdText": "Application Id: ",
       "contextsTitle": "Select Context",
