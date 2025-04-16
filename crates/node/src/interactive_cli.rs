@@ -37,7 +37,7 @@ pub enum SubCommand {
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
-    #[command(name = "lower")]
+    #[command(name = "webui")]
     WebUI(webui::WebUICommand),
 }
 

@@ -1,8 +1,6 @@
-use calimero_network::config::DEFAULT_PORT;
+use calimero_primitives::common::multiaddr_to_url;
 use clap::Args;
-use eyre::Result;
-use libp2p::multiaddr::Protocol;
-use primitives::common::multiaddr_to_url;
+use eyre::{eyre, Context, Result};
 use webbrowser;
 
 use crate::Node;
@@ -15,20 +13,14 @@ impl WebUICommand {
         let addr = node
             .server_config
             .listen
-            .get(0)
+            .first()
             .ok_or_else(|| eyre!("No listen address found"))?;
-        let url: Url = multiaddr_to_url(addr, "/admin-dashboard").unwrap_or_else(|_| {
-            Url::parse(&format!(
-                "http://localhost:{}/admin-dashboard",
-                DEFAULT_PORT
-            ))
-            .unwrap()
-        });
+        let url = multiaddr_to_url(addr, "/admin-dashboard")
+            .wrap_err("Failed to convert multiaddr to URL")?;
 
-        webbrowser::open(url.as_str()).map_err(|e| eyre!("Failed to open browser: {}", e))?;
+        webbrowser::open(url.as_str()).wrap_err("Failed to open browser")?;
 
         println!("Opened admin-dashboard at {}", url);
-
         Ok(())
     }
 }

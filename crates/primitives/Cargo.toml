@@ -11,7 +11,7 @@ bs58.workspace = true
 borsh = { workspace = true, features = ["derive"], optional = true }
 ed25519-dalek.workspace = true
 eyre.workspace = true
-libp2p.workspace = true
+multiaddr.workspace=true
 rand = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -24,3 +24,4 @@ hex.workspace = true
 
 [lints]
 workspace = true
+

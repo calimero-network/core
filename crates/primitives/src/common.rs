@@ -1,5 +1,5 @@
 use eyre::{eyre, Result as EyreResult};
-use libp2p::multiaddr::{Multiaddr, Protocol};
+use multiaddr::{Multiaddr, Protocol};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -26,6 +26,7 @@ impl<T, E> From<ResultAlt<T, E>> for Result<T, E> {
         }
     }
 }
+
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
     let (ip, port, scheme) = multiaddr.iter().fold(
