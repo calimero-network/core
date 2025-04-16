@@ -12,6 +12,7 @@ pub mod identity;
 pub mod peers;
 pub mod state;
 pub mod store;
+pub mod webui;
 
 use clap::{Parser, Subcommand};
 
@@ -36,6 +37,8 @@ pub enum SubCommand {
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
+    #[command(name = "webui")]
+    WebUI(webui::WebUICommand),
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
@@ -60,6 +63,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Identity(identity) => identity.run(node)?,
         SubCommand::Peers(peers) => peers.run(node).await?,
         SubCommand::State(state) => state.run(node)?,
+        SubCommand::WebUI(cmd) => cmd.run(node)?,
         // SubCommand::Store(store) => store.run(node)?,
     }
 
