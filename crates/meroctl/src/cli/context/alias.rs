@@ -91,8 +91,9 @@ impl UseCommand {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let multiaddr = fetch_multiaddr(&config)?;
 
-        let default_alias: Alias<ContextId> =
-            "default".parse().expect("'default' is a valid alias name");
+        let default_alias: Alias<ContextId> = "default"
+            .parse()
+            .wrap_err("Failed to parse 'default' as a valid alias name")?;
 
         let resolve_response = resolve_alias(multiaddr, &config.identity, self.context, None)
             .await
