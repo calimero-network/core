@@ -56,9 +56,9 @@ enum AliasSubcommands {
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
-    /// Remove an alias
     #[command(about = "Remove an identity alias from a context", aliases = ["rm", "del", "delete"])]
     Remove {
+        /// Name of the alias to remove
         identity: Alias<PublicKey>,
         /// The context that the identity is a member of
         #[arg(long, short)]

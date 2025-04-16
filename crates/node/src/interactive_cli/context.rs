@@ -118,7 +118,9 @@ enum Commands {
         #[command(subcommand)]
         command: AliasCommands,
     },
+    /// Set a context as the default context
     Use {
+        /// The context to set as default
         context: Alias<ContextId>,
     },
 }
