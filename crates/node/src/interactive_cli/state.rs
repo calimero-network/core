@@ -12,19 +12,15 @@ use crate::Node;
 #[derive(Copy, Clone, Debug, Parser)]
 pub struct StateCommand {
     /// The context to view the state for
-    context: Option<Alias<ContextId>>,
+    #[arg(long, short, default_value = "default")]
+    context: Alias<ContextId>,
 }
 
 impl StateCommand {
     pub fn run(self, node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
 
-        let context_id = self
-            .context
-            .map(|context| node.ctx_manager.resolve_alias(context, None))
-            .transpose()?
-            .ok_or_eyre("unable to resolve")?;
-
+        let context_id = node.ctx_manager.resolve_alias(self.context, None)?;
         let handle = node.store.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 
