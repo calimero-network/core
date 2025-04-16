@@ -42,7 +42,7 @@ pub enum AppSubCommands {
 
 impl Report for Application {
     fn report(&self) {
-        println!("id: {}", self.id);
+        println!("application_id: {}", self.id);
         println!("size: {}", self.size);
         println!("blobId: {}", self.blob);
         println!("source: {}", self.source);
