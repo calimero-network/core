@@ -459,6 +459,8 @@ impl ContextCommand {
                             .install_application_from_path(app_path, metadata_bytes)
                             .await?;
 
+                        println!("{ind} Installed application: {}", application_id);
+
                         node.ctx_manager
                             .update_application_id(context_id, application_id, public_key)
                             .await?;
