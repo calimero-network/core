@@ -131,7 +131,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     #[expect(trivial_casts, reason = "Necessary here")]
     let mut server = Box::pin(calimero_server::start(
-        config.server,
+        server_config,
         server_sender,
         ctx_manager.clone(),
         node_events.clone(),
