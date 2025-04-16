@@ -4,7 +4,6 @@
     reason = "TODO: Check if this is necessary"
 )]
 
-pub mod admin_dashboard;
 mod applications;
 pub mod call;
 pub mod common;
@@ -13,6 +12,7 @@ pub mod identity;
 pub mod peers;
 pub mod state;
 pub mod store;
+pub mod webui;
 
 use clap::{Parser, Subcommand};
 
@@ -37,8 +37,8 @@ pub enum SubCommand {
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
-    #[command(name = "admin-dashboard")]
-    AdminDashboard(admin_dashboard::AdminDashboardCommand),
+    #[command(rename = "lower")]
+    WebUI(webui::WebUICommand),
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
@@ -63,7 +63,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Identity(identity) => identity.run(node)?,
         SubCommand::Peers(peers) => peers.run(node).await?,
         SubCommand::State(state) => state.run(node)?,
-        SubCommand::AdminDashboard(cmd) => cmd.run()?,
+        SubCommand::WebUI(cmd) => cmd.run(node)?,
         // SubCommand::Store(store) => store.run(node)?,
     }
 
