@@ -70,7 +70,7 @@ pub enum ContextSubCommands {
 
 impl Report for Context {
     fn report(&self) {
-        println!("id: {}", self.id);
+        println!("context_id: {}", self.id);
         println!("application_id: {}", self.application_id);
         println!("root_hash: {}", self.root_hash);
     }
