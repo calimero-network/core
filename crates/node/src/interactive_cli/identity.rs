@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::ContextIdentity as ContextIdentityKey;
 use clap::{Parser, Subcommand};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use owo_colors::OwoColorize;
 
 use crate::Node;
@@ -105,7 +105,7 @@ impl IdentityCommand {
                     .ok_or_eyre("unable to resolve identity")?;
 
                 let default_alias: Alias<PublicKey> =
-                    "default".parse().expect("'default' is a valid alias name");
+                    "default".parse().wrap_err("'default' is a valid alias name")?;
 
                 node.ctx_manager
                     .create_alias(default_alias, Some(context_id), identity_id)?;
