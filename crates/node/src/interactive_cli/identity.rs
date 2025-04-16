@@ -104,8 +104,9 @@ impl IdentityCommand {
                     .lookup_alias(identity, Some(context_id))?
                     .ok_or_eyre("unable to resolve identity")?;
 
-                let default_alias: Alias<PublicKey> =
-                    "default".parse().wrap_err("'default' is a valid alias name")?;
+                let default_alias: Alias<PublicKey> = "default"
+                    .parse()
+                    .wrap_err("'default' is a valid alias name")?;
 
                 node.ctx_manager
                     .create_alias(default_alias, Some(context_id), identity_id)?;
