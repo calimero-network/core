@@ -2,7 +2,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::GetContextResponse;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
@@ -10,7 +10,7 @@ use reqwest::Client;
 use crate::cli::{ApiError, Environment};
 use crate::common::{
     create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
-    multiaddr_to_url, RequestType,
+    multiaddr_to_url, resolve_alias, RequestType,
 };
 use crate::output::ErrorLine;
 
@@ -73,6 +73,56 @@ impl ContextAliasCommand {
 
                 environment.output.write(&res);
             }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(about = "Set the default context")]
+pub struct UseCommand {
+    /// The context to set as default
+    pub context: Alias<ContextId>,
+}
+
+impl UseCommand {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let multiaddr = fetch_multiaddr(&config)?;
+
+        let default_alias: Alias<ContextId> = "default"
+            .parse()
+            .wrap_err("Failed to parse 'default' as a valid alias name")?;
+
+        let resolve_response = resolve_alias(multiaddr, &config.identity, self.context, None)
+            .await
+            .wrap_err("Failed to resolve context")?;
+
+        let resolved_context_id = resolve_response
+            .value()
+            .cloned()
+            .ok_or_eyre("Failed to resolve context: no value found")?;
+
+        let res = create_alias(
+            multiaddr,
+            &config.identity,
+            default_alias,
+            None,
+            resolved_context_id,
+        )
+        .await
+        .wrap_err("Failed to set default context")?;
+
+        environment.output.write(&res);
+
+        if self.context.as_str() == resolved_context_id.as_str() {
+            println!("Default context set to: {}", resolved_context_id);
+        } else {
+            println!(
+                "Default context set to: {} (from alias '{}')",
+                resolved_context_id, self.context
+            );
         }
 
         Ok(())

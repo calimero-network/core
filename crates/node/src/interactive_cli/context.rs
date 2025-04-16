@@ -69,6 +69,7 @@ enum Commands {
     /// Invite a user to a context
     Invite {
         /// The context to invite the user to
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         /// The identity inviting the other
         #[clap(long = "as")]
@@ -95,16 +96,19 @@ enum Commands {
     /// Leave a context
     Leave {
         /// The context to leave
+        #[clap(long, short)]
         context: Alias<ContextId>,
     },
     /// Delete a context
     Delete {
         /// The context to delete
+        #[clap(long, short)]
         context: Alias<ContextId>,
     },
     /// Update the proxy for a context
     UpdateProxy {
         /// The context to update the proxy for
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         #[clap(long = "as")]
         /// The identity requesting the update
@@ -135,6 +139,11 @@ enum Commands {
     Alias {
         #[command(subcommand)]
         command: AliasCommands,
+    },
+    /// Set a context as the default context
+    Use {
+        /// The context to set as default
+        context: Alias<ContextId>,
     },
 }
 
@@ -271,7 +280,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
+                    .ok_or_eyre("unable to resolve context")?;
                 if node.ctx_manager.delete_context(&context_id).await? {
                     println!(
                         "{ind} Successfully deleted context '{}'",
@@ -363,7 +372,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
+                    .ok_or_eyre("unable to resolve context")?;
                 let inviter_id = node
                     .ctx_manager
                     .resolve_alias(inviter, Some(context_id))?
@@ -396,8 +405,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
-
+                    .ok_or_eyre("unable to resolve context")?;
                 let _ = node.ctx_manager.delete_context(&context_id).await?;
                 println!(
                     "{ind} Deleted context '{}'",
@@ -408,7 +416,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
+                    .ok_or_eyre("unable to resolve context")?;
                 let public_key = node
                     .ctx_manager
                     .resolve_alias(identity, Some(context_id))?
@@ -479,6 +487,27 @@ impl ContextCommand {
                 }
             }
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
+            Commands::Use { context } => {
+                let default_alias: Alias<ContextId> =
+                    "default".parse().expect("'default' is a valid alias name");
+
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                node.ctx_manager
+                    .create_alias(default_alias, None, context_id)?;
+
+                if context.as_str() != context_id.as_str() {
+                    println!(
+                        "{} Default context set to: {} (from alias '{}')",
+                        ind, context_id, context
+                    );
+                } else {
+                    println!("{} Default context set to: {}", ind, context_id);
+                }
+            }
         }
         Ok(())
     }
