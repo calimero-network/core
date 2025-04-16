@@ -1,6 +1,7 @@
+use calimero_network::config::DEFAULT_PORT;
 use clap::Args;
 use eyre::Result;
-use multiaddr::Protocol;
+use libp2p::multiaddr::Protocol;
 use webbrowser;
 
 use crate::Node;

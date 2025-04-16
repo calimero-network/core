@@ -102,6 +102,7 @@ pub struct Node {
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
+    pub server_config: ServerConfig,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -157,7 +158,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         config.sync.interval,
     );
 
-    let mut node = Node::new(config.sync, network_client, node_events, ctx_manager, store);
+    let mut node = Node::new(
+        config.sync,
+        network_client,
+        node_events,
+        ctx_manager,
+        store,
+        config.server,
+    );
 
     #[expect(clippy::redundant_pub_crate, reason = "Tokio code")]
     loop {
@@ -196,6 +204,7 @@ impl Node {
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
+        server_config: ServerConfig,
     ) -> Self {
         Self {
             sync_config,
@@ -203,6 +212,7 @@ impl Node {
             ctx_manager,
             network_client,
             node_events,
+            server_config,
         }
     }
 
