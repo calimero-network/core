@@ -158,6 +158,7 @@ impl ContextManager {
         initialization_params: Vec<u8>,
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
     ) -> EyreResult<()> {
+        let protocol_clone = protocol.to_owned();
         let Some(config) = self.client_config.params.get(protocol).cloned() else {
             eyre::bail!(
                 "unsupported protocol: {}, expected one of `{}`",
@@ -200,7 +201,7 @@ impl ContextManager {
             &context,
             identity_secret,
             Some(ContextConfigParams {
-                protocol: config.protocol.as_str().into(),
+                protocol: protocol.into(),
                 network_id: config.network.as_str().into(),
                 contract_id: config.contract_id.as_str().into(),
                 proxy_contract: "".into(),
@@ -232,7 +233,7 @@ impl ContextManager {
 
             this.config_client
                 .mutate::<ContextConfigEnv>(
-                    config.protocol.as_str().into(),
+                    std::borrow::Cow::Borrowed(&protocol_clone),
                     config.network.as_str().into(),
                     config.contract_id.as_str().into(),
                 )
@@ -256,7 +257,7 @@ impl ContextManager {
             let proxy_contract = this
                 .config_client
                 .query::<ContextConfigEnv>(
-                    config.protocol.as_str().into(),
+                    std::borrow::Cow::Borrowed(&protocol_clone),
                     config.network.as_str().into(),
                     config.contract_id.as_str().into(),
                 )
@@ -482,7 +483,7 @@ impl ContextManager {
                 };
 
                 Ok(Some(ContextConfigParams {
-                    protocol: config.protocol.into_string().into(),
+                    protocol: config.protocol.into_string().into(), 
                     network_id: config.network.into_string().into(),
                     contract_id: config.contract.into_string().into(),
                     proxy_contract: config.proxy_contract.into_string().into(),
