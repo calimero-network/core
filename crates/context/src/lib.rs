@@ -212,7 +212,7 @@ impl ContextManager {
         let (tx, rx) = oneshot::channel();
 
         let this = self.clone();
-        let protocol = protocol.to_string();
+        let protocol = protocol.to_owned();
 
         let finalizer = async move {
             this.server_sender

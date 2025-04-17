@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 
 use crate::Node;

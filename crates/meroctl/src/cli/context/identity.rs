@@ -165,7 +165,7 @@ impl ContextIdentityAliasCommand {
                 }
 
                 let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
-                let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
+                let _context_id = res.value().ok_or_eyre("unable to resolve alias")?;
 
                 let context_id = resolve_response
                     .value()
