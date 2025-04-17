@@ -16,7 +16,9 @@ use crate::output::Report;
 #[derive(Debug, Parser)]
 #[command(about = "Create invitation to a context")]
 pub struct InviteCommand {
-    #[arg(
+    #[clap(
+        long = "context",
+        short = 'c',
         value_name = "CONTEXT",
         help = "The context for which invitation is created",
         default_value = "default"
