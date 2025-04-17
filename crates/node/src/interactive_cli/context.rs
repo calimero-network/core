@@ -116,7 +116,7 @@ enum Commands {
     },
     Update {
         /// The context to update
-        #[clap(long, short)]
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
 
         /// The application ID to update in the context
@@ -132,7 +132,7 @@ enum Commands {
         metadata: Option<String>,
 
         /// The identity requesting the update
-        #[clap(long = "as")]
+        #[clap(long = "as", default_value = "default")]
         identity: Alias<PublicKey>,
     },
     /// Manage context aliases
