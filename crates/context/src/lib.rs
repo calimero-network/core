@@ -151,14 +151,14 @@ impl ContextManager {
 
     pub fn create_context(
         &self,
-        protocol: &str,
+        protocol: String,
         seed: Option<[u8; 32]>,
         application_id: ApplicationId,
         identity_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
     ) -> EyreResult<()> {
-        let Some(config) = self.client_config.params.get(protocol).cloned() else {
+        let Some(config) = self.client_config.params.get(&protocol).cloned() else {
             eyre::bail!(
                 "unsupported protocol: {}, expected one of `{}`",
                 protocol,
@@ -200,7 +200,7 @@ impl ContextManager {
             &context,
             identity_secret,
             Some(ContextConfigParams {
-                protocol: protocol.into(),
+                protocol: protocol.as_str().into(),
                 network_id: config.network.as_str().into(),
                 contract_id: config.contract_id.as_str().into(),
                 proxy_contract: "".into(),
@@ -212,7 +212,6 @@ impl ContextManager {
         let (tx, rx) = oneshot::channel();
 
         let this = self.clone();
-        let protocol = protocol.to_owned();
 
         let finalizer = async move {
             this.server_sender
@@ -234,7 +233,7 @@ impl ContextManager {
 
             this.config_client
                 .mutate::<ContextConfigEnv>(
-                    protocol.clone().into(),
+                    protocol.as_str().into(),
                     config.network.as_str().into(),
                     config.contract_id.as_str().into(),
                 )
@@ -258,7 +257,7 @@ impl ContextManager {
             let proxy_contract = this
                 .config_client
                 .query::<ContextConfigEnv>(
-                    protocol.clone().into(),
+                    protocol.as_str().into(),
                     config.network.as_str().into(),
                     config.contract_id.as_str().into(),
                 )
