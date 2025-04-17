@@ -6,6 +6,7 @@ import {
   ContextIdentitiesResponse,
   CreateTokenResponse,
   GetContextsResponse,
+  GetInstalledApplicationsResponse,
 } from '../../../api/dataSource/NodeDataSource';
 import { ResponseData } from '../../../api/response';
 import SelectContextStep from './SelectContextStep';
@@ -23,6 +24,7 @@ interface AppLoginPopupProps {
   callbackUrl: string;
   applicationId: string;
   showServerDownPopup: () => void;
+  closePopup: () => void;
 }
 
 export const enum LoginStep {
@@ -37,7 +39,9 @@ export default function AppLoginPopup({
   callbackUrl,
   applicationId,
   showServerDownPopup,
+  closePopup,
 }: AppLoginPopupProps) {
+  const [applicationError, setApplicationError] = useState('');
   const [contextList, setContextList] = useState<Context[]>([]);
   const [contextIdentities, setContextIdentities] = useState<string[]>([]);
   const [selectedIdentity, setSelectedIdentity] = useState('');
@@ -45,6 +49,23 @@ export default function AppLoginPopup({
   const [loginStep, setLoginStep] = useState(LoginStep.SELECT_CONTEXT);
   const [errorMessage, setErrorMessage] = useState('');
   const t = translations.appLoginPopup;
+
+  useEffect(() => {
+    const fetchApplication = async () => {
+      const fetchApplicationResponse: ResponseData<GetInstalledApplicationsResponse> =
+        await apiClient(showServerDownPopup).node().getInstalledApplications();
+      const applications = fetchApplicationResponse.data;
+      const installedApplication = applications?.apps.find(
+        (app) => app.id === applicationId,
+      );
+      if (installedApplication) {
+        setApplicationError('');
+      } else {
+        setApplicationError(t.applicationError);
+      }
+    };
+    fetchApplication();
+  }, [applicationId]);
 
   useEffect(() => {
     const fetchAvailableContexts = async () => {
@@ -138,6 +159,8 @@ export default function AppLoginPopup({
             setSelectedContextId('');
             setLoginStep(LoginStep.START_NEW_CONTEXT);
           }}
+          applicationError={applicationError}
+          closePopup={closePopup}
         />
       )}
       {loginStep === LoginStep.SELECT_IDENTITY && (
@@ -151,6 +174,7 @@ export default function AppLoginPopup({
             setLoginStep(LoginStep.CREATE_ACCESS_TOKEN);
           }}
           backLoginStep={() => setLoginStep(LoginStep.SELECT_CONTEXT)}
+          closePopup={closePopup}
         />
       )}
       {loginStep === LoginStep.CREATE_ACCESS_TOKEN && (
@@ -162,6 +186,7 @@ export default function AppLoginPopup({
           onCreateToken={onCreateToken}
           errorMessage={errorMessage}
           backLoginStep={() => setLoginStep(LoginStep.SELECT_IDENTITY)}
+          closePopup={closePopup}
         />
       )}
     </Modal>

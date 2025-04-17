@@ -3,13 +3,21 @@ name: End-to-end tests
 on:
   push:
     branches:
-      - '**'
+      - master
     paths:
       - Cargo.toml
       - Cargo.lock
       - 'crates/**'
       - 'e2e-tests/**'
-      - '.github/workflows/e2e_tests.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - master
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'crates/**'
+      - 'e2e-tests/**'
 
 env:
   # Or you can use 'prerelease-{PR-NUMBER}'
@@ -224,7 +232,7 @@ jobs:
       - name: Combine reports
         run: |
           mkdir -p reports
-          
+
           # List all found reports for debugging
           echo "Found report files:"
           find reports/ -type f -name "report.json" -ls
@@ -238,7 +246,7 @@ jobs:
           fi
 
           echo "Found protocols: ${protocols[*]}"
-          
+
           # Combine all reports into a single markdown file
           ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
 
