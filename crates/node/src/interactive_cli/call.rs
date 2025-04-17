@@ -22,6 +22,8 @@ pub struct CallCommand {
     /// The identity of the executor
     #[clap(long = "as", default_value = "default")]
     executor: Alias<PublicKey>,
+    #[clap(long = "substitute")]
+    substitute: Vec<Alias<PublicKey>>, 
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -53,6 +55,7 @@ impl CallCommand {
                 &self.method,
                 serde_json::to_vec(&self.args.unwrap_or(json!({})))?,
                 executor,
+                self.substitute,
             )
             .await;
 

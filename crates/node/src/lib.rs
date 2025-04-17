@@ -21,6 +21,7 @@ use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
 use calimero_node_primitives::{CallError, ExecutionRequest};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
@@ -442,6 +443,7 @@ impl Node {
                 &request.method,
                 request.payload,
                 request.executor_public_key,
+                request.substitute_aliases
             )
             .await;
 
@@ -456,6 +458,7 @@ impl Node {
         method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
+        substitute_aliases: Vec<Alias<PublicKey>>, 
     ) -> Result<Outcome, CallError> {
         let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
             return Err(CallError::ContextNotFound);
@@ -475,6 +478,18 @@ impl Node {
                 public_key: executor_public_key,
             });
         }
+
+        let payload = if !substitute_aliases.is_empty() {
+            self.substitute_aliases_in_payload(
+                context_id,
+                payload,
+                &substitute_aliases,
+                executor_public_key,
+            )
+            .await?
+        } else {
+            payload
+        };
 
         let outcome_option = self
             .execute(&mut context, method, payload, executor_public_key)
@@ -538,6 +553,39 @@ impl Node {
         }
 
         Ok(outcome)
+    }
+
+    #[allow(dead_code)]
+    async fn substitute_aliases_in_payload(
+        &self,
+        context_id: ContextId,
+        payload: Vec<u8>,
+        aliases: &[Alias<PublicKey>],
+        executor_public_key: PublicKey,
+    ) -> Result<Vec<u8>, CallError> {
+        let _ = executor_public_key;
+        let payload_str = String::from_utf8(payload).map_err(|_| CallError::InternalError)?;
+        
+        let mut modified_payload = payload_str;
+        for alias in aliases {
+            let placeholder = format!("{{{}}}", alias.as_ref());
+            if modified_payload.contains(&placeholder) {
+                let public_key = self
+                    .ctx_manager
+                    .resolve_alias(*alias, Some(context_id))
+                    .map_err(|_| CallError::InternalError)?
+                    .ok_or(CallError::InternalError {
+                        // alias: alias.to_string(),
+                    })?;
+                
+                modified_payload = modified_payload.replace(
+                    &placeholder,
+                    &public_key.to_string(),
+                );
+            }
+        }
+        
+        Ok(modified_payload.into_bytes())
     }
 
     async fn execute(
