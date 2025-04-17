@@ -22,7 +22,11 @@ pub struct GetCommand {
     #[command(subcommand)]
     pub command: GetSubcommand,
 
-    #[arg(value_name = "CONTEXT", help = "Context we're operating on")]
+    #[arg(
+        value_name = "CONTEXT",
+        help = "Context we're operating on",
+        default_value = "default"
+    )]
     pub context: Alias<ContextId>,
 }
 
@@ -79,11 +83,13 @@ impl GetCommand {
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
-            .await?
+        let resolve_response =
+            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
+
+        let context_id = resolve_response
             .value()
             .cloned()
-            .ok_or_eyre("unable to resolve")?;
+            .ok_or_eyre("Failed to resolve context: no value found")?;
 
         match self.command {
             GetSubcommand::Info => {

@@ -38,7 +38,7 @@ pub struct InstallCommand {
 
 impl Report for InstallApplicationResponse {
     fn report(&self) {
-        println!("id: {}", self.data.application_id);
+        println!("application_id: {}", self.data.application_id);
     }
 }
 
