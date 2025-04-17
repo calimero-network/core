@@ -79,7 +79,6 @@ impl IcpSandboxEnvironment {
     pub fn node_args(&self) -> Vec<String> {
         vec![
             // Protocol and network configuration
-            format!("context.config.icp.protocol=\"{}\"", "icp"),
             format!("context.config.icp.network=\"{}\"", "local"),
             format!(
                 "context.config.icp.contract_id=\"{}\"",
