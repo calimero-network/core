@@ -13,7 +13,7 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
     IpAddr::V6(Ipv6Addr::LOCALHOST),
 ];
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
