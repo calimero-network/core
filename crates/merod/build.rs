@@ -1,7 +1,8 @@
+use std::env;
 use std::process::Command;
 
 fn main() {
-    // Get git describe output for build version
+    // Get git describe output
     let git_describe = Command::new("git")
         .args([
             "describe",
@@ -33,8 +34,23 @@ fn main() {
         .map(|s| s.split_whitespace().nth(1).unwrap_or("unknown").to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Pass individual components to the binary
-    println!("cargo:rustc-env=GIT_DESCRIBE={}", git_describe.trim());
-    println!("cargo:rustc-env=GIT_COMMIT={}", git_commit.trim());
-    println!("cargo:rustc-env=RUSTC_VERSION={}", rustc_version.trim());
+    // Get package version from Cargo.toml
+    let pkg_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string());
+
+    // Format the complete version string
+    let version_string = format!(
+        "(release {}) (build {}{}) (commit {}) (rustc {})",
+        pkg_version,
+        pkg_version,
+        if git_describe.contains("-modified") {
+            "-modified"
+        } else {
+            ""
+        },
+        git_commit.trim(),
+        rustc_version.trim()
+    );
+
+    // Pass the version string to the binary
+    println!("cargo:rustc-env=VERSION_STRING={}", version_string);
 }

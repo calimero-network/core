@@ -8,9 +8,9 @@ use eyre::Report as EyreReport;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 
+use crate::cli::version::get_version_info;
 use crate::defaults;
 use crate::output::{Format, Output, Report};
-use crate::cli::version::get_version_info;
 
 mod app;
 mod bootstrap;
