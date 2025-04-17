@@ -197,6 +197,10 @@ const Wrapper = styled.div`
     background-color: transparent;
     margin-top: 5px;
   }
+
+  .protocol-title {
+    color: #fff;
+  }
 `;
 
 interface StartContextPopupProps {
