@@ -15,6 +15,8 @@ use crate::common::{
 };
 use crate::output::ErrorLine;
 
+mod generate;
+
 #[derive(Debug, Parser)]
 #[command(about = "Manage context identities")]
 pub struct ContextIdentityCommand {
@@ -34,6 +36,8 @@ pub enum ContextIdentitySubcommand {
     },
     #[command(about = "Manage identity aliases")]
     Alias(ContextIdentityAliasCommand),
+    #[command(about = "Generate a new identity keypair")]
+    Generate(generate::GenerateCommand),
     #[command(about = "Set default identity for a context")]
     Use {
         #[arg(help = "The identity to set as default")]
@@ -108,6 +112,7 @@ impl ContextIdentityCommand {
                 .await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
+            ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Use { identity, context } => {
                 let resolve_response =
                     resolve_alias(multiaddr, &config.identity, context, None).await?;

@@ -8,15 +8,15 @@ use owo_colors::OwoColorize;
 
 use crate::Node;
 
-/// Manage identities
+/// Manage context identities
 #[derive(Debug, Parser)]
-pub struct IdentityCommand {
+pub struct ContextIdentityCommand {
     #[command(subcommand)]
-    subcommand: IdentitySubcommands,
+    subcommand: ContextIdentitySubcommands,
 }
 
 #[derive(Debug, Subcommand)]
-enum IdentitySubcommands {
+enum ContextIdentitySubcommands {
     /// List identities in a context
     #[clap(alias = "ls")]
     List {
@@ -24,12 +24,13 @@ enum IdentitySubcommands {
         #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
-    /// Create a new identity
-    New,
+    /// Generate a new identity keypair
+    #[clap(alias = "new")]
+    Generate,
     /// Manage identity aliases
     Alias {
         #[command(subcommand)]
-        command: AliasSubcommands,
+        command: ContextIdentityAliasSubcommands,
     },
     /// Set default identity for a context
     Use {
@@ -42,7 +43,7 @@ enum IdentitySubcommands {
 }
 
 #[derive(Debug, Subcommand)]
-enum AliasSubcommands {
+enum ContextIdentityAliasSubcommands {
     #[command(
         about = "Add new alias for an identity in a context",
         aliases = ["create", "new"],
@@ -79,21 +80,21 @@ enum AliasSubcommands {
     },
 }
 
-impl IdentityCommand {
+impl ContextIdentityCommand {
     pub fn run(self, node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
 
         match self.subcommand {
-            IdentitySubcommands::List { context } => {
+            ContextIdentitySubcommands::List { context } => {
                 list_identities(node, Some(context), &ind.to_string())?;
             }
-            IdentitySubcommands::New => {
-                create_new_identity(node, &ind.to_string());
+            ContextIdentitySubcommands::Generate => {
+                generate_new_identity(node, &ind.to_string());
             }
-            IdentitySubcommands::Alias { command } => {
+            ContextIdentitySubcommands::Alias { command } => {
                 handle_alias_command(node, command, &ind.to_string())?;
             }
-            IdentitySubcommands::Use { identity, context } => {
+            ContextIdentitySubcommands::Use { identity, context } => {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
@@ -176,15 +177,19 @@ fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) ->
     Ok(())
 }
 
-fn create_new_identity(node: &Node, ind: &str) {
+fn generate_new_identity(node: &Node, ind: &str) {
     let identity = node.ctx_manager.new_private_key();
     println!("{ind} Private Key: {}", identity.cyan());
     println!("{ind} Public Key: {}", identity.public_key().cyan());
 }
 
-fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> EyreResult<()> {
+fn handle_alias_command(
+    node: &Node,
+    command: ContextIdentityAliasSubcommands,
+    ind: &str,
+) -> EyreResult<()> {
     match command {
-        AliasSubcommands::Add {
+        ContextIdentityAliasSubcommands::Add {
             name,
             identity,
             context,
@@ -211,7 +216,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
 
             println!("{ind} Successfully created alias '{}'", name.cyan());
         }
-        AliasSubcommands::Remove { identity, context } => {
+        ContextIdentityAliasSubcommands::Remove { identity, context } => {
             let context_id = node
                 .ctx_manager
                 .resolve_alias(context, None)?
@@ -221,7 +226,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
 
             println!("{ind} Successfully removed alias '{}'", identity.cyan());
         }
-        AliasSubcommands::Get { identity, context } => {
+        ContextIdentityAliasSubcommands::Get { identity, context } => {
             let context_id = node
                 .ctx_manager
                 .resolve_alias(context, None)?
@@ -240,7 +245,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                 identity_id.cyan()
             );
         }
-        AliasSubcommands::List { context } => {
+        ContextIdentityAliasSubcommands::List { context } => {
             println!(
                 "{ind} {c1:44} | {c2:44} | {c3}",
                 c1 = "Context ID",
@@ -248,32 +253,21 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                 c3 = "Alias",
             );
             let context_id = if let Some(ctx) = context {
-                node.ctx_manager
-                    .resolve_alias(ctx, None)?
-                    .ok_or_eyre("unable to resolve context")?
+                Some(
+                    node.ctx_manager
+                        .resolve_alias(ctx, None)?
+                        .ok_or_eyre("unable to resolve context alias")?,
+                )
             } else {
-                let default_alias: Alias<ContextId> =
-                    "default".parse().expect("'default' is a valid alias name");
-
-                node.ctx_manager
-                    .lookup_alias(default_alias, None)?
-                    .ok_or_eyre("unable to resolve default context")?
+                None
             };
-
-            for (alias, identity, scope) in node
-                .ctx_manager
-                .list_aliases::<PublicKey>(Some(context_id))?
-            {
-                let context = scope.as_ref().map_or("---", |s| s.as_str());
-
+            let aliases = node.ctx_manager.list_aliases::<PublicKey>(context_id)?;
+            for (alias, identity, scope) in aliases {
                 println!(
-                    "{ind} {}",
-                    format_args!(
-                        "{c1:44} | {c2:44} | {c3}",
-                        c1 = context.cyan(),
-                        c2 = identity.cyan(),
-                        c3 = alias.cyan(),
-                    )
+                    "{ind} {c1:44} | {c2:44} | {c3}",
+                    c1 = format!("{:?}", scope),
+                    c2 = identity,
+                    c3 = alias.cyan()
                 );
             }
         }
