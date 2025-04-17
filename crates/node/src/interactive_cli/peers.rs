@@ -28,12 +28,12 @@ impl PeersCommand {
             .resolve_alias(self.context, None)?
             .ok_or_eyre("unable to resolve context")?;
 
-            let topic = TopicHash::from_raw(context_id);
-            println!(
-                "{ind} Peers (Session) for Topic {}: {:#?}",
-                topic.clone(),
-                node.network_client.mesh_peer_count(topic).await.cyan()
-            );
+        let topic = TopicHash::from_raw(context_id);
+        println!(
+            "{ind} Peers (Session) for Topic {}: {:#?}",
+            topic.clone(),
+            node.network_client.mesh_peer_count(topic).await.cyan()
+        );
 
         Ok(())
     }
