@@ -158,7 +158,6 @@ impl ContextManager {
         initialization_params: Vec<u8>,
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
     ) -> EyreResult<()> {
-        let protocol_clone = protocol.to_string();
         let Some(config) = self.client_config.params.get(protocol).cloned() else {
             eyre::bail!(
                 "unsupported protocol: {}, expected one of `{}`",
@@ -201,7 +200,7 @@ impl ContextManager {
             &context,
             identity_secret,
             Some(ContextConfigParams {
-                protocol: protocol_clone.as_str().into(),
+                protocol: protocol.into(),
                 network_id: config.network.as_str().into(),
                 contract_id: config.contract_id.as_str().into(),
                 proxy_contract: "".into(),
@@ -213,6 +212,8 @@ impl ContextManager {
         let (tx, rx) = oneshot::channel();
 
         let this = self.clone();
+        let protocol = protocol.to_string();
+
         let finalizer = async move {
             this.server_sender
                 .send(ExecutionRequest::new(
@@ -233,7 +234,7 @@ impl ContextManager {
 
             this.config_client
                 .mutate::<ContextConfigEnv>(
-                    protocol_clone.as_str().into(),
+                    protocol.clone().into(),
                     config.network.as_str().into(),
                     config.contract_id.as_str().into(),
                 )
@@ -257,7 +258,7 @@ impl ContextManager {
             let proxy_contract = this
                 .config_client
                 .query::<ContextConfigEnv>(
-                    protocol_clone.as_str().into(),
+                    protocol.clone().into(),
                     config.network.as_str().into(),
                     config.contract_id.as_str().into(),
                 )
