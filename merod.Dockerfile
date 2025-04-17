@@ -1,8 +1,8 @@
 # Use an official Rust image as the base
-FROM rust:latest
+FROM rust:latest as builder
 
 # Install system dependencies
-RUN  apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     libsnappy-dev \
     libbz2-dev \
@@ -13,7 +13,8 @@ RUN  apt-get update && apt-get install -y \
     curl \
     build-essential \
     pkg-config \
-    jq
+    jq && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (version 20) and pnpm
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -39,8 +40,11 @@ RUN pnpm install && pnpm run build
 WORKDIR /app
 RUN cargo build --release -p merod
 
-# Set the binary as the entrypoint
-ENTRYPOINT ["/app/target/release/merod"]
+# Copy the binary to a location in PATH
+RUN cp /app/target/release/merod /usr/local/bin/merod
+
+# Set the working directory
+WORKDIR /data
 
 # Default command (can be overridden in docker-compose)
-CMD ["--help"]
+CMD ["--help"] 
