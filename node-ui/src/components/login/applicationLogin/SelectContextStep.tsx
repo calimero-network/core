@@ -5,7 +5,7 @@ import { Context } from '../../../api/dataSource/NodeDataSource';
 import ListItem from './ListItem';
 import translations from '../../../constants/en.global.json';
 import { truncateText } from '../../../utils/displayFunctions';
-import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import { ClipboardDocumentIcon, XCircleIcon } from '@heroicons/react/24/solid';
 import { Tooltip } from 'react-tooltip';
 import { copyToClipboard } from '../../../utils/copyToClipboard';
 
@@ -131,6 +131,31 @@ export const ModalWrapper = styled.div`
     position: absolute;
     top: 1rem;
   }
+
+  .back-button {
+    margin-top: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    color: #fff;
+    cursor: pointer;
+  }
+
+  .back-text {
+    color: #6b7280;
+    font-size: 0.875rem;
+  }
+  .back-text:hover {
+    color: #fff;
+  }
+
+  .close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    cursor: pointer;
+  }
 `;
 
 interface SelectContextStepProps {
@@ -140,6 +165,8 @@ interface SelectContextStepProps {
   setSelectedContextId: (selectedContextId: string) => void;
   updateLoginStep: () => void;
   createContext: () => void;
+  applicationError: string;
+  closePopup: () => void;
 }
 
 export default function SelectContextStep({
@@ -149,13 +176,22 @@ export default function SelectContextStep({
   setSelectedContextId,
   updateLoginStep,
   createContext,
+  applicationError,
+  closePopup,
 }: SelectContextStepProps) {
   const t = translations.appLoginPopup.selectContext;
+
+  const redirectBack = () => {
+    window.location.href = callbackUrl;
+  };
 
   return (
     <ModalWrapper>
       <div className="step">1/3</div>
       <div className="title">{t.title}</div>
+      <div className="close">
+        <XCircleIcon className="copy-icon" onClick={closePopup} />
+      </div>
       <div className="wrapper">
         <div className="subtitle separator">
           <span>{t.detailsText}</span>
@@ -184,40 +220,49 @@ export default function SelectContextStep({
         </div>
       </div>
       <div className="wrapper">
-        <div className="flex">
-          <div>
-            <div className="context-title">{t.contextsTitle}</div>
-            <div className="context-subtitle">{t.contextsSubtitle}</div>
-          </div>
-          <Button
-            text={t.buttonCreateText}
-            onClick={createContext}
-            width="200px"
-          />
-        </div>
-
-        {contextList.length > 0 ? (
-          <>
-            <div className="context-list">
-              {contextList.map((context, i) => (
-                <ListItem
-                  item={context.id}
-                  id={i}
-                  count={contextList.length}
-                  onRowItemClick={(selectedContextId: string) => {
-                    setSelectedContextId(selectedContextId);
-                    updateLoginStep();
-                  }}
-                  key={i}
-                />
-              ))}
+        {!applicationError && (
+          <div className="flex">
+            <div>
+              <div className="context-title">{t.contextsTitle}</div>
+              <div className="context-subtitle">{t.contextsSubtitle}</div>
             </div>
-          </>
-        ) : (
-          <div className="flex-container">
-            <div className="no-context-text">{t.noContextsText}</div>
+            <Button
+              text={t.buttonCreateText}
+              onClick={createContext}
+              width="200px"
+            />
           </div>
         )}
+        {applicationError && <div className="error">{applicationError}</div>}
+        <>
+          {contextList.length > 0 ? (
+            <>
+              <div className="context-list">
+                {contextList.map((context, i) => (
+                  <ListItem
+                    item={context.id}
+                    id={i}
+                    count={contextList.length}
+                    onRowItemClick={(selectedContextId: string) => {
+                      setSelectedContextId(selectedContextId);
+                      updateLoginStep();
+                    }}
+                    key={i}
+                  />
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="flex-container">
+              <div className="no-context-text">{t.noContextsText}</div>
+            </div>
+          )}
+        </>
+      </div>
+      <div className="flex-center">
+        <div className="back-button" onClick={redirectBack}>
+          <span className="back-text">{t.backButton}</span>
+        </div>
       </div>
     </ModalWrapper>
   );
