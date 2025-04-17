@@ -2212,6 +2212,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-version"
+version = "0.5.0"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "camino"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5913,6 +5920,7 @@ dependencies = [
  "calimero-config",
  "calimero-primitives",
  "calimero-server-primitives",
+ "calimero-version",
  "camino",
  "chrono",
  "clap",
@@ -5947,6 +5955,7 @@ dependencies = [
  "calimero-node",
  "calimero-server",
  "calimero-store",
+ "calimero-version",
  "camino",
  "clap",
  "color-eyre",

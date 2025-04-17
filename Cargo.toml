@@ -29,6 +29,7 @@ members = [
     "./crates/store",
     "./crates/store/blobs",
     "./crates/utils/actix",
+    "./crates/version",
 
     "./apps/kv-store",
     "./apps/only-peers",
@@ -144,6 +145,7 @@ wasmer-types = "4.2.5"
 web3 = "0.19.0"
 rcgen = "0.13.1"
 x509-parser = "0.16.0"
+calimero-version = { path = "./crates/version" }
 
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
