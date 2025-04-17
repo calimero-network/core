@@ -257,7 +257,7 @@ impl ContextManager {
             let proxy_contract = this
                 .config_client
                 .query::<ContextConfigEnv>(
-                    std::borrow::Cow::Borrowed(&protocol_clone),
+                    protocol_clone.as_str().into(),
                     config.network.as_str().into(),
                     config.contract_id.as_str().into(),
                 )
