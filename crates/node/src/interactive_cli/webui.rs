@@ -5,7 +5,7 @@ use webbrowser;
 
 use crate::Node;
 
-#[derive(Debug, Args)]
+#[derive(Copy, Clone, Debug, Args)]
 pub struct WebUICommand;
 
 impl WebUICommand {
