@@ -24,6 +24,7 @@ pub struct GetCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
 
+    #[arg(long, short)]
     #[arg(
         value_name = "CONTEXT",
         help = "Context for which to query",
