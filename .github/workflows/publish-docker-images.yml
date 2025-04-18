@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - 'feat__*'
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -49,116 +50,74 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Default values
-          echo "should_build=false" >> $GITHUB_OUTPUT
-          echo "prerelease=false" >> $GITHUB_OUTPUT
+          # TESTING: Always build during testing phase
+          echo "should_build=true" >> $GITHUB_OUTPUT
+          echo "prerelease=true" >> $GITHUB_OUTPUT
           
-          if [ "${{ github.event_name }}" == "workflow_run" ]; then
-            # Extract version from the triggering workflow (Release)
-            latest_release=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
-            if [ -n "$latest_release" ]; then
-              echo "Using latest release version: $latest_release"
-              echo "version=$latest_release" >> $GITHUB_OUTPUT
-              echo "should_build=true" >> $GITHUB_OUTPUT
+          # Get version from Cargo.toml or use a dev version
+          if [ -f "Cargo.toml" ]; then
+            version_candidate=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "merod") | .version')
+            echo "Version from Cargo: $version_candidate"
+            
+            # For feature branches, use a dev tag
+            if [[ "${{ github.ref }}" == refs/heads/feat__* ]]; then
+              branch_name=$(echo "${{ github.ref }}" | sed 's|refs/heads/||')
+              echo "On feature branch: $branch_name"
+              echo "version=dev-${branch_name}" >> $GITHUB_OUTPUT
             else
-              echo "No release version found"
-              exit 0
+              echo "Using version from Cargo: $version_candidate"
+              echo "version=$version_candidate" >> $GITHUB_OUTPUT
             fi
           else
-            # Similar logic to the release workflow
-            if [ -f "Cargo.toml" ]; then
-              version_candidate=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "merod") | .version')
-              echo "Version from Cargo: $version_candidate"
-              
-              if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-                echo "On master branch"
-                echo "version=$version_candidate" >> $GITHUB_OUTPUT
-                echo "should_build=true" >> $GITHUB_OUTPUT
-              elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == release/* ]]; then
-                echo "On release PR"
-                echo "version=prerelease-${{ github.event.number }}" >> $GITHUB_OUTPUT
-                echo "should_build=true" >> $GITHUB_OUTPUT
-                echo "prerelease=true" >> $GITHUB_OUTPUT
-              elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-                echo "Manual trigger"
-                echo "version=$version_candidate" >> $GITHUB_OUTPUT
-                echo "should_build=true" >> $GITHUB_OUTPUT
-              else
-                echo "Not building for this branch/PR"
-              fi
-            else
-              echo "No Cargo.toml found"
-            fi
+            echo "No Cargo.toml found, using dev version"
+            echo "version=dev-unknown" >> $GITHUB_OUTPUT
           fi
-
-  build-and-push:
-    name: Build and Push Docker Images
-    needs: prepare
-    if: needs.prepare.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Extract metadata for merod
-        id: meta-merod
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/merod
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-
-      - name: Extract metadata for meroctl
-        id: meta-meroctl
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meroctl
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-      
-      - name: Build and push merod image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./core/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          target: merod
-          tags: ${{ steps.meta-merod.outputs.tags }}
-          labels: ${{ steps.meta-merod.outputs.labels }}
-          annotations: |
-            org.opencontainers.image.description=Merod container image
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-      
-      - name: Build and push meroctl image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./core/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          target: meroctl
-          tags: ${{ steps.meta-meroctl.outputs.tags }}
-          labels: ${{ steps.meta-meroctl.outputs.labels }}
-          annotations: |
-            org.opencontainers.image.description=Meroctl container image
-            org.opencontainers.image.source=https://github.com/${{ github.repository }} 
+          
+          # Original conditional logic (commented out for testing)
+          # if [ "${{ github.event_name }}" == "workflow_run" ]; then
+          #   # Extract version from the triggering workflow (Release)
+          #   latest_release=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
+          #   if [ -n "$latest_release" ]; then
+          #     echo "Using latest release version: $latest_release"
+          #     echo "version=$latest_release" >> $GITHUB_OUTPUT
+          #     echo "should_build=true" >> $GITHUB_OUTPUT
+          #   else
+          #     echo "No release version found"
+          #     exit 0
+          #   fi
+          # else
+          #   # Similar logic to the release workflow
+          #   if [ -f "Cargo.toml" ]; then
+          #     version_candidate=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "merod") | .version')
+          #     echo "Version from Cargo: $version_candidate"
+          #     
+          #     if [ "${{ github.ref }}" == "refs/heads/master" ]; then
+          #       echo "On master branch"
+          #       echo "version=$version_candidate" >> $GITHUB_OUTPUT
+          #       echo "should_build=true" >> $GITHUB_OUTPUT
+          #     elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == release/* ]]; then
+          #       echo "On release PR"
+          #       echo "version=prerelease-${{ github.event.number }}" >> $GITHUB_OUTPUT
+          #       echo "should_build=true" >> $GITHUB_OUTPUT
+          #       echo "prerelease=true" >> $GITHUB_OUTPUT
+          #     elif [[ "${{ github.ref }}" == refs/heads/feat__* ]]; then
+          #       echo "On feature branch starting with feat__"
+          #       echo "version=dev-$(echo ${{ github.ref }} | sed 's|refs/heads/feat__||')" >> $GITHUB_OUTPUT
+          #       echo "should_build=true" >> $GITHUB_OUTPUT
+          #       echo "prerelease=true" >> $GITHUB_OUTPUT
+          #     elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == feat__* ]]; then
+          #       echo "On feature PR starting with feat__"
+          #       echo "version=dev-${{ github.event.number }}" >> $GITHUB_OUTPUT
+          #       echo "should_build=true" >> $GITHUB_OUTPUT
+          #       echo "prerelease=true" >> $GITHUB_OUTPUT
+          #     elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          #       echo "Manual trigger"
+          #       echo "version=$version_candidate" >> $GITHUB_OUTPUT
+          #       echo "should_build=true" >> $GITHUB_OUTPUT
+          #     else
+          #       echo "Not building for this branch/PR"
+          #     fi
+          #   else
+          #     echo "No Cargo.toml found"
+          #   fi
+          # fi 
