@@ -53,19 +53,12 @@ COPY e2e-tests ./e2e-tests
 # Copy the built node-ui from the nodejs stage
 COPY --from=builder-nodejs /app/node-ui ./node-ui
 
-# Build merod with caching and copy to a persistent location in the image
+# Build merod and meroctl together with caching and copy to persistent locations
 RUN --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
-    cargo build --locked --release -p merod && \
-    cp /app/target/release/merod /usr/local/bin/
-
-# Build meroctl with caching and copy to a persistent location in the image
-RUN --mount=type=cache,target=/app/target/ \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
-    --mount=type=cache,target=/usr/local/cargo/registry/ \
-    cargo build --locked --release -p meroctl && \
-    cp /app/target/release/meroctl /usr/local/bin/
+    cargo build --locked --release -p merod -p meroctl && \
+    cp /app/target/release/{merod,meroctl} /usr/local/bin/
 
 ################################################################################
 # Create a minimal runner stage for merod
