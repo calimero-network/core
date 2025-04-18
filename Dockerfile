@@ -58,7 +58,8 @@ RUN --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     cargo build --locked --release -p merod -p meroctl && \
-    cp /app/target/release/{merod,meroctl} /usr/local/bin/
+    cp /app/target/release/merod /usr/local/bin/merod && \
+    cp /app/target/release/meroctl /usr/local/bin/meroctl
 
 ################################################################################
 # Create a minimal runner stage for merod
