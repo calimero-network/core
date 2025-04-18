@@ -1,8 +1,6 @@
-use calimero_primitives::{
-    alias::Alias,
-    context::ContextId,
-    identity::PublicKey,
-};
+use calimero_primitives::alias::Alias;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
@@ -12,8 +10,8 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, resolve_alias,
-    multiaddr_to_url,
+    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, multiaddr_to_url,
+    resolve_alias,
 };
 use crate::output::ErrorLine;
 
@@ -42,7 +40,6 @@ async fn identity_exists_in_context(
 
     Ok(response.data.identities.contains(target_identity))
 }
-
 
 #[derive(Debug, Parser)]
 pub struct ContextIdentityAliasCommand {
@@ -89,7 +86,6 @@ pub enum ContextIdentityAliasSubcommand {
     },
 }
 
-
 impl ContextIdentityAliasCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
@@ -104,13 +100,8 @@ impl ContextIdentityAliasCommand {
                 let resolve_response =
                     resolve_alias(multiaddr, &config.identity, context, None).await?;
                 // Check if identity exists *before* resolving context_id for create_alias
-                if !identity_exists_in_context(
-                    &multiaddr,
-                    &config.identity,
-                    &context,
-                    &identity,
-                )
-                .await?
+                if !identity_exists_in_context(&multiaddr, &config.identity, &context, &identity)
+                    .await?
                 {
                     environment.output.write(&ErrorLine(&format!(
                         "Identity '{}' does not exist in context '{}'",
@@ -165,4 +156,4 @@ impl ContextIdentityAliasCommand {
 
         Ok(())
     }
-} 
+}

@@ -15,8 +15,8 @@ use crate::common::{
 };
 use crate::output::ErrorLine;
 
-mod generate;
 mod alias;
+mod generate;
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context identities")]
