@@ -64,6 +64,10 @@ RUN --mount=type=cache,target=/app/target/ \
 # Create a minimal runner stage for merod
 FROM debian:bookworm-slim AS merod
 
+# Add labels for container metadata
+LABEL org.opencontainers.image.description="Merod daemon"
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Install only the essential runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl3 \
@@ -98,6 +102,10 @@ CMD ["--help"]
 ################################################################################
 # Create a minimal runner stage for meroctl
 FROM debian:bookworm-slim AS meroctl
+
+# Add labels for container metadata
+LABEL org.opencontainers.image.description="Meroctl - Control tool for Merod daemon"
+LABEL org.opencontainers.image.licenses="MIT"
 
 # Install only the essential runtime dependencies
 RUN apt-get update && apt-get install -y \
