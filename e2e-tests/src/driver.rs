@@ -303,12 +303,21 @@ impl Driver {
 
                 merod.run().await?;
 
-                let _ = e.insert(merod);
+                let node_name = merod.name.clone();
+                e.insert(merod);
+
+                let merod_ref = merods.get(&node_name).unwrap();
 
                 while let Err(_) = try_join!(
                     TcpSocket::new_v4()?.connect(swarm_addr),
                     TcpSocket::new_v4()?.connect(server_addr)
                 ) {
+                    if let Some(exit_code) = merod_ref.try_wait().await? {
+                        bail!(
+                            "merod process exited with code {} before becoming ready",
+                            exit_code
+                        );
+                    }
                     sleep(Duration::from_secs(1)).await;
                 }
             }
