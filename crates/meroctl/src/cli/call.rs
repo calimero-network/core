@@ -28,6 +28,7 @@ pub const EXAMPLES: &str = r"
     EXAMPLES
 ))]
 pub struct CallCommand {
+    #[arg(long, short)]
     #[arg(
         value_name = "CONTEXT",
         help = "The context to call the method on",
