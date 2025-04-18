@@ -306,7 +306,7 @@ impl Driver {
                 let node_name = merod.name.clone();
                 e.insert(merod);
 
-                let merod_ref = merods.get(&node_name).unwrap();
+                let merod_ref = &merods[&node_name];
 
                 while let Err(_) = try_join!(
                     TcpSocket::new_v4()?.connect(swarm_addr),
