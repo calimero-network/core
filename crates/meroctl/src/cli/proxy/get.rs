@@ -24,7 +24,12 @@ pub struct GetCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
 
-    #[arg(value_name = "CONTEXT", help = "Context for which to query")]
+    #[arg(long, short)]
+    #[arg(
+        value_name = "CONTEXT",
+        help = "Context for which to query",
+        default_value = "default"
+    )]
     pub context: Alias<ContextId>,
 
     #[arg(value_name = "PROPOSAL_ID", help = "proposal_id of the proposal")]
