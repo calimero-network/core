@@ -40,6 +40,10 @@ jobs:
       version: ${{ steps.version_info.outputs.version }}
       should_build: ${{ steps.version_info.outputs.should_build }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
+      merod_tags: ${{ steps.merod_metadata.outputs.tags }}
+      merod_labels: ${{ steps.merod_metadata.outputs.labels }}
+      meroctl_tags: ${{ steps.meroctl_metadata.outputs.tags }}
+      meroctl_labels: ${{ steps.meroctl_metadata.outputs.labels }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -94,6 +98,24 @@ jobs:
               echo "version=dev-unknown" >> $GITHUB_OUTPUT
             fi
           fi
+      
+      - name: Extract metadata for merod
+        id: merod_metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/merod
+          tags: |
+            type=raw,value=${{ steps.version_info.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+
+      - name: Extract metadata for meroctl
+        id: meroctl_metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/meroctl
+          tags: |
+            type=raw,value=${{ steps.version_info.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
 
   build-and-push:
     name: Build and Push Docker Images
@@ -103,6 +125,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        image: [merod, meroctl]
+      fail-fast: false
 
     steps:
       - name: Checkout repository
@@ -121,48 +147,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Extract metadata for merod
-        id: meta-merod
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/merod
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-
-      - name: Extract metadata for meroctl
-        id: meta-meroctl
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meroctl
-          tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-      
-      - name: Build and push merod image
+      - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          target: merod
-          tags: ${{ steps.meta-merod.outputs.tags }}
-          labels: ${{ steps.meta-merod.outputs.labels }}
+          target: ${{ matrix.image }}
+          tags: ${{ matrix.image == 'merod' && needs.prepare.outputs.merod_tags || needs.prepare.outputs.meroctl_tags }}
+          labels: ${{ matrix.image == 'merod' && needs.prepare.outputs.merod_labels || needs.prepare.outputs.meroctl_labels }}
           annotations: |
-            org.opencontainers.image.description=Merod container image
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-      
-      - name: Build and push meroctl image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          target: meroctl
-          tags: ${{ steps.meta-meroctl.outputs.tags }}
-          labels: ${{ steps.meta-meroctl.outputs.labels }}
-          annotations: |
-            org.opencontainers.image.description=Meroctl container image
+            org.opencontainers.image.description=${{ matrix.image == 'merod' && 'Merod container image' || 'Meroctl container image' }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }} 
