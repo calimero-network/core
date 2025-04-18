@@ -165,7 +165,7 @@ impl ContextIdentityAliasCommand {
                 }
 
                 let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
-                let _context_id = res.value().ok_or_eyre("unable to resolve alias")?;
+                let context_id = res.value().ok_or_eyre("unable to resolve alias")?;
 
                 let context_id = resolve_response
                     .value()
@@ -268,7 +268,7 @@ async fn identity_exists_in_context(
     let endpoint = format!("admin-api/dev/contexts/{}/identities", context_id);
     let url = multiaddr_to_url(multiaddr, &endpoint)?;
 
-    let response: GetContextIdentitiesResponse = client
+    let response: GetContextIdentitiesResponse = reqwest::Client::new()
         .get(url)
         .send()
         .await?
