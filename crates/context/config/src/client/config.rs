@@ -8,6 +8,7 @@ use crate::client::protocol::ethereum::Credentials as EthereumCredentials;
 use crate::client::protocol::icp::Credentials as IcpCredentials;
 use crate::client::protocol::near::Credentials as NearCredentials;
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
+use crate::client::protocol::stellar::Credentials as StellarCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfig {
@@ -61,19 +62,19 @@ pub struct ClientRelayerSigner {
 pub struct ClientLocalSigner {
     pub rpc_url: Url,
     #[serde(flatten)]
-    pub credentials: Credentials,
+    pub near_credentials: Option<NearCredentials>, 
+    #[serde(flatten)]
+    pub starknet_credentials: Option<StarknetCredentials>,
+    #[serde(flatten)]
+    pub ethereum_credentials: Option<EthereumCredentials>,
+    #[serde(flatten)]
+    pub icp_credentials:Option<IcpCredentials>,
+    #[serde(flatten)]
+    pub stellar_credentials:Option<StellarCredentials>,
+    
 }
 
-#[non_exhaustive]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum Credentials {
-    Near(NearCredentials),
-    Starknet(StarknetCredentials),
-    Icp(IcpCredentials),
-    Ethereum(EthereumCredentials),
-    Raw(RawCredentials),
-}
+
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RawCredentials {

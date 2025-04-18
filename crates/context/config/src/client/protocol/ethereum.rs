@@ -60,6 +60,7 @@ pub struct NetworkConfig {
     pub rpc_url: Url,
     pub account_id: String,
     pub access_key: PrivateKeySigner,
+    pub public_key: String,
 }
 
 #[derive(Debug)]
