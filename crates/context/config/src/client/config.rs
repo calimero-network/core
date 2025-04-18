@@ -62,19 +62,27 @@ pub struct ClientRelayerSigner {
 pub struct ClientLocalSigner {
     pub rpc_url: Url,
     #[serde(flatten)]
-    pub near_credentials: Option<NearCredentials>, 
+    pub near_credentials: Option<NearCredentials>,
     #[serde(flatten)]
     pub starknet_credentials: Option<StarknetCredentials>,
     #[serde(flatten)]
     pub ethereum_credentials: Option<EthereumCredentials>,
     #[serde(flatten)]
-    pub icp_credentials:Option<IcpCredentials>,
+    pub icp_credentials: Option<IcpCredentials>,
     #[serde(flatten)]
-    pub stellar_credentials:Option<StellarCredentials>,
-    
+    pub stellar_credentials: Option<StellarCredentials>,
 }
 
-
+#[non_exhaustive]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Credentials {
+    Near(NearCredentials),
+    Starknet(StarknetCredentials),
+    Icp(IcpCredentials),
+    Ethereum(EthereumCredentials),
+    Raw(RawCredentials),
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RawCredentials {

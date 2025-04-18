@@ -52,7 +52,6 @@ pub struct NetworkConfig {
     pub network: String,
     pub public_key: String,
     pub secret_key: String,
-    
 }
 
 #[derive(Debug)]

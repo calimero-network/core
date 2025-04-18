@@ -112,7 +112,7 @@ pub struct NetworkConfig {
     pub rpc_url: Url,
     pub account_id: AccountId,
     pub access_key: SecretKey,
-    pub public_key: Option<String>
+    pub public_key: Option<String>,
 }
 
 #[derive(Debug)]

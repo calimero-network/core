@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::str::FromStr;
@@ -6,7 +7,6 @@ use std::str::FromStr;
 use alloy::signers::local::PrivateKeySigner;
 use eyre::Context;
 use thiserror::Error;
-use std::collections::BTreeMap;
 
 pub mod config;
 pub mod env;
@@ -75,30 +75,34 @@ impl Client<AnyTransport> {
         let mut icp_transport = None;
         let mut stellar_transport = None;
 
-    
         'near: {
-            let Some(params) = config.params.get("near") else { break 'near };
-            
+            let Some(params) = config.params.get("near") else {
+                break 'near;
+            };
+
             // Strict local signer check
             if !matches!(params.signer, ClientSelectedSigner::Local) {
                 break 'near;
             }
 
-          
-            let near_config = config.signer.local.protocols.get("near")
-                .ok_or_else(|| eyre::eyre!("Local signer selected for Near but no configuration found"))?;
+            let near_config = config.signer.local.protocols.get("near").ok_or_else(|| {
+                eyre::eyre!("Local signer selected for Near but no configuration found")
+            })?;
 
-            let mut network_config = near::NearConfig { networks: BTreeMap::new() };
+            let mut network_config = near::NearConfig {
+                networks: BTreeMap::new(),
+            };
 
             for (network, signer) in &near_config.signers {
                 // Direct credential access
-                let credentials = signer.near_credentials.as_ref()
-                    .ok_or_else(|| eyre::eyre!("Near credentials missing for network {}", network))?;
+                let credentials = signer.near_credentials.as_ref().ok_or_else(|| {
+                    eyre::eyre!("Near credentials missing for network {}", network)
+                })?;
 
                 // Handle public key redundancy
                 let public_key = credentials.public_key.to_string();
 
-                let _ignored=network_config.networks.insert(
+                let _ignored = network_config.networks.insert(
                     network.clone().into(),
                     near::NetworkConfig {
                         rpc_url: signer.rpc_url.clone(),
@@ -112,77 +116,100 @@ impl Client<AnyTransport> {
             near_transport = Some(near::NearTransport::new(&network_config));
         }
 
-      
         'starknet: {
-            let Some(params) = config.params.get("starknet") else { break 'starknet };
-            
+            let Some(params) = config.params.get("starknet") else {
+                break 'starknet;
+            };
+
             if !matches!(params.signer, ClientSelectedSigner::Local) {
                 break 'starknet;
             }
-        
-            let starknet_config = config.signer.local.protocols.get("starknet")
-                .ok_or_else(|| eyre::eyre!("Local signer selected for Starknet but no config found"))?;
-        
-            let mut network_config = starknet::StarknetConfig { networks: BTreeMap::new() };
-        
+
+            let starknet_config =
+                config
+                    .signer
+                    .local
+                    .protocols
+                    .get("starknet")
+                    .ok_or_else(|| {
+                        eyre::eyre!("Local signer selected for Starknet but no config found")
+                    })?;
+
+            let mut network_config = starknet::StarknetConfig {
+                networks: BTreeMap::new(),
+            };
+
             for (network, signer) in &starknet_config.signers {
-                let credentials = signer.starknet_credentials.as_ref()
+                let credentials = signer
+                    .starknet_credentials
+                    .as_ref()
                     .ok_or_else(|| eyre::eyre!("Starknet credentials missing"))?;
-        
+
                 // Convert both values to strings for comparison
                 let account_id_str = credentials.account_id.to_string();
                 let public_key_str = credentials.public_key.to_string();
-                
+
                 let public_key = if account_id_str == public_key_str {
                     None
                 } else {
                     Some(public_key_str)
                 };
-        
-                let _ignored=network_config.networks.insert(
+
+                let _ignored = network_config.networks.insert(
                     network.clone().into(),
                     starknet::NetworkConfig {
                         rpc_url: signer.rpc_url.clone(),
-                        account_id: credentials.account_id.clone(),  // Keep as Felt for storage
-                        public_key,  // Option<String>
+                        account_id: credentials.account_id.clone(), // Keep as Felt for storage
+                        public_key,                                 // Option<String>
                         access_key: credentials.secret_key.clone(),
                     },
                 );
             }
-        
+
             starknet_transport = Some(starknet::StarknetTransport::new(&network_config));
         }
 
-      
         'ethereum: {
-            let Some(params) = config.params.get("ethereum") else { break 'ethereum };
-            
+            let Some(params) = config.params.get("ethereum") else {
+                break 'ethereum;
+            };
+
             if !matches!(params.signer, ClientSelectedSigner::Local) {
                 break 'ethereum;
             }
 
-            let ethereum_config = config.signer.local.protocols.get("ethereum")
-                .ok_or_else(|| eyre::eyre!("Local signer selected for Ethereum but no configuration found"))?;
+            let ethereum_config =
+                config
+                    .signer
+                    .local
+                    .protocols
+                    .get("ethereum")
+                    .ok_or_else(|| {
+                        eyre::eyre!("Local signer selected for Ethereum but no configuration found")
+                    })?;
 
-            let mut network_config = ethereum::EthereumConfig { networks: BTreeMap::new() };
+            let mut network_config = ethereum::EthereumConfig {
+                networks: BTreeMap::new(),
+            };
 
             for (network, signer) in &ethereum_config.signers {
-                let credentials = signer.ethereum_credentials.as_ref()
+                let credentials = signer
+                    .ethereum_credentials
+                    .as_ref()
                     .ok_or_else(|| eyre::eyre!("Ethereum credentials missing"))?;
-            
+
                 // Convert secret key to signer and derive public key
                 let access_key = PrivateKeySigner::from_str(&credentials.secret_key)
                     .wrap_err("Failed to convert Ethereum secret key")?;
-                
-                
-                let public_key = access_key.address().to_string(); 
-                let _ignored=network_config.networks.insert(
+
+                let public_key = access_key.address().to_string();
+                let _ignored = network_config.networks.insert(
                     network.clone().into(),
                     ethereum::NetworkConfig {
                         rpc_url: signer.rpc_url.clone(),
                         account_id: credentials.account_id.clone(),
                         access_key,
-                        public_key, 
+                        public_key,
                     },
                 );
             }
@@ -191,22 +218,28 @@ impl Client<AnyTransport> {
         }
 
         'icp: {
-            let Some(params) = config.params.get("icp") else { break 'icp };
-            
+            let Some(params) = config.params.get("icp") else {
+                break 'icp;
+            };
+
             if !matches!(params.signer, ClientSelectedSigner::Local) {
                 break 'icp;
             }
 
-            let icp_config = config.signer.local.protocols.get("icp")
-                .ok_or_else(|| eyre::eyre!("Local signer selected for ICP but no configuration found"))?;
+            let icp_config = config.signer.local.protocols.get("icp").ok_or_else(|| {
+                eyre::eyre!("Local signer selected for ICP but no configuration found")
+            })?;
 
-            let mut network_config = icp::IcpConfig { networks: BTreeMap::new() };
+            let mut network_config = icp::IcpConfig {
+                networks: BTreeMap::new(),
+            };
 
             for (network, signer) in &icp_config.signers {
-                let credentials = signer.icp_credentials.as_ref()
-                    .ok_or_else(|| eyre::eyre!("ICP credentials missing for network {}", network))?;
+                let credentials = signer.icp_credentials.as_ref().ok_or_else(|| {
+                    eyre::eyre!("ICP credentials missing for network {}", network)
+                })?;
 
-                let _ignored=network_config.networks.insert(
+                let _ignored = network_config.networks.insert(
                     network.clone().into(),
                     icp::NetworkConfig {
                         rpc_url: signer.rpc_url.clone(),
@@ -220,26 +253,38 @@ impl Client<AnyTransport> {
         }
 
         'stellar: {
-            let Some(params) = config.params.get("stellar") else { break 'stellar };
-            
+            let Some(params) = config.params.get("stellar") else {
+                break 'stellar;
+            };
+
             if !matches!(params.signer, ClientSelectedSigner::Local) {
                 break 'stellar;
             }
 
-            let stellar_config = config.signer.local.protocols.get("stellar")
-                .ok_or_else(|| eyre::eyre!("Local signer selected for Stellar but no configuration found"))?;
+            let stellar_config = config
+                .signer
+                .local
+                .protocols
+                .get("stellar")
+                .ok_or_else(|| {
+                    eyre::eyre!("Local signer selected for Stellar but no configuration found")
+                })?;
 
-            let mut network_config = stellar::StellarConfig { networks: BTreeMap::new() };
+            let mut network_config = stellar::StellarConfig {
+                networks: BTreeMap::new(),
+            };
 
             for (network, signer) in &stellar_config.signers {
-                let credentials = signer.stellar_credentials.as_ref()
-                .ok_or_else(|| eyre::eyre!("Stellar credentials missing"))?;
-        
+                let credentials = signer
+                    .stellar_credentials
+                    .as_ref()
+                    .ok_or_else(|| eyre::eyre!("Stellar credentials missing"))?;
+
                 // Stellar uses public_key directly as account identifier
                 let public_key = credentials.public_key.clone();
-        
-                let _ignored=network_config.networks.insert(
-                     network.clone().into(),
+
+                let _ignored = network_config.networks.insert(
+                    network.clone().into(),
                     stellar::NetworkConfig {
                         network: network.clone().into(),
                         rpc_url: signer.rpc_url.clone(),
@@ -248,16 +293,16 @@ impl Client<AnyTransport> {
                     },
                 );
             }
-            
+
             stellar_transport = Some(stellar::StellarTransport::new(&network_config));
         }
 
         let all_transports = transport!(
             near_transport,
             starknet_transport,
-            icp_transport,       
-            stellar_transport,    
-            ethereum_transport  
+            icp_transport,
+            stellar_transport,
+            ethereum_transport
         );
 
         Ok(Client::new(all_transports))
