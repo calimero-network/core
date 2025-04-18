@@ -261,12 +261,10 @@ fn handle_alias_command(
             } else {
                 let default_alias: Alias<ContextId> =
                     "default".parse().expect("'default' is a valid alias name");
-                node.ctx_manager
-                    .lookup_alias(default_alias, None)?
+                node.ctx_manager.lookup_alias(default_alias, None)?
             };
-            for (alias, identity, scope) in node
-                .ctx_manager
-                .list_aliases::<PublicKey>(context_id)?
+            for (alias, identity, scope) in
+                node.ctx_manager.list_aliases::<PublicKey>(context_id)?
             {
                 let context = scope.as_ref().map_or("---", |s| s.as_str());
                 println!(
