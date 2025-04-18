@@ -259,15 +259,24 @@ fn handle_alias_command(
                         .ok_or_eyre("unable to resolve context alias")?,
                 )
             } else {
-                None
+                let default_alias: Alias<ContextId> =
+                    "default".parse().expect("'default' is a valid alias name");
+                node.ctx_manager
+                    .lookup_alias(default_alias, None)?
             };
-            let aliases = node.ctx_manager.list_aliases::<PublicKey>(context_id)?;
-            for (alias, identity, scope) in aliases {
+            for (alias, identity, scope) in node
+                .ctx_manager
+                .list_aliases::<PublicKey>(context_id)?
+            {
+                let context = scope.as_ref().map_or("---", |s| s.as_str());
                 println!(
-                    "{ind} {c1:44} | {c2:44} | {c3}",
-                    c1 = format!("{:?}", scope),
-                    c2 = identity,
-                    c3 = alias.cyan()
+                    "{ind} {}",
+                    format_args!(
+                        "{c1:44} | {c2:44} | {c3}",
+                        c1 = context.cyan(),
+                        c2 = identity.cyan(),
+                        c3 = alias.cyan(),
+                    )
                 );
             }
         }
