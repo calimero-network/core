@@ -8,7 +8,6 @@ mod applications;
 pub mod call;
 pub mod common;
 pub mod context;
-pub mod identity;
 pub mod peers;
 pub mod state;
 pub mod store;
@@ -33,7 +32,6 @@ pub enum SubCommand {
     Application(applications::ApplicationCommand),
     Call(call::CallCommand),
     Context(context::ContextCommand),
-    Identity(identity::IdentityCommand),
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
@@ -60,7 +58,6 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Application(application) => application.run(node).await?,
         SubCommand::Call(call) => call.run(node).await?,
         SubCommand::Context(context) => context.run(node).await?,
-        SubCommand::Identity(identity) => identity.run(node)?,
         SubCommand::Peers(peers) => peers.run(node).await?,
         SubCommand::State(state) => state.run(node)?,
         SubCommand::WebUI(cmd) => cmd.run(node)?,
