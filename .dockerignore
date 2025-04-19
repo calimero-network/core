@@ -1,0 +1,83 @@
+# Include any files or directories that you don't want to be copied to your
+# container here (e.g., local build artifacts, temporary files, etc.).
+#
+# For more help, visit the .dockerignore file reference guide at
+# https://docs.docker.com/go/build-context-dockerignore/
+
+# System and IDE files
+**/.DS_Store
+**/.classpath
+**/.dockerignore
+**/.env
+**/.git
+**/.gitignore
+**/.project
+**/.settings
+**/.toolstarget
+**/.vs
+**/.vscode
+**/.idea
+**/*.swp
+**/*.swo
+**/*~
+
+# Project files
+**/*.*proj.user
+**/*.dbmdl
+**/*.jfm
+**/charts
+**/docker-compose*
+**/compose.y*ml
+**/Dockerfile*
+
+# Node.js related
+**/node_modules
+**/npm-debug.log
+**/.npm
+**/package-lock.json
+**/pnpm-lock.yaml
+**/.pnpm-store
+**/.yarn
+**/.next
+**/dist
+**/build
+
+# Rust related
+**/target
+**/*.rs.bk
+**/*.o
+**/*.a
+**/*.so
+**/*.dylib
+**/*.rlib
+**/*.dll
+**/Cargo.lock.orig
+**/.cargo-ok
+
+# Build outputs
+/bin
+/out
+
+# Documentation
+LICENSE
+README.md
+**/docs
+**/*.md
+
+# Logs and databases
+**/*.log
+**/*.sql
+**/*.sqlite
+
+# Testing
+**/coverage
+**/.nyc_output
+**/cypress/screenshots
+**/cypress/videos
+
+# Environment variables
+**/.env*
+**/.envrc
+**/secrets.*
+**/*.pem
+**/*.key
