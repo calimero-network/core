@@ -37,10 +37,10 @@ jobs:
           done
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
-            EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+            EOF=$(openssl rand -hex 9)
             echo "comment_content<<$EOF" >> "$GITHUB_OUTPUT"
             echo "**❌ The PR description is missing these required sections:**\n" >> "$GITHUB_OUTPUT"
-            for section in "${required_sections[@]}"; do
+            for section in "${missing_sections[@]}"; do
               echo "- \`$section\`" >> "$GITHUB_OUTPUT"
             done
             echo "\n**This PR is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
