@@ -79,6 +79,7 @@ jobs:
 
       - name: Set Permissions
         run: |
+          tree
           chmod +x target/debug/e2e-tests target/debug/merod target/debug/meroctl
 
       - name: Download Contracts
