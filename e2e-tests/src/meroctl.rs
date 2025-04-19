@@ -115,6 +115,7 @@ impl Meroctl {
                 [
                     "context",
                     "invite",
+                    "--context",
                     context_id,
                     invitee_public_key,
                     "--as",
@@ -173,6 +174,7 @@ impl Meroctl {
                     "proxy",
                     "get",
                     "proposals",
+                    "--context",
                     context_id,
                     "--args",
                     &args_json,
@@ -197,6 +199,7 @@ impl Meroctl {
             node_name,
             [
                 "call",
+                "--context",
                 context_id,
                 method_name,
                 "--args",

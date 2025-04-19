@@ -11,8 +11,7 @@ use crate::Node;
 #[derive(Copy, Clone, Debug, Parser)]
 pub struct PeersCommand {
     /// The context to list the peers for
-    #[arg(default_value = "default")]
-    context: Alias<ContextId>,
+    context: Option<Alias<ContextId>>,
 }
 
 impl PeersCommand {
@@ -23,17 +22,19 @@ impl PeersCommand {
             node.network_client.peer_count().await.cyan()
         );
 
-        let context_id = node
-            .ctx_manager
-            .resolve_alias(self.context, None)?
-            .ok_or_eyre("unable to resolve context")?;
+        if let Some(context) = self.context {
+            let context_id = node
+                .ctx_manager
+                .resolve_alias(context, None)?
+                .ok_or_eyre("unable to resolve context")?;
 
-        let topic = TopicHash::from_raw(context_id);
-        println!(
-            "{ind} Peers (Session) for Topic {}: {:#?}",
-            topic.clone(),
-            node.network_client.mesh_peer_count(topic).await.cyan()
-        );
+            let topic = TopicHash::from_raw(context_id);
+            println!(
+                "{ind} Peers (Session) for Topic {}: {:#?}",
+                topic.clone(),
+                node.network_client.mesh_peer_count(topic).await.cyan()
+            );
+        }
 
         Ok(())
     }

@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 use owo_colors::OwoColorize;
 
 use crate::Node;
@@ -12,15 +12,22 @@ use crate::Node;
 #[derive(Copy, Clone, Debug, Parser)]
 pub struct StateCommand {
     /// The context to view the state for
-    #[arg(long, short, default_value = "default")]
-    context: Alias<ContextId>,
+    context: Option<Alias<ContextId>>,
 }
 
 impl StateCommand {
     pub fn run(self, node: &Node) -> EyreResult<()> {
         let ind = ">>".blue();
 
-        let context_id = node.ctx_manager.resolve_alias(self.context, None)?;
+        let mut context_id = None;
+        if let Some(context) = self.context {
+            let Some(id) = node.ctx_manager.resolve_alias(context, None)? else {
+                bail!("unable to resolve context");
+            };
+
+            context_id = Some(id);
+        }
+
         let handle = node.store.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 

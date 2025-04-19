@@ -28,6 +28,7 @@ pub const EXAMPLES: &str = r"
     EXAMPLES
 ))]
 pub struct CallCommand {
+    #[arg(long, short)]
     #[arg(
         value_name = "CONTEXT",
         help = "The context to call the method on",
@@ -41,7 +42,11 @@ pub struct CallCommand {
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
     pub args: Option<Value>,
 
-    #[arg(long = "as", help = "The identity of the executor")]
+    #[arg(
+        long = "as",
+        help = "The identity of the executor",
+        default_value = "default"
+    )]
     pub executor: Alias<PublicKey>,
 
     #[arg(long, default_value = "dontcare", help = "Id of the JsonRpc call")]
