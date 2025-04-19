@@ -23,8 +23,8 @@ jobs:
         env:
           REQUIRED_SECTIONS: |
             ## Description
-            ## Test plan
-            ## Documentation update
+            ## Test Plan
+            ## Documentation Update
         run: |
           readarray -t required_sections <<< "$REQUIRED_SECTIONS"
           pr_body_base64=$(echo -n "${{ github.event.pull_request.body }}" | base64 -w0)
