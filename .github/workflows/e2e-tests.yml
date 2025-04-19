@@ -190,6 +190,14 @@ jobs:
           path: e2e-tests/corpus/
           retention-days: 2
 
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-report-${{ matrix.protocol }}
+          path: e2e-tests/corpus/report.json
+          retention-days: 1
+
   comment:
     name: Comment on PR
     needs: test
@@ -199,9 +207,9 @@ jobs:
       - name: Download all reports
         uses: actions/download-artifact@v4
         with:
-          pattern: e2e-tests-*
+          pattern: e2e-test-report-*
           merge-multiple: false
-          path: corpus/
+          path: reports/
 
       - name: Download Binary
         uses: actions/download-artifact@v4
@@ -215,14 +223,14 @@ jobs:
 
       - name: Combine reports
         run: |
-          mkdir -p corpus
+          mkdir -p reports
 
           # List all found reports for debugging
           echo "Found report files:"
-          find corpus/ -type f -name "report.json" -ls
+          find reports/ -type f -name "report.json" -ls
 
           # Create a single array of all protocol directories
-          mapfile -t protocols < <(find corpus/ -type f -name "report.json" | sort | xargs dirname)
+          mapfile -t protocols < <(find reports/ -type f -name "report.json" | sort | xargs dirname)
 
           if [ ${#protocols[@]} -eq 0 ]; then
             echo "No report files found!"
@@ -232,10 +240,10 @@ jobs:
           echo "Found protocols: ${protocols[*]}"
 
           # Combine all reports into a single markdown file
-          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir corpus
+          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
 
           echo "Combined report content:"
-          cat corpus/report.md
+          cat reports/report.md
 
       - name: Prepare Comment
         if: ${{ !cancelled() }}
@@ -244,5 +252,5 @@ jobs:
           --arg pr "${{ github.event.number }}"
           --arg tag e2e-tests-report
           --arg mode recreate
-          --rawfile message corpus/report.md
+          --rawfile message reports/report.md
           '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
