@@ -174,15 +174,16 @@ jobs:
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
 
-          ./target/debug/e2e-tests \
-            --input-dir ./e2e-tests/config \
-            --output-dir ./e2e-tests/corpus \
-            --merod-binary ./target/debug/merod \
-            --meroctl-binary ./target/debug/meroctl \
-            --scenarios ${{ matrix.protocol }}
+          exit 1
+          # ./target/debug/e2e-tests \
+          #   --input-dir ./e2e-tests/config \
+          #   --output-dir ./e2e-tests/corpus \
+          #   --merod-binary ./target/debug/merod \
+          #   --meroctl-binary ./target/debug/meroctl \
+          #   --scenarios ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
-        if: success() || failure()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-tests-${{ matrix.protocol }}
