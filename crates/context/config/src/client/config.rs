@@ -20,7 +20,6 @@ pub struct ClientConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientConfigParams {
     pub signer: ClientSelectedSigner,
-    pub protocol: String,
     pub network: String,
     pub contract_id: String,
 }
