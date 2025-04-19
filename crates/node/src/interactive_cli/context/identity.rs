@@ -253,18 +253,19 @@ fn handle_alias_command(
                 c3 = "Alias",
             );
             let context_id = if let Some(ctx) = context {
-                Some(
-                    node.ctx_manager
-                        .resolve_alias(ctx, None)?
-                        .ok_or_eyre("unable to resolve context alias")?,
-                )
+                node.ctx_manager
+                    .resolve_alias(ctx, None)?
+                    .ok_or_eyre("unable to resolve context alias")?
             } else {
                 let default_alias: Alias<ContextId> =
                     "default".parse().expect("'default' is a valid alias name");
-                node.ctx_manager.lookup_alias(default_alias, None)?
+                node.ctx_manager
+                    .lookup_alias(default_alias, None)?
+                    .ok_or_eyre("unable to resolve default context")?
             };
-            for (alias, identity, scope) in
-                node.ctx_manager.list_aliases::<PublicKey>(context_id)?
+            for (alias, identity, scope) in node
+                .ctx_manager
+                .list_aliases::<PublicKey>(Some(context_id))?
             {
                 let context = scope.as_ref().map_or("---", |s| s.as_str());
                 println!(
