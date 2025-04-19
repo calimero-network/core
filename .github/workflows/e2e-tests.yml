@@ -19,6 +19,7 @@ on:
       - Cargo.lock
       - 'crates/**'
       - 'e2e-tests/**'
+      - '.github/**'
 
 env:
   # Or you can use 'prerelease-{PR-NUMBER}'
