@@ -318,7 +318,7 @@ impl ContextCommand {
                 let (tx, rx) = oneshot::channel();
 
                 node.ctx_manager.create_context(
-                    &protocol.as_str(),
+                    protocol.as_str().to_owned(),
                     context_seed.map(Into::into),
                     application_id,
                     None,

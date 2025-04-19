@@ -75,7 +75,6 @@ impl EthereumSandboxEnvironment {
     pub fn node_args(&self) -> Vec<String> {
         vec![
             // Protocol and network configuration
-            format!("context.config.ethereum.protocol=\"{}\"", "ethereum"),
             format!("context.config.ethereum.network=\"{}\"", "sepolia"),
             format!(
                 "context.config.ethereum.contract_id=\"{}\"",

@@ -59,7 +59,6 @@ impl StellarSandboxEnvironment {
 
     pub fn node_args(&self) -> Vec<String> {
         vec![
-            format!("context.config.stellar.protocol=\"{}\"", "stellar"),
             format!("context.config.stellar.network=\"{}\"", "local"),
             format!(
                 "context.config.stellar.contract_id=\"{}\"",
