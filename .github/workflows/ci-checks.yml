@@ -1,4 +1,4 @@
-name: CI checks
+name: CI
 
 on:
   push:
