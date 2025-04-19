@@ -62,6 +62,8 @@ pub struct ClientRelayerSigner {
 pub struct ClientLocalSigner {
     pub rpc_url: Url,
     #[serde(flatten)]
+    pub credentials: Credentials,
+    #[serde(flatten)]
     pub near_credentials: Option<NearCredentials>,
     #[serde(flatten)]
     pub starknet_credentials: Option<StarknetCredentials>,
