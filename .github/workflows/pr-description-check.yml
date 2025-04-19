@@ -1,4 +1,5 @@
 name: PR Description
+# ^~~ if changed, update comment.yml as well
 
 on:
   pull_request:
@@ -19,10 +20,6 @@ jobs:
     name: Validate
     runs-on: ubuntu-latest
     if: github.actor != 'dependabot[bot]'
-    outputs:
-      comment_action: ${{ steps.validate_description.outputs.comment_action }}
-      comment_content: ${{ steps.validate_description.outputs.comment_content }}
-      is_valid: ${{ steps.validate_description.outputs.is_valid }}
     steps:
       - name: Validate Description
         id: validate_description
@@ -38,7 +35,7 @@ jobs:
           done
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
-            EOF=$(openssl rand -hex 9)
+            EOF=$(openssl rand -hex 8)
             echo "comment_content<<$EOF" >> "$GITHUB_OUTPUT"
             echo -e "**❌ The PR description is missing these required sections:**\n" >> "$GITHUB_OUTPUT"
             for section in "${missing_sections[@]}"; do
@@ -48,26 +45,16 @@ jobs:
             echo "$EOF" >> $GITHUB_OUTPUT
 
             echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
-            echo "is_valid=false" >> "$GITHUB_OUTPUT"
           else
             echo "comment_action=delete" >> "$GITHUB_OUTPUT"
-            echo "comment_content=" >> "$GITHUB_OUTPUT"
-            echo "is_valid=true" >> "$GITHUB_OUTPUT"
           fi
 
-  update-comment:
-    name: Report
-    runs-on: ubuntu-latest
-    needs: validate
-    steps:
-      - name: Post PR Comment
-        uses: thollander/actions-comment-pull-request@v3
-        with:
-          pr-number: ${{ github.event.pull_request.number }}
-          comment-tag: pr-description-check
-          mode: ${{ needs.validate.outputs.comment_action }}
-          message: ${{ needs.validate.outputs.comment_content }}
-
-      - name: Fail job if PR description is invalid
-        if: needs.validate.outputs.is_valid == 'false'
-        run: exit 1
+      - name: Prepare Comment
+        if: ${{ !cancelled() }}
+        run: >-
+          jq -n
+            --arg pr "${{ github.event.number }}"
+            --arg tag pr-description-check
+            --arg mode "${{ steps.validate_description.outputs.comment_action }}"
+            --arg message "${{ steps.validate_description.outputs.comment_content }}"
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json

@@ -1,4 +1,5 @@
 name: e2e-tests
+# ^~~ if changed, update comment.yml as well
 
 on:
   push:
@@ -236,10 +237,12 @@ jobs:
           echo "Combined report content:"
           cat corpus/report.md
 
-      - name: Update pull request comment
-        uses: thollander/actions-comment-pull-request@v3
-        with:
-          file-path: ./corpus/report.md
-          pr-number: ${{ github.event.number }}
-          comment-tag: e2e-tests-report
-          mode: recreate
+      - name: Prepare Comment
+        if: ${{ !cancelled() }}
+        run: >-
+          jq -n
+            --arg pr "${{ github.event.number }}"
+            --arg tag e2e-tests-report
+            --arg mode recreate
+            --rawfile message corpus/report.md
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json

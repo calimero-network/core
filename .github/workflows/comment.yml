@@ -1,0 +1,38 @@
+name: Comment
+
+on:
+  workflow_run:
+    workflows: ['e2e-tests', 'PR Description']
+    types:
+      - completed
+
+jobs:
+  submit:
+    name: Submit
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request'
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-comment-payload
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Extract payload
+        id: payload
+        run: |
+          cat payload.json
+
+          echo "pr=$(jq '.pr' payload.json)" >> $GITHUB_OUTPUT
+          echo "tag=$(jq '.tag' payload.json)" >> $GITHUB_OUTPUT
+          echo "mode=$(jq '.mode' payload.json)" >> $GITHUB_OUTPUT
+          echo "message=$(jq '.message' payload.json)" >> $GITHUB_OUTPUT
+
+      - name: Apply pull request comment
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          pr-number: ${{ steps.payload.outputs.pr }}
+          comment-tag: ${{ steps.payload.outputs.tag }}
+          mode: ${{ steps.payload.outputs.mode }}
+          message: ${{ steps.payload.outputs.message }}
