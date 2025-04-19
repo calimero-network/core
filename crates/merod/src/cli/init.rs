@@ -201,7 +201,6 @@ impl InitCommand {
                 "near".to_owned(),
                 ClientConfigParams {
                     network: "testnet".into(),
-                    protocol: "near".into(),
                     contract_id: "calimero-context-config.testnet".parse()?,
                     signer: ClientSelectedSigner::Relayer,
                 },
@@ -237,7 +236,6 @@ impl InitCommand {
                 "starknet".to_owned(),
                 ClientConfigParams {
                     network: "sepolia".into(),
-                    protocol: "starknet".into(),
                     contract_id:
                         "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                             .parse()?,
@@ -275,7 +273,6 @@ impl InitCommand {
                 "icp".to_owned(),
                 ClientConfigParams {
                     network: "local".into(),
-                    protocol: "icp".into(),
                     contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
                     signer: ClientSelectedSigner::Local,
                 },
@@ -305,7 +302,6 @@ impl InitCommand {
                 "stellar".to_owned(),
                 ClientConfigParams {
                     network: "testnet".into(),
-                    protocol: "stellar".into(),
                     contract_id: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY"
                         .parse()?,
                     signer: ClientSelectedSigner::Relayer,
@@ -342,7 +338,6 @@ impl InitCommand {
                 "ethereum".to_owned(),
                 ClientConfigParams {
                     network: "sepolia".into(),
-                    protocol: "ethereum".into(),
                     contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".parse()?,
                     signer: ClientSelectedSigner::Relayer,
                 },
