@@ -38,7 +38,7 @@ jobs:
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
-            missing_sections=$(printf "- %s\n" "${missing_sections[@]}")
+            missing_sections=$(printf ' - %s\n' "${missing_sections[@]}")
             echo "comment_content=**PR is missing required sections:** <br><br>${missing_sections}<br><br>Please update the PR description.<br><br>**❌ PR merge is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
             echo "is_valid=false" >> "$GITHUB_OUTPUT"
           else
