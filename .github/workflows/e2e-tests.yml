@@ -248,7 +248,7 @@ jobs:
       - name: Prepare Comment
         run: >-
           jq -n
-          --arg pr "${{ github.event.number }}"
+          --arg pr '${{ github.event.number }}'
           --arg tag e2e-tests-report
           --arg mode recreate
           --rawfile message reports/report.md

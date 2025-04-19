@@ -18,6 +18,7 @@ jobs:
         with:
           name: pr-comment-payload
           run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract payload
         id: payload
@@ -32,7 +33,7 @@ jobs:
       - name: Apply pull request comment
         uses: thollander/actions-comment-pull-request@v3
         with:
-          pr-number: ${{ steps.payload.outputs.pr }}
-          comment-tag: ${{ steps.payload.outputs.tag }}
-          mode: ${{ steps.payload.outputs.mode }}
-          message: ${{ steps.payload.outputs.message }}
+          pr-number: ${{ fromJson(steps.payload.outputs.pr) }}
+          comment-tag: ${{ fromJson(steps.payload.outputs.tag) }}
+          mode: ${{ fromJson(steps.payload.outputs.mode) }}
+          message: ${{ fromJson(steps.payload.outputs.message) }}
