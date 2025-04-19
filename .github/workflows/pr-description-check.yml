@@ -1,4 +1,4 @@
-name: PR
+name: PR Description
 
 on:
   pull_request:
@@ -15,8 +15,8 @@ env:
     ## Documentation Update
 
 jobs:
-  check-description:
-    name: Check Description
+  validate:
+    name: Validate
     runs-on: ubuntu-latest
     if: github.actor != 'dependabot[bot]'
     outputs:
@@ -56,18 +56,18 @@ jobs:
           fi
 
   update-comment:
-    name: Update PR Comment
+    name: Report
     runs-on: ubuntu-latest
-    needs: check-description
+    needs: validate
     steps:
       - name: Post PR Comment
         uses: thollander/actions-comment-pull-request@v3
         with:
           pr-number: ${{ github.event.pull_request.number }}
           comment-tag: pr-description-check
-          mode: ${{ needs.check-description.outputs.comment_action }}
-          message: ${{ needs.check-description.outputs.comment_content }}
+          mode: ${{ needs.validate.outputs.comment_action }}
+          message: ${{ needs.validate.outputs.comment_content }}
 
       - name: Fail job if PR description is invalid
-        if: needs.check-description.outputs.is_valid == 'false'
+        if: needs.validate.outputs.is_valid == 'false'
         run: exit 1

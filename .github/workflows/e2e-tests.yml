@@ -1,4 +1,4 @@
-name: End-to-end tests
+name: e2e-tests
 
 on:
   push:
@@ -26,7 +26,7 @@ env:
 
 jobs:
   build:
-    name: Build Apps & Binaries
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -61,7 +61,6 @@ jobs:
           retention-days: 2
 
   test:
-    name: 'Test ${{ matrix.protocol }}'
     needs: build
     runs-on: ubuntu-latest
     strategy:
@@ -174,13 +173,12 @@ jobs:
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
 
-          exit 1
-          # ./target/debug/e2e-tests \
-          #   --input-dir ./e2e-tests/config \
-          #   --output-dir ./e2e-tests/corpus \
-          #   --merod-binary ./target/debug/merod \
-          #   --meroctl-binary ./target/debug/meroctl \
-          #   --scenarios ${{ matrix.protocol }}
+          ./target/debug/e2e-tests \
+            --input-dir ./e2e-tests/config \
+            --output-dir ./e2e-tests/corpus \
+            --merod-binary ./target/debug/merod \
+            --meroctl-binary ./target/debug/meroctl \
+            --scenarios ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
         if: ${{ !cancelled() }}
