@@ -35,6 +35,7 @@ starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 url = { workspace = true, optional = true }
+zksync-web3-rs = { version = "0.2.1", optional = true }
 
 [lints]
 workspace = true
@@ -46,6 +47,7 @@ client = [
   "starknet_client",
   "stellar_client",
   "ethereum_client",
+  "zksync_client",
   "dep:either",
   "dep:eyre",
   "reqwest/json",
@@ -71,4 +73,16 @@ ethereum = [
 ethereum_client = [
   "ethereum"
 ]
+
+zksync = [
+  "alloy",
+  "alloy-sol-types",
+  "ethabi",
+  "dep:zksync-web3-rs",
+]
+
+zksync_client = [
+  "zksync"
+]
+
 stellar_client = ["stellar"]

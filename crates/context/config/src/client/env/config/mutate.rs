@@ -249,11 +249,7 @@ impl<'a> Method<Ethereum> for Mutate<'a> {
 
         let r = B256::from(signature.r());
         let s = B256::from(signature.s());
-        let v = if signature.recid().to_byte() == 0 {
-            27
-        } else {
-            28
-        };
+        let v = if signature.recid().to_byte() == 0 { 27 } else { 28 };
 
         let signed_request = SolSignedRequest {
             payload: sol_request,

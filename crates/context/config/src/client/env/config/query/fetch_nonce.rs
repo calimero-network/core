@@ -149,7 +149,8 @@ impl Method<Ethereum> for FetchNonceRequest {
         let context_id: [u8; 32] = self.context_id.rt().expect("infallible conversion");
         let member_id: [u8; 32] = self.member_id.rt().expect("infallible conversion");
 
-        Ok((context_id, member_id).abi_encode())
+        let args = (context_id, member_id);
+        Ok(args.abi_encode())
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {

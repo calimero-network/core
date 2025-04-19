@@ -103,6 +103,7 @@ pub enum Scenario {
     Near,
     Stellar,
     Icp,
+    Zksync,
 }
 
 impl std::fmt::Display for Scenario {
@@ -112,6 +113,7 @@ impl std::fmt::Display for Scenario {
             Scenario::Near => write!(f, "near"),
             Scenario::Stellar => write!(f, "stellar"),
             Scenario::Icp => write!(f, "icp"),
+            Scenario::Zksync => write!(f, "zksync"),
         }
     }
 }

@@ -1,4 +1,12 @@
 {
+  "params": {
+    "zksync": {
+      "signer": "self",
+      "protocol": "zksync",
+      "network": "testnet",
+      "contract_id": "0x67Fc5Aa53440518DdbAd4B381fD4b86fFD77B776"
+    }
+  },
   "network": {
     "nodeCount": 3,
     "swarmHost": "0.0.0.0",
@@ -8,6 +16,24 @@
   },
   "merod": {
     "args": []
+  },
+  "signer": {
+    "relayer": {
+      "url": "http://localhost:8080"
+    },
+    "self": {
+      "protocols": {
+        "zksync": {
+          "testnet": {
+            "rpc_url": "http://127.0.0.1:8011",
+            "credentials": {
+              "account_id": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+              "secret_key": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+            }
+          }
+        }
+      }
+    }
   },
   "protocolSandboxes": [
     {
@@ -40,8 +66,17 @@
     {
       "protocol": "ethereum",
       "config": {
-        "contextConfigContractId": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        "contextConfigContractId": "0xDE0bD381D1e3eC29465fC4AAcaF11994F75fE6a9",
         "rpcUrl": "http://127.0.0.1:8545",
+        "accountId": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        "secretKey": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      }
+    },
+    {
+      "protocol": "zksync",
+      "config": {
+        "contextConfigContractId": "0x67Fc5Aa53440518DdbAd4B381fD4b86fFD77B776",
+        "rpcUrl": "http://127.0.0.1:8011",
         "accountId": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
         "secretKey": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
       }

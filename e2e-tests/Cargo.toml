@@ -37,5 +37,10 @@ soroban-client.workspace = true
 soroban-sdk.workspace = true
 base64.workspace = true
 
+# Add ZkSync dependencies
+zksync-web3-rs = "0.2.1"
+hex = "0.4"
+ethabi = "18.0.0"
+
 [lints]
 workspace = true

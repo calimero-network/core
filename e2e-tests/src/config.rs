@@ -6,6 +6,7 @@ use crate::protocol::ethereum::EthereumProtocolConfig;
 use crate::protocol::icp::IcpProtocolConfig;
 use crate::protocol::near::NearProtocolConfig;
 use crate::protocol::stellar::StellarProtocolConfig;
+use crate::protocol::zksync::ZkSyncProtocolConfig;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,4 +39,5 @@ pub enum ProtocolSandboxConfig {
     Icp(IcpProtocolConfig),
     Stellar(StellarProtocolConfig),
     Ethereum(EthereumProtocolConfig),
+    Zksync(ZkSyncProtocolConfig),
 }
