@@ -198,7 +198,7 @@ jobs:
       - name: Download all reports
         uses: actions/download-artifact@v4
         with:
-          pattern: e2e-test-*
+          pattern: e2e-tests-*
           merge-multiple: false
           path: corpus/
 
