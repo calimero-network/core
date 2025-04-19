@@ -18,6 +18,7 @@ on:
       - Cargo.lock
       - 'crates/**'
       - 'e2e-tests/**'
+      - 'miraclx/patch-ci'
 
 env:
   # Or you can use 'prerelease-{PR-NUMBER}'
