@@ -53,8 +53,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: >-
           jq -n
-            --arg pr "${{ github.event.number }}"
-            --arg tag pr-description-check
-            --arg mode "${{ steps.validate_description.outputs.comment_action }}"
-            --arg message "${{ steps.validate_description.outputs.comment_content }}"
-            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+          --arg pr "${{ github.event.number }}"
+          --arg tag pr-description-check
+          --arg mode "${{ steps.validate_description.outputs.comment_action }}"
+          --arg message "${{ steps.validate_description.outputs.comment_content }}"
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json

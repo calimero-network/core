@@ -241,8 +241,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: >-
           jq -n
-            --arg pr "${{ github.event.number }}"
-            --arg tag e2e-tests-report
-            --arg mode recreate
-            --rawfile message corpus/report.md
-            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+          --arg pr "${{ github.event.number }}"
+          --arg tag e2e-tests-report
+          --arg mode recreate
+          --rawfile message corpus/report.md
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
