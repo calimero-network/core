@@ -9,8 +9,7 @@ use crate::driver::{Test, TestContext};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaitStep {
-    #[serde(rename = "durationMs", with = "serde_duration")]
-    pub duration: Duration,
+    pub duration_ms: u64,
     pub r#for: WaitFor,
 }
 
@@ -46,26 +45,6 @@ pub enum WaitFor {
     Consensus,
 }
 
-mod serde_duration {
-    use core::time::Duration;
-
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_u64(duration.as_millis() as u64)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        u64::deserialize(deserializer).map(Duration::from_millis)
-    }
-}
-
 impl Test for WaitStep {
     fn display_name(&self) -> String {
         format!("wait ({:?})", self.r#for)
@@ -77,14 +56,14 @@ impl Test for WaitStep {
         let factor = match self.r#for {
             WaitFor::Consensus => {
                 let nodes = (ctx.invitees.len() + 1) as f64;
-                let pairs = nodes.log2().ceil() as u32;
+                let pairs = nodes.log2().ceil() as u64;
                 extra = format!(" (assuming we reach consensus in {} rounds)", pairs);
                 pairs
             }
             _ => 1,
         };
 
-        let duration = self.duration * factor;
+        let duration = Duration::from_millis(self.duration_ms * factor);
 
         ctx.output_writer
             .write_str(&format!("Waiting for {} ms{extra}", duration.as_millis()));
