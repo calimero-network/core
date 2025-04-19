@@ -8,6 +8,12 @@ permissions:
   pull-requests: write
   contents: read
 
+env:
+  REQUIRED_SECTIONS: |
+    ## Description
+    ## Test Plan
+    ## Documentation Update
+
 jobs:
   check-description:
     name: Check Description
@@ -20,11 +26,6 @@ jobs:
     steps:
       - name: Validate Description
         id: validate_description
-        env:
-          REQUIRED_SECTIONS: |
-            ## Description
-            ## Test plan
-            ## Documentation update
         run: |
           readarray -t required_sections <<< "$REQUIRED_SECTIONS"
           pr_body_base64=$(echo -n "${{ github.event.pull_request.body }}" | base64 -w0)
@@ -37,8 +38,16 @@ jobs:
           done
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
+            EOF=$(openssl rand -hex 9)
+            echo "comment_content<<$EOF" >> "$GITHUB_OUTPUT"
+            echo -e "**❌ The PR description is missing these required sections:**\n" >> "$GITHUB_OUTPUT"
+            for section in "${missing_sections[@]}"; do
+              echo "- \`$section\`" >> "$GITHUB_OUTPUT"
+            done
+            echo -e "\n**This PR is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
+            echo "$EOF" >> $GITHUB_OUTPUT
+
             echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
-            echo "comment_content=**PR is missing required sections:** <br><br>${missing_sections[*]}.<br><br>Please update the PR description.<br><br>**❌ PR merge is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
             echo "is_valid=false" >> "$GITHUB_OUTPUT"
           else
             echo "comment_action=delete" >> "$GITHUB_OUTPUT"
