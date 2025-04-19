@@ -18,7 +18,6 @@ on:
       - Cargo.lock
       - 'crates/**'
       - 'e2e-tests/**'
-      - '.github/workflows/e2e-tests.yml'
 
 env:
   # Or you can use 'prerelease-{PR-NUMBER}'
@@ -79,7 +78,6 @@ jobs:
 
       - name: Set Permissions
         run: |
-          tree
           chmod +x target/debug/e2e-tests target/debug/merod target/debug/meroctl
 
       - name: Download Contracts
