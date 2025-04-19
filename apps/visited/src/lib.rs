@@ -1,10 +1,7 @@
 #![allow(clippy::len_without_is_empty)]
 
-use std::result::Result;
-
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::types::Error;
 use calimero_storage::collections::{UnorderedMap, UnorderedSet};
 
 #[app::state]
@@ -23,15 +20,15 @@ impl VisitedCities {
         }
     }
 
-    pub fn add_person(&mut self, person: String) -> Result<bool, Error> {
+    pub fn add_person(&mut self, person: String) -> app::Result<bool> {
         Ok(self.visited.insert(person, UnorderedSet::new())?.is_some())
     }
 
-    pub fn add_visited_city(&mut self, person: String, city: String) -> Result<bool, Error> {
+    pub fn add_visited_city(&mut self, person: String, city: String) -> app::Result<bool> {
         Ok(self.visited.get(&person)?.unwrap().insert(city)?)
     }
 
-    pub fn get_person_with_most_cities_visited(&self) -> Result<String, Error> {
+    pub fn get_person_with_most_cities_visited(&self) -> app::Result<String> {
         let mut max = 0;
         let mut person = String::new();
 
@@ -42,6 +39,7 @@ impl VisitedCities {
                 person = person_key.clone();
             }
         }
+
         Ok(person)
     }
 }

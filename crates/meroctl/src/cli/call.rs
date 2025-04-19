@@ -28,7 +28,12 @@ pub const EXAMPLES: &str = r"
     EXAMPLES
 ))]
 pub struct CallCommand {
-    #[arg(value_name = "CONTEXT", help = "The context to call the method on")]
+    #[arg(long, short)]
+    #[arg(
+        value_name = "CONTEXT",
+        help = "The context to call the method on",
+        default_value = "default"
+    )]
     pub context: Alias<ContextId>,
 
     #[arg(value_name = "METHOD", help = "The method to call")]
@@ -37,7 +42,11 @@ pub struct CallCommand {
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
     pub args: Option<Value>,
 
-    #[arg(long = "as", help = "The identity of the executor")]
+    #[arg(
+        long = "as",
+        help = "The identity of the executor",
+        default_value = "default"
+    )]
     pub executor: Alias<PublicKey>,
 
     #[arg(long, default_value = "dontcare", help = "Id of the JsonRpc call")]
@@ -80,12 +89,12 @@ impl CallCommand {
 
         let multiaddr = fetch_multiaddr(&config)?;
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
-            .await?
+        let resolve_response =
+            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
+        let context_id = resolve_response
             .value()
             .cloned()
-            .ok_or_eyre("unable to resolve")?;
-
+            .ok_or_eyre("Failed to resolve context: no value found")?;
         let executor = resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
             .await?
             .value()

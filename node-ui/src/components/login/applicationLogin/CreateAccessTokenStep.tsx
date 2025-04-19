@@ -4,7 +4,7 @@ import translations from '../../../constants/en.global.json';
 import { ModalWrapper } from './SelectIdentityStep';
 import { truncateText } from '../../../utils/displayFunctions';
 import { Tooltip } from 'react-tooltip';
-import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import { ClipboardDocumentIcon, XCircleIcon } from '@heroicons/react/24/solid';
 import { copyToClipboard } from '../../../utils/copyToClipboard';
 
 interface CreateAccessTokenStepProps {
@@ -15,6 +15,7 @@ interface CreateAccessTokenStepProps {
   onCreateToken: () => void;
   errorMessage: string;
   backLoginStep: () => void;
+  closePopup: () => void;
 }
 
 export default function CreateAccessTokenStep({
@@ -25,6 +26,7 @@ export default function CreateAccessTokenStep({
   onCreateToken,
   errorMessage,
   backLoginStep,
+  closePopup,
 }: CreateAccessTokenStepProps) {
   const t = translations.appLoginPopup.createToken;
 
@@ -32,6 +34,9 @@ export default function CreateAccessTokenStep({
     <ModalWrapper>
       <div className="step">3/3</div>
       <div className="title">{t.title}</div>
+      <div className="close">
+        <XCircleIcon className="copy-icon" onClick={closePopup} />
+      </div>
       <div className="wrapper">
         <div className="subtitle separator">
           <span>{t.detailsText}</span>

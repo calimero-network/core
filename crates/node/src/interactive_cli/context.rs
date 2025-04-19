@@ -4,6 +4,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{ContextConfig as ContextConfigKey, ContextMeta as ContextMetaKey};
+use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
 use owo_colors::OwoColorize;
@@ -68,6 +69,7 @@ enum Commands {
     /// Invite a user to a context
     Invite {
         /// The context to invite the user to
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         /// The identity inviting the other
         #[clap(long = "as")]
@@ -94,25 +96,54 @@ enum Commands {
     /// Leave a context
     Leave {
         /// The context to leave
+        #[clap(long, short)]
         context: Alias<ContextId>,
     },
     /// Delete a context
     Delete {
         /// The context to delete
+        #[clap(long, short)]
         context: Alias<ContextId>,
     },
     /// Update the proxy for a context
     UpdateProxy {
         /// The context to update the proxy for
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         #[clap(long = "as")]
         /// The identity requesting the update
+        identity: Alias<PublicKey>,
+    },
+    Update {
+        /// The context to update
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+
+        /// The application ID to update in the context
+        #[clap(long, short = 'a', conflicts_with = "path")]
+        application_id: Option<ApplicationId>,
+
+        /// Path to the application file to install locally
+        #[clap(long, conflicts_with = "application_id")]
+        path: Option<Utf8PathBuf>,
+
+        /// Metadata needed for the application installation
+        #[clap(long, conflicts_with = "application_id")]
+        metadata: Option<String>,
+
+        /// The identity requesting the update
+        #[clap(long = "as", default_value = "default")]
         identity: Alias<PublicKey>,
     },
     /// Manage context aliases
     Alias {
         #[command(subcommand)]
         command: AliasCommands,
+    },
+    /// Set a context as the default context
+    Use {
+        /// The context to set as default
+        context: Alias<ContextId>,
     },
 }
 
@@ -249,7 +280,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
+                    .ok_or_eyre("unable to resolve context")?;
                 if node.ctx_manager.delete_context(&context_id).await? {
                     println!(
                         "{ind} Successfully deleted context '{}'",
@@ -341,7 +372,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
+                    .ok_or_eyre("unable to resolve context")?;
                 let inviter_id = node
                     .ctx_manager
                     .resolve_alias(inviter, Some(context_id))?
@@ -374,8 +405,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
-
+                    .ok_or_eyre("unable to resolve context")?;
                 let _ = node.ctx_manager.delete_context(&context_id).await?;
                 println!(
                     "{ind} Deleted context '{}'",
@@ -386,7 +416,7 @@ impl ContextCommand {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
+                    .ok_or_eyre("unable to resolve context")?;
                 let public_key = node
                     .ctx_manager
                     .resolve_alias(identity, Some(context_id))?
@@ -400,7 +430,84 @@ impl ContextCommand {
                     pretty_alias(Some(context), &context_id)
                 );
             }
+            Commands::Update {
+                context,
+                application_id,
+                path,
+                metadata,
+                identity,
+            } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+                let public_key = node
+                    .ctx_manager
+                    .resolve_alias(identity, Some(context_id))?
+                    .ok_or_eyre("unable to resolve identity")?;
+
+                match (application_id, path) {
+                    // Update with application ID
+                    (Some(app_id), None) => {
+                        node.ctx_manager
+                            .update_application_id(context_id, app_id, public_key)
+                            .await?;
+                        println!(
+                            "{ind} Updated application for context '{}'",
+                            pretty_alias(Some(context), &context_id)
+                        );
+                    }
+
+                    // Install application from path
+                    (None, Some(app_path)) => {
+                        let metadata_bytes = metadata.map(String::into_bytes).unwrap_or_default();
+
+                        let application_id = node
+                            .ctx_manager
+                            .install_application_from_path(app_path, metadata_bytes)
+                            .await?;
+
+                        println!("{ind} Installed application: {}", application_id);
+
+                        node.ctx_manager
+                            .update_application_id(context_id, application_id, public_key)
+                            .await?;
+
+                        println!(
+                            "{ind} Installed and updated application for context '{}'",
+                            pretty_alias(Some(context), &context_id)
+                        );
+                    }
+
+                    _ => {
+                        return Err(eyre::eyre!(
+                            "Either application_id or path must be provided"
+                        ));
+                    }
+                }
+            }
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
+            Commands::Use { context } => {
+                let default_alias: Alias<ContextId> =
+                    "default".parse().expect("'default' is a valid alias name");
+
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                node.ctx_manager
+                    .create_alias(default_alias, None, context_id)?;
+
+                if context.as_str() != context_id.as_str() {
+                    println!(
+                        "{} Default context set to: {} (from alias '{}')",
+                        ind, context_id, context
+                    );
+                } else {
+                    println!("{} Default context set to: {}", ind, context_id);
+                }
+            }
         }
         Ok(())
     }
@@ -409,6 +516,16 @@ impl ContextCommand {
 fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreResult<()> {
     match command {
         AliasCommands::Add { alias, context_id } => {
+            let handle = node.store.handle();
+
+            if !handle.has(&ContextMetaKey::new(context_id))? {
+                println!(
+                    "{ind} Error: Context with ID '{}' does not exist.",
+                    context_id.cyan()
+                );
+                return Ok(());
+            }
+
             node.ctx_manager.create_alias(alias, None, context_id)?;
             println!("{ind} Successfully created alias '{}'", alias.cyan());
         }

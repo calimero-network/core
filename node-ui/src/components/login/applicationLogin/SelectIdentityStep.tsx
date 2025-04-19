@@ -4,7 +4,7 @@ import ListItem from './ListItem';
 import translations from '../../../constants/en.global.json';
 import { truncateText } from '../../../utils/displayFunctions';
 import { Tooltip } from 'react-tooltip';
-import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import { ClipboardDocumentIcon, XCircleIcon } from '@heroicons/react/24/solid';
 import { copyToClipboard } from '../../../utils/copyToClipboard';
 
 export const ModalWrapper = styled.div`
@@ -141,6 +141,12 @@ export const ModalWrapper = styled.div`
     position: absolute;
     top: 1rem;
   }
+  .close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    cursor: pointer;
+  }
 `;
 
 interface SelectIdentityStepProps {
@@ -150,6 +156,7 @@ interface SelectIdentityStepProps {
   selectedContextId: string;
   updateLoginStep: (selectedIdentity: string) => void;
   backLoginStep: () => void;
+  closePopup: () => void;
 }
 
 export default function SelectIdentityStep({
@@ -159,6 +166,7 @@ export default function SelectIdentityStep({
   selectedContextId,
   updateLoginStep,
   backLoginStep,
+  closePopup,
 }: SelectIdentityStepProps) {
   const t = translations.appLoginPopup.selectIdentity;
 
@@ -166,6 +174,9 @@ export default function SelectIdentityStep({
     <ModalWrapper>
       <span className="step">2/3</span>
       <div className="title">{t.title}</div>
+      <div className="close">
+        <XCircleIcon className="copy-icon" onClick={closePopup} />
+      </div>
       <div className="wrapper">
         <div className="subtitle separator">
           <span>{t.detailsText}</span>

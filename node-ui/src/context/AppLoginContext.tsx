@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import AppLoginPopup from '../components/login/applicationLogin/AppLoginPopup';
 import { useServerDown } from './ServerDownContext';
 import {
+  closeLoginPopup,
   getStorageApplicationId,
   getStorageCallbackUrl,
   getStorageNodeAuthorized,
@@ -123,6 +124,11 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
     };
   }, []);
 
+  const closePopup = () => {
+    setShowPopup(false);
+    closeLoginPopup();
+  };
+
   return (
     <div>
       {showPopup && (
@@ -131,6 +137,7 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
           callbackUrl={callbackUrl}
           applicationId={applicationId}
           showServerDownPopup={showServerDownPopup}
+          closePopup={closePopup}
         />
       )}
       {children}

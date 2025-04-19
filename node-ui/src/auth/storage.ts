@@ -10,6 +10,10 @@ export const setStorageCallbackUrl = (callbackUrl: string) => {
   localStorage.setItem(CALLBACK_URL, JSON.stringify(callbackUrl));
 };
 
+export const clearStorageCallbackUrl = () => {
+  localStorage.removeItem(CALLBACK_URL);
+};
+
 export const getStorageCallbackUrl = (): string | null => {
   if (typeof window !== 'undefined' && window.localStorage) {
     const storageCallbackUrl = localStorage.getItem(CALLBACK_URL);
@@ -25,6 +29,15 @@ export const getStorageCallbackUrl = (): string | null => {
 
 export const setStorageApplicationId = (applicationId: string) => {
   localStorage.setItem(APPLICATION_ID, JSON.stringify(applicationId));
+};
+
+export const clearStorageApplicationId = () => {
+  localStorage.removeItem(APPLICATION_ID);
+};
+
+export const closeLoginPopup = () => {
+  clearStorageApplicationId();
+  clearStorageCallbackUrl();
 };
 
 export const getStorageApplicationId = (): string | null => {

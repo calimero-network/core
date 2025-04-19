@@ -32,7 +32,6 @@ MOCK_CONTRACT_ADDRESS="0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
 # Start Anvil in the background with &
 echo "Starting Anvil..."
 anvil --host 0.0.0.0 --port 8545 &
-ANVIL_PID=$!
 
 # Give Anvil a moment to start up
 sleep 2
