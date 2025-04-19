@@ -3,12 +3,14 @@ use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
+use crate::cli::version::get_version_info;
 use crate::defaults;
 
 mod config;
 mod init;
 mod relay;
 mod run;
+mod version;
 
 use config::ConfigCommand;
 use init::InitCommand;
@@ -31,7 +33,7 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = get_version_info(), about, long_about = None)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",

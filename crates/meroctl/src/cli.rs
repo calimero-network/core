@@ -8,6 +8,7 @@ use eyre::Report as EyreReport;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 
+use crate::cli::version::get_version_info;
 use crate::defaults;
 use crate::output::{Format, Output, Report};
 
@@ -18,6 +19,7 @@ mod context;
 mod identity;
 mod peers;
 mod proxy;
+mod version;
 
 use app::AppCommand;
 use call::CallCommand;
@@ -35,7 +37,7 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = get_version_info(), about, long_about = None)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",
