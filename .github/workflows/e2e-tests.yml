@@ -246,7 +246,6 @@ jobs:
           cat reports/report.md
 
       - name: Prepare Comment
-        if: ${{ !cancelled() }}
         run: >-
           jq -n
           --arg pr "${{ github.event.number }}"
@@ -254,3 +253,9 @@ jobs:
           --arg mode recreate
           --rawfile message reports/report.md
           '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload
+          path: payload.json

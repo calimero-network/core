@@ -58,3 +58,9 @@ jobs:
           --arg mode "${{ steps.validate_description.outputs.comment_action }}"
           --arg message "${{ steps.validate_description.outputs.comment_content }}"
           '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload
+          path: payload.json
