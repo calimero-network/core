@@ -1,4 +1,5 @@
-name: End-to-end tests
+name: e2e-tests
+# ^~~ if changed, update comment.yml as well
 
 on:
   push:
@@ -25,7 +26,7 @@ env:
 
 jobs:
   build:
-    name: Build Apps & Binaries
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -60,7 +61,7 @@ jobs:
           retention-days: 2
 
   test:
-    name: 'Test ${{ matrix.protocol }}'
+    name: ${{ matrix.protocol }}
     needs: build
     runs-on: ubuntu-latest
     strategy:
@@ -170,7 +171,6 @@ jobs:
         id: e2e-tests
         env:
           NO_COLOR: '1'
-        continue-on-error: true
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
 
@@ -182,20 +182,15 @@ jobs:
             --scenarios ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-tests-${{ matrix.protocol }}
           path: e2e-tests/corpus/
           retention-days: 2
 
-      - name: Fail on Test Failures
-        shell: bash
-        if: |
-          steps.e2e-tests.outcome == 'failure'
-        run: exit 1
-
       - name: Upload test report
-        if: success() || failure()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-report-${{ matrix.protocol }}
@@ -203,7 +198,7 @@ jobs:
           retention-days: 1
 
   comment:
-    name: Comment on PR
+    name: Submit Report
     needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
@@ -249,10 +244,17 @@ jobs:
           echo "Combined report content:"
           cat reports/report.md
 
-      - name: Update pull request comment
-        uses: thollander/actions-comment-pull-request@v3
+      - name: Prepare Comment
+        run: >-
+          jq -n
+          --arg pr '${{ github.event.number }}'
+          --arg tag e2e-tests-report
+          --arg mode recreate
+          --rawfile message reports/report.md
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        uses: actions/upload-artifact@v4
         with:
-          file-path: ./reports/report.md
-          pr-number: ${{ github.event.number }}
-          comment-tag: e2e-tests-report
-          mode: recreate
+          name: pr-comment-payload
+          path: payload.json
