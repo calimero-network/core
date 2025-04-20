@@ -55,6 +55,9 @@ enum AliasSubcommands {
         /// The context that the identity is a member of
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
+        /// Force overwrite existing alias
+        #[arg(long, short)]
+        force: bool,
     },
     #[command(about = "Remove an identity alias from a context", aliases = ["rm", "del", "delete"])]
     Remove {
@@ -188,6 +191,7 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             name,
             identity,
             context,
+            force,
         } => {
             let context_id = node
                 .ctx_manager
@@ -204,6 +208,27 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
                     context_id.cyan()
                 );
                 return Ok(());
+            }
+
+            if let Some(existing_identity) =
+                node.ctx_manager.lookup_alias(name, Some(context_id))?
+            {
+                if !force {
+                    println!(
+                        "{ind} Error: Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
+                        name.cyan(),
+                        existing_identity.cyan()
+                    );
+                    return Ok(());
+                }
+                println!(
+                    "{ind} Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                    name.cyan(),
+                    existing_identity.cyan(),
+                    identity.cyan()
+                );
+
+                node.ctx_manager.delete_alias(name, Some(context_id))?;
             }
 
             node.ctx_manager
