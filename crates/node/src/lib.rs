@@ -458,7 +458,6 @@ impl Node {
         method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
-        // substitute_aliases: Vec<Alias<PublicKey>>,
         aliases: Vec<Alias<PublicKey>>,
     ) -> Result<Outcome, CallError> {
         let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
@@ -567,9 +566,7 @@ impl Node {
                     .ctx_manager
                     .resolve_alias(*alias, Some(context_id))
                     .map_err(|_| CallError::InternalError)?
-                    .ok_or(CallError::InternalError {
-                        // alias: alias.to_string(),
-                    })?;
+                    .ok_or(CallError::InternalError)?;
 
                 modified_payload = modified_payload.replace(&placeholder, &public_key.to_string());
             }
