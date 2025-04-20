@@ -1,4 +1,5 @@
-use calimero_primitives::{alias::Alias, application::ApplicationId};
+use calimero_primitives::alias::Alias;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
@@ -33,7 +34,7 @@ impl ExecutionRequest {
             payload,
             executor_public_key,
             outcome_sender,
-            substitutes
+            substitutes,
         }
     }
 }

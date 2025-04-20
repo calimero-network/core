@@ -23,7 +23,7 @@ pub struct CallCommand {
     #[clap(long = "as", default_value = "default")]
     executor: Alias<PublicKey>,
     #[clap(long = "substitute")]
-    substitutes: Vec<Alias<PublicKey>>, 
+    substitutes: Vec<Alias<PublicKey>>,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
