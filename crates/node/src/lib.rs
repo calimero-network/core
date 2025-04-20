@@ -443,7 +443,7 @@ impl Node {
                 &request.method,
                 request.payload,
                 request.executor_public_key,
-                request.substitute_aliases
+                request.substitutes,
             )
             .await;
 
@@ -458,7 +458,8 @@ impl Node {
         method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
-        substitute_aliases: Vec<Alias<PublicKey>>, 
+        // substitute_aliases: Vec<Alias<PublicKey>>,
+        aliases: Vec<Alias<PublicKey>>,
     ) -> Result<Outcome, CallError> {
         let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
             return Err(CallError::ContextNotFound);
@@ -479,14 +480,9 @@ impl Node {
             });
         }
 
-        let payload = if !substitute_aliases.is_empty() {
-            self.substitute_aliases_in_payload(
-                context_id,
-                payload,
-                &substitute_aliases,
-                executor_public_key,
-            )
-            .await?
+        let payload = if !aliases.is_empty() {
+            self.substitute_aliases_in_payload(context_id, payload, &aliases)
+                .await?
         } else {
             payload
         };
@@ -555,17 +551,14 @@ impl Node {
         Ok(outcome)
     }
 
-    #[allow(dead_code)]
     async fn substitute_aliases_in_payload(
         &self,
         context_id: ContextId,
         payload: Vec<u8>,
         aliases: &[Alias<PublicKey>],
-        executor_public_key: PublicKey,
     ) -> Result<Vec<u8>, CallError> {
-        let _ = executor_public_key;
         let payload_str = String::from_utf8(payload).map_err(|_| CallError::InternalError)?;
-        
+
         let mut modified_payload = payload_str;
         for alias in aliases {
             let placeholder = format!("{{{}}}", alias.as_ref());
@@ -577,14 +570,11 @@ impl Node {
                     .ok_or(CallError::InternalError {
                         // alias: alias.to_string(),
                     })?;
-                
-                modified_payload = modified_payload.replace(
-                    &placeholder,
-                    &public_key.to_string(),
-                );
+
+                modified_payload = modified_payload.replace(&placeholder, &public_key.to_string());
             }
         }
-        
+
         Ok(modified_payload.into_bytes())
     }
 

@@ -186,6 +186,7 @@ pub(crate) async fn call(
             args,
             executor_public_key,
             outcome_sender,
+            vec![],
         ))
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;

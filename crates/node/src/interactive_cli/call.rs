@@ -23,7 +23,7 @@ pub struct CallCommand {
     #[clap(long = "as", default_value = "default")]
     executor: Alias<PublicKey>,
     #[clap(long = "substitute")]
-    substitute: Vec<Alias<PublicKey>>, 
+    substitutes: Vec<Alias<PublicKey>>, 
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -49,13 +49,20 @@ impl CallCommand {
             return Ok(());
         };
 
+        // let substitutions = self.substitutes.into_iter().map(|alias| {
+        //     let public_key = node.ctx_manager
+        //         .resolve_alias(alias, Some(context_id))?
+        //         .ok_or_eyre("unable to resolve alias")?;
+        //     Ok((alias.to_string(), public_key))
+        // }).collect::<eyre::Result<Vec<_>>>()?;
+
         let outcome_result = node
             .handle_call(
                 context.id,
                 &self.method,
                 serde_json::to_vec(&self.args.unwrap_or(json!({})))?,
                 executor,
-                self.substitute,
+                self.substitutes,
             )
             .await;
 
@@ -77,7 +84,7 @@ impl CallCommand {
                                         .join("\n")
                                 )
                             } else {
-                                format!("(raw): {:?}", result.cyan())
+                                format!("(raw): {:?}", String::from_utf8_lossy(&result).cyan())
                             };
 
                             for line in result.lines() {

@@ -51,7 +51,11 @@ pub struct CallCommand {
 
     #[arg(long, default_value = "dontcare", help = "Id of the JsonRpc call")]
     pub id: Option<String>,
-    #[arg(long = "substitute")]
+    #[arg(
+        long = "substitute",
+        help = "Aliases to substitute in the payload (format: {alias})",
+        value_name = "ALIAS"
+    )]
     pub substitute: Vec<Alias<PublicKey>>,
 }
 
@@ -110,7 +114,6 @@ impl CallCommand {
             self.method,
             self.args.unwrap_or(json!({})),
             executor,
-            self.substitute,
         ));
 
         let request = Request::new(
