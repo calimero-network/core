@@ -1,8 +1,10 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, Utc};
+use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use reqwest::Client;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CHECK_INTERVAL_HOURS: i64 = 24;
@@ -25,7 +27,7 @@ pub async fn check_for_update() {
     if let Some(info) = &cache {
         let hours_since = (Utc::now() - info.last_checked).num_hours();
         if hours_since < CHECK_INTERVAL_HOURS {
-            return; 
+            return;
         }
     }
 
@@ -34,7 +36,7 @@ pub async fn check_for_update() {
             Ok(v) => v,
             Err(_) => return,
         };
-        
+
         if latest > current {
             println!("\n🔔 New version of meroctl available: v{latest} (current: v{current})");
             println!("💡 To update: brew upgrade meroctl (or rerun your installer)\n");
