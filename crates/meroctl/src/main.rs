@@ -3,11 +3,13 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use crate::cli::RootCommand;
+use crate::version::check_for_update;
 
 mod cli;
 mod common;
 mod defaults;
 mod output;
+mod version;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -17,6 +19,8 @@ async fn main() -> ExitCode {
     }
 
     let command = RootCommand::parse();
+
+    check_for_update().await;
 
     match command.run().await {
         Ok(()) => ExitCode::SUCCESS,

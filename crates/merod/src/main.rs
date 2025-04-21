@@ -7,15 +7,19 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::{registry, EnvFilter};
 
 use crate::cli::RootCommand;
+use crate::version::check_for_update;
 
 mod cli;
 mod defaults;
+mod version;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
     setup()?;
 
     let command = RootCommand::parse();
+
+    check_for_update().await;
 
     command.run().await
 }
