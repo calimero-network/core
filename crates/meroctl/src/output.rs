@@ -17,7 +17,6 @@ pub struct Output {
 pub trait Report {
     fn report(&self);
 
-    // New method for pretty printing
     fn pretty_report(&self) {
         self.report();
     }
@@ -40,7 +39,6 @@ impl PrettyTable {
             return;
         }
 
-        // Calculate column widths
         let mut widths: Vec<usize> = self.headers.iter().map(|h| h.len()).collect();
 
         for row in &self.rows {
@@ -51,7 +49,6 @@ impl PrettyTable {
             }
         }
 
-        // Print header
         let header = self
             .headers
             .iter()
@@ -63,7 +60,6 @@ impl PrettyTable {
         println!("{}", header);
         println!("{}", "─".repeat(header.len()));
 
-        // Print rows
         for row in &self.rows {
             let row_str = row
                 .iter()
@@ -77,7 +73,6 @@ impl PrettyTable {
     }
 }
 
-// Implement PrettyTable for Report where applicable
 impl Report for PrettyTable {
     fn report(&self) {
         self.print();
