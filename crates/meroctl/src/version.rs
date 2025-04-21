@@ -43,7 +43,7 @@ pub async fn check_for_update() {
         }
 
         let updated = ToolVersionInfo {
-            version: CURRENT_VERSION.to_string(),
+            version: CURRENT_VERSION.to_owned(),
             last_checked: Utc::now(),
         };
 
