@@ -15,6 +15,7 @@ mod app;
 mod bootstrap;
 mod call;
 mod context;
+mod did;
 mod identity;
 mod peers;
 mod proxy;
@@ -22,6 +23,7 @@ mod proxy;
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
+use did::DidCommand;
 use identity::IdentityCommand;
 use peers::PeersCommand;
 use proxy::ProxyCommand;
@@ -59,6 +61,7 @@ pub enum SubCommands {
     Call(CallCommand),
     Bootstrap(BootstrapCommand),
     Peers(PeersCommand),
+    Did(DidCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -110,6 +113,7 @@ impl RootCommand {
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Bootstrap(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
+            SubCommands::Did(did) => did.run(&environment).await,
         };
 
         if let Err(err) = result {
