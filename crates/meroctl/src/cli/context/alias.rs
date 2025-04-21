@@ -30,6 +30,9 @@ pub enum ContextAliasSubcommand {
 
         #[arg(help = "The context to create an alias for")]
         context_id: ContextId,
+
+        #[arg(long, short, help = "Force overwrite if alias already exists")]
+        force: bool,
     },
 
     #[command(about = "Remove a context alias", aliases = ["rm", "del", "delete"])]
@@ -51,7 +54,11 @@ impl ContextAliasCommand {
         let multiaddr = fetch_multiaddr(&config)?;
 
         match self.command {
-            ContextAliasSubcommand::Add { alias, context_id } => {
+            ContextAliasSubcommand::Add {
+                alias,
+                context_id,
+                force,
+            } => {
                 if !context_exists(&multiaddr, &config.identity, &context_id).await? {
                     environment.output.write(&ErrorLine(&format!(
                         "Context with ID '{}' does not exist",
@@ -59,6 +66,27 @@ impl ContextAliasCommand {
                     )));
                     return Ok(());
                 }
+
+                let lookup_result =
+                    lookup_alias(multiaddr, &config.identity, alias.clone(), None).await?;
+                if let Some(existing_context) = lookup_result.data.value {
+                    if !force {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
+                            alias,
+                            existing_context
+                        )));
+                        return Ok(());
+                    }
+
+                    println!(
+                        "Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                        alias, existing_context, context_id
+                    );
+
+                    delete_alias(multiaddr, &config.identity, alias.clone(), None).await?;
+                }
+
                 let res =
                     create_alias(multiaddr, &config.identity, alias, None, context_id).await?;
                 environment.output.write(&res);
@@ -84,6 +112,14 @@ impl ContextAliasCommand {
 pub struct UseCommand {
     /// The context to set as default
     pub context: Alias<ContextId>,
+
+    /// Force overwrite if default alias already exists
+    #[arg(
+        long,
+        short,
+        help = "Force overwrite if default alias already points elsewhere"
+    )]
+    pub force: bool,
 }
 
 impl UseCommand {
@@ -104,12 +140,33 @@ impl UseCommand {
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
+        let lookup_result =
+            lookup_alias(multiaddr, &config.identity, default_alias.clone(), None).await?;
+        if let Some(existing_context) = lookup_result.data.value {
+            if existing_context != resolved_context_id && !self.force {
+                environment.output.write(&ErrorLine(&format!(
+                    "Default alias already points to '{}'. Use --force to overwrite.",
+                    existing_context
+                )));
+                return Ok(());
+            }
+
+            if existing_context != resolved_context_id && self.force {
+                println!(
+                    "Warning: Overwriting default alias from '{}' to '{}'",
+                    existing_context, resolved_context_id
+                );
+
+                delete_alias(multiaddr, &config.identity, default_alias.clone(), None).await?;
+            }
+        }
+
         let res = create_alias(
             multiaddr,
             &config.identity,
             default_alias,
             None,
-            resolved_context_id,
+            resolved_context_id.clone(),
         )
         .await
         .wrap_err("Failed to set default context")?;

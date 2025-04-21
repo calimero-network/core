@@ -144,6 +144,14 @@ enum Commands {
     Use {
         /// The context to set as default
         context: Alias<ContextId>,
+
+        /// Force overwrite if default alias already exists
+        #[clap(
+            long,
+            short,
+            help = "Force overwrite if default alias already points elsewhere"
+        )]
+        force: bool,
     },
 }
 
@@ -490,7 +498,7 @@ impl ContextCommand {
                 }
             }
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
-            Commands::Use { context } => {
+            Commands::Use { context, force } => {
                 let default_alias: Alias<ContextId> =
                     "default".parse().expect("'default' is a valid alias name");
 
@@ -498,6 +506,30 @@ impl ContextCommand {
                     .ctx_manager
                     .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve context")?;
+
+                if let Some(existing_context) =
+                    node.ctx_manager.lookup_alias(default_alias, None)?
+                {
+                    if existing_context != context_id && !force {
+                        println!(
+                            "{} Error: Default alias already points to '{}'. Use --force to overwrite.",
+                            ind,
+                            existing_context.cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    if existing_context != context_id && force {
+                        println!(
+                            "{} Warning: Overwriting default alias from '{}' to '{}'",
+                            ind,
+                            existing_context.cyan(),
+                            context_id.cyan()
+                        );
+
+                        node.ctx_manager.delete_alias(default_alias, None)?;
+                    }
+                }
 
                 node.ctx_manager
                     .create_alias(default_alias, None, context_id)?;

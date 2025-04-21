@@ -38,6 +38,13 @@ enum IdentitySubcommands {
         /// The context to set the default identity for
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
+
+        #[arg(
+            long,
+            short,
+            help = "Force overwrite if default alias already points elsewhere"
+        )]
+        force: bool,
     },
 }
 
@@ -96,7 +103,11 @@ impl IdentityCommand {
             IdentitySubcommands::Alias { command } => {
                 handle_alias_command(node, command, &ind.to_string())?;
             }
-            IdentitySubcommands::Use { identity, context } => {
+            IdentitySubcommands::Use {
+                identity,
+                context,
+                force,
+            } => {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
@@ -110,6 +121,32 @@ impl IdentityCommand {
                 let default_alias: Alias<PublicKey> = "default"
                     .parse()
                     .wrap_err("'default' is a valid alias name")?;
+
+                if let Some(existing_identity) = node
+                    .ctx_manager
+                    .lookup_alias(default_alias, Some(context_id))?
+                {
+                    if existing_identity != identity_id && !force {
+                        println!(
+                            "{} Error: Default alias already points to '{}'. Use --force to overwrite.",
+                            ind,
+                            existing_identity.cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    if existing_identity != identity_id && force {
+                        println!(
+                            "{} Warning: Overwriting default alias from '{}' to '{}'",
+                            ind,
+                            existing_identity.cyan(),
+                            identity_id.cyan()
+                        );
+
+                        node.ctx_manager
+                            .delete_alias(default_alias, Some(context_id))?;
+                    }
+                }
 
                 node.ctx_manager
                     .create_alias(default_alias, Some(context_id), identity_id)?;
