@@ -3,6 +3,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
+use color_eyre::owo_colors::OwoColorize;
 use eyre::Result as EyreResult;
 use reqwest::Client;
 
@@ -35,10 +36,16 @@ impl Report for JoinContextResponse {
     fn report(&self) {
         match self.data {
             Some(ref payload) => {
-                println!("context_id {}", payload.context_id);
-                println!("member_public_key: {}", payload.member_public_key);
+                println!("{} {}", "✓".green(), "Successfully joined context".bold());
+                println!("  Context ID: {}", payload.context_id.to_string().cyan());
+                println!(
+                    "  Member Public Key: {}",
+                    payload.member_public_key.to_string().cyan()
+                );
             }
-            None => todo!(),
+            None => {
+                println!("{} {}", "✗".red(), "Failed to join context".bold());
+            }
         }
     }
 }

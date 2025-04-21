@@ -3,6 +3,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
 use clap::Parser;
+use color_eyre::owo_colors::OwoColorize;
 use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
@@ -43,9 +44,12 @@ impl Report for InviteToContextResponse {
     fn report(&self) {
         match self.data {
             Some(ref payload) => {
-                println!("Invitation payload: {}", payload)
+                println!("{} {}", "✓".green(), "Invitation created".bold());
+                println!("  Payload: {}", payload.to_string().cyan());
             }
-            None => println!("No invitation payload"),
+            None => {
+                println!("{} {}", "✗".red(), "No invitation payload".bold());
+            }
         }
     }
 }

@@ -14,7 +14,7 @@ use crate::cli::Environment;
 use crate::common::{
     fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
 };
-use crate::output::Report;
+use crate::output::{PrettyTable, Report};
 
 #[derive(Parser, Debug)]
 #[command(about = "Fetch details about the context")]
@@ -50,10 +50,13 @@ impl Report for GetContextResponse {
 
 impl Report for GetContextUsersResponse {
     fn report(&self) {
+        let mut table = PrettyTable::new(&["User ID", "Joined At"]);
+
         for user in &self.data.context_users {
-            println!("user_id: {}", user.user_id);
-            println!("joined_at: {}", user.joined_at);
+            table.add_row(vec![user.user_id.to_string(), user.joined_at.to_string()]);
         }
+
+        table.print();
     }
 }
 
@@ -71,9 +74,13 @@ impl Report for GetContextStorageResponse {
 
 impl Report for GetContextIdentitiesResponse {
     fn report(&self) {
+        let mut table = PrettyTable::new(&["Public Key"]);
+
         for identity in &self.data.identities {
-            println!("{}", identity);
+            table.add_row(vec![identity.to_string()]);
         }
+
+        table.print();
     }
 }
 

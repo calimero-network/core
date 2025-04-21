@@ -1,5 +1,6 @@
 use calimero_server_primitives::admin::GetPeersCountResponse;
 use clap::Parser;
+use color_eyre::owo_colors::OwoColorize;
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 use reqwest::Client;
@@ -23,7 +24,7 @@ pub struct PeersCommand;
 
 impl Report for GetPeersCountResponse {
     fn report(&self) {
-        println!("{}", self.count);
+        println!("{}", self.count.to_string().bold().green());
     }
 }
 

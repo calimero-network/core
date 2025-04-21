@@ -2,6 +2,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
+use color_eyre::owo_colors::OwoColorize;
 use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
@@ -21,6 +22,14 @@ pub struct DeleteCommand {
 impl Report for DeleteContextResponse {
     fn report(&self) {
         println!("is_deleted: {}", self.data.is_deleted);
+    }
+
+    fn pretty_report(&self) {
+        if self.data.is_deleted {
+            println!("{} {}", "✓".green(), "Context successfully deleted".bold());
+        } else {
+            println!("{} {}", "✗".red(), "Context deletion failed".bold());
+        }
     }
 }
 

@@ -5,7 +5,7 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
-use crate::output::Report;
+use crate::output::{PrettyTable, Report};
 
 #[derive(Debug, Parser)]
 #[command(about = "List all contexts")]
@@ -13,9 +13,17 @@ pub struct ListCommand;
 
 impl Report for GetContextsResponse {
     fn report(&self) {
+        let mut table = PrettyTable::new(&["ID", "Application ID", "Root Hash"]);
+
         for context in &self.data.contexts {
-            context.report();
+            table.add_row(vec![
+                context.id.to_string(),
+                context.application_id.to_string(),
+                context.root_hash.to_string(),
+            ]);
         }
+
+        table.print();
     }
 }
 

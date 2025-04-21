@@ -1,6 +1,7 @@
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::GenerateContextIdentityResponse;
 use clap::Parser;
+use color_eyre::owo_colors::OwoColorize;
 use eyre::Result as EyreResult;
 
 use crate::cli::Environment;
@@ -12,8 +13,12 @@ pub struct GenerateCommand;
 
 impl Report for GenerateContextIdentityResponse {
     fn report(&self) {
-        println!("public_key: {}", self.data.public_key);
-        println!("private_key: {}", self.data.private_key);
+        println!("{} {}", "✓".green(), "Key pair generated".bold());
+        println!("  Public Key: {}", self.data.public_key.to_string().cyan());
+        println!(
+            "  Private Key: {}",
+            self.data.private_key.to_string().cyan()
+        );
     }
 }
 

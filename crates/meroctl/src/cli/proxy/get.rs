@@ -6,6 +6,7 @@ use calimero_server_primitives::admin::{
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
 use clap::{Parser, ValueEnum};
+use color_eyre::owo_colors::OwoColorize;
 use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
@@ -16,7 +17,7 @@ use crate::cli::Environment;
 use crate::common::{
     fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
 };
-use crate::output::Report;
+use crate::output::{PrettyTable, Report};
 
 #[derive(Parser, Debug)]
 #[command(about = "Fetch details about the proxy contract")]
@@ -54,7 +55,7 @@ pub enum GetRequest {
 
 impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
-        println!("{:?}", self.data);
+        println!("Active proposals: {}", self.data.to_string().bold().green());
     }
 }
 
@@ -66,9 +67,13 @@ impl Report for GetNumberOfProposalApprovalsResponse {
 
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
+        let mut table = PrettyTable::new(&["Approver"]);
+
         for user in &self.data {
-            println!("{}", user);
+            table.add_row(vec![user.to_string()]);
         }
+
+        table.print();
     }
 }
 
