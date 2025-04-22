@@ -233,7 +233,10 @@ jobs:
       - name: Prepare Docker context with pre-built binaries
         run: |
           mkdir -p .docker-context-${{ matrix.image }}
-          cp -R . .docker-context-${{ matrix.image }}/
+          # Copy only necessary files instead of recursively copying everything
+          cp Dockerfile .docker-context-${{ matrix.image }}/
+          cp Cargo.toml .docker-context-${{ matrix.image }}/
+          cp Cargo.lock .docker-context-${{ matrix.image }}/
           mkdir -p .docker-context-${{ matrix.image }}/prebuild/linux/amd64
           cp target/x86_64-unknown-linux-gnu/release/${{ matrix.image }} .docker-context-${{ matrix.image }}/prebuild/linux/amd64/
           
