@@ -241,9 +241,10 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/${{ matrix.image }} .docker-context-${{ matrix.image }}/prebuild/linux/amd64/
           
           # Create a custom Dockerfile that uses pre-built binaries
+          # Use Ubuntu instead of Debian to match GLIBC version
           cat << EOF > .docker-context-${{ matrix.image }}/Dockerfile.prebuild
           # syntax=docker/dockerfile:1
-          FROM debian:bookworm-slim AS ${{ matrix.image }}
+          FROM ubuntu:22.04 AS ${{ matrix.image }}
           
           # Add labels for container metadata
           LABEL org.opencontainers.image.description="${{ matrix.image == 'merod' && 'Merod daemon' || 'Meroctl - Control tool for Merod daemon' }}"
