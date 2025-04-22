@@ -143,11 +143,20 @@ jobs:
       # - name: Install dependencies for cross-compilation
       # - name: Download and set up OpenSSL for cross-compilation
 
-      - name: Build x86_64 binaries
+      - name: Install musl-tools for static linking
         run: |
-          echo "Building x86_64-unknown-linux-gnu binaries"
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Add rust target for musl (static linking)
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Build x86_64 binaries with musl (static linking)
+        run: |
+          echo "Building x86_64-unknown-linux-musl binaries (statically linked)"
           binaries=$(echo '${{ needs.prepare.outputs.binary_matrix }}' | jq -r 'join(" ") | split(" ") | map("-p " + .) | join(" ")')
-          cargo build $binaries --release --target x86_64-unknown-linux-gnu
+          # Build with musl for static linking
+          RUSTFLAGS='-C target-feature=+crt-static' cargo build $binaries --release --target x86_64-unknown-linux-musl
 
       # Skip aarch64 builds for testing
 
@@ -155,7 +164,7 @@ jobs:
         run: |
           mkdir -p artifacts
           echo '${{ needs.prepare.outputs.binary_matrix }}' | jq -r '.[]' | while read binary; do
-            tar -czf artifacts/"$binary"_x86_64-unknown-linux-gnu.tar.gz -C target/x86_64-unknown-linux-gnu/release "$binary"
+            tar -czf artifacts/"$binary"_x86_64-unknown-linux-musl.tar.gz -C target/x86_64-unknown-linux-musl/release "$binary"
           done
 
       - name: Upload artifacts
@@ -199,7 +208,7 @@ jobs:
       - name: Add targets
         run: |
           # Only x86_64 for testing
-          rustup target add x86_64-unknown-linux-gnu
+          rustup target add x86_64-unknown-linux-musl
 
       - name: Restore cargo registry cache
         uses: actions/cache@v4
@@ -209,11 +218,13 @@ jobs:
             ~/.cargo/git
           key: ${{ needs.prepare.outputs.shared_cargo_registry_key }}
 
-      - name: Restore cargo build cache x86_64
+      - name: Restore cargo build cache for musl
         uses: actions/cache@v4
         with:
-          path: target/x86_64-unknown-linux-gnu
-          key: cargo-build-x86_64-linux-${{ hashFiles('**/Cargo.lock') }}
+          path: target/x86_64-unknown-linux-musl
+          key: cargo-build-x86_64-linux-musl-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-build-x86_64-linux-musl-
 
       # Skip QEMU for testing (only building amd64)
       # - name: Set up QEMU
@@ -238,34 +249,27 @@ jobs:
           cp Cargo.toml .docker-context-${{ matrix.image }}/
           cp Cargo.lock .docker-context-${{ matrix.image }}/
           mkdir -p .docker-context-${{ matrix.image }}/prebuild/linux/amd64
-          cp target/x86_64-unknown-linux-gnu/release/${{ matrix.image }} .docker-context-${{ matrix.image }}/prebuild/linux/amd64/
+          # Use statically linked binaries
+          cp target/x86_64-unknown-linux-musl/release/${{ matrix.image }} .docker-context-${{ matrix.image }}/prebuild/linux/amd64/
+          
+          # Check if binary is statically linked
+          file target/x86_64-unknown-linux-musl/release/${{ matrix.image }}
           
           # Create a custom Dockerfile that uses pre-built binaries
-          # Use Ubuntu instead of Debian to match GLIBC version
+          # Use a minimal Alpine container for statically linked binaries
           cat << EOF > .docker-context-${{ matrix.image }}/Dockerfile.prebuild
           # syntax=docker/dockerfile:1
-          FROM ubuntu:22.04 AS ${{ matrix.image }}
+          FROM alpine:latest AS ${{ matrix.image }}
           
           # Add labels for container metadata
           LABEL org.opencontainers.image.description="${{ matrix.image == 'merod' && 'Merod daemon' || 'Meroctl - Control tool for Merod daemon' }}"
           LABEL org.opencontainers.image.licenses="MIT"
           
           # Install only the essential runtime dependencies
-          RUN apt-get update && apt-get install -y \\
-              libssl3 \\
-              ca-certificates \\
-              && rm -rf /var/lib/apt/lists/*
+          RUN apk --no-cache add ca-certificates
           
           # Create a non-privileged user for running the app
-          ARG UID=10001
-          RUN adduser \\
-              --disabled-password \\
-              --gecos "" \\
-              --home "/nonexistent" \\
-              --shell "/sbin/nologin" \\
-              --no-create-home \\
-              --uid "\${UID}" \\
-              appuser
+          RUN adduser -D -H -h /nonexistent -s /sbin/nologin -u 10001 appuser
           
           # Set the working directory
           WORKDIR /${{ matrix.image == 'merod' && 'data' || 'app' }}
