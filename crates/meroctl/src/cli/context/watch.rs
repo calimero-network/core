@@ -12,7 +12,22 @@ use crate::cli::Environment;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias};
 use crate::output::{ErrorLine, InfoLine, Report};
 
+pub const EXAMPLES: &str = r#"
+  # Watch events from default context
+  $ meroctl context watch
+
+  # Watch events and show notification
+  $ meroctl context watch -x notify-send "New event"
+
+  # Watch events and log to file (first 10 events)
+  $ meroctl context watch -x sh -c "echo 'Event received' >> events.log" -n 10
+
+  # Watch events and run custom script with arguments
+  $ meroctl context watch -x ./my-script.sh --arg1 value1
+"#;
+
 #[derive(Debug, Parser)]
+#[command(after_help = EXAMPLES)]
 #[command(about = "Watch events from a context and optionally execute commands")]
 pub struct WatchCommand {
     /// ContextId to stream events from
@@ -104,12 +119,11 @@ impl WatchCommand {
                                 }
                             }
 
-                            let output = if cmd.len() == 1 {
-                                Command::new(&cmd[0]).output().await
-                            } else {
-                                Command::new(&cmd[0]).args(&cmd[1..]).output().await
-                            }
-                            .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
+                            let output = Command::new(&cmd[0])
+                                .args(&cmd[1..])
+                                .output()
+                                .await
+                                .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
 
                             if !output.status.success() {
                                 environment.output.write(&ErrorLine(&format!(
