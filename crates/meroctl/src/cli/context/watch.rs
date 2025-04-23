@@ -1,11 +1,10 @@
-use std::process::Command;
-
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::ws::{Request, RequestPayload, Response, SubscribeRequest};
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
+use tokio::process::Command;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -108,6 +107,7 @@ impl WatchCommand {
                                 .arg("-c")
                                 .arg(cmd)
                                 .output()
+                                .await
                                 .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
 
                             if !output.status.success() {
