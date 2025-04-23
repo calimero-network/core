@@ -138,3 +138,89 @@ USER appuser
 # Set the entrypoint
 ENTRYPOINT ["meroctl"]
 CMD ["--help"]
+
+################################################################################
+# Create a minimal runner stage for merod using prebuilt binaries
+FROM debian:bookworm-slim AS merod-prebuilt
+
+# Add labels for container metadata
+LABEL org.opencontainers.image.description="Merod daemon (using prebuilt binary)"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Install only the essential runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-privileged user for running the app
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    appuser
+
+# Set the working directory
+WORKDIR /data
+RUN chown appuser:appuser /data
+
+# Set architecture-specific path for multi-platform builds
+ARG TARGETARCH
+
+# Copy the prebuilt binary from the CI workflow artifacts
+COPY bin/${TARGETARCH}/merod /usr/local/bin/merod
+RUN chmod +x /usr/local/bin/merod
+
+# Change to non-root user
+USER appuser
+
+# Set the entrypoint
+ENTRYPOINT ["merod"]
+CMD ["--help"]
+
+################################################################################
+# Create a minimal runner stage for meroctl using prebuilt binaries
+FROM debian:bookworm-slim AS meroctl-prebuilt
+
+# Add labels for container metadata
+LABEL org.opencontainers.image.description="Meroctl - Control tool for Merod daemon (using prebuilt binary)"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Install only the essential runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-privileged user for running the app
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    appuser
+
+# Set the working directory
+WORKDIR /app
+RUN chown appuser:appuser /app
+
+# Set architecture-specific path for multi-platform builds
+ARG TARGETARCH
+
+# Copy the prebuilt binary from the CI workflow artifacts
+COPY bin/${TARGETARCH}/meroctl /usr/local/bin/meroctl
+RUN chmod +x /usr/local/bin/meroctl
+
+# Change to non-root user
+USER appuser
+
+# Set the entrypoint
+ENTRYPOINT ["meroctl"]
+CMD ["--help"]

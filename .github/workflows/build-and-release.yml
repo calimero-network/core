@@ -27,6 +27,10 @@ on:
     types:
       - completed
 
+# Default permissions are read-only
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -351,6 +355,9 @@ jobs:
     if: needs.prepare.outputs.release_binaries == 'true'
     runs-on: ubuntu-latest
     needs: [prepare, build-binaries]
+    # Add write permissions for releases
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -376,7 +383,7 @@ jobs:
   build-docker:
     name: Build Docker Images
     if: needs.prepare.outputs.build_docker == 'true'
-    needs: prepare
+    needs: [prepare, build-binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -390,6 +397,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries/
+          merge-multiple: true
+
+      - name: Extract Linux binaries
+        run: |
+          mkdir -p ./bin/amd64 ./bin/arm64
+          tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64
+          tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -408,17 +427,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
-      # Add a step to create a layer cache for Rust dependencies
-      - name: Minimal Cargo layer caching
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-          key: ${{ runner.os }}-cargo-minimal-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-minimal-
 
       - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@v5
@@ -427,22 +435,11 @@ jobs:
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          target: ${{ matrix.image }}
+          target: ${{ matrix.image }}-prebuilt
           tags: ${{ matrix.image == 'merod' && needs.prepare.outputs.merod_tags || needs.prepare.outputs.meroctl_tags }}
           labels: ${{ matrix.image == 'merod' && needs.prepare.outputs.merod_labels || needs.prepare.outputs.meroctl_labels }}
-          # Enhanced cache with image-specific keys
-          cache-from: |
-            ${{ needs.prepare.outputs.docker_cache_from }}
-            type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:buildcache
-            type=gha,scope=${{ github.repository_owner }}-${{ matrix.image }}
-          cache-to: |
-            type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:buildcache,mode=max
-            type=gha,scope=${{ github.repository_owner }}-${{ matrix.image }},mode=max
-          # Use better caching for Rust builds
-          build-args: |
-            BUILDKIT_INLINE_CACHE=1
-            CARGO_NET_GIT_FETCH_WITH_CLI=true
-            CARGO_INCREMENTAL=1
+          cache-from: ${{ needs.prepare.outputs.docker_cache_from }}
+          cache-to: type=gha,scope=${{ github.repository_owner }}-${{ matrix.image }},mode=max
           outputs: type=registry,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           provenance: mode=max
           sbom: true
@@ -458,6 +455,10 @@ jobs:
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     needs: [prepare, release-binaries]
+    # Add write permissions for creating tokens
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Create GitHub App Token
         uses: actions/create-github-app-token@v1
