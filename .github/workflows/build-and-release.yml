@@ -412,16 +412,13 @@ jobs:
           echo "Contents of aarch64 tarball:"
           tar -tvf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz
           
-          # Create directory structure
+          # Create architecture-specific directories
           mkdir -p ./bin/amd64 ./bin/arm64
           
-          # Extract and rename binaries to match Dockerfile expectations
-          tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz
-          tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz
-          
-          # Move binaries to the correct locations
-          mv ${{ matrix.image }} ./bin/amd64/
-          mv ${{ matrix.image }} ./bin/arm64/
+          # Extract binaries directly to the proper directories
+          # The 'no transform' option preserves the exact path and filename
+          tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
+          tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
           
           # Ensure binaries have correct permissions
           chmod +x ./bin/amd64/${{ matrix.image }} ./bin/arm64/${{ matrix.image }}
