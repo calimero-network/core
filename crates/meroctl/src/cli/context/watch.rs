@@ -1,10 +1,11 @@
+use std::process::Command;
+
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::ws::{Request, RequestPayload, Response, SubscribeRequest};
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
-use std::process::Command;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -77,7 +78,7 @@ impl WatchCommand {
         environment
             .output
             .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
-        
+
         if let Some(cmd) = &self.exec {
             environment
                 .output
@@ -101,14 +102,14 @@ impl WatchCommand {
                     if let WsMessage::Text(text) = msg {
                         let response = serde_json::from_str::<Response>(&text)?;
                         environment.output.write(&response);
-                        
+
                         if let Some(cmd) = &self.exec {
                             let output = Command::new("sh")
                                 .arg("-c")
                                 .arg(cmd)
                                 .output()
                                 .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
-                            
+
                             if !output.status.success() {
                                 environment.output.write(&ErrorLine(&format!(
                                     "Command failed: {}",
@@ -121,14 +122,14 @@ impl WatchCommand {
                                 )));
                             }
                         }
-                        
+
                         event_count += 1;
                     }
                 }
                 Err(err) => {
-                    environment.output.write(&ErrorLine(&format!(
-                        "Error receiving message: {err}"
-                    )));
+                    environment
+                        .output
+                        .write(&ErrorLine(&format!("Error receiving message: {err}")));
                 }
             }
         }
