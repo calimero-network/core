@@ -41,11 +41,7 @@ pub enum ContextIdentitySubcommand {
         #[arg(help = "The context to set the identity for")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
-        #[arg(
-            long,
-            short,
-            help = "Force overwrite if default alias already points elsewhere"
-        )]
+        #[arg(long, short, help = "Force overwrite if default is already set")]
         force: bool,
     },
 }
@@ -132,36 +128,23 @@ impl ContextIdentityCommand {
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
 
-                let lookup_result = lookup_alias(
-                    multiaddr,
-                    &config.identity,
-                    default_alias.clone(),
-                    Some(context_id.clone()),
-                )
-                .await?;
+                let lookup_result =
+                    lookup_alias(multiaddr, &config.identity, default_alias, Some(context_id))
+                        .await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
-                    if existing_identity != identity && !force {
-                        environment.output.write(&ErrorLine(&format!(
-                            "Default alias already points to '{}'. Use --force to overwrite.",
-                            existing_identity
-                        )));
-                        return Ok(());
-                    }
-
-                    if existing_identity != identity && force {
+                    if existing_identity != identity {
+                        if !force {
+                            environment.output.write(&ErrorLine(&format!(
+                                "Default alias already points to '{}'. Use --force to overwrite.",
+                                existing_identity
+                            )));
+                            return Ok(());
+                        }
                         println!(
                             "Warning: Overwriting default identity from '{}' to '{}'",
                             existing_identity, identity
                         );
-
-                        delete_alias(
-                            multiaddr,
-                            &config.identity,
-                            default_alias.clone(),
-                            Some(context_id.clone()),
-                        )
-                        .await?;
                     }
                 }
 
