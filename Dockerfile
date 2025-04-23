@@ -173,7 +173,7 @@ ARG TARGETARCH
 ARG BINARY_NAME=merod
 
 # Copy the prebuilt binary from the CI workflow artifacts
-COPY ./bin/${TARGETARCH}/${BINARY_NAME:-merod} /usr/local/bin/merod
+COPY bin/${TARGETARCH}/merod /usr/local/bin/merod
 RUN chmod +x /usr/local/bin/merod
 
 # Change to non-root user
@@ -217,7 +217,7 @@ ARG TARGETARCH
 ARG BINARY_NAME=meroctl
 
 # Copy the prebuilt binary from the CI workflow artifacts
-COPY ./bin/${TARGETARCH}/${BINARY_NAME:-meroctl} /usr/local/bin/meroctl
+COPY bin/${TARGETARCH}/meroctl /usr/local/bin/meroctl
 RUN chmod +x /usr/local/bin/meroctl
 
 # Change to non-root user

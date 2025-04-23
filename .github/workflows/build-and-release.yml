@@ -406,14 +406,29 @@ jobs:
 
       - name: Extract Linux binaries
         run: |
+          # First, let's see what's in these tar files
+          echo "Contents of x86_64 tarball:"
+          tar -tvf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz
+          echo "Contents of aarch64 tarball:"
+          tar -tvf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz
+          
+          # Create directory structure
           mkdir -p ./bin/amd64 ./bin/arm64
-          # Extract with verbose flag to see file paths
-          tar -xvzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64
-          tar -xvzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64
+          
+          # Extract and rename binaries to match Dockerfile expectations
+          tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz
+          
+          # Move binaries to the correct locations
+          mv ${{ matrix.image }} ./bin/amd64/
+          mv ${{ matrix.image }} ./bin/arm64/
+          
           # Ensure binaries have correct permissions
           chmod +x ./bin/amd64/${{ matrix.image }} ./bin/arm64/${{ matrix.image }}
+          
           # List directory structure for debugging
-          find ./bin -type f | sort
+          echo "Directory structure:"
+          find ./bin -type f -ls
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -433,6 +448,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Debug - Show context structure
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Contents of current directory:"
+          ls -la
+          echo "Contents of ./bin directory (if exists):"
+          ls -la ./bin || echo "bin directory not found"
+          echo "Contents of ./bin/amd64 directory (if exists):"
+          ls -la ./bin/amd64 || echo "bin/amd64 directory not found"
+          echo "Contents of ./bin/arm64 directory (if exists):"
+          ls -la ./bin/arm64 || echo "bin/arm64 directory not found"
+          
       - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@v5
         with:
