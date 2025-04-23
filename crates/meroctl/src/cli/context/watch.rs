@@ -23,12 +23,12 @@ pub struct WatchCommand {
     )]
     pub context: Alias<ContextId>,
 
-    /// Command to execute when an event is received
-    #[arg(short, long, value_name = "COMMAND")]
-    pub exec: Option<String>,
+    /// Command to execute when an event is received (can specify multiple args)
+    #[arg(short = 'x', long, value_name = "COMMAND", num_args = 1..)]
+    pub exec: Option<Vec<String>>,
 
     /// Maximum number of events to process before exiting
-    #[arg(short, long, value_name = "COUNT")]
+    #[arg(short = 'n', long, value_name = "COUNT")]
     pub count: Option<usize>,
 }
 
@@ -79,9 +79,10 @@ impl WatchCommand {
             .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
 
         if let Some(cmd) = &self.exec {
-            environment
-                .output
-                .write(&InfoLine(&format!("Will execute command: {}", cmd)));
+            environment.output.write(&InfoLine(&format!(
+                "Will execute command: {}",
+                cmd.join(" ")
+            )));
         }
 
         environment
@@ -90,12 +91,6 @@ impl WatchCommand {
 
         let mut event_count = 0;
         while let Some(message) = read.next().await {
-            if let Some(max_count) = self.count {
-                if event_count >= max_count {
-                    break;
-                }
-            }
-
             match message {
                 Ok(msg) => {
                     if let WsMessage::Text(text) = msg {
@@ -103,12 +98,18 @@ impl WatchCommand {
                         environment.output.write(&response);
 
                         if let Some(cmd) = &self.exec {
-                            let output = Command::new("sh")
-                                .arg("-c")
-                                .arg(cmd)
-                                .output()
-                                .await
-                                .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
+                            if let Some(max_count) = self.count {
+                                if event_count >= max_count {
+                                    break;
+                                }
+                            }
+
+                            let output = if cmd.len() == 1 {
+                                Command::new(&cmd[0]).output().await
+                            } else {
+                                Command::new(&cmd[0]).args(&cmd[1..]).output().await
+                            }
+                            .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
 
                             if !output.status.success() {
                                 environment.output.write(&ErrorLine(&format!(
