@@ -4,15 +4,16 @@ use calimero_server_primitives::ws::{Request, RequestPayload, Response, Subscrib
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
+use std::process::Command;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias};
-use crate::output::{InfoLine, Report};
+use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
-#[command(about = "Watch events from a context")]
+#[command(about = "Watch events from a context and optionally execute commands")]
 pub struct WatchCommand {
     /// ContextId to stream events from
     #[arg(
@@ -21,6 +22,14 @@ pub struct WatchCommand {
         default_value = "default"
     )]
     pub context: Alias<ContextId>,
+
+    /// Command to execute when an event is received
+    #[arg(short, long, value_name = "COMMAND")]
+    pub exec: Option<String>,
+
+    /// Maximum number of events to process before exiting
+    #[arg(short, long, value_name = "COUNT")]
+    pub count: Option<usize>,
 }
 
 impl Report for Response {
@@ -33,7 +42,6 @@ impl Report for Response {
 impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
-
         let multiaddr = fetch_multiaddr(&config)?;
 
         let resolve_response =
@@ -69,19 +77,59 @@ impl WatchCommand {
         environment
             .output
             .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
+        
+        if let Some(cmd) = &self.exec {
+            environment
+                .output
+                .write(&InfoLine(&format!("Will execute command: {}", cmd)));
+        }
+
         environment
             .output
             .write(&InfoLine("Streaming events (press Ctrl+C to stop):"));
 
+        let mut event_count = 0;
         while let Some(message) = read.next().await {
+            if let Some(max_count) = self.count {
+                if event_count >= max_count {
+                    break;
+                }
+            }
+
             match message {
                 Ok(msg) => {
                     if let WsMessage::Text(text) = msg {
                         let response = serde_json::from_str::<Response>(&text)?;
                         environment.output.write(&response);
+                        
+                        if let Some(cmd) = &self.exec {
+                            let output = Command::new("sh")
+                                .arg("-c")
+                                .arg(cmd)
+                                .output()
+                                .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
+                            
+                            if !output.status.success() {
+                                environment.output.write(&ErrorLine(&format!(
+                                    "Command failed: {}",
+                                    String::from_utf8_lossy(&output.stderr)
+                                )));
+                            } else {
+                                environment.output.write(&InfoLine(&format!(
+                                    "Command output: {}",
+                                    String::from_utf8_lossy(&output.stdout)
+                                )));
+                            }
+                        }
+                        
+                        event_count += 1;
                     }
                 }
-                Err(err) => eprintln!("Error receiving message: {err}"),
+                Err(err) => {
+                    environment.output.write(&ErrorLine(&format!(
+                        "Error receiving message: {err}"
+                    )));
+                }
             }
         }
 
