@@ -100,17 +100,33 @@ pub struct InitCommand {
     #[clap(overrides_with("no_mdns"))]
     pub mdns: bool,
 
-    #[clap(long, hide = true)]
+    #[clap(
+        long,
+        hide = true,
+        help = "Disable mDNS discovery (hidden as it's the inverse of --mdns)"
+    )]
     #[clap(overrides_with("mdns"))]
     pub no_mdns: bool,
 
-    #[clap(long, default_value = "3")]
+    #[clap(
+        long,
+        default_value = "3",
+        help = "Maximum number of rendezvous registrations allowed"
+    )]
     pub rendezvous_registrations_limit: usize,
 
-    #[clap(long, default_value = "3")]
+    #[clap(
+        long,
+        default_value = "3",
+        help = "Maximum number of relay registrations allowed"
+    )]
     pub relay_registrations_limit: usize,
 
-    #[clap(long, default_value = "2")]
+    #[clap(
+        long,
+        default_value = "2",
+        help = "Minimum number of successful autonat probes required to be confident about NAT status"
+    )]
     pub autonat_confidence_threshold: usize,
 
     /// Force initialization even if the directory already exists
