@@ -173,11 +173,15 @@ ARG TARGETARCH
 ARG BINARY_NAME=merod
 
 # Copy the prebuilt binary from the CI workflow artifacts
-COPY ./bin/${TARGETARCH}/merod /usr/local/bin/merod
-RUN chmod +x /usr/local/bin/merod
+WORKDIR /
+COPY bin/${TARGETARCH}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
+RUN chmod +x /usr/local/bin/${BINARY_NAME}
 
 # Change to non-root user
 USER appuser
+
+# Set the working directory back
+WORKDIR /data
 
 # Set the entrypoint
 ENTRYPOINT ["merod"]
@@ -217,11 +221,15 @@ ARG TARGETARCH
 ARG BINARY_NAME=meroctl
 
 # Copy the prebuilt binary from the CI workflow artifacts
-COPY ./bin/${TARGETARCH}/meroctl /usr/local/bin/meroctl
-RUN chmod +x /usr/local/bin/meroctl
+WORKDIR /
+COPY bin/${TARGETARCH}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
+RUN chmod +x /usr/local/bin/${BINARY_NAME}
 
 # Change to non-root user
 USER appuser
+
+# Set the working directory back
+WORKDIR /app
 
 # Set the entrypoint
 ENTRYPOINT ["meroctl"]
