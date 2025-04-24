@@ -11,7 +11,7 @@ on:
       - Cargo.lock
       - 'crates/**'
       - 'Dockerfile'
-      - '.github/workflows/build-and-release.yml'
+      - '.github/workflows/release.yml'
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
@@ -21,7 +21,7 @@ on:
       - Cargo.lock
       - 'crates/**'
       - 'Dockerfile'
-      - '.github/workflows/build-and-release.yml'
+      - '.github/workflows/release.yml'
   workflow_run:
     workflows: ["Release"]
     types:
