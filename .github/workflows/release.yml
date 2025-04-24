@@ -1,7 +1,6 @@
 name: Release
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - master
@@ -34,10 +33,6 @@ jobs:
   prepare:
     name: Prepare
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'workflow_dispatch' || 
-      github.event_name == 'push' || 
-      github.event_name == 'pull_request'
     outputs:
       binary_matrix: ${{ steps.setup_matrix.outputs.binary_matrix }}
       version: ${{ steps.version_info.outputs.version }}
@@ -107,15 +102,6 @@ jobs:
             echo "prerelease=true" >> $GITHUB_OUTPUT
             echo "overwrite_release=true" >> $GITHUB_OUTPUT
             
-          elif [[ "${{ github.ref }}" == refs/heads/feat__* ]]; then
-            branch_name=$(echo "${{ github.ref }}" | sed 's|refs/heads/||')
-            version="dev-${branch_name}"
-            
-            echo "build_binaries=false" >> $GITHUB_OUTPUT
-            echo "release_required=false" >> $GITHUB_OUTPUT
-            echo "build_docker=true" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-            
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
             version="pr-${{ github.event.number }}"
             
@@ -124,14 +110,6 @@ jobs:
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
             
-          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            version="$version_candidate"
-            
-            echo "build_binaries=true" >> $GITHUB_OUTPUT
-            echo "release_required=true" >> $GITHUB_OUTPUT
-            echo "build_docker=true" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-            echo "overwrite_release=true" >> $GITHUB_OUTPUT
           else
             version="dev-$(echo ${{ github.ref }} | sed 's|refs/heads/||')"
             
@@ -194,7 +172,6 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-      fail-fast: false
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -349,7 +326,6 @@ jobs:
     strategy:
       matrix:
         image: [merod, meroctl]
-      fail-fast: false
 
     steps:
       - name: Checkout repository
@@ -479,4 +455,4 @@ jobs:
           git commit -m "chore: bump formulas version"
           git push origin "${target_branch}"
 
-          gh pr create -f || true 
+          gh pr create -f || true
