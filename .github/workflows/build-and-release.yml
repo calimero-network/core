@@ -412,21 +412,24 @@ jobs:
           echo "Contents of aarch64 tarball:"
           tar -tvf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz
           
-          # Create architecture-specific directories
-          mkdir -p ./bin/amd64 ./bin/arm64
+          # Create bin directory
+          mkdir -p ./bin
           
-          # Extract binaries directly to the proper directories
-          # The 'no transform' option preserves the exact path and filename
-          tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
-          tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
+          # Extract and rename binaries with architecture in the name
+          tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz
+          
+          # Move to bin directory with arch-specific names
+          cp ${{ matrix.image }} ./bin/${{ matrix.image }}.amd64
+          cp ${{ matrix.image }} ./bin/${{ matrix.image }}.arm64
           
           # Ensure binaries have correct permissions
-          chmod +x ./bin/amd64/${{ matrix.image }} ./bin/arm64/${{ matrix.image }}
+          chmod +x ./bin/${{ matrix.image }}.amd64 ./bin/${{ matrix.image }}.arm64
           
           # List directory structure for debugging
           echo "Directory structure:"
           find ./bin -type f -ls
-
+          
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       
@@ -452,10 +455,6 @@ jobs:
           ls -la
           echo "Contents of ./bin directory (if exists):"
           ls -la ./bin || echo "bin directory not found"
-          echo "Contents of ./bin/amd64 directory (if exists):"
-          ls -la ./bin/amd64 || echo "bin/amd64 directory not found"
-          echo "Contents of ./bin/arm64 directory (if exists):"
-          ls -la ./bin/arm64 || echo "bin/arm64 directory not found"
           
       - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@v5
