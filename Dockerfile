@@ -112,6 +112,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    adduser \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-privileged user for running the app
@@ -151,6 +152,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    adduser \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-privileged user for running the app
@@ -199,6 +201,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    adduser \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-privileged user for running the app
