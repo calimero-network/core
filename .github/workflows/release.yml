@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - master
-      - 'feat__*'
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -22,10 +21,6 @@ on:
       - 'crates/**'
       - 'Dockerfile'
       - '.github/workflows/release.yml'
-  workflow_run:
-    workflows: ["Release"]
-    types:
-      - completed
 
 # Default permissions are read-only
 permissions:
@@ -42,8 +37,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' || 
       github.event_name == 'push' || 
-      github.event_name == 'pull_request' || 
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      github.event_name == 'pull_request'
     outputs:
       binary_matrix: ${{ steps.setup_matrix.outputs.binary_matrix }}
       version: ${{ steps.version_info.outputs.version }}
@@ -74,22 +68,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" == "workflow_run" ]; then
-            latest_release=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
-            if [ -n "$latest_release" ]; then
-              echo "version=$latest_release" >> $GITHUB_OUTPUT
-            else
-              echo "version=dev-workflow-run" >> $GITHUB_OUTPUT
-            fi
-            
-            echo "build_binaries=false" >> $GITHUB_OUTPUT
-            echo "release_required=false" >> $GITHUB_OUTPUT
-            echo "build_docker=true" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-            echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
-            return 0
-          fi
-          
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
           
           version_candidate=""
