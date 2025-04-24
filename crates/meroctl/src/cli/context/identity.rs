@@ -213,27 +213,21 @@ impl ContextIdentityAliasCommand {
                 .await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
-                    if !force {
-                        environment.output.write(&ErrorLine(&format!(
+                    if existing_identity != identity {
+                        if !force {
+                            environment.output.write(&ErrorLine(&format!(
                             "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
                             name,
                             existing_identity
                         )));
-                        return Ok(());
+                            return Ok(());
+                        }
+
+                        println!(
+                            "Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                            name, existing_identity, identity
+                        );
                     }
-
-                    println!(
-                        "Warning: Overwriting existing alias '{}' from '{}' to '{}'",
-                        name, existing_identity, identity
-                    );
-
-                    delete_alias(
-                        multiaddr,
-                        &config.identity,
-                        name.clone(),
-                        Some(context_id.clone()),
-                    )
-                    .await?;
                 }
 
                 let res = create_alias(

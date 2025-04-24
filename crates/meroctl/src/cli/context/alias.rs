@@ -69,19 +69,21 @@ impl ContextAliasCommand {
 
                 let lookup_result = lookup_alias(multiaddr, &config.identity, alias, None).await?;
                 if let Some(existing_context) = lookup_result.data.value {
-                    if !force {
-                        environment.output.write(&ErrorLine(&format!(
+                    if existing_context != context_id {
+                        if !force {
+                            environment.output.write(&ErrorLine(&format!(
                             "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
                             alias,
                             existing_context
                         )));
-                        return Ok(());
-                    }
+                            return Ok(());
+                        }
 
-                    println!(
-                        "Warning: Overwriting existing alias '{}' from '{}' to '{}'",
-                        alias, existing_context, context_id
-                    );
+                        println!(
+                            "Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                            alias, existing_context, context_id
+                        );
+                    }
                 }
 
                 let res =
