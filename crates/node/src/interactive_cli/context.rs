@@ -512,7 +512,7 @@ impl ContextCommand {
                     println!("{} Default context set to: {}", ind, context_id);
                 }
             }
-            Commands::Identity(identity_cmd) => identity_cmd.run(node)?,
+            Commands::Identity(identity) => identity.run(node)?,
         }
         Ok(())
     }
