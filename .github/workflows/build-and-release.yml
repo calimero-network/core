@@ -74,17 +74,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Getting version information..."
-          
-          # Handle workflow_run event differently
           if [ "${{ github.event_name }}" == "workflow_run" ]; then
-            # Extract version from the triggering workflow (Release)
             latest_release=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
             if [ -n "$latest_release" ]; then
-              echo "Using latest release version: $latest_release"
               echo "version=$latest_release" >> $GITHUB_OUTPUT
             else
-              echo "No release version found, using dev version"
               echo "version=dev-workflow-run" >> $GITHUB_OUTPUT
             fi
             
@@ -96,15 +90,11 @@ jobs:
             return 0
           fi
           
-          # Default version handling process
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
           
-          # Validate binary versions
-          echo "Validating binary versions..."
           version_candidate=""
           for binary in $(echo '${{ steps.setup_matrix.outputs.binary_matrix }}' | jq -r '.[]'); do
             binary_version=$(cargo metadata --format-version 1 --no-deps | jq -r --arg binary "$binary" '.packages[] | select(.name == $binary) | .version')
-            echo "  binary: $binary, version: $binary_version"
             
             if [ -z "$version_candidate" ]; then
               version_candidate="$binary_version"
@@ -115,19 +105,13 @@ jobs:
               exit 1
             fi
           done
-          echo "Valid version candidate: $version_candidate"
           
-          # Determine version and build flags based on context
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-            echo "On master branch"
             version="$version_candidate"
             
-            # Check if release already exists
             if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
-              echo "Release for version $version already exists"
               echo "release_binaries=false" >> $GITHUB_OUTPUT
             else
-              echo "New release required for version $version"
               echo "release_binaries=true" >> $GITHUB_OUTPUT
             fi
             
@@ -137,7 +121,6 @@ jobs:
             echo "overwrite_release=false" >> $GITHUB_OUTPUT
             
           elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == release/* ]]; then
-            echo "On release PR"
             version="prerelease-${{ github.event.number }}"
             
             echo "build_binaries=true" >> $GITHUB_OUTPUT
@@ -147,7 +130,6 @@ jobs:
             echo "overwrite_release=true" >> $GITHUB_OUTPUT
             
           elif [[ "${{ github.ref }}" == refs/heads/feat__* ]]; then
-            echo "On feature branch"
             branch_name=$(echo "${{ github.ref }}" | sed 's|refs/heads/||')
             version="dev-${branch_name}"
             
@@ -157,7 +139,6 @@ jobs:
             echo "prerelease=true" >> $GITHUB_OUTPUT
             
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
-            echo "On PR"
             version="pr-${{ github.event.number }}"
             
             echo "build_binaries=true" >> $GITHUB_OUTPUT
@@ -166,7 +147,6 @@ jobs:
             echo "prerelease=true" >> $GITHUB_OUTPUT
             
           elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "Manual trigger"
             version="$version_candidate"
             
             echo "build_binaries=true" >> $GITHUB_OUTPUT
@@ -175,7 +155,6 @@ jobs:
             echo "prerelease=false" >> $GITHUB_OUTPUT
             echo "overwrite_release=true" >> $GITHUB_OUTPUT
           else
-            echo "Other branch/event"
             version="dev-$(echo ${{ github.ref }} | sed 's|refs/heads/||')"
             
             echo "build_binaries=false" >> $GITHUB_OUTPUT
@@ -406,26 +385,15 @@ jobs:
 
       - name: Extract Linux binaries
         run: |
-          # First, let's see what's in these tar files
-          echo "Contents of x86_64 tarball:"
-          tar -tvf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz
-          echo "Contents of aarch64 tarball:"
-          tar -tvf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz
-          
           # Create architecture-specific directories
           mkdir -p ./bin/amd64 ./bin/arm64
           
           # Extract binaries directly to the proper directories
-          # The 'no transform' option preserves the exact path and filename
           tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
           tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
           
           # Ensure binaries have correct permissions
           chmod +x ./bin/amd64/${{ matrix.image }} ./bin/arm64/${{ matrix.image }}
-          
-          # List directory structure for debugging
-          echo "Directory structure:"
-          find ./bin -type f -ls
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -433,7 +401,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          # Enable BuildKit driver with more caching capabilities
           driver-opts: |
             image=moby/buildkit:latest
             network=host
@@ -444,18 +411,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Debug - Show context structure
-        run: |
-          echo "Current directory: $(pwd)"
-          echo "Contents of current directory:"
-          ls -la
-          echo "Contents of ./bin directory (if exists):"
-          ls -la ./bin || echo "bin directory not found"
-          echo "Contents of ./bin/amd64 directory (if exists):"
-          ls -la ./bin/amd64 || echo "bin/amd64 directory not found"
-          echo "Contents of ./bin/arm64 directory (if exists):"
-          ls -la ./bin/arm64 || echo "bin/arm64 directory not found"
           
       - name: Build and push ${{ matrix.image }} image
         uses: docker/build-push-action@v5
