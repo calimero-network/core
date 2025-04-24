@@ -141,7 +141,7 @@ CMD ["--help"]
 
 ################################################################################
 # Create a minimal runner stage for merod using prebuilt binaries
-FROM debian:bookworm-slim AS merod-prebuilt
+FROM ubuntu:24.04 AS merod-prebuilt
 
 # Add labels for container metadata
 LABEL org.opencontainers.image.description="Merod daemon (using prebuilt binary)"
@@ -189,7 +189,7 @@ CMD ["--help"]
 
 ################################################################################
 # Create a minimal runner stage for meroctl using prebuilt binaries
-FROM debian:bookworm-slim AS meroctl-prebuilt
+FROM ubuntu:24.04 AS meroctl-prebuilt
 
 # Add labels for container metadata
 LABEL org.opencontainers.image.description="Meroctl - Control tool for Merod daemon (using prebuilt binary)"
