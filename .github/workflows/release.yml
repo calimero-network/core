@@ -48,7 +48,7 @@ jobs:
       binary_matrix: ${{ steps.setup_matrix.outputs.binary_matrix }}
       version: ${{ steps.version_info.outputs.version }}
       build_binaries: ${{ steps.version_info.outputs.build_binaries }}
-      release_binaries: ${{ steps.version_info.outputs.release_binaries }}
+      release_required: ${{ steps.version_info.outputs.release_required }}
       build_docker: ${{ steps.version_info.outputs.build_docker }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       overwrite_release: ${{ steps.version_info.outputs.overwrite_release }}
@@ -83,7 +83,7 @@ jobs:
             fi
             
             echo "build_binaries=false" >> $GITHUB_OUTPUT
-            echo "release_binaries=false" >> $GITHUB_OUTPUT
+            echo "release_required=false" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
             echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
@@ -110,9 +110,9 @@ jobs:
             version="$version_candidate"
             
             if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
-              echo "release_binaries=false" >> $GITHUB_OUTPUT
+              echo "release_required=false" >> $GITHUB_OUTPUT
             else
-              echo "release_binaries=true" >> $GITHUB_OUTPUT
+              echo "release_required=true" >> $GITHUB_OUTPUT
             fi
             
             echo "build_binaries=true" >> $GITHUB_OUTPUT
@@ -124,7 +124,7 @@ jobs:
             version="prerelease-${{ github.event.number }}"
             
             echo "build_binaries=true" >> $GITHUB_OUTPUT
-            echo "release_binaries=true" >> $GITHUB_OUTPUT
+            echo "release_required=true" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
             echo "overwrite_release=true" >> $GITHUB_OUTPUT
@@ -134,7 +134,7 @@ jobs:
             version="dev-${branch_name}"
             
             echo "build_binaries=false" >> $GITHUB_OUTPUT
-            echo "release_binaries=false" >> $GITHUB_OUTPUT
+            echo "release_required=false" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
             
@@ -142,7 +142,7 @@ jobs:
             version="pr-${{ github.event.number }}"
             
             echo "build_binaries=true" >> $GITHUB_OUTPUT
-            echo "release_binaries=false" >> $GITHUB_OUTPUT
+            echo "release_required=false" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
             
@@ -150,7 +150,7 @@ jobs:
             version="$version_candidate"
             
             echo "build_binaries=true" >> $GITHUB_OUTPUT
-            echo "release_binaries=true" >> $GITHUB_OUTPUT
+            echo "release_required=true" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
             echo "overwrite_release=true" >> $GITHUB_OUTPUT
@@ -158,7 +158,7 @@ jobs:
             version="dev-$(echo ${{ github.ref }} | sed 's|refs/heads/||')"
             
             echo "build_binaries=false" >> $GITHUB_OUTPUT
-            echo "release_binaries=false" >> $GITHUB_OUTPUT
+            echo "release_required=false" >> $GITHUB_OUTPUT
             echo "build_docker=false" >> $GITHUB_OUTPUT
           fi
           
@@ -331,7 +331,7 @@ jobs:
 
   release-binaries:
     name: Release Binaries
-    if: needs.prepare.outputs.release_binaries == 'true'
+    if: needs.prepare.outputs.release_required == 'true'
     runs-on: ubuntu-latest
     needs: [prepare, build-binaries]
     # Add write permissions for releases
@@ -437,7 +437,7 @@ jobs:
   brew-update:
     name: Update Homebrew Tap
     if: |
-      needs.prepare.outputs.release_binaries == 'true' &&
+      needs.prepare.outputs.release_required == 'true' &&
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     needs: [prepare, release-binaries]
