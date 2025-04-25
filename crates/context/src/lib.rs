@@ -1614,6 +1614,7 @@ impl ContextManager {
     pub async fn grant_capabilities(
         &self,
         context_id: ContextId,
+        signer_id: PublicKey,
         capabilities: &[(ContextIdentity, Capability)],
     ) -> EyreResult<()> {
         let handle = self.store.handle();
@@ -1625,10 +1626,7 @@ impl ContextManager {
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
             ..
-        }) = handle.get(&ContextIdentityKey::new(
-            context_id,
-            signing_key.public_key(),
-        ))?
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("No private key found for signer");
         };
@@ -1642,10 +1640,7 @@ impl ContextManager {
             )
             .fetch_nonce(
                 context_id.rt().expect("infallible conversion"),
-                signing_key
-                    .public_key()
-                    .rt()
-                    .expect("infallible conversion"),
+                signer_id.rt().expect("infallible conversion"),
             )
             .await?
             .ok_or_eyre("Not a member")?;
@@ -1669,6 +1664,7 @@ impl ContextManager {
     pub async fn revoke_capabilities(
         &self,
         context_id: ContextId,
+        signer_id: PublicKey,
         capabilities: &[(ContextIdentity, Capability)],
     ) -> EyreResult<()> {
         let handle = self.store.handle();
@@ -1680,10 +1676,7 @@ impl ContextManager {
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
             ..
-        }) = handle.get(&ContextIdentityKey::new(
-            context_id,
-            signing_key.public_key(),
-        ))?
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("No private key found for signer");
         };
@@ -1697,10 +1690,7 @@ impl ContextManager {
             )
             .fetch_nonce(
                 context_id.rt().expect("infallible conversion"),
-                signing_key
-                    .public_key()
-                    .rt()
-                    .expect("infallible conversion"),
+                signer_id.rt().expect("infallible conversion"),
             )
             .await?
             .ok_or_eyre("Not a member")?;

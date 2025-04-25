@@ -305,6 +305,7 @@ export interface CreateTokenResponse {
 
 export interface CapabilitiesRequest {
   capabilities: Array<[string, string]>; // [ContextIdentity, Capability]
+  signer_id: string;
 }
 
 export class NodeDataSource implements NodeApi {
@@ -693,9 +694,14 @@ export class NodeDataSource implements NodeApi {
         return { error: { code: 401, message: t.unauthorizedErrorMessage } };
       }
 
+      const data = {
+        capabilities: request.capabilities,
+        signer_id: request.signer_id,
+      };
+      const url = `/contexts/${contextId}/capabilities/grant`;
       await this.client.post<void>(
-        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/capabilities/grant`,
-        request,
+        `${getAppEndpointKey()}/admin-api${url}`,
+        data,
         headers,
       );
       return { data: undefined };
@@ -718,9 +724,14 @@ export class NodeDataSource implements NodeApi {
         return { error: { code: 401, message: t.unauthorizedErrorMessage } };
       }
 
+      const data = {
+        capabilities: request.capabilities,
+        signer_id: request.signer_id,
+      };
+      const url = `/contexts/${contextId}/capabilities/revoke`;
       await this.client.post<void>(
-        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/capabilities/revoke`,
-        request,
+        `${getAppEndpointKey()}/admin-api${url}`,
+        data,
         headers,
       );
       return { data: undefined };

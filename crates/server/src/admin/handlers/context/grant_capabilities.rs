@@ -5,14 +5,16 @@ use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_context_config::types::{Capability, ContextIdentity};
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use serde::Deserialize;
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct GrantCapabilitiesRequest {
     pub capabilities: Vec<(ContextIdentity, Capability)>,
+    pub signer_id: PublicKey,
 }
 
 pub async fn handler(
@@ -32,7 +34,7 @@ pub async fn handler(
 
     match state
         .ctx_manager
-        .grant_capabilities(context.id, &request.capabilities)
+        .grant_capabilities(context.id, request.signer_id, &request.capabilities)
         .await
     {
         Ok(_) => ApiResponse { payload: () }.into_response(),
