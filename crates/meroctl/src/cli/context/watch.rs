@@ -4,15 +4,31 @@ use calimero_server_primitives::ws::{Request, RequestPayload, Response, Subscrib
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
+use tokio::process::Command;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias};
-use crate::output::{InfoLine, Report};
+use crate::output::{ErrorLine, InfoLine, Report};
+
+pub const EXAMPLES: &str = r#"
+  # Watch events from default context
+  $ meroctl context watch
+
+  # Watch events and show notification
+  $ meroctl context watch -x notify-send "New event"
+
+  # Watch events and log to file (first 10 events)
+  $ meroctl context watch -x sh -c "echo 'Event received' >> events.log" -n 10
+
+  # Watch events and run custom script with arguments
+  $ meroctl context watch -x ./my-script.sh --arg1 value1
+"#;
 
 #[derive(Debug, Parser)]
-#[command(about = "Watch events from a context")]
+#[command(after_help = EXAMPLES)]
+#[command(about = "Watch events from a context and optionally execute commands")]
 pub struct WatchCommand {
     /// ContextId to stream events from
     #[arg(
@@ -21,6 +37,14 @@ pub struct WatchCommand {
         default_value = "default"
     )]
     pub context: Alias<ContextId>,
+
+    /// Command to execute when an event is received (can specify multiple args)
+    #[arg(short = 'x', long, value_name = "COMMAND", num_args = 1..)]
+    pub exec: Option<Vec<String>>,
+
+    /// Maximum number of events to process before exiting
+    #[arg(short = 'n', long, value_name = "COUNT")]
+    pub count: Option<usize>,
 }
 
 impl Report for Response {
@@ -33,7 +57,6 @@ impl Report for Response {
 impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let config = load_config(&environment.args.home, &environment.args.node_name)?;
-
         let multiaddr = fetch_multiaddr(&config)?;
 
         let resolve_response =
@@ -69,19 +92,60 @@ impl WatchCommand {
         environment
             .output
             .write(&InfoLine(&format!("Subscribed to context {}", context_id)));
+
+        if let Some(cmd) = &self.exec {
+            environment.output.write(&InfoLine(&format!(
+                "Will execute command: {}",
+                cmd.join(" ")
+            )));
+        }
+
         environment
             .output
             .write(&InfoLine("Streaming events (press Ctrl+C to stop):"));
 
+        let mut event_count = 0;
         while let Some(message) = read.next().await {
             match message {
                 Ok(msg) => {
                     if let WsMessage::Text(text) = msg {
                         let response = serde_json::from_str::<Response>(&text)?;
                         environment.output.write(&response);
+
+                        if let Some(cmd) = &self.exec {
+                            if let Some(max_count) = self.count {
+                                if event_count >= max_count {
+                                    break;
+                                }
+                            }
+
+                            let output = Command::new(&cmd[0])
+                                .args(&cmd[1..])
+                                .output()
+                                .await
+                                .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
+
+                            if !output.status.success() {
+                                environment.output.write(&ErrorLine(&format!(
+                                    "Command failed: {}",
+                                    String::from_utf8_lossy(&output.stderr)
+                                )));
+                            } else {
+                                environment.output.write(&InfoLine(&format!(
+                                    "Command output: {}",
+                                    String::from_utf8_lossy(&output.stdout)
+                                )));
+                            }
+                        }
+
+                        event_count += 1;
                     }
                 }
-                Err(err) => eprintln!("Error receiving message: {err}"),
+                Err(err) => {
+                    environment
+                        .output
+                        .write(&ErrorLine(&format!("Error receiving message: {err}")));
+                }
             }
         }
 
