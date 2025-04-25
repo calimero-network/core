@@ -726,7 +726,9 @@ export class NodeDataSource implements NodeApi {
       return { data: undefined };
     } catch (error) {
       console.error('Error revoking capabilities:', error);
-      return { error: { code: 500, message: 'Failed to revoke capabilities.' } };
+      return {
+        error: { code: 500, message: 'Failed to revoke capabilities.' },
+      };
     }
   }
 }

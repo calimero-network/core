@@ -30,7 +30,11 @@ pub async fn handler(
         }
     };
 
-    match state.ctx_manager.revoke_capabilities(context.id, &request.capabilities).await {
+    match state
+        .ctx_manager
+        .revoke_capabilities(context.id, &request.capabilities)
+        .await
+    {
         Ok(_) => ApiResponse { payload: () }.into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
