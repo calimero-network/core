@@ -324,15 +324,14 @@ jobs:
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
             # Use a master-specific cache for stable releases
             MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
-            DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
-            echo "cache_from=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${MASTER_SCOPE} type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
-            echo "cache_to=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${MASTER_SCOPE},mode=max,compression=zstd" >> $GITHUB_OUTPUT
+            echo "cache_from=type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
+            echo "cache_to=type=gha,scope=${MASTER_SCOPE},mode=max" >> $GITHUB_OUTPUT
           else
             # Use a feature branch cache for development
             MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
             DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
-            echo "cache_from=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${MASTER_SCOPE} type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${DEV_SCOPE} type=gha,scope=${DEV_SCOPE}" >> $GITHUB_OUTPUT
-            echo "cache_to=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${DEV_SCOPE},mode=max,compression=zstd" >> $GITHUB_OUTPUT
+            echo "cache_from=type=gha,scope=${MASTER_SCOPE} type=gha,scope=${DEV_SCOPE}" >> $GITHUB_OUTPUT
+            echo "cache_to=type=gha,scope=${DEV_SCOPE},mode=max" >> $GITHUB_OUTPUT
           fi
 
       - name: Extract metadata for ${{ matrix.image.name }}
