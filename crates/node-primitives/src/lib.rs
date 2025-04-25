@@ -58,6 +58,6 @@ pub enum CallError {
     ApplicationNotInstalled { application_id: ApplicationId },
     #[error("internal error")]
     InternalError,
-    #[error("Alias error")]
-    AliasResolutionFailed,
+    #[error("error resolving identity alias '{alias}'")]
+    AliasResolutionFailed { alias: Alias<PublicKey> },
 }

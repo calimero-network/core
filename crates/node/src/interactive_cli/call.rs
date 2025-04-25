@@ -22,7 +22,13 @@ pub struct CallCommand {
     /// The identity of the executor
     #[clap(long = "as", default_value = "default")]
     executor: Alias<PublicKey>,
-    #[clap(long = "substitute")]
+    /// A list of aliases that should be substituted in the method payload.
+    #[clap(
+        long = "substitute",
+        help = "Comma-separated list of aliases to substitute in the payload (use {alias} in payload)",
+        value_name = "ALIAS",
+        value_delimiter = ','
+    )]
     substitutes: Vec<Alias<PublicKey>>,
 }
 

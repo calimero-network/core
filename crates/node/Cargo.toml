@@ -13,9 +13,9 @@ clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 libp2p.workspace = true
+memchr.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
-memchr.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true

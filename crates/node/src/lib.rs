@@ -457,7 +457,7 @@ impl Node {
         &mut self,
         context_id: ContextId,
         method: &str,
-        payload: Vec<u8>,
+        mut payload: Vec<u8>,
         executor_public_key: PublicKey,
         aliases: Vec<Alias<PublicKey>>,
     ) -> Result<Outcome, CallError> {
@@ -480,12 +480,11 @@ impl Node {
             });
         }
 
-        let payload = if !aliases.is_empty() {
-            self.substitute_aliases_in_payload(context_id, payload, &aliases)
+        if !aliases.is_empty() {
+            payload = self
+                .substitute_aliases_in_payload(context_id, payload, &aliases)
                 .await?
-        } else {
-            payload
-        };
+        }
 
         let outcome_option = self
             .execute(&mut context, method, payload, executor_public_key)
@@ -565,21 +564,23 @@ impl Node {
         let mut remaining = &payload[..];
 
         for alias in aliases {
-            let placeholder = format!("{{{}}}", alias.as_ref());
-            let placeholder_bytes = placeholder.as_bytes();
+            let needle_str = format!("{{{alias}}}");
+            let needle = needle_str.as_bytes();
 
-            while let Some(pos) = memmem::find(remaining, placeholder_bytes) {
+            while let Some(pos) = memmem::find(remaining, needle) {
                 result.extend_from_slice(&remaining[..pos]);
 
                 let public_key = self
                     .ctx_manager
-                    .resolve_alias(*alias, Some(context_id))
-                    .map_err(|_| CallError::AliasResolutionFailed)?
-                    .ok_or(CallError::InternalError)?;
+                    .resolve_alias(alias.clone(), Some(context_id))
+                    .map_err(|_| CallError::InternalError)?
+                    .ok_or_else(|| CallError::AliasResolutionFailed {
+                        alias: alias.clone(),
+                    })?;
 
-                result.extend_from_slice(public_key.to_string().as_bytes());
+                result.extend_from_slice(public_key.as_str().as_bytes());
 
-                remaining = &remaining[pos + placeholder_bytes.len()..];
+                remaining = &remaining[pos + needle.len()..];
             }
         }
 

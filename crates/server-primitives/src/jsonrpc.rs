@@ -145,6 +145,7 @@ pub struct ExecuteRequest {
     pub method: String,
     pub args_json: Value,
     pub executor_public_key: PublicKey,
+    #[serde(default)]
     pub substitute: Vec<Alias<PublicKey>>,
 }
 
