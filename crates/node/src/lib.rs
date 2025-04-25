@@ -574,9 +574,7 @@ impl Node {
                     .ctx_manager
                     .resolve_alias(*alias, Some(context_id))
                     .map_err(|_| CallError::InternalError)?
-                    .ok_or_else(|| CallError::AliasResolutionFailed {
-                        alias: *alias,
-                    })?;
+                    .ok_or_else(|| CallError::AliasResolutionFailed { alias: *alias })?;
 
                 result.extend_from_slice(public_key.as_str().as_bytes());
 
