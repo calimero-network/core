@@ -4,6 +4,7 @@ use alloy::signers::{Signature, SignerSync};
 use alloy_sol_types::SolValue;
 use candid::Decode;
 use ed25519_dalek::{Signer, SigningKey};
+use eyre::WrapErr;
 use soroban_sdk::xdr::{FromXdr, ToXdr};
 use soroban_sdk::{Bytes, Env};
 use starknet::core::codec::Encode;
@@ -83,9 +84,7 @@ impl Method<Starknet> for Mutate {
         let verifying_key_bytes = verifying_key.to_bytes_be();
 
         // Create signer_id from ECDSA verifying key for signature verification
-        let signer_id = verifying_key_bytes
-            .rt()
-            .map_err(|_| eyre::eyre!("Infallible conversion"))?;
+        let signer_id = verifying_key_bytes.rt().wrap_err("Infallible conversion")?;
 
         // Create request with signer_id (no Repr)
         let request = StarknetProxyMutateRequest::from((signer_id, self.raw_request));
@@ -263,7 +262,7 @@ impl Method<Ethereum> for Mutate {
         let decoded: SolProposalWithApprovals = SolValue::abi_decode(&response, false)?;
 
         let proposal = ProposalWithApprovals {
-            proposal_id: decoded.proposalId.rt().expect("infallible conversion"),
+            proposal_id: decoded.proposalId.rt().wrap_err("infallible conversion")?,
             num_approvals: decoded.numApprovals as usize,
         };
 
