@@ -20,6 +20,7 @@ tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
 url.workspace = true
 webbrowser.workspace = true
+memchr = "2"
 
 calimero-context.workspace = true
 calimero-context-config.workspace = true
