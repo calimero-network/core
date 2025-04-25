@@ -54,7 +54,7 @@ impl Report for JoinContextResponse {
                 payload.member_public_key
             )]);
         } else {
-            let _ = table.add_row(vec!["No response data".to_string()]);
+            let _ = table.add_row(vec!["No response data".to_owned()]);
         }
         println!("{table}");
     }

@@ -70,7 +70,7 @@ impl Report for GetContextUsersResponse {
         ]);
 
         for user in &self.data.context_users {
-            let _ = table.add_row(vec![user.user_id.to_string(), user.joined_at.to_string()]);
+            let _ = table.add_row(vec![user.user_id.clone(), user.joined_at.to_string()]);
         }
         println!("{table}");
     }
@@ -96,7 +96,7 @@ impl Report for GetContextClientKeysResponse {
                 format!("{:?}", key.signing_key),
                 key.created_at.to_string(),
                 key.context_id
-                    .map_or_else(|| "None".to_string(), |id| id.to_string()),
+                    .map_or_else(|| "None".to_owned(), |id| id.to_string()),
             ]);
         }
         println!("{table}");

@@ -95,7 +95,7 @@ impl Report for GetProposalApproversResponse {
         ]);
 
         for user in &self.data {
-            let _ = table.add_row(vec![user.to_string(), "ContextIdentity".to_string()]);
+            let _ = table.add_row(vec![user.to_string(), "ContextIdentity".to_owned()]);
         }
         println!("{table}");
     }
