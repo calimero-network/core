@@ -15,6 +15,9 @@ use crate::common::{
 };
 use crate::output::ErrorLine;
 
+mod alias;
+mod generate;
+
 #[derive(Debug, Parser)]
 #[command(about = "Manage context identities")]
 pub struct ContextIdentityCommand {
@@ -33,58 +36,15 @@ pub enum ContextIdentitySubcommand {
         owned: bool,
     },
     #[command(about = "Manage identity aliases")]
-    Alias(ContextIdentityAliasCommand),
+    Alias(alias::ContextIdentityAliasCommand),
+    #[command(about = "Generate a new identity keypair", alias = "new")]
+    Generate(generate::GenerateCommand),
     #[command(about = "Set default identity for a context")]
     Use {
         #[arg(help = "The identity to set as default")]
         identity: PublicKey,
         #[arg(help = "The context to set the identity for")]
         #[arg(long, short, default_value = "default")]
-        context: Alias<ContextId>,
-    },
-}
-
-#[derive(Debug, Parser)]
-pub struct ContextIdentityAliasCommand {
-    #[command(subcommand)]
-    command: ContextIdentityAliasSubcommand,
-}
-
-#[derive(Debug, Parser)]
-pub enum ContextIdentityAliasSubcommand {
-    #[command(about = "Add new alias for an identity in a context", aliases = ["new", "create"])]
-    Add {
-        #[arg(help = "Name for the alias")]
-        name: Alias<PublicKey>,
-
-        #[arg(help = "The identity to create an alias for")]
-        identity: PublicKey,
-
-        #[arg(help = "The context that the identity is a member of")]
-        #[arg(long, short, default_value = "default")]
-        context: Alias<ContextId>,
-    },
-
-    #[command(
-        about = "Remove an identity alias from a context",
-        aliases = ["rm", "del", "delete"]
-    )]
-    Remove {
-        #[arg(help = "Name of the alias to remove")]
-        identity: Alias<PublicKey>,
-
-        #[arg(help = "The context that the identity is a member of ")]
-        #[arg(long, short)]
-        context: Alias<ContextId>,
-    },
-
-    #[command(about = "Resolve the alias to a context identity")]
-    Get {
-        #[arg(help = "Name of the alias to look up")]
-        identity: Alias<PublicKey>,
-
-        #[arg(help = "The context that the identity is a member of ")]
-        #[arg(long, short)]
         context: Alias<ContextId>,
     },
 }
@@ -108,6 +68,7 @@ impl ContextIdentityCommand {
                 .await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
+            ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Use { identity, context } => {
                 let resolve_response =
                     resolve_alias(multiaddr, &config.identity, context, None).await?;
@@ -132,85 +93,6 @@ impl ContextIdentityCommand {
                 Ok(())
             }
         }
-    }
-}
-
-impl ContextIdentityAliasCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
-        let multiaddr = fetch_multiaddr(&config)?;
-
-        match self.command {
-            ContextIdentityAliasSubcommand::Add {
-                name,
-                identity,
-                context,
-            } => {
-                let resolve_response =
-                    resolve_alias(multiaddr, &config.identity, context, None).await?;
-                if !identity_exists_in_context(
-                    &multiaddr,
-                    &Client::new(),
-                    &config.identity,
-                    &context,
-                    &identity,
-                )
-                .await?
-                {
-                    environment.output.write(&ErrorLine(&format!(
-                        "Identity '{}' does not exist in context '{}'",
-                        identity, context
-                    )));
-                    return Ok(());
-                }
-
-                let res = resolve_alias(multiaddr, &config.identity, context, None).await?;
-                let _context_id = res.value().ok_or_eyre("unable to resolve alias")?;
-
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-                let res = create_alias(
-                    multiaddr,
-                    &config.identity,
-                    name,
-                    Some(context_id),
-                    identity,
-                )
-                .await?;
-
-                environment.output.write(&res);
-            }
-            ContextIdentityAliasSubcommand::Remove { identity, context } => {
-                let resolve_response =
-                    resolve_alias(multiaddr, &config.identity, context, None).await?;
-
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-                let res =
-                    delete_alias(multiaddr, &config.identity, identity, Some(context_id)).await?;
-
-                environment.output.write(&res);
-            }
-            ContextIdentityAliasSubcommand::Get { identity, context } => {
-                let resolve_response =
-                    resolve_alias(multiaddr, &config.identity, context, None).await?;
-
-                let context_id = resolve_response
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?;
-                let res =
-                    lookup_alias(multiaddr, &config.identity, identity, Some(context_id)).await?;
-
-                environment.output.write(&res);
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -251,29 +133,4 @@ async fn list_identities(
         RequestType::Get,
     )
     .await
-}
-async fn identity_exists_in_context(
-    multiaddr: &Multiaddr,
-    client: &Client,
-    keypair: &Keypair,
-    context: &Alias<ContextId>,
-    target_identity: &PublicKey,
-) -> EyreResult<bool> {
-    let context_id = resolve_alias(multiaddr, keypair, *context, None)
-        .await?
-        .value()
-        .cloned()
-        .ok_or_eyre("unable to resolve alias")?;
-
-    let endpoint = format!("admin-api/dev/contexts/{}/identities", context_id);
-    let url = multiaddr_to_url(multiaddr, &endpoint)?;
-
-    let response: GetContextIdentitiesResponse = client
-        .get(url)
-        .send()
-        .await?
-        .json::<GetContextIdentitiesResponse>()
-        .await?;
-
-    Ok(response.data.identities.contains(target_identity))
 }
