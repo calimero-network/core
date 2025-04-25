@@ -48,7 +48,7 @@ impl Report for ListApplicationsResponse {
                 for data in &app.metadata {
                     let _ = meta_table.add_row(vec![format!("{:?}", data)]);
                 }
-                println!("\n{meta_table}");
+                println!("{meta_table}");
             }
         }
     }
