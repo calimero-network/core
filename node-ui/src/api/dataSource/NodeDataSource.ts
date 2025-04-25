@@ -303,6 +303,10 @@ export interface CreateTokenResponse {
   data: JsonWebToken;
 }
 
+export interface CapabilitiesRequest {
+  capabilities: Array<[string, string]>; // [ContextIdentity, Capability]
+}
+
 export class NodeDataSource implements NodeApi {
   private client: HttpClient;
 
@@ -674,5 +678,55 @@ export class NodeDataSource implements NodeApi {
       },
       headers,
     );
+  }
+
+  async grantCapabilities(
+    contextId: string,
+    request: CapabilitiesRequest,
+  ): ApiResponse<void> {
+    try {
+      const headers: Header | null = await createAuthHeader(
+        contextId,
+        getNearEnvironment(),
+      );
+      if (!headers) {
+        return { error: { code: 401, message: t.unauthorizedErrorMessage } };
+      }
+
+      await this.client.post<void>(
+        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/capabilities/grant`,
+        request,
+        headers,
+      );
+      return { data: undefined };
+    } catch (error) {
+      console.error('Error granting capabilities:', error);
+      return { error: { code: 500, message: 'Failed to grant capabilities.' } };
+    }
+  }
+
+  async revokeCapabilities(
+    contextId: string,
+    request: CapabilitiesRequest,
+  ): ApiResponse<void> {
+    try {
+      const headers: Header | null = await createAuthHeader(
+        contextId,
+        getNearEnvironment(),
+      );
+      if (!headers) {
+        return { error: { code: 401, message: t.unauthorizedErrorMessage } };
+      }
+
+      await this.client.post<void>(
+        `${getAppEndpointKey()}/admin-api/contexts/${contextId}/capabilities/revoke`,
+        request,
+        headers,
+      );
+      return { data: undefined };
+    } catch (error) {
+      console.error('Error revoking capabilities:', error);
+      return { error: { code: 500, message: 'Failed to revoke capabilities.' } };
+    }
   }
 }
