@@ -53,8 +53,9 @@ pub struct CallCommand {
     pub id: Option<String>,
     #[arg(
         long = "substitute",
-        help = "Aliases to substitute in the payload (format: {alias})",
-        value_name = "ALIAS"
+        help = "Comma-separated list of aliases to substitute in the payload (use {alias} in payload)",
+        value_name = "ALIAS",
+        value_delimiter = ','
     )]
     pub substitute: Vec<Alias<PublicKey>>,
 }
@@ -114,6 +115,7 @@ impl CallCommand {
             self.method,
             self.args.unwrap_or(json!({})),
             executor,
+            self.substitute.iter().cloned().collect(),
         ));
 
         let request = Request::new(

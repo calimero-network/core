@@ -565,7 +565,7 @@ impl Node {
                 let public_key = self
                     .ctx_manager
                     .resolve_alias(*alias, Some(context_id))
-                    .map_err(|_| CallError::InternalError)?
+                    .map_err(|_| CallError::AliasResolutionFailed)?
                     .ok_or(CallError::InternalError)?;
 
                 modified_payload = modified_payload.replace(&placeholder, &public_key.to_string());

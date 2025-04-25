@@ -49,13 +49,6 @@ impl CallCommand {
             return Ok(());
         };
 
-        // let substitutions = self.substitutes.into_iter().map(|alias| {
-        //     let public_key = node.ctx_manager
-        //         .resolve_alias(alias, Some(context_id))?
-        //         .ok_or_eyre("unable to resolve alias")?;
-        //     Ok((alias.to_string(), public_key))
-        // }).collect::<eyre::Result<Vec<_>>>()?;
-
         let outcome_result = node
             .handle_call(
                 context.id,
@@ -84,7 +77,7 @@ impl CallCommand {
                                         .join("\n")
                                 )
                             } else {
-                                format!("(raw): {:?}", String::from_utf8_lossy(&result).cyan())
+                                format!("(raw): {:?}", result.cyan())
                             };
 
                             for line in result.lines() {
