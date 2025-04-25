@@ -8,8 +8,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - 'crates/**'
-      - 'Dockerfile'
-      - '.github/workflows/release.yml'
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
@@ -18,7 +16,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - 'crates/**'
-      - 'Dockerfile'
       - '.github/workflows/release.yml'
 
 # Default permissions are read-only
@@ -42,12 +39,6 @@ jobs:
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       overwrite_release: ${{ steps.version_info.outputs.overwrite_release }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
-      merod_tags: ${{ steps.merod_metadata.outputs.tags }}
-      merod_labels: ${{ steps.merod_metadata.outputs.labels }}
-      meroctl_tags: ${{ steps.meroctl_metadata.outputs.tags }}
-      meroctl_labels: ${{ steps.meroctl_metadata.outputs.labels }}
-      docker_cache_from: ${{ steps.prep_cache.outputs.cache_from }}
-      docker_cache_to: ${{ steps.prep_cache.outputs.cache_to }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -81,81 +72,36 @@ jobs:
           
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
             version="$version_candidate"
-            
             if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
               echo "release_required=false" >> $GITHUB_OUTPUT
             else
               echo "release_required=true" >> $GITHUB_OUTPUT
             fi
-            
             echo "build_binaries=true" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
             echo "overwrite_release=false" >> $GITHUB_OUTPUT
-            
           elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == release/* ]]; then
             version="prerelease-${{ github.event.number }}"
-            
             echo "build_binaries=true" >> $GITHUB_OUTPUT
             echo "release_required=true" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
             echo "overwrite_release=true" >> $GITHUB_OUTPUT
-            
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
             version="pr-${{ github.event.number }}"
-            
             echo "build_binaries=true" >> $GITHUB_OUTPUT
             echo "release_required=false" >> $GITHUB_OUTPUT
             echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
-            
           else
             version="dev-$(echo ${{ github.ref }} | sed 's|refs/heads/||')"
-            
             echo "build_binaries=false" >> $GITHUB_OUTPUT
             echo "release_required=false" >> $GITHUB_OUTPUT
             echo "build_docker=false" >> $GITHUB_OUTPUT
           fi
           
           echo "version=$version" >> $GITHUB_OUTPUT
-
-      - name: Extract metadata for merod
-        id: merod_metadata
-        uses: docker/metadata-action@v5
-        if: steps.version_info.outputs.build_docker == 'true'
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/merod
-          tags: |
-            type=raw,value=${{ steps.version_info.outputs.version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-
-      - name: Extract metadata for meroctl
-        id: meroctl_metadata
-        uses: docker/metadata-action@v5
-        if: steps.version_info.outputs.build_docker == 'true'
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/meroctl
-          tags: |
-            type=raw,value=${{ steps.version_info.outputs.version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-
-      - name: Prepare Docker cache parameters
-        id: prep_cache
-        if: steps.version_info.outputs.build_docker == 'true'
-        run: |
-          # Define cache configuration for Buildx
-          if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-            # Use a master-specific cache for stable releases
-            SCOPE="${{ github.repository_owner }}-docker-master"
-          else
-            # Use a feature branch cache for development
-            SCOPE="${{ github.repository_owner }}-docker-dev"
-          fi
-          
-          echo "Using cache scope: $SCOPE"
-          echo "cache_from=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:$SCOPE type=gha,scope=$SCOPE" >> $GITHUB_OUTPUT
-          echo "cache_to=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:$SCOPE,mode=max,compression=zstd" >> $GITHUB_OUTPUT
 
   build-binaries:
     name: Build Binaries
@@ -200,7 +146,8 @@ jobs:
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: rust-binaries-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          prefix-key: rust-binaries
+          shared-key: ${{ matrix.target }}
 
       - name: Install target for ${{ matrix.target }}
         run: rustup target add ${{ matrix.target }}
@@ -325,7 +272,11 @@ jobs:
       packages: write
     strategy:
       matrix:
-        image: [merod, meroctl]
+        image:
+          - name: merod
+            description: Merod container image
+          - name: meroctl
+            description: Meroctl - Control tool for Merod container image
 
     steps:
       - name: Checkout repository
@@ -343,11 +294,11 @@ jobs:
           mkdir -p ./bin/amd64 ./bin/arm64
           
           # Extract binaries directly to the proper directories
-          tar -xzf binaries/${{ matrix.image }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
-          tar -xzf binaries/${{ matrix.image }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
+          tar -xzf binaries/${{ matrix.image.name }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
+          tar -xzf binaries/${{ matrix.image.name }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
           
           # Ensure binaries have correct permissions
-          chmod +x ./bin/amd64/${{ matrix.image }} ./bin/arm64/${{ matrix.image }}
+          chmod +x ./bin/amd64/${{ matrix.image.name }} ./bin/arm64/${{ matrix.image.name }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -366,25 +317,51 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Build and push ${{ matrix.image }} image
+      - name: Prepare Docker cache parameters
+        id: prep_cache
+        run: |
+          # Define cache configuration for Buildx
+          if [ "${{ github.ref }}" == "refs/heads/master" ]; then
+            # Use a master-specific cache for stable releases
+            MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
+            DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
+            echo "cache_from=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${MASTER_SCOPE} type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
+            echo "cache_to=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${MASTER_SCOPE},mode=max,compression=zstd" >> $GITHUB_OUTPUT
+          else
+            # Use a feature branch cache for development
+            MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
+            DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
+            echo "cache_from=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${MASTER_SCOPE} type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${DEV_SCOPE} type=gha,scope=${DEV_SCOPE}" >> $GITHUB_OUTPUT
+            echo "cache_to=type=registry,ref=ghcr.io/${{ github.repository_owner }}/buildcache:${DEV_SCOPE},mode=max,compression=zstd" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract metadata for ${{ matrix.image.name }}
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+      
+      - name: Build and push ${{ matrix.image.name }} image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./prebuilt.Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          target: ${{ matrix.image }}-prebuilt
+          target: ${{ matrix.image.name }}-prebuilt
           build-args: |
-            BINARY_NAME=${{ matrix.image }}
-          tags: ${{ matrix.image == 'merod' && needs.prepare.outputs.merod_tags || needs.prepare.outputs.meroctl_tags }}
-          labels: ${{ matrix.image == 'merod' && needs.prepare.outputs.merod_labels || needs.prepare.outputs.meroctl_labels }}
-          cache-from: ${{ needs.prepare.outputs.docker_cache_from }}
-          cache-to: type=gha,scope=${{ github.repository_owner }}-${{ matrix.image }},mode=max
-          outputs: type=registry,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+            BINARY_NAME=${{ matrix.image.name }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: ${{ steps.prep_cache.outputs.cache_from }}
+          cache-to: ${{ steps.prep_cache.outputs.cache_to }}
           provenance: mode=max
           sbom: true
           annotations: |
-            org.opencontainers.image.description=${{ matrix.image == 'merod' && 'Merod container image' || 'Meroctl container image' }}
+            org.opencontainers.image.description=${{ matrix.image.description }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
 
