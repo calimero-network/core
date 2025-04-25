@@ -10,8 +10,8 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    create_alias, fetch_multiaddr, load_config, make_request,
-    multiaddr_to_url, resolve_alias, RequestType,
+    create_alias, fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias,
+    RequestType,
 };
 
 mod alias;

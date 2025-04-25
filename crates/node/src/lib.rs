@@ -551,43 +551,42 @@ impl Node {
         Ok(outcome)
     }
 
-
-async fn substitute_aliases_in_payload(
-    &self,
-    context_id: ContextId,
-    payload: Vec<u8>,
-    aliases: &[Alias<PublicKey>],
-) -> Result<Vec<u8>, CallError> {
-    if aliases.is_empty() {
-        return Ok(payload); 
-    }
-
-    let mut result = Vec::with_capacity(payload.len()); 
-    let mut remaining = &payload[..];
-    
-    for alias in aliases {
-        let placeholder = format!("{{{}}}", alias.as_ref());
-        let placeholder_bytes = placeholder.as_bytes();
-        
-        while let Some(pos) = memmem::find(remaining, placeholder_bytes) {
-            result.extend_from_slice(&remaining[..pos]);
-            
-            let public_key = self
-                .ctx_manager
-                .resolve_alias(*alias, Some(context_id))
-                .map_err(|_| CallError::AliasResolutionFailed)?
-                .ok_or(CallError::InternalError)?;
-            
-            result.extend_from_slice(public_key.to_string().as_bytes());
-            
-            remaining = &remaining[pos + placeholder_bytes.len()..];
+    async fn substitute_aliases_in_payload(
+        &self,
+        context_id: ContextId,
+        payload: Vec<u8>,
+        aliases: &[Alias<PublicKey>],
+    ) -> Result<Vec<u8>, CallError> {
+        if aliases.is_empty() {
+            return Ok(payload);
         }
+
+        let mut result = Vec::with_capacity(payload.len());
+        let mut remaining = &payload[..];
+
+        for alias in aliases {
+            let placeholder = format!("{{{}}}", alias.as_ref());
+            let placeholder_bytes = placeholder.as_bytes();
+
+            while let Some(pos) = memmem::find(remaining, placeholder_bytes) {
+                result.extend_from_slice(&remaining[..pos]);
+
+                let public_key = self
+                    .ctx_manager
+                    .resolve_alias(*alias, Some(context_id))
+                    .map_err(|_| CallError::AliasResolutionFailed)?
+                    .ok_or(CallError::InternalError)?;
+
+                result.extend_from_slice(public_key.to_string().as_bytes());
+
+                remaining = &remaining[pos + placeholder_bytes.len()..];
+            }
+        }
+
+        result.extend_from_slice(remaining);
+
+        Ok(result)
     }
-    
-    result.extend_from_slice(remaining);
-    
-    Ok(result)
-}
 
     async fn execute(
         &self,
