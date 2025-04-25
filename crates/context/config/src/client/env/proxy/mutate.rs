@@ -29,7 +29,7 @@ use crate::stellar::stellar_types::{
     FromWithEnv, StellarSignedRequest, StellarSignedRequestPayload,
 };
 use crate::stellar::{StellarProposalWithApprovals, StellarProxyMutateRequest};
-use crate::types::{Identity, ProposalId, Signed};
+use crate::types::Signed;
 use crate::{ProposalWithApprovals, ProxyMutateRequest, Repr};
 
 pub mod methods;
@@ -263,7 +263,7 @@ impl Method<Ethereum> for Mutate {
         let decoded: SolProposalWithApprovals = SolValue::abi_decode(&response, false)?;
 
         let proposal = ProposalWithApprovals {
-            proposal_id: Repr::new(ProposalId(Identity(decoded.proposalId.0))),
+            proposal_id: decoded.proposalId.rt().expect("infallible conversion"),
             num_approvals: decoded.numApprovals as usize,
         };
 
