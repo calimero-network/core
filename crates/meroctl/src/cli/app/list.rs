@@ -5,7 +5,7 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
-use crate::output::{PrettyTable, Report};
+use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "List installed applications")]
@@ -13,18 +13,9 @@ pub struct ListCommand;
 
 impl Report for ListApplicationsResponse {
     fn report(&self) {
-        let mut table = PrettyTable::new(&["ID", "Source", "Size", "Blob ID"]);
-
-        for app in &self.data.apps {
-            table.add_row(vec![
-                app.id.to_string(),
-                app.source.to_string(),
-                app.size.to_string(),
-                app.blob.to_string(),
-            ]);
+        for application in &self.data.apps {
+            application.report();
         }
-
-        table.print();
     }
 }
 

@@ -1,5 +1,6 @@
 use calimero_primitives::application::Application;
 use clap::{Parser, Subcommand};
+use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
@@ -50,6 +51,21 @@ impl Report for Application {
         for item in &self.metadata {
             println!("  {item:?}");
         }
+    }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Application Details").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("ID: {}", self.id)]);
+        let _ = table.add_row(vec![format!("Size: {}", self.size)]);
+        let _ = table.add_row(vec![format!("Blob ID: {}", self.blob)]);
+        let _ = table.add_row(vec![format!("Source: {}", self.source)]);
+        let _ = table.add_row(vec!["Metadata:"]);
+
+        for item in &self.metadata {
+            let _ = table.add_row(vec![format!("  - {item:?}")]);
+        }
+        println!("{table}");
     }
 }
 

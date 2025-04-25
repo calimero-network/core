@@ -2,7 +2,8 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
-use color_eyre::owo_colors::OwoColorize;
+// use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
@@ -25,11 +26,16 @@ impl Report for DeleteContextResponse {
     }
 
     fn pretty_report(&self) {
-        if self.data.is_deleted {
-            println!("{} {}", "✓".green(), "Context successfully deleted".bold());
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Context Deletion Status").fg(comfy_table::Color::Blue)
+        ]);
+        let _ = table.add_row(vec![if self.data.is_deleted {
+            Cell::new("✓ Deleted").fg(comfy_table::Color::Green)
         } else {
-            println!("{} {}", "✗".red(), "Context deletion failed".bold());
-        }
+            Cell::new("✗ Not Deleted").fg(comfy_table::Color::Red)
+        }]);
+        println!("{table}");
     }
 }
 

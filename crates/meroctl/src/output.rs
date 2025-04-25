@@ -1,5 +1,6 @@
 use clap::ValueEnum;
 use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Table};
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -7,6 +8,7 @@ pub enum Format {
     Json,
     #[default]
     PlainText,
+    PrettyText,
 }
 
 #[derive(Debug, Default)]
@@ -22,68 +24,6 @@ pub trait Report {
     }
 }
 
-impl PrettyTable {
-    pub fn new(headers: &[&str]) -> Self {
-        Self {
-            headers: headers.iter().map(|s| s.to_string()).collect(),
-            rows: Vec::new(),
-        }
-    }
-
-    pub fn add_row(&mut self, row: Vec<String>) {
-        self.rows.push(row);
-    }
-
-    pub fn print(&self) {
-        if self.headers.is_empty() || self.rows.is_empty() {
-            return;
-        }
-
-        let mut widths: Vec<usize> = self.headers.iter().map(|h| h.len()).collect();
-
-        for row in &self.rows {
-            for (i, cell) in row.iter().enumerate() {
-                if i < widths.len() {
-                    widths[i] = widths[i].max(cell.len());
-                }
-            }
-        }
-
-        let header = self
-            .headers
-            .iter()
-            .enumerate()
-            .map(|(i, h)| format!(" {:width$} ", h.bold().blue(), width = widths[i]))
-            .collect::<Vec<_>>()
-            .join("│");
-
-        println!("{}", header);
-        println!("{}", "─".repeat(header.len()));
-
-        for row in &self.rows {
-            let row_str = row
-                .iter()
-                .enumerate()
-                .map(|(i, cell)| format!(" {:width$} ", cell, width = widths[i]))
-                .collect::<Vec<_>>()
-                .join("│");
-
-            println!("{}", row_str);
-        }
-    }
-}
-
-impl Report for PrettyTable {
-    fn report(&self) {
-        self.print();
-    }
-}
-
-pub struct PrettyTable {
-    headers: Vec<String>,
-    rows: Vec<Vec<String>>,
-}
-
 impl Output {
     pub const fn new(output_type: Format) -> Self {
         Self {
@@ -97,7 +37,8 @@ impl Output {
                 Ok(json) => println!("{json}"),
                 Err(err) => eprintln!("Failed to serialize to JSON: {err}"),
             },
-            Format::PlainText => value.pretty_report(),
+            Format::PlainText => value.report(),
+            Format::PrettyText => value.pretty_report(),
         }
     }
 }
@@ -109,6 +50,13 @@ impl Report for InfoLine<'_> {
     fn report(&self) {
         println!("{} {}", "[INFO]".green(), self.0);
     }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("INFO").fg(comfy_table::Color::Green)]);
+        let _ = table.add_row(vec![self.0]);
+        println!("{table}");
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -117,5 +65,12 @@ pub struct ErrorLine<'a>(pub &'a str);
 impl Report for ErrorLine<'_> {
     fn report(&self) {
         println!("{} {}", "[ERROR]".red(), self.0);
+    }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("ERROR").fg(comfy_table::Color::Red)]);
+        let _ = table.add_row(vec![self.0]);
+        println!("{table}");
     }
 }

@@ -3,7 +3,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
-use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
 use reqwest::Client;
 
@@ -36,17 +36,27 @@ impl Report for JoinContextResponse {
     fn report(&self) {
         match self.data {
             Some(ref payload) => {
-                println!("{} {}", "✓".green(), "Successfully joined context".bold());
-                println!("  Context ID: {}", payload.context_id.to_string().cyan());
-                println!(
-                    "  Member Public Key: {}",
-                    payload.member_public_key.to_string().cyan()
-                );
+                println!("context_id {}", payload.context_id);
+                println!("member_public_key: {}", payload.member_public_key);
             }
-            None => {
-                println!("{} {}", "✗".red(), "Failed to join context".bold());
-            }
+            None => todo!(),
         }
+    }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Join Context Response").fg(Color::Blue)]);
+
+        if let Some(payload) = &self.data {
+            let _ = table.add_row(vec![format!("Context ID: {}", payload.context_id)]);
+            let _ = table.add_row(vec![format!(
+                "Member Public Key: {}",
+                payload.member_public_key
+            )]);
+        } else {
+            let _ = table.add_row(vec!["No response data".to_string()]);
+        }
+        println!("{table}");
     }
 }
 

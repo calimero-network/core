@@ -1,6 +1,6 @@
 use calimero_server_primitives::admin::GetPeersCountResponse;
 use clap::Parser;
-use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 use reqwest::Client;
@@ -24,7 +24,14 @@ pub struct PeersCommand;
 
 impl Report for GetPeersCountResponse {
     fn report(&self) {
-        println!("{}", self.count.to_string().bold().green());
+        println!("{}", self.count);
+    }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Connected Peers").fg(Color::Blue)]);
+        let _ = table.add_row(vec![self.count.to_string()]);
+        println!("{table}");
     }
 }
 

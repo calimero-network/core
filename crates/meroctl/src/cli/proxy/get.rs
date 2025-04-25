@@ -7,6 +7,7 @@ use calimero_server_primitives::admin::{
 };
 use clap::{Parser, ValueEnum};
 use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
@@ -17,7 +18,7 @@ use crate::cli::Environment;
 use crate::common::{
     fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
 };
-use crate::output::{PrettyTable, Report};
+use crate::output::Report;
 
 #[derive(Parser, Debug)]
 #[command(about = "Fetch details about the proxy contract")]
@@ -57,23 +58,46 @@ impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
         println!("Active proposals: {}", self.data.to_string().bold().green());
     }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Active Proposals Count").fg(Color::Blue)]);
+        let _ = table.add_row(vec![self.data.to_string()]);
+        println!("{table}");
+    }
 }
 
 impl Report for GetNumberOfProposalApprovalsResponse {
     fn report(&self) {
         println!("{:?}", self.data);
     }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Proposal Approvals").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("Approvals: {:?}", self.data)]);
+        println!("{table}");
+    }
 }
 
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
-        let mut table = PrettyTable::new(&["Approver"]);
+        for user in &self.data {
+            println!("{}", user);
+        }
+    }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+      let _ =  table.set_header(vec![
+            Cell::new("Proposal Approvers").fg(Color::Blue),
+            Cell::new("Type").fg(Color::Blue),
+        ]);
 
         for user in &self.data {
-            table.add_row(vec![user.to_string()]);
+          let _ =  table.add_row(vec![user.to_string(), "ContextIdentity".to_string()]);
         }
-
-        table.print();
+        println!("{table}");
     }
 }
 
@@ -83,11 +107,33 @@ impl Report for GetProposalsResponse {
             println!("{:#?}", proposal);
         }
     }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+      let _ =  table.set_header(vec![
+            Cell::new("Proposals").fg(Color::Blue),
+            Cell::new("ID").fg(Color::Blue),
+            Cell::new("Status").fg(Color::Blue),
+        ]);
+
+        for proposal in &self.data {
+           let _ =  table.add_row(vec![proposal.id.to_string(), format!("{:?}", proposal)]);
+        }
+        println!("{table}");
+    }
 }
 
 impl Report for GetProposalResponse {
     fn report(&self) {
         println!("{:#?}", self.data);
+    }
+
+    fn pretty_report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Proposal Details").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("ID: {}", self.data.id)]);
+        let _ = table.add_row(vec![format!("Status: {:?}", self.data)]);
+        println!("{table}");
     }
 }
 
