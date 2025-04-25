@@ -89,13 +89,13 @@ impl Report for GetProposalApproversResponse {
 
     fn pretty_report(&self) {
         let mut table = Table::new();
-      let _ =  table.set_header(vec![
+        let _ = table.set_header(vec![
             Cell::new("Proposal Approvers").fg(Color::Blue),
             Cell::new("Type").fg(Color::Blue),
         ]);
 
         for user in &self.data {
-          let _ =  table.add_row(vec![user.to_string(), "ContextIdentity".to_string()]);
+            let _ = table.add_row(vec![user.to_string(), "ContextIdentity".to_string()]);
         }
         println!("{table}");
     }
@@ -110,14 +110,14 @@ impl Report for GetProposalsResponse {
 
     fn pretty_report(&self) {
         let mut table = Table::new();
-      let _ =  table.set_header(vec![
+        let _ = table.set_header(vec![
             Cell::new("Proposals").fg(Color::Blue),
             Cell::new("ID").fg(Color::Blue),
             Cell::new("Status").fg(Color::Blue),
         ]);
 
         for proposal in &self.data {
-           let _ =  table.add_row(vec![proposal.id.to_string(), format!("{:?}", proposal)]);
+            let _ = table.add_row(vec![proposal.id.to_string(), format!("{:?}", proposal)]);
         }
         println!("{table}");
     }

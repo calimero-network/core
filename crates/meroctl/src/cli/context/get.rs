@@ -95,7 +95,8 @@ impl Report for GetContextClientKeysResponse {
                 format!("{:?}", key.wallet_type),
                 format!("{:?}", key.signing_key),
                 key.created_at.to_string(),
-                key.context_id.map_or_else(|| "None".to_string(), |id| id.to_string()),
+                key.context_id
+                    .map_or_else(|| "None".to_string(), |id| id.to_string()),
             ]);
         }
         println!("{table}");
