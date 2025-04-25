@@ -572,10 +572,10 @@ impl Node {
 
                 let public_key = self
                     .ctx_manager
-                    .resolve_alias(alias.clone(), Some(context_id))
+                    .resolve_alias(*alias, Some(context_id))
                     .map_err(|_| CallError::InternalError)?
                     .ok_or_else(|| CallError::AliasResolutionFailed {
-                        alias: alias.clone(),
+                        alias: *alias,
                     })?;
 
                 result.extend_from_slice(public_key.as_str().as_bytes());

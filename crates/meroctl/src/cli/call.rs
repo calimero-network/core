@@ -115,7 +115,7 @@ impl CallCommand {
             self.method,
             self.args.unwrap_or(json!({})),
             executor,
-            self.substitute.iter().cloned().collect(),
+            self.substitute,
         ));
 
         let request = Request::new(
