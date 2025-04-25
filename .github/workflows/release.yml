@@ -347,10 +347,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./prebuilt.Dockerfile
+          file: ./.github/workflows/deps/prebuilt.Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          target: ${{ matrix.image.name }}-prebuilt
+          target: generic-prebuilt
           build-args: |
             BINARY_NAME=${{ matrix.image.name }}
           tags: ${{ steps.metadata.outputs.tags }}

@@ -37,25 +37,28 @@ RUN chmod +x /usr/local/bin/${BINARY_NAME}
 USER appuser
 
 ################################################################################
-# Create a minimal runner stage for merod using prebuilt binaries
-FROM prebuilt-base AS merod-prebuilt
+# Create a generic runner stage using prebuilt binaries
+FROM prebuilt-base AS generic-prebuilt
 
-# Set the working directory
-WORKDIR /data
-RUN chown appuser:appuser /data
+# Set the working directory based on binary name
+ARG BINARY_NAME
+RUN if [ "$BINARY_NAME" = "merod" ]; then \
+      mkdir -p /data && \
+      chown appuser:appuser /data && \
+      echo "/data" > /tmp/workdir; \
+    else \
+      mkdir -p /app && \
+      chown appuser:appuser /app && \
+      echo "/app" > /tmp/workdir; \
+    fi
+WORKDIR /placeholder
+RUN WORKDIR=$(cat /tmp/workdir) && rm /tmp/workdir && cd $WORKDIR
 
-# Set the entrypoint
-ENTRYPOINT ["merod"]
+# Set the entrypoint using the binary name
+ENTRYPOINT ["/usr/local/bin/${BINARY_NAME}"]
 CMD ["--help"]
 
 ################################################################################
-# Create a minimal runner stage for meroctl using prebuilt binaries
-FROM prebuilt-base AS meroctl-prebuilt
-
-# Set the working directory
-WORKDIR /app
-RUN chown appuser:appuser /app
-
-# Set the entrypoint
-ENTRYPOINT ["meroctl"]
-CMD ["--help"]
+# Create aliased targets for backward compatibility
+FROM generic-prebuilt AS merod-prebuilt
+FROM generic-prebuilt AS meroctl-prebuilt
