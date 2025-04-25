@@ -565,9 +565,9 @@ impl Node {
 
         for alias in aliases {
             let needle_str = format!("{{{alias}}}");
-            let needle = needle_str.as_bytes();
+            let needle = needle_str.into_bytes();
 
-            while let Some(pos) = memmem::find(remaining, needle) {
+            while let Some(pos) = memmem::find(remaining, &needle) {
                 result.extend_from_slice(&remaining[..pos]);
 
                 let public_key = self
