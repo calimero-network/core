@@ -2,7 +2,6 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
-// use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
