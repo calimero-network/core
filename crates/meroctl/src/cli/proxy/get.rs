@@ -6,7 +6,6 @@ use calimero_server_primitives::admin::{
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
 use clap::{Parser, ValueEnum};
-use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
@@ -56,7 +55,7 @@ pub enum GetRequest {
 
 impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
-        println!("Active proposals: {}", self.data.to_string().bold().green());
+        println!("Active proposals: {}", self.data);
     }
 
     fn pretty_report(&self) {
