@@ -4,6 +4,7 @@ use axum::middleware::from_fn;
 use axum::routing::{post, Router};
 use axum::{Extension, Json};
 use calimero_node_primitives::{CallError as PrimitiveCallError, ExecutionRequest, ServerSender};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
@@ -176,6 +177,7 @@ pub(crate) async fn call(
     method: String,
     args: Vec<u8>,
     executor_public_key: PublicKey,
+    substitute: Vec<Alias<PublicKey>>,
 ) -> Result<Option<String>, CallError> {
     let (outcome_sender, outcome_receiver) = oneshot::channel();
 
@@ -186,6 +188,7 @@ pub(crate) async fn call(
             args,
             executor_public_key,
             outcome_sender,
+            substitute,
         ))
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;

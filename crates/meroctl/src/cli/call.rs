@@ -52,6 +52,13 @@ pub struct CallCommand {
 
     #[arg(long, default_value = "dontcare", help = "Id of the JsonRpc call")]
     pub id: Option<String>,
+    #[arg(
+        long = "substitute",
+        help = "Comma-separated list of aliases to substitute in the payload (use {alias} in payload)",
+        value_name = "ALIAS",
+        value_delimiter = ','
+    )]
+    pub substitute: Vec<Alias<PublicKey>>,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -124,6 +131,7 @@ impl CallCommand {
             self.method,
             self.args.unwrap_or(json!({})),
             executor,
+            self.substitute,
         ));
 
         let request = Request::new(
