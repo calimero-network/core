@@ -34,16 +34,6 @@ pub struct JoinCommand {
 
 impl Report for JoinContextResponse {
     fn report(&self) {
-        match self.data {
-            Some(ref payload) => {
-                println!("context_id {}", payload.context_id);
-                println!("member_public_key: {}", payload.member_public_key);
-            }
-            None => todo!(),
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Join Context Response").fg(Color::Blue)]);
 

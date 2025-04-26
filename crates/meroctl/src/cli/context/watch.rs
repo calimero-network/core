@@ -50,11 +50,6 @@ pub struct WatchCommand {
 
 impl Report for Response {
     fn report(&self) {
-        println!("id: {:?}", self.id);
-        println!("payload: {:?}", self.body);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("WebSocket Response").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("ID: {:?}", self.id)]);

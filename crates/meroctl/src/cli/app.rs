@@ -43,27 +43,19 @@ pub enum AppSubCommands {
 
 impl Report for Application {
     fn report(&self) {
-        println!("application_id: {}", self.id);
-        println!("size: {}", self.size);
-        println!("blobId: {}", self.blob);
-        println!("source: {}", self.source);
-        println!("metadata:");
-        for item in &self.metadata {
-            println!("  {item:?}");
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Application Details").fg(Color::Blue)]);
-        let _ = table.add_row(vec![format!("ID: {}", self.id)]);
-        let _ = table.add_row(vec![format!("Size: {}", self.size)]);
-        let _ = table.add_row(vec![format!("Blob ID: {}", self.blob)]);
-        let _ = table.add_row(vec![format!("Source: {}", self.source)]);
-        let _ = table.add_row(vec!["Metadata:"]);
+        let _ = table.set_header(vec![
+            Cell::new("Field").fg(Color::Blue),
+            Cell::new("Value").fg(Color::Blue),
+        ]);
+        let _ = table.add_row(vec!["Application ID", &self.id.to_string()]);
+        let _ = table.add_row(vec!["Size", &self.size.to_string()]);
+        let _ = table.add_row(vec!["Blob ID", &self.blob.to_string()]);
+        let _ = table.add_row(vec!["Source", &self.source.to_string()]);
+        let _ = table.add_row(vec!["Metadata", ""]);
 
         for item in &self.metadata {
-            let _ = table.add_row(vec![format!("  - {item:?}")]);
+            let _ = table.add_row(vec!["", &format!("- {item:?}")]);
         }
         println!("{table}");
     }

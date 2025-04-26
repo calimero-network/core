@@ -1,7 +1,6 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
-use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
 use reqwest::Client;
 
@@ -26,19 +25,6 @@ impl Report for GetApplicationResponse {
         match self.data.application {
             Some(ref application) => application.report(),
             None => println!("No application found"),
-        }
-    }
-
-    fn pretty_report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Application").fg(Color::Blue)]);
-
-        match &self.data.application {
-            Some(app) => app.pretty_report(),
-            None => {
-                let _ = table.add_row(vec!["No application found"]);
-                println!("{table}");
-            }
         }
     }
 }

@@ -146,10 +146,6 @@ impl From<CliError> for ExitCode {
 
 impl Report for CliError {
     fn report(&self) {
-        println!("{self}");
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
         let _ = table.add_row(vec![match self {

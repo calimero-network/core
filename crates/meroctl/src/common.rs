@@ -233,10 +233,6 @@ impl UrlFragment for ApplicationId {
 
 impl Report for CreateAliasResponse {
     fn report(&self) {
-        println!("alias created");
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Alias Created").fg(Color::Green)]);
         let _ = table.add_row(vec!["Successfully created alias"]);
@@ -281,10 +277,6 @@ where
 
 impl Report for DeleteAliasResponse {
     fn report(&self) {
-        println!("alias deleted");
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Alias Deleted").fg(Color::Green)]);
         let _ = table.add_row(vec!["Successfully deleted alias"]);
@@ -350,13 +342,6 @@ where
 
 impl<T: fmt::Display> Report for LookupAliasResponse<T> {
     fn report(&self) {
-        match &self.data.value {
-            Some(value) => println!("aliased to {}", value),
-            None => println!("alias not found"),
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Alias Lookup").fg(Color::Blue)]);
 
@@ -397,15 +382,6 @@ impl<T> ResolveResponse<T> {
 
 impl<T: fmt::Display> Report for ResolveResponse<T> {
     fn report(&self) {
-        println!("{}", self.alias);
-        match &self.value {
-            Some(ResolveResponseValue::Lookup(value)) => value.report(),
-            Some(ResolveResponseValue::Parsed(value)) => println!("parses to {}", value),
-            None => println!("could not be reolved"),
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Alias Resolution").fg(Color::Blue)]);
         let _ = table.add_row(vec!["Alias", self.alias.as_str()]);
@@ -413,7 +389,7 @@ impl<T: fmt::Display> Report for ResolveResponse<T> {
         match &self.value {
             Some(ResolveResponseValue::Lookup(value)) => {
                 let _ = table.add_row(vec!["Type", "Lookup"]);
-                value.pretty_report();
+                value.report();
             }
             Some(ResolveResponseValue::Parsed(value)) => {
                 let _ = table.add_row(vec!["Type", "Direct"]);

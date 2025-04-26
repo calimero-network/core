@@ -21,10 +21,6 @@ pub struct DeleteCommand {
 
 impl Report for DeleteContextResponse {
     fn report(&self) {
-        println!("is_deleted: {}", self.data.is_deleted);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Context Deletion Status").fg(comfy_table::Color::Blue)

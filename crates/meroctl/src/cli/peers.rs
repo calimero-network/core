@@ -24,10 +24,6 @@ pub struct PeersCommand;
 
 impl Report for GetPeersCountResponse {
     fn report(&self) {
-        println!("{}", self.count);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Connected Peers").fg(Color::Blue)]);
         let _ = table.add_row(vec![self.count.to_string()]);

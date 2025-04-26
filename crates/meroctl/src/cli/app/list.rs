@@ -14,12 +14,6 @@ pub struct ListCommand;
 
 impl Report for ListApplicationsResponse {
     fn report(&self) {
-        for application in &self.data.apps {
-            application.report();
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Application ID").fg(Color::Blue),

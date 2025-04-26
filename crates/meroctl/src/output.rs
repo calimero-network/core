@@ -1,5 +1,4 @@
 use clap::ValueEnum;
-use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Table};
 use serde::Serialize;
 
@@ -7,7 +6,6 @@ use serde::Serialize;
 pub enum Format {
     Json,
     #[default]
-    PlainText,
     PrettyText,
 }
 
@@ -18,10 +16,6 @@ pub struct Output {
 
 pub trait Report {
     fn report(&self);
-
-    fn pretty_report(&self) {
-        self.report();
-    }
 }
 
 impl Output {
@@ -37,8 +31,7 @@ impl Output {
                 Ok(json) => println!("{json}"),
                 Err(err) => eprintln!("Failed to serialize to JSON: {err}"),
             },
-            Format::PlainText => value.report(),
-            Format::PrettyText => value.pretty_report(),
+            Format::PrettyText => value.report(),
         }
     }
 }
@@ -48,10 +41,6 @@ pub struct InfoLine<'a>(pub &'a str);
 
 impl Report for InfoLine<'_> {
     fn report(&self) {
-        println!("{} {}", "[INFO]".green(), self.0);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("INFO").fg(comfy_table::Color::Green)]);
         let _ = table.add_row(vec![self.0]);
@@ -64,10 +53,6 @@ pub struct ErrorLine<'a>(pub &'a str);
 
 impl Report for ErrorLine<'_> {
     fn report(&self) {
-        println!("{} {}", "[ERROR]".red(), self.0);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("ERROR").fg(comfy_table::Color::Red)]);
         let _ = table.add_row(vec![self.0]);

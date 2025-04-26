@@ -71,12 +71,6 @@ pub enum ContextSubCommands {
 
 impl Report for Context {
     fn report(&self) {
-        println!("context_id: {}", self.id);
-        println!("application_id: {}", self.application_id);
-        println!("root_hash: {}", self.root_hash);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Context Details").fg(comfy_table::Color::Blue)

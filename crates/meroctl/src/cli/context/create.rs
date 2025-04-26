@@ -77,11 +77,6 @@ pub struct CreateCommand {
 
 impl Report for CreateContextResponse {
     fn report(&self) {
-        println!("context_id: {}", self.data.context_id);
-        println!("member_public_key: {}", self.data.member_public_key);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Context Created").fg(Color::Green)]);
         let _ = table.add_row(vec![format!("Context ID: {}", self.data.context_id)]);
@@ -95,10 +90,6 @@ impl Report for CreateContextResponse {
 
 impl Report for UpdateContextApplicationResponse {
     fn report(&self) {
-        println!("Context application updated");
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Context Updated").fg(Color::Green)]);
         let _ = table.add_row(vec!["Application successfully updated"]);

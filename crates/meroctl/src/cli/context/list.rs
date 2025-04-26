@@ -14,12 +14,6 @@ pub struct ListCommand;
 
 impl Report for GetContextsResponse {
     fn report(&self) {
-        for context in &self.data.contexts {
-            context.report();
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Contexts").fg(Color::Blue),

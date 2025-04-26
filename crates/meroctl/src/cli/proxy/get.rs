@@ -55,10 +55,6 @@ pub enum GetRequest {
 
 impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
-        println!("Active proposals: {}", self.data);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Active Proposals Count").fg(Color::Blue)]);
         let _ = table.add_row(vec![self.data.to_string()]);
@@ -68,10 +64,6 @@ impl Report for GetNumberOfActiveProposalsResponse {
 
 impl Report for GetNumberOfProposalApprovalsResponse {
     fn report(&self) {
-        println!("{:?}", self.data);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Proposal Approvals").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("Approvals: {:?}", self.data)]);
@@ -81,12 +73,6 @@ impl Report for GetNumberOfProposalApprovalsResponse {
 
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
-        for user in &self.data {
-            println!("{}", user);
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Proposal Approvers").fg(Color::Blue),
@@ -102,12 +88,6 @@ impl Report for GetProposalApproversResponse {
 
 impl Report for GetProposalsResponse {
     fn report(&self) {
-        for proposal in &self.data {
-            println!("{:#?}", proposal);
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Proposals").fg(Color::Blue),
@@ -124,10 +104,6 @@ impl Report for GetProposalsResponse {
 
 impl Report for GetProposalResponse {
     fn report(&self) {
-        println!("{:#?}", self.data);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Proposal Details").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("ID: {}", self.data.id)]);

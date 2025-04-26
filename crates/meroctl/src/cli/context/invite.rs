@@ -3,7 +3,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
 use clap::Parser;
-use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
@@ -42,15 +42,28 @@ pub struct InviteCommand {
 
 impl Report for InviteToContextResponse {
     fn report(&self) {
-        match self.data {
-            Some(ref payload) => {
-                println!("{} {}", "✓".green(), "Invitation created".bold());
-                println!("  Payload: {}", payload.to_string().cyan());
+        let mut table = Table::new();
+        let _ = table.add_row(vec![
+            Cell::new("Invitation Details").fg(Color::Blue),
+            Cell::new("").fg(Color::Blue),
+        ]);
+
+        match &self.data {
+            Some(payload) => {
+                let payload_str = payload.to_string();
+                let _ = table.add_row(vec!["Encoded Payload", &payload_str]);
+                let _ = table.add_row(vec!["Length", &payload_str.len().to_string()]);
+
+                if payload_str.len() > 50 {
+                    let _ = table.add_row(vec!["Preview", &format!("{}...", &payload_str[..50])]);
+                }
             }
             None => {
-                println!("{} {}", "✗".red(), "No invitation payload".bold());
+                let _ = table.add_row(vec!["Status", "No invitation payload available"]);
             }
         }
+
+        println!("{table}");
     }
 }
 

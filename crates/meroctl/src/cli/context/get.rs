@@ -47,21 +47,10 @@ impl Report for GetContextResponse {
     fn report(&self) {
         self.data.report();
     }
-
-    fn pretty_report(&self) {
-        self.data.pretty_report();
-    }
 }
 
 impl Report for GetContextUsersResponse {
     fn report(&self) {
-        for user in &self.data.context_users {
-            println!("user_id: {}", user.user_id);
-            println!("joined_at: {}", user.joined_at);
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Context Users").fg(Color::Blue),
@@ -78,9 +67,6 @@ impl Report for GetContextUsersResponse {
 
 impl Report for GetContextClientKeysResponse {
     fn report(&self) {
-        println!("Client Keys: {self:?}");
-    }
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
             Cell::new("Client Keys").fg(Color::Blue),
@@ -105,10 +91,6 @@ impl Report for GetContextClientKeysResponse {
 
 impl Report for GetContextStorageResponse {
     fn report(&self) {
-        println!("Storage: {self:?}");
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Context Storage").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("Size: {} bytes", self.data.size_in_bytes)]);
@@ -118,12 +100,6 @@ impl Report for GetContextStorageResponse {
 
 impl Report for GetContextIdentitiesResponse {
     fn report(&self) {
-        for identity in &self.data.identities {
-            println!("{}", identity);
-        }
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Context Identities").fg(Color::Blue)]);
 

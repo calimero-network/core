@@ -14,9 +14,9 @@ camino = { workspace = true, features = ["serde1"] }
 chrono.workspace = true
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
+comfy-table.workspace = true 
 const_format.workspace = true
 dirs.workspace = true
-comfy-table = { workspace = true } 
 eyre.workspace = true
 futures-util.workspace = true
 libp2p.workspace = true

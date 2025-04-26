@@ -39,10 +39,6 @@ pub struct InstallCommand {
 
 impl Report for InstallApplicationResponse {
     fn report(&self) {
-        println!("application_id: {}", self.data.application_id);
-    }
-
-    fn pretty_report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Application Installed").fg(Color::Green)]);
         let _ = table.add_row(vec![format!(
