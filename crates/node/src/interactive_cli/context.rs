@@ -14,6 +14,8 @@ use tokio::sync::oneshot;
 use crate::interactive_cli::common::pretty_alias;
 use crate::Node;
 
+mod identity;
+
 /// Manage contexts
 #[derive(Debug, Parser)]
 pub struct ContextCommand {
@@ -145,6 +147,8 @@ enum Commands {
         /// The context to set as default
         context: Alias<ContextId>,
     },
+    /// Manage context identities
+    Identity(identity::ContextIdentityCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -508,6 +512,7 @@ impl ContextCommand {
                     println!("{} Default context set to: {}", ind, context_id);
                 }
             }
+            Commands::Identity(identity) => identity.run(node)?,
         }
         Ok(())
     }
