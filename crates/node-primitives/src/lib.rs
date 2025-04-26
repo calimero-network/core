@@ -1,3 +1,4 @@
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -14,6 +15,7 @@ pub struct ExecutionRequest {
     pub payload: Vec<u8>,
     pub executor_public_key: PublicKey,
     pub outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
+    pub substitutes: Vec<Alias<PublicKey>>,
 }
 
 impl ExecutionRequest {
@@ -24,6 +26,7 @@ impl ExecutionRequest {
         payload: Vec<u8>,
         executor_public_key: PublicKey,
         outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
+        substitutes: Vec<Alias<PublicKey>>,
     ) -> Self {
         Self {
             context_id,
@@ -31,6 +34,7 @@ impl ExecutionRequest {
             payload,
             executor_public_key,
             outcome_sender,
+            substitutes,
         }
     }
 }
@@ -54,4 +58,6 @@ pub enum CallError {
     ApplicationNotInstalled { application_id: ApplicationId },
     #[error("internal error")]
     InternalError,
+    #[error("error resolving identity alias '{alias}'")]
+    AliasResolutionFailed { alias: Alias<PublicKey> },
 }
