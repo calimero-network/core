@@ -568,7 +568,7 @@ impl TestRunReport {
                     };
                     write!(&mut markdown, " {result} |")?;
                 }
-                writeln!(&mut markdown,"\n")?;
+                writeln!(&mut markdown, "\n")?;
             }
             writeln!(&mut markdown)?;
         }
