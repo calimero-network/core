@@ -1,9 +1,10 @@
 {
-  "protocol": "ethereum",
   "steps": [
     {
       "applicationInstall": {
-        "application": { "localFile": "./apps/kv-store/res/kv_store.wasm" },
+        "application": {
+          "localFile": "./apps/kv-store/res/kv_store.wasm"
+        },
         "target": "allMembers"
       }
     },
@@ -18,7 +19,10 @@
     {
       "call": {
         "methodName": "set",
-        "argsJson": { "key": "foo", "value": "bar" },
+        "argsJson": {
+          "key": "foo",
+          "value": "bar"
+        },
         "expectedResultJson": null,
         "target": "inviter"
       }
@@ -26,7 +30,9 @@
     {
       "call": {
         "methodName": "get",
-        "argsJson": { "key": "foo" },
+        "argsJson": {
+          "key": "foo"
+        },
         "expectedResultJson": "bar",
         "target": "inviter"
       }
@@ -47,7 +53,9 @@
     {
       "call": {
         "methodName": "get",
-        "argsJson": { "key": "foo" },
+        "argsJson": {
+          "key": "foo"
+        },
         "expectedResultJson": "bar",
         "target": "allMembers",
         "retries": 20,
@@ -63,7 +71,10 @@
     {
       "call": {
         "methodName": "set",
-        "argsJson": { "key": "foo", "value": "baz" },
+        "argsJson": {
+          "key": "foo",
+          "value": "baz"
+        },
         "expectedResultJson": null,
         "target": "inviter"
       }
@@ -72,13 +83,17 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": ["wait exactly 5s for the broadcast to propagate"]
+        "description": [
+          "wait exactly 5s for the broadcast to propagate"
+        ]
       }
     },
     {
       "call": {
         "methodName": "get",
-        "argsJson": { "key": "foo" },
+        "argsJson": {
+          "key": "foo"
+        },
         "expectedResultJson": "baz",
         "target": "allMembers",
         "retries": 5,
