@@ -1,4 +1,5 @@
 use calimero_node_primitives::CallError;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Error as EyreError;
@@ -144,6 +145,8 @@ pub struct ExecuteRequest {
     pub method: String,
     pub args_json: Value,
     pub executor_public_key: PublicKey,
+    #[serde(default)]
+    pub substitute: Vec<Alias<PublicKey>>,
 }
 
 impl ExecuteRequest {
@@ -153,12 +156,14 @@ impl ExecuteRequest {
         method: String,
         args_json: Value,
         executor_public_key: PublicKey,
+        substitute: Vec<Alias<PublicKey>>,
     ) -> Self {
         Self {
             context_id,
             method,
             args_json,
             executor_public_key,
+            substitute,
         }
     }
 }

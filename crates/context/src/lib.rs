@@ -221,6 +221,7 @@ impl ContextManager {
                     initialization_params,
                     identity_secret.public_key(),
                     tx,
+                    vec![],
                 ))
                 .await?;
 
