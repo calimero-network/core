@@ -3,6 +3,7 @@ use std::io::Cursor;
 use alloy::primitives::B256;
 use alloy_sol_types::SolValue;
 use candid::{Decode, Encode};
+use eyre::WrapErr;
 use serde::{Deserialize, Serialize};
 use soroban_sdk::xdr::{Limited, Limits, ReadXdr, ScVal, ToXdr};
 use soroban_sdk::{BytesN, Env, IntoVal, TryIntoVal, Val};
@@ -23,7 +24,7 @@ use crate::icp::repr::ICRepr;
 use crate::icp::ICProposalWithApprovals;
 use crate::repr::ReprTransmute;
 use crate::stellar::StellarProposalWithApprovals;
-use crate::types::{Identity, ProposalId};
+use crate::types::ProposalId;
 use crate::{ProposalWithApprovals, Repr};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,7 +175,7 @@ impl Method<Ethereum> for ProposalApprovalsRequest {
         let (proposal_id, num_approvals): (B256, u32) = SolValue::abi_decode(&response, false)?;
 
         Ok(ProposalWithApprovals {
-            proposal_id: Repr::new(ProposalId(Identity(proposal_id.0))),
+            proposal_id: proposal_id.rt().wrap_err("infallible conversion")?,
             num_approvals: num_approvals as usize,
         })
     }
