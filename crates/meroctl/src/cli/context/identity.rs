@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
@@ -133,7 +133,15 @@ impl ContextIdentityCommand {
                         .await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
-                    if existing_identity != identity {
+                    if existing_identity == identity {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Default alias already points to '{}'. Use --force to overwrite.",
+                            existing_identity
+                        )));
+                        return Ok(());
+                    } 
+                    
+
                         if !force {
                             environment.output.write(&ErrorLine(&format!(
                                 "Default alias already points to '{}'. Use --force to overwrite.",
@@ -141,11 +149,19 @@ impl ContextIdentityCommand {
                             )));
                             return Ok(());
                         }
-                        println!(
-                            "Warning: Overwriting default identity from '{}' to '{}'",
+                       environment.output.write(&ErrorLine(&format!(
+                            "Overwriting existing default alias from '{}' to '{}'",
                             existing_identity, identity
-                        );
-                    }
+                        )));
+                        delete_alias(
+                            multiaddr,
+                            &config.identity,
+                            default_alias,
+                            Some(context_id),
+                        )
+                        .await
+                        .wrap_err("Failed to delete existing default alias")?;
+                    
                 }
 
                 let res = create_alias(
@@ -213,7 +229,14 @@ impl ContextIdentityAliasCommand {
                 .await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
-                    if existing_identity != identity {
+                    if existing_identity == identity {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
+                            name,
+                            existing_identity
+                        )));
+                        return Ok(());
+                    } 
                         if !force {
                             environment.output.write(&ErrorLine(&format!(
                             "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
@@ -222,12 +245,19 @@ impl ContextIdentityAliasCommand {
                         )));
                             return Ok(());
                         }
-
-                        println!(
-                            "Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                        environment.output.write(&ErrorLine(&format!(
+                            "Overwriting existing alias '{}' from '{}' to '{}'",
                             name, existing_identity, identity
-                        );
-                    }
+                        )));
+                        delete_alias(
+                            multiaddr,
+                            &config.identity,
+                            name,
+                            Some(context_id),
+                        )
+                        .await
+                        .wrap_err("Failed to delete existing alias")?;
+                        
                 }
 
                 let res = create_alias(

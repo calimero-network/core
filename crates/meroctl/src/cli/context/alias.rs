@@ -1,18 +1,20 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::GetContextResponse;
+use chrono::format;
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
+use serde::de;
 
 use crate::cli::{ApiError, Environment};
 use crate::common::{
     create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
     multiaddr_to_url, resolve_alias, RequestType,
 };
-use crate::output::ErrorLine;
+use crate::output::{ErrorLine, WarnLine };
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context aliases")]
@@ -69,21 +71,21 @@ impl ContextAliasCommand {
 
                 let lookup_result = lookup_alias(multiaddr, &config.identity, alias, None).await?;
                 if let Some(existing_context) = lookup_result.data.value {
-                    if existing_context != context_id {
-                        if !force {
-                            environment.output.write(&ErrorLine(&format!(
-                            "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
-                            alias,
-                            existing_context
+                    if existing_context == context_id {
+                        environment.output.write(&WarnLine(&format!(
+                            "Alias '{alias}' already points to '{context_id}'. Doing nothing."
                         )));
-                            return Ok(());
-                        }
-
-                        println!(
-                            "Warning: Overwriting existing alias '{}' from '{}' to '{}'",
-                            alias, existing_context, context_id
-                        );
+                        return Ok(());
                     }
+                    if !force {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Alias '{alias}' already exists and points to '{existing_context}'. Use --force to overwrite."
+                        )));
+                        return Ok(());
+                    }
+                    environment.output.write(&WarnLine(&format!(
+                        "Overwriting existing alias '{alias}' from '{existing_context}' to '{context_id}'"
+                    )));
                 }
 
                 let res =
@@ -130,14 +132,20 @@ impl UseCommand {
             .await
             .wrap_err("Failed to resolve context")?;
 
-        let resolved_context_id = resolve_response
+        let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
         let lookup_result = lookup_alias(multiaddr, &config.identity, default_alias, None).await?;
         if let Some(existing_context) = lookup_result.data.value {
-            if existing_context != resolved_context_id {
+            if existing_context == context_id {
+                environment.output.write(&WarnLine(&format!(
+                    "Default alias already points to '{context_id}'. Doing nothing."
+                )));
+                return Ok(());
+            }
+                
                 if !self.force {
                     environment.output.write(&ErrorLine(&format!(
                         "Default alias already points to '{}'. Use --force to overwrite.",
@@ -145,31 +153,38 @@ impl UseCommand {
                     )));
                     return Ok(());
                 }
-                println!(
-                    "Warning: Overwriting default alias from '{}' to '{}'",
-                    existing_context, resolved_context_id
-                );
+                environment.output.write(&WarnLine(&format!(
+                    "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
+                )));
+                delete_alias(
+                    multiaddr,
+                    &config.identity,
+                    default_alias,
+                    None,
+                )
+                .await
+                .wrap_err("Failed to delete existing default alias")?;
             }
-        }
+      
 
         let res = create_alias(
             multiaddr,
             &config.identity,
             default_alias,
             None,
-            resolved_context_id,
+            context_id,
         )
         .await
         .wrap_err("Failed to set default context")?;
 
         environment.output.write(&res);
 
-        if self.context.as_str() == resolved_context_id.as_str() {
-            println!("Default context set to: {}", resolved_context_id);
+        if self.context.as_str() == context_id.as_str() {
+            println!("Default context set to: {}", context_id);
         } else {
             println!(
                 "Default context set to: {} (from alias '{}')",
-                resolved_context_id, self.context
+                context_id, self.context
             );
         }
 
