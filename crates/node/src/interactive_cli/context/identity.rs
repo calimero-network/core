@@ -63,9 +63,11 @@ enum ContextIdentityAliasSubcommands {
         /// The context that the identity is a member of
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
+
         /// Force overwrite existing alias
         #[arg(long, short)]
         force: bool,
+
     },
     #[command(about = "Remove an identity alias from a context", aliases = ["rm", "del", "delete"])]
     Remove {
@@ -104,11 +106,13 @@ impl ContextIdentityCommand {
             ContextIdentitySubcommands::Alias { command } => {
                 handle_alias_command(node, command, &ind.to_string())?;
             }
+
             ContextIdentitySubcommands::Use {
                 identity,
                 context,
                 force,
             } => {
+
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
@@ -122,6 +126,7 @@ impl ContextIdentityCommand {
                 let default_alias: Alias<PublicKey> = "default"
                     .parse()
                     .wrap_err("'default' is a valid alias name")?;
+
 
                 if let Some(existing_identity) = node
                     .ctx_manager
@@ -148,9 +153,6 @@ impl ContextIdentityCommand {
                             .delete_alias(default_alias, Some(context_id))?;
                     }
                 }
-
-                node.ctx_manager
-                    .create_alias(default_alias, Some(context_id), identity_id)?;
 
                 println!(
                     "{} Default identity set to: {} for context {}",
@@ -233,7 +235,9 @@ fn handle_alias_command(
             name,
             identity,
             context,
+
             force,
+
         } => {
             let context_id = node
                 .ctx_manager
@@ -251,6 +255,7 @@ fn handle_alias_command(
                 );
                 return Ok(());
             }
+
 
             if let Some(existing_identity) =
                 node.ctx_manager.lookup_alias(name, Some(context_id))?
@@ -272,6 +277,7 @@ fn handle_alias_command(
 
                 node.ctx_manager.delete_alias(name, Some(context_id))?;
             }
+
 
             node.ctx_manager
                 .create_alias(name, Some(context_id), identity)?;

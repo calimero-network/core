@@ -47,6 +47,7 @@ pub enum ContextIdentitySubcommand {
         context: Alias<ContextId>,
         #[arg(long, short, help = "Force overwrite if alias already exists")]
         force: bool,
+
     },
 }
 
@@ -70,6 +71,7 @@ impl ContextIdentityCommand {
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
+
             ContextIdentitySubcommand::Use {
                 identity,
                 context,
@@ -84,6 +86,7 @@ impl ContextIdentityCommand {
                     .ok_or_eyre("Failed to resolve context: no value found")?;
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
+
 
                 let lookup_result =
                     lookup_alias(multiaddr, &config.identity, default_alias, Some(context_id))
@@ -124,10 +127,8 @@ impl ContextIdentityCommand {
                 .await?;
 
                 environment.output.write(&res);
-                println!(
-                    "Default identity set to: {} for context {}",
-                    identity, context_id
-                );
+
+            
                 println!(
                     "Default identity set to: {} for context {}",
                     identity, context_id
@@ -176,3 +177,4 @@ async fn list_identities(
     )
     .await
 }
+

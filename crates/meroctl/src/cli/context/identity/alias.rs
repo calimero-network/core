@@ -7,7 +7,9 @@ use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
+
 use eyre::{ WrapErr};
+
 use crate::cli::Environment;
 use crate::common::{
     create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, multiaddr_to_url,
@@ -60,9 +62,9 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "The context that the identity is a member of")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
-        
          #[arg(long, short , help = "Force overwrite if alias already exists")]
          force: bool,
+
     },
 
     #[command(
@@ -111,6 +113,7 @@ impl ContextIdentityAliasCommand {
                     &identity,
                 )
                 .await?
+
                 {
                     environment.output.write(&ErrorLine(&format!(
                         "Identity '{}' does not exist in context '{}'",
@@ -123,6 +126,7 @@ impl ContextIdentityAliasCommand {
                     .value()
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
+
 
                 let lookup_result = lookup_alias(
                     multiaddr,
