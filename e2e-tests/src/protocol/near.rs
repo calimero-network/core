@@ -5,6 +5,7 @@ use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract, Worker};
 use serde::{Deserialize, Serialize};
 use tokio::fs::read;
+use chrono::Utc;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,9 +73,11 @@ impl NearSandboxEnvironment {
     }
 
     pub async fn node_args(&self, node_name: &str) -> EyreResult<Vec<String>> {
+        let timestamp = Utc::now().timestamp();
+        let unique_node_name = format!("{}-{}", node_name, timestamp);
         let near_account = self
             .root_account
-            .create_subaccount(node_name)
+            .create_subaccount(&unique_node_name)
             .initial_balance(NearToken::from_near(30))
             .transact()
             .await?

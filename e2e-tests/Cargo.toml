@@ -12,6 +12,7 @@ license.workspace = true
 async-compression = { version = "0.4.22", features = ["tokio", "gzip"] }
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
+chrono = { version = "0.4", features = ["serde"] }
 const_format.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
