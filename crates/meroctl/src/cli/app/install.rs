@@ -52,7 +52,10 @@ impl InstallCommand {
     }
 
     pub async fn install_app(&self, environment: &Environment) -> EyreResult<ApplicationId> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node_name.as_deref().unwrap_or_default(),
+        )?;
         let mut is_dev_installation = false;
         let metadata = self
             .metadata
@@ -88,7 +91,7 @@ impl InstallCommand {
             &Client::new(),
             url,
             Some(request),
-            &config.identity,
+            Some(&config.identity),
             RequestType::Post,
         )
         .await?;

@@ -21,13 +21,16 @@ impl Report for ListApplicationsResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node_name.as_deref().unwrap_or_default(),
+        )?;
 
         let response: ListApplicationsResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/applications")?,
             None::<()>,
-            &config.identity,
+            Some(&config.identity),
             RequestType::Get,
         )
         .await?;

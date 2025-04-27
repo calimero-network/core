@@ -56,7 +56,10 @@ impl Report for Response {
 
 impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node_name.as_deref().unwrap_or_default(),
+        )?;
         let multiaddr = fetch_multiaddr(&config)?;
 
         let resolve_response =

@@ -1,11 +1,12 @@
 use calimero_server_primitives::admin::GetPeersCountResponse;
 use clap::Parser;
 use const_format::concatcp;
-use eyre::Result as EyreResult;
+use eyre::{eyre, Result as EyreResult};
 use reqwest::Client;
 
+use super::ConnectionInfo;
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{do_request, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
@@ -29,16 +30,21 @@ impl Report for GetPeersCountResponse {
 
 impl PeersCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let (url, keypair) = match &environment.connection {
+            Some(ConnectionInfo::Local { config, multiaddr }) => (
+                multiaddr_to_url(multiaddr, "admin-api/dev/peers")?,
+                Some(&config.identity),
+            ),
+            Some(ConnectionInfo::Remote { api }) => {
+                let mut url = api.clone();
+                url.set_path("admin-api/dev/peers");
+                (url, None)
+            }
+            None => return Err(eyre!("No connection configured")),
+        };
 
-        let response: GetPeersCountResponse = do_request(
-            &Client::new(),
-            multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/peers")?,
-            None::<()>,
-            &config.identity,
-            RequestType::Get,
-        )
-        .await?;
+        let response: GetPeersCountResponse =
+            do_request(&Client::new(), url, None::<()>, keypair, RequestType::Get).await?;
 
         environment.output.write(&response);
 

@@ -31,7 +31,10 @@ impl Report for GetApplicationResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node_name.as_deref().unwrap_or_default(),
+        )?;
 
         let url = multiaddr_to_url(
             fetch_multiaddr(&config)?,
@@ -42,7 +45,7 @@ impl GetCommand {
             &Client::new(),
             url,
             None::<()>,
-            &config.identity,
+            Some(&config.identity),
             RequestType::Get,
         )
         .await?;

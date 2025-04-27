@@ -65,10 +65,13 @@ impl StartBootstrapCommand {
         let node1_environment = &Environment::new(
             RootArgs::new(
                 nodes_dir.clone(),
-                node1_name.to_owned(),
+                Some(node1_name.to_owned()),
+                None,
+                None,
                 crate::output::Format::Json,
             ),
             Output::new(crate::output::Format::Json),
+            None,
         );
 
         let node1_process = self
@@ -93,10 +96,13 @@ impl StartBootstrapCommand {
         let node2_environment = &Environment::new(
             RootArgs::new(
                 nodes_dir.clone(),
-                node2_name.to_owned(),
+                Some(node2_name.to_owned()),
+                None,
+                None,
                 crate::output::Format::Json,
             ),
             Output::new(crate::output::Format::Json),
+            None,
         );
 
         let node2_process = self
@@ -286,7 +292,11 @@ impl StartBootstrapCommand {
         environment: &Environment,
         protocol: String,
     ) -> EyreResult<(ContextId, PublicKey, ApplicationId)> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node_name.as_deref().unwrap_or_default(),
+        )?;
+
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
