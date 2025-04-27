@@ -86,6 +86,10 @@ impl ContextAliasCommand {
                     environment.output.write(&WarnLine(&format!(
                         "Overwriting existing alias '{alias}' from '{existing_context}' to '{context_id}'"
                     )));
+
+                    delete_alias(multiaddr, &config.identity, alias, None)
+                        .await
+                        .wrap_err("Failed to delete existing alias")?;
                 }
 
                 let res =
