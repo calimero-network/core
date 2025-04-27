@@ -3,12 +3,10 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
-
-use eyre::{ WrapErr};
 
 use crate::cli::Environment;
 use crate::common::{
@@ -62,9 +60,8 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "The context that the identity is a member of")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
-         #[arg(long, short , help = "Force overwrite if alias already exists")]
-         force: bool,
-
+        #[arg(long, short, help = "Force overwrite if alias already exists")]
+        force: bool,
     },
 
     #[command(
@@ -106,14 +103,8 @@ impl ContextIdentityAliasCommand {
                 let resolve_response =
                     resolve_alias(multiaddr, &config.identity, context, None).await?;
 
-                if !identity_exists_in_context(
-                    &multiaddr,
-                    &config.identity,
-                    &context,
-                    &identity,
-                )
-                .await?
-
+                if !identity_exists_in_context(&multiaddr, &config.identity, &context, &identity)
+                    .await?
                 {
                     environment.output.write(&ErrorLine(&format!(
                         "Identity '{}' does not exist in context '{}'",
@@ -126,7 +117,6 @@ impl ContextIdentityAliasCommand {
                     .value()
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
-
 
                 let lookup_result = lookup_alias(
                     multiaddr,

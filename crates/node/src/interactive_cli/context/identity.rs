@@ -67,7 +67,6 @@ enum ContextIdentityAliasSubcommands {
         /// Force overwrite existing alias
         #[arg(long, short)]
         force: bool,
-
     },
     #[command(about = "Remove an identity alias from a context", aliases = ["rm", "del", "delete"])]
     Remove {
@@ -112,7 +111,6 @@ impl ContextIdentityCommand {
                 context,
                 force,
             } => {
-
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
@@ -126,7 +124,6 @@ impl ContextIdentityCommand {
                 let default_alias: Alias<PublicKey> = "default"
                     .parse()
                     .wrap_err("'default' is a valid alias name")?;
-
 
                 if let Some(existing_identity) = node
                     .ctx_manager
@@ -237,7 +234,6 @@ fn handle_alias_command(
             context,
 
             force,
-
         } => {
             let context_id = node
                 .ctx_manager
@@ -255,7 +251,6 @@ fn handle_alias_command(
                 );
                 return Ok(());
             }
-
 
             if let Some(existing_identity) =
                 node.ctx_manager.lookup_alias(name, Some(context_id))?
@@ -277,7 +272,6 @@ fn handle_alias_command(
 
                 node.ctx_manager.delete_alias(name, Some(context_id))?;
             }
-
 
             node.ctx_manager
                 .create_alias(name, Some(context_id), identity)?;
