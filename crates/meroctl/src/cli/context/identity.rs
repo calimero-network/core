@@ -139,29 +139,22 @@ impl ContextIdentityCommand {
                             existing_identity
                         )));
                         return Ok(());
-                    } 
-                    
+                    }
 
-                        if !force {
-                            environment.output.write(&ErrorLine(&format!(
-                                "Default alias already points to '{}'. Use --force to overwrite.",
-                                existing_identity
-                            )));
-                            return Ok(());
-                        }
-                       environment.output.write(&ErrorLine(&format!(
-                            "Overwriting existing default alias from '{}' to '{}'",
-                            existing_identity, identity
+                    if !force {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Default alias already points to '{}'. Use --force to overwrite.",
+                            existing_identity
                         )));
-                        delete_alias(
-                            multiaddr,
-                            &config.identity,
-                            default_alias,
-                            Some(context_id),
-                        )
+                        return Ok(());
+                    }
+                    environment.output.write(&ErrorLine(&format!(
+                        "Overwriting existing default alias from '{}' to '{}'",
+                        existing_identity, identity
+                    )));
+                    delete_alias(multiaddr, &config.identity, default_alias, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing default alias")?;
-                    
                 }
 
                 let res = create_alias(
@@ -236,28 +229,22 @@ impl ContextIdentityAliasCommand {
                             existing_identity
                         )));
                         return Ok(());
-                    } 
-                        if !force {
-                            environment.output.write(&ErrorLine(&format!(
+                    }
+                    if !force {
+                        environment.output.write(&ErrorLine(&format!(
                             "Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
                             name,
                             existing_identity
                         )));
-                            return Ok(());
-                        }
-                        environment.output.write(&ErrorLine(&format!(
-                            "Overwriting existing alias '{}' from '{}' to '{}'",
-                            name, existing_identity, identity
-                        )));
-                        delete_alias(
-                            multiaddr,
-                            &config.identity,
-                            name,
-                            Some(context_id),
-                        )
+                        return Ok(());
+                    }
+                    environment.output.write(&ErrorLine(&format!(
+                        "Overwriting existing alias '{}' from '{}' to '{}'",
+                        name, existing_identity, identity
+                    )));
+                    delete_alias(multiaddr, &config.identity, name, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing alias")?;
-                        
                 }
 
                 let res = create_alias(

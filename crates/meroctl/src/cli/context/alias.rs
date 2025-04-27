@@ -14,7 +14,7 @@ use crate::common::{
     create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
     multiaddr_to_url, resolve_alias, RequestType,
 };
-use crate::output::{ErrorLine, WarnLine };
+use crate::output::{ErrorLine, WarnLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context aliases")]
@@ -145,37 +145,25 @@ impl UseCommand {
                 )));
                 return Ok(());
             }
-                
-                if !self.force {
-                    environment.output.write(&ErrorLine(&format!(
-                        "Default alias already points to '{}'. Use --force to overwrite.",
-                        existing_context
-                    )));
-                    return Ok(());
-                }
-                environment.output.write(&WarnLine(&format!(
-                    "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
+
+            if !self.force {
+                environment.output.write(&ErrorLine(&format!(
+                    "Default alias already points to '{}'. Use --force to overwrite.",
+                    existing_context
                 )));
-                delete_alias(
-                    multiaddr,
-                    &config.identity,
-                    default_alias,
-                    None,
-                )
+                return Ok(());
+            }
+            environment.output.write(&WarnLine(&format!(
+                "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
+            )));
+            delete_alias(multiaddr, &config.identity, default_alias, None)
                 .await
                 .wrap_err("Failed to delete existing default alias")?;
-            }
-      
+        }
 
-        let res = create_alias(
-            multiaddr,
-            &config.identity,
-            default_alias,
-            None,
-            context_id,
-        )
-        .await
-        .wrap_err("Failed to set default context")?;
+        let res = create_alias(multiaddr, &config.identity, default_alias, None, context_id)
+            .await
+            .wrap_err("Failed to set default context")?;
 
         environment.output.write(&res);
 
