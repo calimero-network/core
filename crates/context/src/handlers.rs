@@ -5,10 +5,11 @@ use calimero_utils_actix::adapters::ActorExt;
 use crate::ContextManager;
 
 pub mod create_context;
+pub mod delete_context;
 pub mod execute;
+pub mod join_context;
 pub mod update_application;
 // pub mod list_contexts;
-// pub mod delete_context;
 
 impl Handler<ContextMessage> for ContextManager {
     type Result = ();
@@ -22,6 +23,12 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::CreateContext { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::DeleteContext { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::JoinContext { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }
