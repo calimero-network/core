@@ -25,6 +25,7 @@ async fn handle(request: ExecuteRequest, state: Arc<ServiceState>) -> EyreResult
         request.method,
         args,
         request.executor_public_key,
+        request.substitute,
     )
     .await
     {

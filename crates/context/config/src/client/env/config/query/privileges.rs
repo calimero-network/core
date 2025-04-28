@@ -26,7 +26,7 @@ use crate::icp::repr::ICRepr;
 use crate::icp::types::ICCapability;
 use crate::repr::{Repr, ReprTransmute};
 use crate::stellar::stellar_types::StellarCapability;
-use crate::types::{Capability, ContextId, ContextIdentity, Identity, SignerId};
+use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct PrivilegesRequest<'a> {
@@ -246,8 +246,7 @@ impl<'a> Method<Ethereum> for PrivilegesRequest<'a> {
         let mut result = BTreeMap::new();
 
         for user_cap in user_caps {
-            let bytes: [u8; 32] = user_cap.userId.into();
-            let user_id = SignerId(Identity(bytes));
+            let user_id = user_cap.userId.rt().expect("infallible conversion");
 
             let capabilities: Result<Vec<_>, _> = user_cap
                 .capabilities

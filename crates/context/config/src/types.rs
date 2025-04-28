@@ -56,20 +56,9 @@ impl<'a> Application<'a> {
 }
 
 #[derive(
-    Eq,
-    Ord,
-    Copy,
-    Debug,
-    Clone,
-    PartialEq,
-    PartialOrd,
-    BorshSerialize,
-    BorshDeserialize,
-    Hash,
-    Serialize,
-    Deserialize,
+    Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, Hash,
 )]
-pub struct Identity(pub(crate) [u8; 32]);
+pub struct Identity([u8; 32]);
 
 impl ReprBytes for Identity {
     type EncodeBytes<'a> = [u8; 32];
@@ -98,7 +87,7 @@ impl From<[u8; 32]> for Identity {
 #[derive(
     Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize, Hash,
 )]
-pub struct SignerId(pub(crate) Identity);
+pub struct SignerId(Identity);
 
 impl ReprBytes for SignerId {
     type EncodeBytes<'a> = [u8; 32];
@@ -296,7 +285,7 @@ impl ReprBytes for Signature {
 }
 
 #[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
-pub struct ProposalId(pub(crate) Identity);
+pub struct ProposalId(Identity);
 
 impl ReprBytes for ProposalId {
     type EncodeBytes<'a> = [u8; 32];
