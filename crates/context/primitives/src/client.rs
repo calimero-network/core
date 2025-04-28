@@ -1,8 +1,6 @@
 use actix::Recipient;
 use async_stream::try_stream;
-use calimero_context_config::client::env::config::ContextConfig as ContextConfigEnv;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
-use calimero_context_config::repr::ReprTransmute;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -10,10 +8,8 @@ use calimero_store::key::{
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
     ContextMeta as ContextMetaKey,
 };
-use calimero_store::types::ContextIdentity as ContextIdentityValue;
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
-use eyre::OptionExt;
 use futures_util::Stream;
 use tokio::sync::oneshot;
 
@@ -63,12 +59,10 @@ impl ContextClient {
         &self,
         start: Option<ContextId>,
     ) -> impl Stream<Item = eyre::Result<ContextId>> {
-        let datastore = self.datastore.clone();
+        let datastore = self.datastore.handle();
 
         try_stream! {
-            let handle = datastore.handle();
-            let iter_result = handle.iter::<ContextMetaKey>();
-            let mut iter = iter_result?;
+            let mut iter = datastore.iter::<ContextMetaKey>()?;
 
             let start = start.and_then(|s| iter.seek(ContextMetaKey::new(s)).transpose());
 
@@ -110,13 +104,12 @@ impl ContextClient {
         context_id: &ContextId,
         only_owned: Option<bool>,
     ) -> impl Stream<Item = eyre::Result<PublicKey>> {
-        let datastore = self.datastore.clone();
+        let datastore = self.datastore.handle();
         let context_id = *context_id;
         let only_owned = only_owned.unwrap_or(false);
 
         try_stream! {
-            let handle = datastore.handle();
-            let mut iter = handle.iter::<ContextIdentityKey>()?;
+            let mut iter = datastore.iter::<ContextIdentityKey>()?;
 
             let first = iter
                 .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
@@ -180,53 +173,23 @@ impl ContextClient {
         inviter_id: &PublicKey,
         invitee_id: &PublicKey,
     ) -> eyre::Result<Option<ContextInvitationPayload>> {
-        let handle = self.datastore.handle();
-
-        let Some(context_config) = handle.get(&ContextConfigKey::new(*context_id))? else {
+        let Some(external_config) = self.context_config(context_id)? else {
             return Ok(None);
         };
 
-        let Some(ContextIdentityValue {
-            private_key: Some(requester_secret),
-            ..
-        }) = handle.get(&ContextIdentityKey::new(*context_id, *inviter_id))?
-        else {
-            return Ok(None);
-        };
+        let external_client = self.external_client(context_id, &external_config)?;
 
-        let nonce = self
-            .external_client
-            .query::<ContextConfigEnv>(
-                context_config.protocol.as_ref().into(),
-                context_config.network.as_ref().into(),
-                context_config.contract.as_ref().into(),
-            )
-            .fetch_nonce(
-                context_id.rt().expect("infallible conversion"),
-                inviter_id.rt().expect("infallible conversion"),
-            )
-            .await?
-            .ok_or_eyre("The inviter doesen't exist")?;
-
-        self.external_client
-            .mutate::<ContextConfigEnv>(
-                context_config.protocol.as_ref().into(),
-                context_config.network.as_ref().into(),
-                context_config.contract.as_ref().into(),
-            )
-            .add_members(
-                context_id.rt().expect("infallible conversion"),
-                &[invitee_id.rt().expect("infallible conversion")],
-            )
-            .send(requester_secret, nonce)
+        external_client
+            .config()
+            .add_members(inviter_id, &[*invitee_id])
             .await?;
 
         let invitation_payload = ContextInvitationPayload::new(
             *context_id,
             *invitee_id,
-            context_config.protocol.into_string().into(),
-            context_config.network.into_string().into(),
-            context_config.contract.into_string().into(),
+            external_config.protocol.into(),
+            external_config.network_id.into(),
+            external_config.contract_id.into(),
         )?;
 
         Ok(Some(invitation_payload))
