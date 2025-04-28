@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::{Json, Path};
 use axum::response::IntoResponse;
 use axum::Extension;
+use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Capability, ContextIdentity};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -13,7 +14,7 @@ use crate::AdminState;
 
 #[derive(Deserialize, Debug)]
 pub struct GrantCapabilitiesRequest {
-    pub capabilities: Vec<(ContextIdentity, Capability)>,
+    pub capabilities: Vec<(Repr<ContextIdentity>, Capability)>,
     pub signer_id: PublicKey,
 }
 
@@ -32,9 +33,15 @@ pub async fn handler(
         }
     };
 
+    let capabilities_to_grant: Vec<(ContextIdentity, Capability)> = request
+        .capabilities
+        .into_iter()
+        .map(|(identity_repr, capability)| (identity_repr.into_inner(), capability))
+        .collect();
+
     match state
         .ctx_manager
-        .grant_capabilities(context.id, request.signer_id, &request.capabilities)
+        .grant_capabilities(context.id, request.signer_id, &capabilities_to_grant)
         .await
     {
         Ok(_) => ApiResponse { payload: () }.into_response(),
