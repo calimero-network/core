@@ -1610,4 +1610,41 @@ impl ContextManager {
 
         Ok(aliases)
     }
+
+    /// Stores a ContextIdentity value directly.
+    /// Used internally and potentially by admin handlers for pre-storing keys.
+    pub fn store_identity_value(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+        value: ContextIdentityValue,
+    ) -> EyreResult<()> {
+        let key = ContextIdentityKey::new(context_id, public_key);
+        let mut handle = self.store.handle();
+        handle.put(&key, &value)?;
+        Ok(())
+    }
+
+    /// Retrieves a complete ContextIdentity value.
+    pub fn get_identity_value(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<Option<ContextIdentityValue>> {
+        let key = ContextIdentityKey::new(context_id, public_key);
+        let handle = self.store.handle();
+        handle.get(&key).map_err(eyre::Report::from)
+    }
+
+    /// Deletes a ContextIdentity value.
+    pub fn delete_identity_value(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<()> {
+        let key = ContextIdentityKey::new(context_id, public_key);
+        let mut handle = self.store.handle();
+        handle.delete(&key)?;
+        Ok(())
+    }
 }
