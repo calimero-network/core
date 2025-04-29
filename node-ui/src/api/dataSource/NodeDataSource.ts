@@ -699,12 +699,12 @@ export class NodeDataSource implements NodeApi {
         signer_id: request.signer_id,
       };
       const url = `/contexts/${contextId}/capabilities/grant`;
-      await this.client.post<void>(
+      const response: ResponseData<void> = await this.client.post<void>(
         `${getAppEndpointKey()}/admin-api${url}`,
         data,
         headers,
       );
-      return { data: undefined };
+      return response;
     } catch (error) {
       console.error('Error granting capabilities:', error);
       return { error: { code: 500, message: 'Failed to grant capabilities.' } };
