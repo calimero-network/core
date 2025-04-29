@@ -729,12 +729,12 @@ export class NodeDataSource implements NodeApi {
         signer_id: request.signer_id,
       };
       const url = `/contexts/${contextId}/capabilities/revoke`;
-      await this.client.post<void>(
+      const response: ResponseData<void> = await this.client.post<void>(
         `${getAppEndpointKey()}/admin-api${url}`,
         data,
         headers,
       );
-      return { data: undefined };
+      return response;
     } catch (error) {
       console.error('Error revoking capabilities:', error);
       return {
