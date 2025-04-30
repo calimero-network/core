@@ -3,16 +3,17 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    create_alias, fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias,
-    RequestType,
+    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, make_request,
+    multiaddr_to_url, resolve_alias, RequestType,
 };
+use crate::output::ErrorLine;
 
 mod alias;
 mod generate;
@@ -45,6 +46,8 @@ pub enum ContextIdentitySubcommand {
         #[arg(help = "The context to set the identity for")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
+        #[arg(long, short, help = "Force overwrite if alias already exists")]
+        force: bool,
     },
 }
 
@@ -68,7 +71,12 @@ impl ContextIdentityCommand {
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
-            ContextIdentitySubcommand::Use { identity, context } => {
+
+            ContextIdentitySubcommand::Use {
+                identity,
+                context,
+                force,
+            } => {
                 let resolve_response =
                     resolve_alias(multiaddr, &config.identity, context, None).await?;
 
@@ -78,6 +86,35 @@ impl ContextIdentityCommand {
                     .ok_or_eyre("Failed to resolve context: no value found")?;
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
+
+                let lookup_result =
+                    lookup_alias(multiaddr, &config.identity, default_alias, Some(context_id))
+                        .await?;
+
+                if let Some(existing_identity) = lookup_result.data.value {
+                    if existing_identity == identity {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Default alias already points to '{}'. Use --force to overwrite.",
+                            existing_identity
+                        )));
+                        return Ok(());
+                    }
+
+                    if !force {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Default alias already points to '{}'. Use --force to overwrite.",
+                            existing_identity
+                        )));
+                        return Ok(());
+                    }
+                    environment.output.write(&ErrorLine(&format!(
+                        "Overwriting existing default alias from '{}' to '{}'",
+                        existing_identity, identity
+                    )));
+                    delete_alias(multiaddr, &config.identity, default_alias, Some(context_id))
+                        .await
+                        .wrap_err("Failed to delete existing default alias")?;
+                }
 
                 let res = create_alias(
                     multiaddr,
@@ -89,6 +126,11 @@ impl ContextIdentityCommand {
                 .await?;
 
                 environment.output.write(&res);
+
+                println!(
+                    "Default identity set to: {} for context {}",
+                    identity, context_id
+                );
                 Ok(())
             }
         }
