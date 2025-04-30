@@ -1,13 +1,11 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::GetContextResponse;
-use chrono::format;
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
-use serde::de;
 
 use crate::cli::{ApiError, Environment};
 use crate::common::{

@@ -129,7 +129,16 @@ impl ContextIdentityCommand {
                     .ctx_manager
                     .lookup_alias(default_alias, Some(context_id))?
                 {
-                    if existing_identity != identity_id && !force {
+                    if existing_identity == identity_id {
+                        println!(
+                            "{} Default identity already set to: {} for context {}",
+                            ind,
+                            identity.cyan(),
+                            context_id.cyan()
+                        );
+                        return Ok(());
+                    }
+                    if !force {
                         println!(
                             "{} Error: Default alias already points to '{}'. Use --force to overwrite.",
                             ind,
@@ -137,18 +146,14 @@ impl ContextIdentityCommand {
                         );
                         return Ok(());
                     }
-
-                    if existing_identity != identity_id && force {
-                        println!(
-                            "{} Warning: Overwriting default alias from '{}' to '{}'",
-                            ind,
-                            existing_identity.cyan(),
-                            identity_id.cyan()
-                        );
-
-                        node.ctx_manager
-                            .delete_alias(default_alias, Some(context_id))?;
-                    }
+                    println!(
+                        "{} Warning: Overwriting default alias from '{}' to '{}'",
+                        ind,
+                        existing_identity.cyan(),
+                        identity_id.cyan()
+                    );
+                    node.ctx_manager
+                        .delete_alias(default_alias, Some(context_id))?;
                 }
 
                 println!(

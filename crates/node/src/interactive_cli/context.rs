@@ -514,25 +514,32 @@ impl ContextCommand {
                 if let Some(existing_context) =
                     node.ctx_manager.lookup_alias(default_alias, None)?
                 {
-                    if existing_context != context_id {
-                        if !force {
-                            println!(
+                    if existing_context == context_id {
+                        println!(
+                            "{} Default alias already points to '{}'. Doing nothing.",
+                            ind,
+                            context_id.cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    if !force {
+                        println!(
                             "{} Error: Default alias already points to '{}'. Use --force to overwrite.",
                             ind,
                             existing_context.cyan()
                         );
-                            return Ok(());
-                        }
-
-                        println!(
-                            "{} Warning: Overwriting default alias from '{}' to '{}'",
-                            ind,
-                            existing_context.cyan(),
-                            context_id.cyan()
-                        );
-
-                        node.ctx_manager.delete_alias(default_alias, None)?;
+                        return Ok(());
                     }
+
+                    println!(
+                        "{} Warning: Overwriting default alias from '{}' to '{}'",
+                        ind,
+                        existing_context.cyan(),
+                        context_id.cyan()
+                    );
+
+                    node.ctx_manager.delete_alias(default_alias, None)?;
                 }
 
                 node.ctx_manager
