@@ -26,10 +26,14 @@ use proxy::ProxyCommand;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl -- --node-name node1 app ls
+  $ meroctl --node-name node1 app ls
+  # List all applications with custom destination config
+  $ meroctl  --home data --node-name node1 app ls
 
   # List all contexts
-  $ meroctl -- --home data --node-name node1 context ls
+  $ meroctl --node-name node1 context ls
+  # List all contexts with custom destination config
+  $ meroctl --home data --node-name node1 context ls
 ";
 
 #[derive(Debug, Parser)]
