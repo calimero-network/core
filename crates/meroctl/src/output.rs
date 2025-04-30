@@ -59,3 +59,12 @@ impl Report for ErrorLine<'_> {
         println!("{table}");
     }
 }
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WarnLine<'a>(pub &'a str);
+
+impl Report for WarnLine<'_> {
+    fn report(&self) {
+        println!("{} {}", "[WARN]".yellow(), self.0);
+    }
+}
