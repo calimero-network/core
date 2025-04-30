@@ -111,9 +111,10 @@ impl ContextIdentityCommand {
                         "Overwriting existing default alias from '{}' to '{}'",
                         existing_identity, identity
                     )));
-                    let _ = delete_alias(multiaddr, &config.identity, default_alias, Some(context_id))
-                        .await
-                        .wrap_err("Failed to delete existing default alias")?;
+                    let _ =
+                        delete_alias(multiaddr, &config.identity, default_alias, Some(context_id))
+                            .await
+                            .wrap_err("Failed to delete existing default alias")?;
                 }
 
                 let res = create_alias(
