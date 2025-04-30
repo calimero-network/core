@@ -260,6 +260,15 @@ fn handle_alias_command(
             if let Some(existing_identity) =
                 node.ctx_manager.lookup_alias(name, Some(context_id))?
             {
+                if existing_identity == identity {
+                    println!(
+                        "{ind} Alias '{}' already points to '{}'. Doing nothing.",
+                        name.cyan(),
+                        identity.cyan()
+                    );
+                    return Ok(());
+                }
+
                 if !force {
                     println!(
                         "{ind} Error: Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
@@ -268,6 +277,7 @@ fn handle_alias_command(
                     );
                     return Ok(());
                 }
+
                 println!(
                     "{ind} Warning: Overwriting existing alias '{}' from '{}' to '{}'",
                     name.cyan(),

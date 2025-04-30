@@ -118,13 +118,8 @@ impl ContextIdentityAliasCommand {
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
 
-                let lookup_result = lookup_alias(
-                    multiaddr,
-                    &config.identity,
-                    name.clone(),
-                    Some(context_id.clone()),
-                )
-                .await?;
+                let lookup_result =
+                    lookup_alias(multiaddr, &config.identity, name, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
