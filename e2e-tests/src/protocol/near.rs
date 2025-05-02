@@ -1,5 +1,4 @@
 use camino::Utf8PathBuf;
-use chrono::Utc;
 use eyre::Result as EyreResult;
 use near_workspaces::network::Sandbox;
 use near_workspaces::types::NearToken;
@@ -73,11 +72,9 @@ impl NearSandboxEnvironment {
     }
 
     pub async fn node_args(&self, node_name: &str) -> EyreResult<Vec<String>> {
-        let timestamp = Utc::now().timestamp();
-        let unique_node_name = format!("{}-{}", node_name, timestamp);
         let near_account = self
             .root_account
-            .create_subaccount(&unique_node_name)
+            .create_subaccount(node_name)
             .initial_balance(NearToken::from_near(30))
             .transact()
             .await?
