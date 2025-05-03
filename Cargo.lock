@@ -3137,7 +3137,6 @@ dependencies = [
  "base64 0.22.1",
  "camino",
  "candid",
- "chrono",
  "clap",
  "const_format",
  "eyre",
