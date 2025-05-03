@@ -39,6 +39,13 @@ enum ContextIdentitySubcommands {
         /// The context to set the default identity for
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
+
+        #[arg(
+            long,
+            short,
+            help = "Force overwrite if default alias already points elsewhere"
+        )]
+        force: bool,
     },
 }
 
@@ -56,6 +63,10 @@ enum ContextIdentityAliasSubcommands {
         /// The context that the identity is a member of
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
+
+        /// Force overwrite existing alias
+        #[arg(long, short)]
+        force: bool,
     },
     #[command(about = "Remove an identity alias from a context", aliases = ["rm", "del", "delete"])]
     Remove {
@@ -94,7 +105,12 @@ impl ContextIdentityCommand {
             ContextIdentitySubcommands::Alias { command } => {
                 handle_alias_command(node, command, &ind.to_string())?;
             }
-            ContextIdentitySubcommands::Use { identity, context } => {
+
+            ContextIdentitySubcommands::Use {
+                identity,
+                context,
+                force,
+            } => {
                 let context_id = node
                     .ctx_manager
                     .resolve_alias(context, None)?
@@ -109,8 +125,36 @@ impl ContextIdentityCommand {
                     .parse()
                     .wrap_err("'default' is a valid alias name")?;
 
-                node.ctx_manager
-                    .create_alias(default_alias, Some(context_id), identity_id)?;
+                if let Some(existing_identity) = node
+                    .ctx_manager
+                    .lookup_alias(default_alias, Some(context_id))?
+                {
+                    if existing_identity == identity_id {
+                        println!(
+                            "{} Default identity already set to: {} for context {}",
+                            ind,
+                            identity.cyan(),
+                            context_id.cyan()
+                        );
+                        return Ok(());
+                    }
+                    if !force {
+                        println!(
+                            "{} Error: Default alias already points to '{}'. Use --force to overwrite.",
+                            ind,
+                            existing_identity.cyan()
+                        );
+                        return Ok(());
+                    }
+                    println!(
+                        "{} Warning: Overwriting default alias from '{}' to '{}'",
+                        ind,
+                        existing_identity.cyan(),
+                        identity_id.cyan()
+                    );
+                    node.ctx_manager
+                        .delete_alias(default_alias, Some(context_id))?;
+                }
 
                 println!(
                     "{} Default identity set to: {} for context {}",
@@ -193,6 +237,8 @@ fn handle_alias_command(
             name,
             identity,
             context,
+
+            force,
         } => {
             let context_id = node
                 .ctx_manager
@@ -209,6 +255,37 @@ fn handle_alias_command(
                     context_id.cyan()
                 );
                 return Ok(());
+            }
+
+            if let Some(existing_identity) =
+                node.ctx_manager.lookup_alias(name, Some(context_id))?
+            {
+                if existing_identity == identity {
+                    println!(
+                        "{ind} Alias '{}' already points to '{}'. Doing nothing.",
+                        name.cyan(),
+                        identity.cyan()
+                    );
+                    return Ok(());
+                }
+
+                if !force {
+                    println!(
+                        "{ind} Error: Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
+                        name.cyan(),
+                        existing_identity.cyan()
+                    );
+                    return Ok(());
+                }
+
+                println!(
+                    "{ind} Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                    name.cyan(),
+                    existing_identity.cyan(),
+                    identity.cyan()
+                );
+
+                node.ctx_manager.delete_alias(name, Some(context_id))?;
             }
 
             node.ctx_manager

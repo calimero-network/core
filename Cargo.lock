@@ -1995,6 +1995,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "libp2p",
+ "memchr",
  "owo-colors",
  "rand 0.8.5",
  "serde_json",

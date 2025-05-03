@@ -146,6 +146,14 @@ enum Commands {
     Use {
         /// The context to set as default
         context: Alias<ContextId>,
+
+        /// Force overwrite if default alias already exists
+        #[clap(
+            long,
+            short,
+            help = "Force overwrite if default alias already points elsewhere"
+        )]
+        force: bool,
     },
     /// Manage context identities
     Identity(identity::ContextIdentityCommand),
@@ -159,6 +167,9 @@ enum AliasCommands {
         alias: Alias<ContextId>,
         /// The context to create an alias for
         context_id: ContextId,
+        /// Force overwrite
+        #[clap(long, short)]
+        force: bool,
     },
     #[command(about = "Remove a context alias", aliases = ["rm", "del", "delete"])]
     Remove {
@@ -491,7 +502,7 @@ impl ContextCommand {
                 }
             }
             Commands::Alias { command } => handle_alias_command(node, command, &ind.to_string())?,
-            Commands::Use { context } => {
+            Commands::Use { context, force } => {
                 let default_alias: Alias<ContextId> =
                     "default".parse().expect("'default' is a valid alias name");
 
@@ -499,6 +510,37 @@ impl ContextCommand {
                     .ctx_manager
                     .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve context")?;
+
+                if let Some(existing_context) =
+                    node.ctx_manager.lookup_alias(default_alias, None)?
+                {
+                    if existing_context == context_id {
+                        println!(
+                            "{} Default alias already points to '{}'. Doing nothing.",
+                            ind,
+                            context_id.cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    if !force {
+                        println!(
+                            "{} Error: Default alias already points to '{}'. Use --force to overwrite.",
+                            ind,
+                            existing_context.cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    println!(
+                        "{} Warning: Overwriting default alias from '{}' to '{}'",
+                        ind,
+                        existing_context.cyan(),
+                        context_id.cyan()
+                    );
+
+                    node.ctx_manager.delete_alias(default_alias, None)?;
+                }
 
                 node.ctx_manager
                     .create_alias(default_alias, None, context_id)?;
@@ -520,7 +562,11 @@ impl ContextCommand {
 
 fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreResult<()> {
     match command {
-        AliasCommands::Add { alias, context_id } => {
+        AliasCommands::Add {
+            alias,
+            context_id,
+            force,
+        } => {
             let handle = node.store.handle();
 
             if !handle.has(&ContextMetaKey::new(context_id))? {
@@ -529,6 +575,35 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
                     context_id.cyan()
                 );
                 return Ok(());
+            }
+
+            if let Some(existing_context) = node.ctx_manager.lookup_alias(alias, None)? {
+                if existing_context == context_id {
+                    println!(
+                        "{ind} Alias '{}' already points to '{}'. Doing nothing.",
+                        alias.cyan(),
+                        context_id.cyan()
+                    );
+                    return Ok(());
+                }
+
+                if !force {
+                    println!(
+                        "{ind} Error: Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
+                        alias.cyan(),
+                        existing_context.to_string().cyan()
+                    );
+                    return Ok(());
+                }
+
+                println!(
+                    "{ind} Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                    alias.cyan(),
+                    existing_context.to_string().cyan(),
+                    context_id.cyan()
+                );
+
+                node.ctx_manager.delete_alias(alias, None)?;
             }
 
             node.ctx_manager.create_alias(alias, None, context_id)?;
