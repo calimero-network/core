@@ -1,5 +1,5 @@
 use clap::ValueEnum;
-use comfy_table::{Cell, Table};
+use color_eyre::owo_colors::OwoColorize;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -41,10 +41,7 @@ pub struct InfoLine<'a>(pub &'a str);
 
 impl Report for InfoLine<'_> {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("INFO").fg(comfy_table::Color::Green)]);
-        let _ = table.add_row(vec![self.0]);
-        println!("{table}");
+        println!("{} {}", "[INFO]".green(), self.0);
     }
 }
 
@@ -53,10 +50,7 @@ pub struct ErrorLine<'a>(pub &'a str);
 
 impl Report for ErrorLine<'_> {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("ERROR").fg(comfy_table::Color::Red)]);
-        let _ = table.add_row(vec![self.0]);
-        println!("{table}");
+        println!("{} {}", "[ERROR]".red(), self.0);
     }
 }
 
@@ -65,6 +59,6 @@ pub struct WarnLine<'a>(pub &'a str);
 
 impl Report for WarnLine<'_> {
     fn report(&self) {
-        println!("{} {}", "[WARN]", self.0);
+        println!("{} {}", "[WARN]".yellow(), self.0);
     }
 }
