@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2025-05-5
+
+- Added support for no-auth node
+- Upgrade alias support in context commands
+- ZkSync integration
+
 ## [0.5.0] - 2025-03-27
 
 - Added Ethereum integration
@@ -67,7 +73,8 @@ Integrations:
 - Starknet: reached feature parity with the NEAR implementation, allowing
   contexts to be created in association with the Starknet protocol.
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.5.0...HEAD
+[unreleased]: https://github.com/calimero-network/core/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/calimero-network/core/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/calimero-network/core/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/calimero-network/core/compare/merod-0.3.1...0.4.0
 [0.3.1]:
