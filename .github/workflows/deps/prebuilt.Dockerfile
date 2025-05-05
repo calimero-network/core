@@ -42,23 +42,9 @@ FROM prebuilt-base AS generic-prebuilt
 
 # Set the working directory based on binary name
 ARG BINARY_NAME
-RUN if [ "$BINARY_NAME" = "merod" ]; then \
-      mkdir -p /data && \
-      chown appuser:appuser /data && \
-      echo "/data" > /tmp/workdir; \
-    else \
-      mkdir -p /app && \
-      chown appuser:appuser /app && \
-      echo "/app" > /tmp/workdir; \
-    fi
-WORKDIR /placeholder
-RUN WORKDIR=$(cat /tmp/workdir) && rm /tmp/workdir && cd $WORKDIR
+RUN mkdir -p /app && chown appuser:appuser /app
+WORKDIR /app
 
 # Set the entrypoint using the binary name
 ENTRYPOINT ["/usr/local/bin/${BINARY_NAME}"]
 CMD ["--help"]
-
-################################################################################
-# Create aliased targets for backward compatibility
-FROM generic-prebuilt AS merod-prebuilt
-FROM generic-prebuilt AS meroctl-prebuilt
