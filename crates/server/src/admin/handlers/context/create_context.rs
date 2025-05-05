@@ -17,7 +17,7 @@ pub async fn handler(
     let result = state
         .ctx_manager
         .create_context(
-            &req.protocol,
+            req.protocol,
             req.context_seed.map(Into::into),
             req.application_id,
             None,

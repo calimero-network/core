@@ -1,4 +1,5 @@
-name: End-to-end tests
+name: e2e-tests
+# ^~~ if changed, update comment.yml as well
 
 on:
   push:
@@ -25,7 +26,7 @@ env:
 
 jobs:
   build:
-    name: Build Apps & Binaries
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -60,7 +61,7 @@ jobs:
           retention-days: 2
 
   test:
-    name: 'Test ${{ matrix.protocol }}'
+    name: ${{ matrix.protocol }}
     needs: build
     runs-on: ubuntu-latest
     strategy:
@@ -170,9 +171,11 @@ jobs:
         id: e2e-tests
         env:
           NO_COLOR: '1'
-        continue-on-error: true
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
+
+          jq '.network.serverHost = "0.0.0.0"' \
+            e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
 
           ./target/debug/e2e-tests \
             --input-dir ./e2e-tests/config \
@@ -182,35 +185,26 @@ jobs:
             --scenarios ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-tests-${{ matrix.protocol }}
           path: e2e-tests/corpus/
           retention-days: 2
 
-      - name: Fail on Test Failures
-        shell: bash
-        if: |
-          steps.e2e-tests.outcome == 'failure'
-        run: exit 1
-
       - name: Upload test report
-        if: success() || failure()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-report-${{ matrix.protocol }}
           path: e2e-tests/corpus/report.json
           retention-days: 1
 
-      - name: Verify Stellar CLI installation
-        if: matrix.protocol == 'stellar'
-        run: stellar --version
-
   comment:
-    name: Comment on PR
+    name: Submit Report
     needs: test
     runs-on: ubuntu-latest
-    if: success()
+    if: github.event_name == 'pull_request'
     steps:
       - name: Download all reports
         uses: actions/download-artifact@v4
@@ -253,25 +247,17 @@ jobs:
           echo "Combined report content:"
           cat reports/report.md
 
-      - name: Get PR number
-        id: pr_number
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REF: ${{ github.ref }}
-        shell: bash
-        run: |
-          echo "PR_NUMBER=$(gh pr list \
-            --repo ${{ github.repository }} \
-            --state open \
-            --head "${GH_REF#refs/heads/}" \
-            --json number \
-            -q '.[0].number')" >> $GITHUB_OUTPUT
+      - name: Prepare Comment
+        run: >-
+          jq -n
+          --arg pr '${{ github.event.number }}'
+          --arg tag e2e-tests-report
+          --arg mode recreate
+          --rawfile message reports/report.md
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
 
-      - name: Update pull request comment
-        uses: thollander/actions-comment-pull-request@v3
-        if: steps.pr_number.outputs.PR_NUMBER != ''
+      - name: Upload Comment
+        uses: actions/upload-artifact@v4
         with:
-          file-path: ./reports/report.md
-          pr-number: ${{ steps.pr_number.outputs.PR_NUMBER }}
-          comment-tag: e2e-tests-report
-          mode: recreate
+          name: pr-comment-payload
+          path: payload.json

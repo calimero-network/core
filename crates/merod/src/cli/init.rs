@@ -100,17 +100,33 @@ pub struct InitCommand {
     #[clap(overrides_with("no_mdns"))]
     pub mdns: bool,
 
-    #[clap(long, hide = true)]
+    #[clap(
+        long,
+        hide = true,
+        help = "Disable mDNS discovery (hidden as it's the inverse of --mdns)"
+    )]
     #[clap(overrides_with("mdns"))]
     pub no_mdns: bool,
 
-    #[clap(long, default_value = "3")]
+    #[clap(
+        long,
+        default_value = "3",
+        help = "Maximum number of rendezvous registrations allowed"
+    )]
     pub rendezvous_registrations_limit: usize,
 
-    #[clap(long, default_value = "3")]
+    #[clap(
+        long,
+        default_value = "3",
+        help = "Maximum number of relay registrations allowed"
+    )]
     pub relay_registrations_limit: usize,
 
-    #[clap(long, default_value = "2")]
+    #[clap(
+        long,
+        default_value = "2",
+        help = "Minimum number of successful autonat probes required to be confident about NAT status"
+    )]
     pub autonat_confidence_threshold: usize,
 
     /// Force initialization even if the directory already exists
@@ -201,7 +217,6 @@ impl InitCommand {
                 "near".to_owned(),
                 ClientConfigParams {
                     network: "testnet".into(),
-                    protocol: "near".into(),
                     contract_id: "calimero-context-config.testnet".parse()?,
                     signer: ClientSelectedSigner::Relayer,
                 },
@@ -237,7 +252,6 @@ impl InitCommand {
                 "starknet".to_owned(),
                 ClientConfigParams {
                     network: "sepolia".into(),
-                    protocol: "starknet".into(),
                     contract_id:
                         "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                             .parse()?,
@@ -275,7 +289,6 @@ impl InitCommand {
                 "icp".to_owned(),
                 ClientConfigParams {
                     network: "local".into(),
-                    protocol: "icp".into(),
                     contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
                     signer: ClientSelectedSigner::Local,
                 },
@@ -305,7 +318,6 @@ impl InitCommand {
                 "stellar".to_owned(),
                 ClientConfigParams {
                     network: "testnet".into(),
-                    protocol: "stellar".into(),
                     contract_id: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY"
                         .parse()?,
                     signer: ClientSelectedSigner::Relayer,
@@ -342,7 +354,6 @@ impl InitCommand {
                 "ethereum".to_owned(),
                 ClientConfigParams {
                     network: "sepolia".into(),
-                    protocol: "ethereum".into(),
                     contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".parse()?,
                     signer: ClientSelectedSigner::Relayer,
                 },
