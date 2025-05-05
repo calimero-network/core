@@ -34,6 +34,7 @@ COPY bin/${TARGETARCH}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
 RUN chmod +x /usr/local/bin/${BINARY_NAME}
 
 # Change to non-root user
+RUN mkdir -p /app && chown appuser:appuser /app
 USER appuser
 
 ################################################################################
