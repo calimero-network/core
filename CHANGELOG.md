@@ -4,9 +4,11 @@
 
 ## [0.6.0] - 2025-05-5
 
-- Added support for no-auth node
-- Upgrade alias support in context commands
-- ZkSync integration
+- Added alias substitution and use command for streamlined context interactions
+- Introduced event-triggered command execution with context watch
+- Enabled forced alias creation and validation for safer configuration
+- Improved Dockerfile, login popup, and admin dashboard experience
+- Optimized CI/CD, e2e test reliability, and removed redundant config fields
 
 ## [0.5.0] - 2025-03-27
 
