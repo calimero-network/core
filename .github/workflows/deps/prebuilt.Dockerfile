@@ -1,10 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# Dockerfile for prebuilt binaries stages used in CI
+# Dockerfile for prebuilt binaries
 
-################################################################################
-# Base image for prebuilt binaries
-FROM ubuntu:24.04 AS prebuilt-base
+FROM ubuntu:24.04
 
 # Install only the essential runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -33,17 +31,11 @@ WORKDIR /
 COPY bin/${TARGETARCH}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
 RUN chmod +x /usr/local/bin/${BINARY_NAME}
 
+# Create app directory and set permissions
+RUN mkdir -p /app && chown appuser:appuser /app
+
 # Change to non-root user
-RUN mkdir -p /app && chown appuser:appuser /app
 USER appuser
-
-################################################################################
-# Create a generic runner stage using prebuilt binaries
-FROM prebuilt-base AS generic-prebuilt
-
-# Set the working directory based on binary name
-ARG BINARY_NAME
-RUN mkdir -p /app && chown appuser:appuser /app
 WORKDIR /app
 
 # Set the entrypoint using the binary name
