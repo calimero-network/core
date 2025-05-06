@@ -5,25 +5,26 @@
 ## [0.6.0] - 2025-05-5
 
 - Added alias substitution and use command for streamlined context interactions
-  ([#1223](https://github.com/calimero-network/core/pull/1223),
-  [#1171](https://github.com/calimero-network/core/pull/1171))
+  ( [#1223](https://github.com/calimero-network/core/pull/1223) - thanks @Nathy-bajo ,
+  [#1171](https://github.com/calimero-network/core/pull/1171) - thanks @rtb-12 )
 - Added support for alias on context invitation and join command
-  ([#1181](https://github.com/calimero-network/core/pull/1181),
-  [#1151](https://github.com/calimero-network/core/pull/1151))
+  ( [#1181](https://github.com/calimero-network/core/pull/1181 - thanks @cy4n1d3-p1x3l ),
+  [#1151](https://github.com/calimero-network/core/pull/1151)- thanks @iamgoeldhruv )
 - Introduced event-triggered command execution with context watch
-  ([#1224](https://github.com/calimero-network/core/pull/1224))
-- Added support for no-auth mode for node ([#1174](https://github.com/calimero-network/core/pull/1174))
+  ( [#1224](https://github.com/calimero-network/core/pull/1224) - thanks @Nathy-bajo )
+- Added support for no-auth mode for node
+  ( [#1174](https://github.com/calimero-network/core/pull/1174) )
 - Enabled forced alias creation and validation for safer configuration
-  ([#1227](https://github.com/calimero-network/core/pull/1227),
-  [#1180](https://github.com/calimero-network/core/pull/1180))
+  ( [#1227](https://github.com/calimero-network/core/pull/1227 - thanks @rtb-12 ),
+  [#1180](https://github.com/calimero-network/core/pull/1180) - thanks @rtb-12)
 - Improved Dockerfile, login popup, and admin dashboard experience
-  ([#1214](https://github.com/calimero-network/core/pull/1214),
+  ( [#1214](https://github.com/calimero-network/core/pull/1214),
   [#1209](https://github.com/calimero-network/core/pull/1209),
-  [#1205](https://github.com/calimero-network/core/pull/1205))
+  [#1205](https://github.com/calimero-network/core/pull/1205) - thanks @iamgoeldhruv )
 - Optimized CI/CD, e2e test reliability, and removed redundant config fields
-  ([#1235](https://github.com/calimero-network/core/pull/1235),
-  [#1218](https://github.com/calimero-network/core/pull/1218),
-  [#1206](https://github.com/calimero-network/core/pull/1206))
+  ( [#1235](https://github.com/calimero-network/core/pull/1235),
+  [#1218](https://github.com/calimero-network/core/pull/1218) - thanks @Nathy-bajo,
+  [#1206](https://github.com/calimero-network/core/pull/1206) - thanks @Nathy-bajo)
 
 ## [0.5.0] - 2025-03-27
 
