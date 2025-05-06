@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use bootstrap::BootstrapCommand;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::Report as EyreReport;
 use serde::{Serialize, Serializer};
@@ -149,7 +150,13 @@ impl From<CliError> for ExitCode {
 
 impl Report for CliError {
     fn report(&self) {
-        println!("{self}");
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
+        let _ = table.add_row(vec![match self {
+            CliError::ApiError(e) => format!("API Error ({}): {}", e.status_code, e.message),
+            CliError::Other(e) => format!("Error: {}", e),
+        }]);
+        println!("{table}");
     }
 }
 
