@@ -2,10 +2,10 @@
 
 use std::fs::{remove_dir_all, remove_file};
 
+use calimero_rocksdb::db::RocksDB;
 use calimero_store::key::{ContextIdentity as ContextIdentityKey, ContextState as ContextStateKey};
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::{config, db, Store};
-use calimero_rocksdb::db::RocksDB;
 use eyre::Ok as EyreOk;
 
 #[test]
