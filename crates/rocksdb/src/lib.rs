@@ -8,6 +8,7 @@ pub mod entry;
 mod handle;
 pub mod iter;
 pub mod key;
+pub mod layer;
 pub mod slice;
 mod tx;
 

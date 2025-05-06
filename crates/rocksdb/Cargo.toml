@@ -19,6 +19,7 @@ thiserror.workspace = true
 thunderdome.workspace = true
 
 calimero-primitives.workspace = true
+calimero-store.workspace = true
 
 [dev-dependencies]
 tempdir.workspace = true
