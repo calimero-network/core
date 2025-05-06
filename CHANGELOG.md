@@ -4,11 +4,13 @@
 
 ## [0.6.0] - 2025-05-5
 
-- Added alias substitution and use command for streamlined context interactions
-- Introduced event-triggered command execution with context watch
-- Enabled forced alias creation and validation for safer configuration
-- Improved Dockerfile, login popup, and admin dashboard experience
-- Optimized CI/CD, e2e test reliability, and removed redundant config fields
+- Added alias substitution and use command for streamlined context interactions (#1223, #1171)
+- Added support for alias on context invitation and join command (#1181, #1151)
+- Introduced event-triggered command execution with context watch (#1224)
+- Added support for no-auth mode for node (#1174)
+- Enabled forced alias creation and validation for safer configuration (#1227, #1180)
+- Improved Dockerfile, login popup, and admin dashboard experience (#1214, #1209, #1205)
+- Optimized CI/CD, e2e test reliability, and removed redundant config fields (#1235, #1218, #1206)
 
 ## [0.5.0] - 2025-03-27
 
