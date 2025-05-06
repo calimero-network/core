@@ -1,7 +1,6 @@
 name: Release
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - master
@@ -9,7 +8,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - 'crates/**'
-      - .github/workflows/release.yml
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
@@ -18,7 +16,15 @@ on:
       - Cargo.toml
       - Cargo.lock
       - 'crates/**'
-      - .github/workflows/release.yml
+      - '.github/workflows/release.yml'
+
+# Default permissions are read-only
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   prepare:
@@ -27,11 +33,12 @@ jobs:
     outputs:
       binary_matrix: ${{ steps.setup_matrix.outputs.binary_matrix }}
       version: ${{ steps.version_info.outputs.version }}
+      build_binaries: ${{ steps.version_info.outputs.build_binaries }}
       release_required: ${{ steps.version_info.outputs.release_required }}
-      build_required: ${{ steps.version_info.outputs.build_required }}
-      target_commit: ${{ steps.version_info.outputs.target_commit }}
+      build_docker: ${{ steps.version_info.outputs.build_docker }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       overwrite_release: ${{ steps.version_info.outputs.overwrite_release }}
+      target_commit: ${{ steps.version_info.outputs.target_commit }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -47,60 +54,60 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Validating binary versions"
-
+          echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
+          
           version_candidate=""
           for binary in $(echo '${{ steps.setup_matrix.outputs.binary_matrix }}' | jq -r '.[]'); do
             binary_version=$(cargo metadata --format-version 1 --no-deps | jq -r --arg binary "$binary" '.packages[] | select(.name == $binary) | .version')
-            echo "  binary: $binary, version: $binary_version"
-
+            
             if [ -z "$version_candidate" ]; then
               version_candidate="$binary_version"
             elif [ "$version_candidate" != "$binary_version" ]; then
-              echo "Version mismatch between binaries"
-              echo "Make sure all binaries have the same version"
-              echo "All binaries: '${{ steps.setup_matrix.outputs.binary_matrix }}'"
+              echo "::error::Version mismatch between binaries"
+              echo "::error::Make sure all binaries have the same version"
+              echo "::error::All binaries: '${{ steps.setup_matrix.outputs.binary_matrix }}'"
               exit 1
             fi
           done
-          echo "Valid version candidate: $version_candidate"
-
-          echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
-
+          
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
             version="$version_candidate"
-            echo "Master version: $version"
-
             if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
-              echo "Master release for this version already exists"
               echo "release_required=false" >> $GITHUB_OUTPUT
+              echo "build_docker=false" >> $GITHUB_OUTPUT
             else
-              echo "New master release required"
               echo "release_required=true" >> $GITHUB_OUTPUT
+              echo "build_docker=true" >> $GITHUB_OUTPUT
             fi
-
-            echo "build_required=true" >> $GITHUB_OUTPUT
+            echo "build_binaries=true" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
-            echo "overwrite_release=false">> $GITHUB_OUTPUT
-            echo "version=$version" >> $GITHUB_OUTPUT
+            echo "overwrite_release=false" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == release/* ]]; then
             version="prerelease-${{ github.event.number }}"
-            echo "Prerelease version: $version"
-
-            echo "build_required=true" >> $GITHUB_OUTPUT
+            echo "build_binaries=true" >> $GITHUB_OUTPUT
             echo "release_required=true" >> $GITHUB_OUTPUT
+            echo "build_docker=true" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
-            echo "overwrite_release=true">> $GITHUB_OUTPUT
-            echo "version=$version" >> $GITHUB_OUTPUT
-          else
-            echo "This is not a master branch or a release PR"
-            echo "build_required=false" >> $GITHUB_OUTPUT
+            echo "overwrite_release=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "pull_request" ]; then
+            version="pr-${{ github.event.number }}"
+            echo "build_binaries=true" >> $GITHUB_OUTPUT
             echo "release_required=false" >> $GITHUB_OUTPUT
+            echo "build_docker=false" >> $GITHUB_OUTPUT
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            version="dev-$(echo ${{ github.ref }} | sed 's|refs/heads/||')"
+            echo "build_binaries=false" >> $GITHUB_OUTPUT
+            echo "release_required=false" >> $GITHUB_OUTPUT
+            echo "build_docker=false" >> $GITHUB_OUTPUT
           fi
+          
+          echo "version=$version" >> $GITHUB_OUTPUT
 
-  build:
-    name: Build
-    if: needs.prepare.outputs.build_required == 'true'
+  build-binaries:
+    name: Build Binaries
+    if: needs.prepare.outputs.build_binaries == 'true'
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -113,7 +120,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
-    needs: prepare
 
     steps:
       - name: Checkout code
@@ -127,7 +133,7 @@ jobs:
           echo "Cargo build arguments: $args"
           echo args="$args" >> "$GITHUB_OUTPUT"
 
-      - name: Install rustup and Rust toolchain
+      - name: Install rustup and Rust toolchain (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -141,13 +147,14 @@ jobs:
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: rust-binaries-${{ runner.os }}-${{ matrix.target }}
+          prefix-key: rust-binaries
+          shared-key: ${{ matrix.target }}
 
       - name: Install target for ${{ matrix.target }}
         run: rustup target add ${{ matrix.target }}
 
-      - name: Install dependencies for cross-compilation
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install dependencies for cross-compilation (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -161,7 +168,7 @@ jobs:
           clang \
           libc6-dev-arm64-cross
 
-      - name: Download and set up OpenSSL for cross-compilation
+      - name: Download and set up OpenSSL for cross-compilation (Linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           wget https://www.openssl.org/source/openssl-1.1.1g.tar.gz
@@ -191,7 +198,7 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
 
-      - name: Build binaries
+      - name: Build binaries (Linux aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         env:
           CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
@@ -207,7 +214,7 @@ jobs:
         run: |
           cargo build ${{ steps.cargo_args.outputs.args }}
 
-      - name: Build binaries
+      - name: Build binaries (other targets)
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: cargo build ${{ steps.cargo_args.outputs.args }}
 
@@ -225,11 +232,14 @@ jobs:
           path: artifacts/*
           retention-days: 2
 
-  release:
-    name: Release
+  release-binaries:
+    name: Release Binaries
     if: needs.prepare.outputs.release_required == 'true'
     runs-on: ubuntu-latest
-    needs: [prepare, build]
+    needs: [prepare, build-binaries]
+    # Add write permissions for releases
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -252,13 +262,119 @@ jobs:
           overwrite: ${{ needs.prepare.outputs.overwrite_release }}
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
+  build-docker:
+    name: Build Docker Images
+    if: needs.prepare.outputs.build_docker == 'true'
+    needs: [prepare, build-binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image:
+          - name: merod
+            description: Merod container image
+          - name: meroctl
+            description: Meroctl - Control tool for Merod container image
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries/
+          merge-multiple: true
+
+      - name: Extract Linux binaries
+        run: |
+          # Create architecture-specific directories
+          mkdir -p ./bin/amd64 ./bin/arm64
+          
+          # Extract binaries directly to the proper directories
+          tar -xzf binaries/${{ matrix.image.name }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
+          tar -xzf binaries/${{ matrix.image.name }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
+          
+          # Ensure binaries have correct permissions
+          chmod +x ./bin/amd64/${{ matrix.image.name }} ./bin/arm64/${{ matrix.image.name }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Prepare Docker cache parameters
+        id: prep_cache
+        run: |
+          # Define cache configuration for Buildx
+          if [ "${{ github.ref }}" == "refs/heads/master" ]; then
+            # Use a master-specific cache for stable releases
+            MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
+            echo "cache_from=type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
+            echo "cache_to=type=gha,scope=${MASTER_SCOPE},mode=max" >> $GITHUB_OUTPUT
+          else
+            # Use a feature branch cache for development
+            MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
+            DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
+            echo "cache_from=type=gha,scope=${MASTER_SCOPE} type=gha,scope=${DEV_SCOPE}" >> $GITHUB_OUTPUT
+            echo "cache_to=type=gha,scope=${DEV_SCOPE},mode=max" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract metadata for ${{ matrix.image.name }}
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+      
+      - name: Build and push ${{ matrix.image.name }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./.github/workflows/deps/prebuilt.Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            BINARY_NAME=${{ matrix.image.name }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: ${{ steps.prep_cache.outputs.cache_from }}
+          cache-to: ${{ steps.prep_cache.outputs.cache_to }}
+          provenance: mode=max
+          sbom: true
+          annotations: |
+            org.opencontainers.image.description=${{ matrix.image.description }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
   brew-update:
-    name: Bump Brew
+    name: Update Homebrew Tap
     if: |
       needs.prepare.outputs.release_required == 'true' &&
       github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    needs: [prepare, build, release]
+    needs: [prepare, release-binaries]
+    # Add write permissions for creating tokens
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Create GitHub App Token
         uses: actions/create-github-app-token@v1

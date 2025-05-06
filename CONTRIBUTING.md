@@ -30,7 +30,8 @@ There are several ways you can contribute:
 Contributions are managed via Issues and Pull Requests (PRs). Here are some
 general guidelines:
 
-- Read our [Rust style guide][STYLE] to ensure compatibility with the rest of our codebase!
+- Read our [Rust style guide][STYLE] to ensure compatibility with the rest of
+  our codebase!
 
 - Before creating a new Issue or PR, search for [existing ones][Issues].
 
@@ -107,11 +108,13 @@ We use the ["fork-and-pull"][GitPR] Git workflow:
 
 7. Tag a maintainer to review your PR.
 
-8. Make sure your PR follows our PR template (has to consist of a `Description`, `Test plan` and `Documentation update` sections)
+8. Make sure your PR follows our PR template (has to consist of a `Description`,
+   `Test plan` and `Documentation update` sections)
 
 ### Commit Message Style
 
-We follow a structured commit message format to ensure readability and enable automated changelog generation.
+We follow a structured commit message format to ensure readability and enable
+automated changelog generation.
 
 #### Format
 
@@ -125,16 +128,16 @@ We follow a structured commit message format to ensure readability and enable au
 
 Must be one of the following:
 
-| Type | Description |
-|------|-------------|
-| `build` | Changes affecting build system or dependencies |
-| `ci` | Changes to CI configuration files and scripts |
-| `docs` | Documentation only changes |
-| `feat` | A new feature |
-| `fix` | A bug fix |
-| `perf` | Performance improvement |
-| `refactor` | Code change with no bug fix or new feature |
-| `test` | Adding or correcting tests |
+| Type       | Description                                    |
+| ---------- | ---------------------------------------------- |
+| `build`    | Changes affecting build system or dependencies |
+| `ci`       | Changes to CI configuration files and scripts  |
+| `docs`     | Documentation only changes                     |
+| `feat`     | A new feature                                  |
+| `fix`      | A bug fix                                      |
+| `perf`     | Performance improvement                        |
+| `refactor` | Code change with no bug fix or new feature     |
+| `test`     | Adding or correcting tests                     |
 
 #### Scope (Optional)
 

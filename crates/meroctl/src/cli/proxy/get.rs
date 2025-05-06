@@ -6,6 +6,7 @@ use calimero_server_primitives::admin::{
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
 use clap::{Parser, ValueEnum};
+use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
@@ -54,35 +55,60 @@ pub enum GetRequest {
 
 impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
-        println!("{:?}", self.data);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Active Proposals Count").fg(Color::Blue)]);
+        let _ = table.add_row(vec![self.data.to_string()]);
+        println!("{table}");
     }
 }
 
 impl Report for GetNumberOfProposalApprovalsResponse {
     fn report(&self) {
-        println!("{:?}", self.data);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Proposal Approvals").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("Approvals: {:?}", self.data)]);
+        println!("{table}");
     }
 }
 
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Proposal Approvers").fg(Color::Blue),
+            Cell::new("Type").fg(Color::Blue),
+        ]);
+
         for user in &self.data {
-            println!("{}", user);
+            let _ = table.add_row(vec![user.to_string(), "ContextIdentity".to_owned()]);
         }
+        println!("{table}");
     }
 }
 
 impl Report for GetProposalsResponse {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Proposals").fg(Color::Blue),
+            Cell::new("ID").fg(Color::Blue),
+            Cell::new("Status").fg(Color::Blue),
+        ]);
+
         for proposal in &self.data {
-            println!("{:#?}", proposal);
+            let _ = table.add_row(vec![proposal.id.to_string(), format!("{:?}", proposal)]);
         }
+        println!("{table}");
     }
 }
 
 impl Report for GetProposalResponse {
     fn report(&self) {
-        println!("{:#?}", self.data);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Proposal Details").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("ID: {}", self.data.id)]);
+        let _ = table.add_row(vec![format!("Status: {:?}", self.data)]);
+        println!("{table}");
     }
 }
 

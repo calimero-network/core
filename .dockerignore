@@ -55,7 +55,6 @@
 **/.cargo-ok
 
 # Build outputs
-/bin
 /out
 
 # Documentation

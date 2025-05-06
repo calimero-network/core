@@ -58,11 +58,16 @@ RUN --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
     cargo build --locked --release -p merod -p meroctl && \
-    cp /app/target/release/{merod,meroctl} /usr/local/bin/
+    cp /app/target/release/merod /usr/local/bin/merod && \
+    cp /app/target/release/meroctl /usr/local/bin/meroctl
 
 ################################################################################
 # Create a minimal runner stage for merod
 FROM debian:bookworm-slim AS merod
+
+# Add labels for container metadata
+LABEL org.opencontainers.image.description="Merod daemon"
+LABEL org.opencontainers.image.licenses="MIT"
 
 # Install only the essential runtime dependencies
 RUN apt-get update && apt-get install -y \
@@ -99,10 +104,15 @@ CMD ["--help"]
 # Create a minimal runner stage for meroctl
 FROM debian:bookworm-slim AS meroctl
 
+# Add labels for container metadata
+LABEL org.opencontainers.image.description="Meroctl - Control tool for Merod daemon"
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Install only the essential runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    adduser \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-privileged user for running the app

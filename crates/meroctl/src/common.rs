@@ -12,6 +12,7 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8Path;
 use chrono::Utc;
+use comfy_table::{Cell, Color, Table};
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
@@ -232,7 +233,10 @@ impl UrlFragment for ApplicationId {
 
 impl Report for CreateAliasResponse {
     fn report(&self) {
-        println!("alias created");
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Created").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully created alias"]);
+        println!("{table}");
     }
 }
 
@@ -273,7 +277,10 @@ where
 
 impl Report for DeleteAliasResponse {
     fn report(&self) {
-        println!("alias deleted");
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Deleted").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully deleted alias"]);
+        println!("{table}");
     }
 }
 
@@ -335,10 +342,19 @@ where
 
 impl<T: fmt::Display> Report for LookupAliasResponse<T> {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Lookup").fg(Color::Blue)]);
+
         match &self.data.value {
-            Some(value) => println!("aliased to {}", value),
-            None => println!("alias not found"),
-        }
+            Some(value) => {
+                let _ = table.add_row(vec!["Status", "Found"]);
+                let _ = table.add_row(vec!["Value", &value.to_string()]);
+            }
+            None => {
+                let _ = table.add_row(vec!["Status", "Not Found"]);
+            }
+        };
+        println!("{table}");
     }
 }
 
@@ -366,12 +382,24 @@ impl<T> ResolveResponse<T> {
 
 impl<T: fmt::Display> Report for ResolveResponse<T> {
     fn report(&self) {
-        println!("{}", self.alias);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Resolution").fg(Color::Blue)]);
+        let _ = table.add_row(vec!["Alias", self.alias.as_str()]);
+
         match &self.value {
-            Some(ResolveResponseValue::Lookup(value)) => value.report(),
-            Some(ResolveResponseValue::Parsed(value)) => println!("parses to {}", value),
-            None => println!("could not be reolved"),
-        }
+            Some(ResolveResponseValue::Lookup(value)) => {
+                let _ = table.add_row(vec!["Type", "Lookup"]);
+                value.report();
+            }
+            Some(ResolveResponseValue::Parsed(value)) => {
+                let _ = table.add_row(vec!["Type", "Direct"]);
+                let _ = table.add_row(vec!["Value", &value.to_string()]);
+            }
+            None => {
+                let _ = table.add_row(vec!["Status", "Not Resolved"]);
+            }
+        };
+        println!("{table}");
     }
 }
 

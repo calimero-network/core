@@ -1,5 +1,6 @@
 use calimero_server_primitives::admin::GetContextsResponse;
 use clap::Parser;
+use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
 use reqwest::Client;
 
@@ -13,9 +14,20 @@ pub struct ListCommand;
 
 impl Report for GetContextsResponse {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Contexts").fg(Color::Blue),
+            Cell::new("ID").fg(Color::Blue),
+            Cell::new("Application ID").fg(Color::Blue),
+        ]);
+
         for context in &self.data.contexts {
-            context.report();
+            let _ = table.add_row(vec![
+                context.id.to_string(),
+                context.application_id.to_string(),
+            ]);
         }
+        println!("{table}");
     }
 }
 

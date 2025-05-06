@@ -1,6 +1,7 @@
 use alias::ContextAliasCommand;
 use calimero_primitives::context::Context;
 use clap::{Parser, Subcommand};
+use comfy_table::{Cell, Table};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
@@ -70,9 +71,19 @@ pub enum ContextSubCommands {
 
 impl Report for Context {
     fn report(&self) {
-        println!("context_id: {}", self.id);
-        println!("application_id: {}", self.application_id);
-        println!("root_hash: {}", self.root_hash);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Context Details").fg(comfy_table::Color::Blue)
+        ]);
+        let _ = table.add_row(vec![
+            Cell::new(format!("ID: {}", self.id)).fg(comfy_table::Color::Yellow)
+        ]);
+        let _ = table.add_row(vec![Cell::new(format!(
+            "Application ID: {}",
+            self.application_id
+        ))]);
+        let _ = table.add_row(vec![Cell::new(format!("Root Hash: {}", self.root_hash))]);
+        println!("{table}");
     }
 }
 

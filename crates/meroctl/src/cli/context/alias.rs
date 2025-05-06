@@ -85,7 +85,7 @@ impl ContextAliasCommand {
                         "Overwriting existing alias '{alias}' from '{existing_context}' to '{context_id}'"
                     )));
 
-                    delete_alias(multiaddr, &config.identity, alias, None)
+                    let _ = delete_alias(multiaddr, &config.identity, alias, None)
                         .await
                         .wrap_err("Failed to delete existing alias")?;
                 }
@@ -158,7 +158,7 @@ impl UseCommand {
             environment.output.write(&WarnLine(&format!(
                 "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
             )));
-            delete_alias(multiaddr, &config.identity, default_alias, None)
+            let _ = delete_alias(multiaddr, &config.identity, default_alias, None)
                 .await
                 .wrap_err("Failed to delete existing default alias")?;
         }
