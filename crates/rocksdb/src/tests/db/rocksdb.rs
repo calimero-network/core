@@ -10,7 +10,7 @@ use crate::slice::Slice;
 
 #[test]
 fn test_rocksdb() {
-    let dir = TempDir::new("_calimero_store_rocks").unwrap();
+    let dir = TempDir::new("_calimero_rocks").unwrap();
 
     let config = StoreConfig {
         path: dir.path().to_owned().try_into().unwrap(),

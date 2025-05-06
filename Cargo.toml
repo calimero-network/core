@@ -27,6 +27,7 @@ members = [
     "./crates/storage",
     "./crates/storage-macros",
     "./crates/store",
+    "./crates/rocksdb",
     "./crates/store/blobs",
     "./crates/utils/actix",
 

@@ -1,5 +1,5 @@
 [package]
-name = "calimero-store"
+name = "calimero-rocksdb"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -11,6 +11,7 @@ borsh = { workspace = true, optional = true }
 camino.workspace = true
 eyre.workspace = true
 generic-array.workspace = true
+rocksdb.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 strum = { workspace = true, features = ["derive"] }
