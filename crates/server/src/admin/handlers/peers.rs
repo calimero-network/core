@@ -10,7 +10,7 @@ use crate::AdminState;
 pub async fn get_peers_count_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let peer_count = state.ctx_manager.get_peers_count().await;
+    let peer_count = state.node_client.get_peers_count(None).await?;
 
     ApiResponse {
         payload: GetPeersCountResponse::new(peer_count),

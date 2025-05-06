@@ -12,6 +12,7 @@ camino = { workspace = true, features = ["serde1"] }
 either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+ouroboros.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
@@ -23,6 +24,7 @@ calimero-context-config = { workspace = true, features = ["client"] }
 calimero-context-primitives.workspace = true
 calimero-blobstore.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
+calimero-runtime.workspace = true
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 calimero-utils-actix.workspace = true

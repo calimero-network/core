@@ -12,8 +12,8 @@ pub async fn handler(
     Json(req): Json<InviteToContextRequest>,
 ) -> impl IntoResponse {
     let result = state
-        .ctx_manager
-        .invite_to_context(req.context_id, req.inviter_id, req.invitee_id)
+        .ctx_client
+        .invite_member(&req.context_id, &req.inviter_id, &req.invitee_id)
         .await
         .map_err(parse_api_error);
 

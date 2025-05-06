@@ -28,7 +28,7 @@ where
         return (StatusCode::BAD_REQUEST, "invalid path params").into_response();
     };
 
-    match state.ctx_manager.lookup_alias(alias, scope) {
+    match state.node_client.lookup_alias(alias, scope) {
         Ok(value) => ApiResponse {
             payload: LookupAliasResponse {
                 data: LookupAliasResponseData::new(value),
