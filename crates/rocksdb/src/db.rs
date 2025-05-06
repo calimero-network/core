@@ -8,9 +8,9 @@ use crate::iter::Iter;
 use crate::slice::Slice;
 use crate::tx::Transaction;
 
-mod memory;
+mod rocksdb;
 
-pub use memory::InMemoryDB;
+pub use rocksdb::RocksDB;
 
 #[derive(AsRefStr, Clone, Copy, Debug, EnumIter, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]

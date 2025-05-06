@@ -5,6 +5,7 @@ use std::fs::{remove_dir_all, remove_file};
 use calimero_store::key::{ContextIdentity as ContextIdentityKey, ContextState as ContextStateKey};
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::{config, db, Store};
+use calimero_rocksdb::db::RocksDB;
 use eyre::Ok as EyreOk;
 
 #[test]
@@ -19,7 +20,7 @@ fn rocks_store() {
         }
     }
 
-    let mut store = Store::open::<db::RocksDB>(&config).unwrap();
+    let mut store = Store::open::<RocksDB>(&config).unwrap();
 
     let context_id1 = [0_u8; 32].into();
     let state_key1 = [0_u8; 32];

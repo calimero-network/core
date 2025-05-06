@@ -25,7 +25,7 @@ use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
 use calimero_store::config::StoreConfig;
-use calimero_store::db::RocksDB;
+use calimero_rocksdb::db::RocksDB;
 use calimero_store::Store;
 use clap::{Parser, ValueEnum};
 use ed25519_consensus::SigningKey as IcpSigningKey;
