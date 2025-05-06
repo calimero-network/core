@@ -12,7 +12,6 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
-
     let result = state
         .ctx_client
         .create_context(

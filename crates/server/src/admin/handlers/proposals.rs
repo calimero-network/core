@@ -38,7 +38,9 @@ pub async fn get_proposals_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client
         .config()
@@ -63,7 +65,9 @@ pub async fn get_proposal_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client
         .config()
@@ -88,7 +92,9 @@ pub async fn get_proxy_contract_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client.config().get_proxy_id(context_id).await {
         Ok(proxy_contract) => ApiResponse {
@@ -110,7 +116,9 @@ pub async fn get_context_value_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client
         .config()
@@ -136,7 +144,9 @@ pub async fn get_context_storage_entries_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client
         .config()
@@ -162,7 +172,9 @@ pub async fn get_number_of_active_proposals_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client
         .config()
@@ -187,7 +199,9 @@ pub async fn get_number_of_proposal_approvals_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client
         .config()
@@ -216,7 +230,9 @@ pub async fn get_proposal_approvers_handler(
         return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
     };
 
-    let external_client = state.ctx_client.external_client(&context_id, &external_config)?;
+    let external_client = state
+        .ctx_client
+        .external_client(&context_id, &external_config)?;
 
     match external_client
         .config()

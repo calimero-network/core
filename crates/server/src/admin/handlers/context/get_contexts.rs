@@ -9,10 +9,7 @@ use crate::AdminState;
 
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let contexts = state
-        .ctx_client
-        .get_contexts(None)
-        .map_err(parse_api_error);
+    let contexts = state.ctx_client.get_contexts(None).map_err(parse_api_error);
 
     match contexts {
         Ok(contexts) => ApiResponse {

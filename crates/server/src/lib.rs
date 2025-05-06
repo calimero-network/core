@@ -52,7 +52,12 @@ pub struct AdminState {
 
 impl AdminState {
     #[must_use]
-    pub const fn new(store: Store, keypair: Keypair, ctx_client: ContextClient, node_client: NodeClient) -> Self {
+    pub const fn new(
+        store: Store,
+        keypair: Keypair,
+        ctx_client: ContextClient,
+        node_client: NodeClient,
+    ) -> Self {
         Self {
             store,
             keypair,
