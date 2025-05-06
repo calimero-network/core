@@ -25,6 +25,7 @@ webbrowser.workspace = true
 calimero-context.workspace = true
 calimero-context-config.workspace = true
 calimero-crypto.workspace = true
+calimero-store-rocksdb.workspace = true
 calimero-blobstore.workspace = true
 calimero-network.workspace = true
 calimero-node-primitives.workspace = true

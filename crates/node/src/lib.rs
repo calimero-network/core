@@ -29,13 +29,13 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_rocksdb::db::RocksDB;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};

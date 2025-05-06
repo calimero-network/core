@@ -5,9 +5,9 @@ use std::process::exit;
 
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
-use calimero_rocksdb::db::RocksDB;
 use calimero_store::config::StoreConfig;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use eyre::Result as EyreResult;
 use futures_util::TryStreamExt;
 use tokio::io::{stdin, stdout, AsyncWriteExt};
