@@ -6,20 +6,24 @@
 
 - Added alias substitution and use command for streamlined context interactions
   ( [#1223](https://github.com/calimero-network/core/pull/1223) - thanks
-  [@Nathy-bajo](https://github.com/Nathy-bajo), [#1171](https://github.com/calimero-network/core/pull/1171) -
-  thanks [@rtb-12](https://github.com/rtb-12) )
+  [@Nathy-bajo](https://github.com/Nathy-bajo),
+  [#1171](https://github.com/calimero-network/core/pull/1171) - thanks
+  [@rtb-12](https://github.com/rtb-12) )
 - Added support for alias on context invitation and join command (
   [#1181](https://github.com/calimero-network/core/pull/1181) - thanks
-  [@cy4n1d3-p1x3l](https://github.com/cy4n1d3-p1x3l), [#1151](https://github.com/calimero-network/core/pull/1151) -
-  thanks [@iamgoeldhruv](https://github.com/iamgoeldhruv) )
+  [@cy4n1d3-p1x3l](https://github.com/cy4n1d3-p1x3l),
+  [#1151](https://github.com/calimero-network/core/pull/1151) - thanks
+  [@iamgoeldhruv](https://github.com/iamgoeldhruv) )
 - Introduced event-triggered command execution with context watch (
   [#1224](https://github.com/calimero-network/core/pull/1224) - thanks
   [@Nathy-bajo](https://github.com/Nathy-bajo) )
 - Added support for no-auth mode for node (
   [#1174](https://github.com/calimero-network/core/pull/1174) )
 - Enabled forced alias creation and validation for safer configuration (
-  [#1227](https://github.com/calimero-network/core/pull/1227) - thanks [@rtb-12](https://github.com/rtb-12),
-  [#1180](https://github.com/calimero-network/core/pull/1180) - thanks [@rtb-12](https://github.com/rtb-12) )
+  [#1227](https://github.com/calimero-network/core/pull/1227) - thanks
+  [@rtb-12](https://github.com/rtb-12),
+  [#1180](https://github.com/calimero-network/core/pull/1180) - thanks
+  [@rtb-12](https://github.com/rtb-12) )
 - Improved Dockerfile, login popup, and admin dashboard experience (
   [#1214](https://github.com/calimero-network/core/pull/1214),
   [#1209](https://github.com/calimero-network/core/pull/1209),
@@ -28,8 +32,9 @@
 - Optimized CI/CD, e2e test reliability, and removed redundant config fields (
   [#1235](https://github.com/calimero-network/core/pull/1235),
   [#1218](https://github.com/calimero-network/core/pull/1218) - thanks
-  [@Nathy-bajo](https://github.com/Nathy-bajo), [#1206](https://github.com/calimero-network/core/pull/1206) -
-  thanks [@Nathy-bajo](https://github.com/Nathy-bajo) )
+  [@Nathy-bajo](https://github.com/Nathy-bajo),
+  [#1206](https://github.com/calimero-network/core/pull/1206) - thanks
+  [@Nathy-bajo](https://github.com/Nathy-bajo) )
 
 ## [0.5.0] - 2025-03-27
 
