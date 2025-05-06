@@ -2072,6 +2072,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "calimero-primitives",
+ "calimero-store",
  "camino",
  "eyre",
  "generic-array 1.2.0",
