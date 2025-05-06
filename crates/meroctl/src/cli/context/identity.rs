@@ -160,8 +160,7 @@ async fn list_identities(
                 .as_ref()
                 .map(|alias| alias.to_string())
                 .unwrap_or_else(|| "default".to_string());
-            println!("Error: Unable to resolve context '{}'. Please verify the context ID exists or setup default context.", context_display);
-            return Ok(());
+            eyre::bail!("Error: Unable to resolve context '{}'. Please verify the context ID exists or setup default context.", context_display)
         }
     };
 
