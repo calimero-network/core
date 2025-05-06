@@ -8,7 +8,6 @@ use crate::admin::service::ApiResponse;
 use crate::AdminState;
 
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-  
     let private_key = state.ctx_client.new_private_key();
 
     ApiResponse {
