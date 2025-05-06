@@ -55,6 +55,10 @@ impl ContextClient {
         Ok(Some(context))
     }
 
+    pub fn new_private_key(&self) -> PrivateKey {
+        PrivateKey::random(&mut rand::thread_rng())
+    }
+
     pub async fn get_contexts(
         &self,
         start: Option<ContextId>,

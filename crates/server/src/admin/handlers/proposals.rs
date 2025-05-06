@@ -35,7 +35,7 @@ pub async fn get_proposals_handler(
     Json(req): Json<GetProposalsRequest>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
@@ -62,7 +62,7 @@ pub async fn get_proposal_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
@@ -89,7 +89,7 @@ pub async fn get_proxy_contract_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
@@ -113,7 +113,7 @@ pub async fn get_context_value_handler(
     Json(req): Json<GetContextValueRequest>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
@@ -141,7 +141,7 @@ pub async fn get_context_storage_entries_handler(
     Json(req): Json<GetContextStorageEntriesRequest>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
@@ -169,7 +169,7 @@ pub async fn get_number_of_active_proposals_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
@@ -196,7 +196,7 @@ pub async fn get_number_of_proposal_approvals_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
@@ -227,7 +227,7 @@ pub async fn get_proposal_approvers_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return Err(parse_api_error(eyre::eyre!("Context not found"))).into_response();
+        return parse_api_error(eyre::eyre!("Context not found")).into_response();
     };
 
     let external_client = state
