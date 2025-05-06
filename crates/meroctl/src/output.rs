@@ -1,5 +1,5 @@
 use clap::ValueEnum;
-use owo_colors::OwoColorize;
+use color_eyre::owo_colors::OwoColorize;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
