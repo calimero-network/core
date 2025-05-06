@@ -97,9 +97,9 @@ impl Driver {
         let mut report = TestRunReport::new();
         let mut initialized_protocols: HashMap<String, ProtocolSandboxEnvironment> = HashMap::new();
 
-        let scenarios_dir = self.environment.input_dir.join("protocols");
+        let protocols_dir = self.environment.input_dir.join("protocols");
 
-        for protocol_name in &self.environment.scenarios {
+        for protocol_name in &self.environment.protocols {
             let protocol_name = protocol_name.to_string().to_lowercase();
 
             if initialized_protocols.contains_key(&protocol_name) {
@@ -140,9 +140,9 @@ impl Driver {
             }
         }
 
-        for protocol_name in &self.environment.scenarios {
+        for protocol_name in &self.environment.protocols {
             let protocol_name = protocol_name.to_string().to_lowercase();
-            let protocol_path = scenarios_dir.join(&protocol_name);
+            let protocol_path = protocols_dir.join(&protocol_name);
 
             if !protocol_path.exists() || !protocol_path.is_dir() {
                 self.environment
