@@ -1073,15 +1073,20 @@ dependencies = [
 name = "calimero-context"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "calimero-blobstore",
  "calimero-context-config",
- "calimero-network",
+ "calimero-context-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
+ "calimero-runtime",
  "calimero-store",
+ "calimero-utils-actix",
  "camino",
+ "either",
  "eyre",
  "futures-util",
+ "ouroboros",
  "rand 0.8.5",
  "reqwest 0.12.9",
  "serde",
@@ -1169,24 +1174,16 @@ name = "calimero-context-primitives"
 version = "0.1.0"
 dependencies = [
  "actix",
- "calimero-blobstore",
+ "async-stream",
  "calimero-context-config",
- "calimero-network-primitives",
- "calimero-node-primitives",
  "calimero-primitives",
- "calimero-runtime",
  "calimero-store",
  "calimero-utils-actix",
- "camino",
  "eyre",
  "futures-util",
- "rand 0.8.5",
- "reqwest 0.12.9",
  "serde",
  "thiserror 1.0.69",
  "tokio 1.41.1",
- "tokio-util 0.7.12",
- "tracing",
 ]
 
 [[package]]
@@ -1337,11 +1334,20 @@ dependencies = [
 name = "calimero-node-primitives"
 version = "0.1.0"
 dependencies = [
+ "actix",
+ "calimero-blobstore",
+ "calimero-network-primitives",
  "calimero-primitives",
- "calimero-runtime",
- "serde",
- "thiserror 1.0.69",
+ "calimero-store",
+ "calimero-utils-actix",
+ "camino",
+ "eyre",
+ "futures-util",
+ "libp2p",
+ "reqwest 0.12.9",
  "tokio 1.41.1",
+ "tokio-util 0.7.12",
+ "tracing",
 ]
 
 [[package]]
@@ -1376,11 +1382,9 @@ dependencies = [
 name = "calimero-runtime"
 version = "0.1.0"
 dependencies = [
- "actix",
  "assert-json-diff",
  "borsh",
  "calimero-primitives",
- "calimero-utils-actix",
  "eyre",
  "fragile",
  "ouroboros",
@@ -1389,7 +1393,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
- "tokio 1.41.1",
  "ureq",
  "wasmer",
  "wasmer-types",
@@ -1486,6 +1489,7 @@ name = "calimero-server-primitives"
 version = "0.1.0"
 dependencies = [
  "calimero-context-config",
+ "calimero-context-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
  "camino",

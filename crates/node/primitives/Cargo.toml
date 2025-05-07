@@ -19,6 +19,7 @@ tracing.workspace = true
 
 calimero-primitives.workspace = true
 calimero-blobstore.workspace = true
+calimero-utils-actix.workspace = true
 calimero-network-primitives.workspace = true
 calimero-store.workspace = true
 calimero-utils-actix.workspace = true

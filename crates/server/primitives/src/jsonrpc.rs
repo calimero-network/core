@@ -1,4 +1,4 @@
-use calimero_node_primitives::CallError;
+use calimero_context_primitives::messages::execute;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Error as EyreError;
@@ -184,7 +184,7 @@ pub enum ExecuteError {
     #[error("codec error: {message}")]
     SerdeError { message: String },
     #[error("error occurred while handling request: {0}")]
-    CallError(CallError),
+    ExecuteError(execute::ExecuteError),
     #[error("function call error: {0}")]
     FunctionCallError(String),
 }
