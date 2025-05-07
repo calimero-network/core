@@ -211,16 +211,16 @@ async fn internal_sync_context_config(
 
             let derived_application_id = match source.scheme() {
                 "http" | "https" => {
-                    install_application_from_url(datastore, node_client, source, metadata, None)
+                    node_client
+                        .install_application_from_url(source, metadata, None)
                         .await?
                 }
-                _ => install_application(
-                    datastore,
-                    application.blob.as_bytes().into(),
-                    application.size,
-                    &source.into(),
-                    metadata,
-                )?,
+                _ => node_client
+                    .install_application_from_path(
+                        source.path().into(),
+                        metadata,
+                    )
+                    .await?,
             };
 
             if application_id != derived_application_id {
@@ -265,33 +265,6 @@ async fn internal_sync_context_config(
     )
 }
 
-pub async fn install_application_from_url(
-    datastore: &Store,
-    node_client: &NodeClient,
-    url: Url,
-    metadata: Vec<u8>,
-    expected_hash: Option<Hash>,
-) -> eyre::Result<ApplicationId> {
-    let uri = url.as_str().parse()?;
-
-    let response = Client::new().get(url).send().await?;
-
-    let expected_size = response.content_length();
-
-    let (blob_id, size) = add_blob(
-        node_client,
-        response
-            .bytes_stream()
-            .map_err(Error::other)
-            .into_async_read(),
-        expected_size,
-        expected_hash,
-    )
-    .await?;
-
-    install_application(datastore, blob_id, size, &uri, metadata)
-}
-
 pub async fn add_blob<S: AsyncRead>(
     node_client: &NodeClient,
     stream: S,
@@ -307,29 +280,6 @@ pub async fn add_blob<S: AsyncRead>(
     }
 
     Ok((blob_id, size))
-}
-
-fn install_application(
-    datastore: &Store,
-    blob_id: BlobId,
-    size: u64,
-    source: &ApplicationSource,
-    metadata: Vec<u8>,
-) -> eyre::Result<ApplicationId> {
-    let application = types::ApplicationMeta::new(
-        key::BlobMeta::new(blob_id),
-        size,
-        source.to_string().into_boxed_str(),
-        metadata.into_boxed_slice(),
-    );
-
-    let application_id = ApplicationId::from(*Hash::hash_borsh(&application)?);
-
-    let mut handle = datastore.handle();
-
-    handle.put(&key::ApplicationMeta::new(application_id), &application)?;
-
-    Ok(application_id)
 }
 
 pub fn is_application_installed(
