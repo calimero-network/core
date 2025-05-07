@@ -1,7 +1,6 @@
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_primitives::application::ApplicationId;
-
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::{key, Store};
@@ -105,7 +104,7 @@ impl ContextClient {
 
     pub async fn join_context(
         &self,
-        private_key: PrivateKey,
+        identity_secret: PrivateKey,
         invitation_payload: ContextInvitationPayload,
     ) -> eyre::Result<JoinContextResponse> {
         let (sender, receiver) = oneshot::channel();
@@ -113,7 +112,7 @@ impl ContextClient {
         self.context_manager
             .send(ContextMessage::JoinContext {
                 request: JoinContextRequest {
-                    private_key,
+                    identity_secret,
                     invitation_payload,
                 },
                 outcome: sender,

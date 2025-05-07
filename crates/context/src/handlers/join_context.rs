@@ -30,7 +30,7 @@ impl Handler<JoinContextRequest> for ContextManager {
     fn handle(
         &mut self,
         JoinContextRequest {
-            private_key,
+            identity_secret,
             invitation_payload,
         }: JoinContextRequest,
         _ctx: &mut Self::Context,
@@ -40,7 +40,7 @@ impl Handler<JoinContextRequest> for ContextManager {
             self.node_client.clone(),
             self.context_client.clone(),
             invitation_payload,
-            private_key,
+            identity_secret,
         );
 
         ActorResponse::r#async(wrap_future::<_, Self>(Box::pin(task)))

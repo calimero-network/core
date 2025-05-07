@@ -31,33 +31,54 @@ impl Handler<DeleteContextRequest> for ContextManager {
         DeleteContextRequest { context_id }: DeleteContextResponse,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let mut handle = self.datastore.handle();
 
-        let key = key::ContextMeta::new(context_id);
 
-        // todo! perhaps we shouldn't bother checking?
-        if !handle.has(&key)? {
-            return Ok(DeleteContextResponse { deleted: false });
-        }
+      let task = delete_context(
+          self.datastore.clone(),
+          self.node_client.clone(),
+          self.context_client.clone(),
+          context_id,
+      );
 
-        handle.delete(&key)?;
-        handle.delete(&key::ContextConfig::new(context_id))?;
-
-        delete_context_scoped::<key::ContextIdentity, 32>(
-            self.datastore.clone(),
-            &context_id,
-            [0; 32],
-            None,
-        )?;
-        delete_context_scoped::<key::ContextState, 32>(
-            self.datastore.clone(),
-            &context_id,
-            [0; 32],
-            None,
-        )?;
-
-        Ok(DeleteContextResponse { deleted: true })
+      ActorResponse::r#async(wrap_future::<_, Self>(Box::pin(task)))        
     }
+}
+
+async fn delete_context(
+    datastore: Store,
+    node_client: NodeClient,
+    context_client: ContextClient,
+    context_id: ContextId,
+) -> eyre::Result<()> {
+
+    let mut handle = datastore.handle();
+
+    let key = key::ContextMeta::new(context_id);
+
+    // todo! perhaps we shouldn't bother checking?
+    if !handle.has(&key)? {
+        return Ok(DeleteContextResponse { deleted: false });
+    }
+
+    handle.delete(&key)?;
+    handle.delete(&key::ContextConfig::new(context_id))?;
+
+    delete_context_scoped::<key::ContextIdentity, 32>(
+        self.datastore.clone(),
+        &context_id,
+        [0; 32],
+        None,
+    )?;
+    delete_context_scoped::<key::ContextState, 32>(
+        datastore.clone(),
+        &context_id,
+        [0; 32],
+        None,
+    )?;
+
+    unsubscribe(&node_client, &context_id).await?;
+
+    Ok(DeleteContextResponse { deleted: true })
 }
 
 #[expect(clippy::unwrap_in_result, reason = "pre-validated")]
@@ -66,11 +87,11 @@ fn delete_context_scoped<K, const N: usize>(
     context_id: &ContextId,
     offset: [u8; N],
     end: Option<[u8; N]>,
-) -> EyreResult<()>
+) -> eyre::Result<()>
 where
     K: FromKeyParts<Error: Error + Send + Sync>,
 {
-    let expected_length = Key::<K::Components>::len();
+    let expected_length = key::Key::<K::Components>::len();
 
     if context_id.len().saturating_add(N) != expected_length {
         bail!(
@@ -137,6 +158,19 @@ where
             datastore.delete(&k)?;
         }
     }
+
+    Ok(())
+}
+
+async fn unsubscribe(
+    node_client: &NodeClient,
+    context_id: &ContextId,
+) -> eyre::Result<()> {
+    node_client
+        .unsubscribe(context_id)
+        .await?;
+
+    info!(%context_id, "Unsubscribed from context");
 
     Ok(())
 }

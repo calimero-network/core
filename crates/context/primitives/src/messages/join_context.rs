@@ -14,5 +14,6 @@ impl Message for JoinContextRequest {
 
 #[derive(Copy, Clone, Debug)]
 pub struct JoinContextResponse {
-    pub res: Option<(ContextId, PublicKey)>,
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
 }
