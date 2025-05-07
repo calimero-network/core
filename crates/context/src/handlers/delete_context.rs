@@ -31,16 +31,14 @@ impl Handler<DeleteContextRequest> for ContextManager {
         DeleteContextRequest { context_id }: DeleteContextResponse,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        let task = delete_context(
+            self.datastore.clone(),
+            self.node_client.clone(),
+            self.context_client.clone(),
+            context_id,
+        );
 
-
-      let task = delete_context(
-          self.datastore.clone(),
-          self.node_client.clone(),
-          self.context_client.clone(),
-          context_id,
-      );
-
-      ActorResponse::r#async(wrap_future::<_, Self>(Box::pin(task)))        
+        ActorResponse::r#async(wrap_future::<_, Self>(Box::pin(task)))
     }
 }
 
@@ -50,7 +48,6 @@ async fn delete_context(
     context_client: ContextClient,
     context_id: ContextId,
 ) -> eyre::Result<()> {
-
     let mut handle = datastore.handle();
 
     let key = key::ContextMeta::new(context_id);
@@ -69,12 +66,7 @@ async fn delete_context(
         [0; 32],
         None,
     )?;
-    delete_context_scoped::<key::ContextState, 32>(
-        datastore.clone(),
-        &context_id,
-        [0; 32],
-        None,
-    )?;
+    delete_context_scoped::<key::ContextState, 32>(datastore.clone(), &context_id, [0; 32], None)?;
 
     unsubscribe(&node_client, &context_id).await?;
 
@@ -162,13 +154,8 @@ where
     Ok(())
 }
 
-async fn unsubscribe(
-    node_client: &NodeClient,
-    context_id: &ContextId,
-) -> eyre::Result<()> {
-    node_client
-        .unsubscribe(context_id)
-        .await?;
+async fn unsubscribe(node_client: &NodeClient, context_id: &ContextId) -> eyre::Result<()> {
+    node_client.unsubscribe(context_id).await?;
 
     info!(%context_id, "Unsubscribed from context");
 
