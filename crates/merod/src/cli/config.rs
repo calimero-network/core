@@ -1,13 +1,13 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
 use std::env::temp_dir;
-use tokio::fs::{read_to_string, write};
 use std::str::FromStr;
 
 use calimero_config::{ConfigFile, CONFIG_FILE};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::{bail, eyre, Result as EyreResult};
+use tokio::fs::{read_to_string, write};
 use toml_edit::{Item, Value};
 use tracing::info;
 

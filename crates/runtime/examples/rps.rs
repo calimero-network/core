@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use std::env;
-use tokio::fs::File;
 use std::io::Read;
 use std::path::Path;
 
@@ -15,6 +14,7 @@ use rand::distributions::{Distribution, Standard};
 use rand::{random, thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice as from_json_slice, json, to_vec as to_json_vec};
+use tokio::fs::File;
 
 #[derive(Debug, Deserialize)]
 struct KeyComponents {

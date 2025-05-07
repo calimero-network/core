@@ -1,7 +1,6 @@
 use core::net::IpAddr;
 use core::time::Duration;
 use std::collections::BTreeMap;
-use tokio::fs::{create_dir, create_dir_all};
 
 use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
@@ -39,6 +38,7 @@ use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
 use soroban_client::keypair::{Keypair as StellarKeypair, KeypairBehavior};
 use starknet::signers::SigningKey;
+use tokio::fs::{create_dir, create_dir_all};
 use tracing::{info, warn};
 use url::Url;
 

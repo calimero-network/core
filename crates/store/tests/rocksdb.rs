@@ -1,11 +1,10 @@
 #![allow(unused_crate_dependencies, reason = "False positives")]
 
-use tokio::fs::{remove_dir_all, remove_file};
-
 use calimero_store::key::{ContextIdentity as ContextIdentityKey, ContextState as ContextStateKey};
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::{config, db, Store};
 use eyre::Ok as EyreOk;
+use tokio::fs::{remove_dir_all, remove_file};
 
 #[test]
 fn rocks_store() {

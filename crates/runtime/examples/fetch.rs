@@ -1,7 +1,6 @@
 #![allow(unused_crate_dependencies)]
 
 use std::env;
-use tokio::fs::File;
 use std::io::Read;
 use std::path::Path;
 
@@ -10,6 +9,7 @@ use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{run, Constraint};
 use eyre::Result as EyreResult;
 use serde_json::{json, to_vec as to_json_vec};
+use tokio::fs::File;
 
 fn main() -> EyreResult<()> {
     let args: Vec<String> = env::args().collect();

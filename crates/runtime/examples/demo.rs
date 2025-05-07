@@ -2,7 +2,6 @@
 
 use core::str;
 use std::env;
-use tokio::fs::File;
 use std::io::Read;
 use std::path::Path;
 
@@ -12,6 +11,7 @@ use calimero_runtime::{run, Constraint};
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use serde_json::{json, to_vec as to_json_vec, Value};
+use tokio::fs::File;
 
 fn parse_payload<const PRETTY: bool>(
     payload: impl AsRef<[u8]> + ToOwned<Owned = Vec<u8>>,

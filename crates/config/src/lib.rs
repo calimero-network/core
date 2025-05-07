@@ -1,5 +1,4 @@
 use core::time::Duration;
-use tokio::fs::{read_to_string, write};
 
 use calimero_context::config::ContextConfig;
 use calimero_network::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
@@ -10,6 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
+use tokio::fs::{read_to_string, write};
 
 pub const CONFIG_FILE: &str = "config.toml";
 
