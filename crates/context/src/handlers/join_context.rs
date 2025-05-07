@@ -1,15 +1,12 @@
-use std::io::Error;
-
 use actix::fut::wrap_future;
 use actix::{ActorResponse, Handler, Message};
-use calimero_context_config::repr::ReprBytes;
 use calimero_context_primitives::client::external::ExternalClient;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::join_context::{
     JoinContextRequest, JoinContextResponse,
 };
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::{ApplicationId, ApplicationSource};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{
     Context, ContextConfigParams, ContextId, ContextInvitationPayload,
@@ -18,8 +15,8 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::{key, types, Store};
 use eyre;
-use futures_util::{AsyncRead, TryStreamExt};
-use reqwest::{Client, Url};
+use futures_util::AsyncRead;
+use reqwest::Url;
 use tracing::info;
 
 use crate::ContextManager;
