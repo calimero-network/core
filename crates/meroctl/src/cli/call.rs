@@ -5,7 +5,7 @@ use calimero_server_primitives::jsonrpc::{
     ExecuteRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
 };
 use clap::Parser;
-use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{OptionExt, Result as EyreResult};
 use serde_json::{json, Value};
@@ -66,26 +66,18 @@ fn serde_value(s: &str) -> serde_json::Result<Value> {
 
 impl Report for Response {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("RPC Response").fg(Color::Blue)]);
+
         match &self.body {
             ResponseBody::Result(result) => {
-                println!("return value:");
-                let result = format!(
-                    "(json): {}",
-                    format!("{:#}", result.0)
-                        .lines()
-                        .map(|line| line.cyan().to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
-
-                for line in result.lines() {
-                    println!("  > {line}");
-                }
+                let _ = table.add_row(vec![format!("Result: {:#}", result.0)]);
             }
             ResponseBody::Error(error) => {
-                println!("{error}");
+                let _ = table.add_row(vec![format!("Error: {}", error)]);
             }
         }
+        println!("{table}");
     }
 }
 

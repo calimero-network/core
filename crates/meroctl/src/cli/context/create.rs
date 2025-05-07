@@ -11,6 +11,7 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
+use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
@@ -76,14 +77,23 @@ pub struct CreateCommand {
 
 impl Report for CreateContextResponse {
     fn report(&self) {
-        println!("context_id: {}", self.data.context_id);
-        println!("member_public_key: {}", self.data.member_public_key);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Context Created").fg(Color::Green)]);
+        let _ = table.add_row(vec![format!("Context ID: {}", self.data.context_id)]);
+        let _ = table.add_row(vec![format!(
+            "Member Public Key: {}",
+            self.data.member_public_key
+        )]);
+        println!("{table}");
     }
 }
 
 impl Report for UpdateContextApplicationResponse {
     fn report(&self) {
-        println!("Context application updated");
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Context Updated").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Application successfully updated"]);
+        println!("{table}");
     }
 }
 

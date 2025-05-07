@@ -2,6 +2,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::ws::{Request, RequestPayload, Response, SubscribeRequest};
 use clap::Parser;
+use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use tokio::process::Command;
@@ -49,8 +50,11 @@ pub struct WatchCommand {
 
 impl Report for Response {
     fn report(&self) {
-        println!("id: {:?}", self.id);
-        println!("payload: {:?}", self.body);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("WebSocket Response").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("ID: {:?}", self.id)]);
+        let _ = table.add_row(vec![format!("Payload: {:#?}", self.body)]);
+        println!("{table}");
     }
 }
 

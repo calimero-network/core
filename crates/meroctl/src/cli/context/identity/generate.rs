@@ -1,6 +1,7 @@
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::GenerateContextIdentityResponse;
 use clap::Parser;
+use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
 
 use crate::cli::Environment;
@@ -12,8 +13,11 @@ pub struct GenerateCommand;
 
 impl Report for GenerateContextIdentityResponse {
     fn report(&self) {
-        println!("public_key: {}", self.data.public_key);
-        println!("private_key: {}", self.data.private_key);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Generated Identity").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("Public Key: {}", self.data.public_key)]);
+        let _ = table.add_row(vec![format!("Private Key: {}", self.data.private_key)]);
+        println!("{table}");
     }
 }
 

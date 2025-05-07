@@ -5,6 +5,7 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
+use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result as EyreResult};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -38,7 +39,13 @@ pub struct InstallCommand {
 
 impl Report for InstallApplicationResponse {
     fn report(&self) {
-        println!("application_id: {}", self.data.application_id);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Application Installed").fg(Color::Green)]);
+        let _ = table.add_row(vec![format!(
+            "Application ID: {}",
+            self.data.application_id
+        )]);
+        println!("{table}");
     }
 }
 
