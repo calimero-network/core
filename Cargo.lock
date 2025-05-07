@@ -5992,7 +5992,7 @@ dependencies = [
 
 [[package]]
 name = "meroctl"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bs58 0.5.1",
  "calimero-config",
@@ -6021,7 +6021,7 @@ dependencies = [
 
 [[package]]
 name = "merod"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "alloy",
  "axum",
