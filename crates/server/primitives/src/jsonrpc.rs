@@ -1,4 +1,4 @@
-use calimero_node_primitives::CallError;
+// use calimero_context_primitives::messages::execute::ExecuteError;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use eyre::Error as EyreError;

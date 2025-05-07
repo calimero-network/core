@@ -15,6 +15,7 @@ thiserror.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 calimero-context-config.workspace = true
+calimero-context-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 

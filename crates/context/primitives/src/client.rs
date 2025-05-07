@@ -1,12 +1,18 @@
-use actix::Recipient;
+use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_primitives::application::ApplicationId;
+
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::PublicKey;
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
 use futures_util::{stream, Stream};
 
+use crate::messages::create_context::{CreateContextRequest, CreateContextResponse};
+use crate::messages::delete_context::{DeleteContextRequest, DeleteContextResponse};
+use crate::messages::execute::{ExecuteError, ExecuteRequest, ExecuteResponse};
+use crate::messages::join_context::{JoinContextRequest, JoinContextResponse};
+use crate::messages::update_application::UpdateApplicationRequest;
 use crate::messages::ContextMessage;
 
 mod crypto;
@@ -50,8 +56,25 @@ impl ContextClient {
         stream::empty()
     }
 
-    pub async fn delete_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
-        todo!()
+    pub async fn delete_context(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<DeleteContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::DeleteContext {
+                request: DeleteContextRequest {
+                    context_id: *context_id,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Context manager mailbox not to be dropped");
+
+        receiver
+            .await
+            .expect("Context manager not to drop response channel")
     }
 
     pub async fn context_members(
@@ -78,5 +101,28 @@ impl ContextClient {
         identity: &PublicKey,
     ) -> eyre::Result<()> {
         todo!()
+    }
+
+    pub async fn join_context(
+        &self,
+        private_key: PrivateKey,
+        invitation_payload: ContextInvitationPayload,
+    ) -> eyre::Result<JoinContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::JoinContext {
+                request: JoinContextRequest {
+                    private_key,
+                    invitation_payload,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Context manager mailbox not to be dropped");
+
+        receiver
+            .await
+            .expect("Context manager not to drop response channel")
     }
 }
