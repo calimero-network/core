@@ -21,7 +21,7 @@ use calimero_network::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
 };
-use calimero_rocksdb::db::RocksDB;
+use calimero_store_rocksdb::RocksDB;
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
