@@ -1,7 +1,7 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
 use std::env::temp_dir;
-use std::fs::{read_to_string, write};
+use tokio::fs::{read_to_string, write};
 use std::str::FromStr;
 
 use calimero_config::{ConfigFile, CONFIG_FILE};

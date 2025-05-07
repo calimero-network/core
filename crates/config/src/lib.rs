@@ -1,5 +1,5 @@
 use core::time::Duration;
-use std::fs::{read_to_string, write};
+use tokio::fs::{read_to_string, write};
 
 use calimero_context::config::ContextConfig;
 use calimero_network::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};

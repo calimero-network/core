@@ -1,6 +1,6 @@
 #![allow(unused_crate_dependencies, reason = "False positives")]
 
-use std::fs::{remove_dir_all, remove_file};
+use tokio::fs::{remove_dir_all, remove_file};
 
 use calimero_store::key::{ContextIdentity as ContextIdentityKey, ContextState as ContextStateKey};
 use calimero_store::layer::{ReadLayer, WriteLayer};
