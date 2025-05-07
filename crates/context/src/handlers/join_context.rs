@@ -201,7 +201,7 @@ async fn internal_sync_context_config(
             id
         };
 
-        if !is_application_installed(&datastore, &node_client, &application_id)? {
+        if !node_client.has_application(&application_id)? {
             let source: Url = application.source.into();
 
             let metadata = application.metadata.to_vec();
@@ -259,43 +259,6 @@ async fn internal_sync_context_config(
             Ok(context)
         },
     )
-}
-
-pub async fn add_blob<S: AsyncRead>(
-    node_client: &NodeClient,
-    stream: S,
-    expected_size: Option<u64>,
-    expected_hash: Option<Hash>,
-) -> eyre::Result<(BlobId, u64)> {
-    let (blob_id, size) = node_client
-        .add_blob(stream, expected_size, expected_hash.as_ref())
-        .await?;
-
-    if matches!(expected_size, Some(expected_size) if size != expected_size) {
-        eyre::bail!("fatal: blob size mismatch");
-    }
-
-    Ok((blob_id, size))
-}
-
-pub fn is_application_installed(
-    datastore: &Store,
-    node_client: &NodeClient,
-    application_id: &ApplicationId,
-) -> eyre::Result<bool> {
-    let handle = datastore.handle();
-
-    if let Some(application) = handle.get(&key::ApplicationMeta::new(*application_id))? {
-        if has_blob_available(node_client, &application.blob.blob_id())? {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
-pub fn has_blob_available(node_client: &NodeClient, blob_id: &BlobId) -> eyre::Result<bool> {
-    node_client.has_blob(blob_id)
 }
 
 fn add_context(
