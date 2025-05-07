@@ -61,7 +61,7 @@ async fn delete_context(
     handle.delete(&key::ContextConfig::new(context_id))?;
 
     delete_context_scoped::<key::ContextIdentity, 32>(
-        self.datastore.clone(),
+        datastore.clone(),
         &context_id,
         [0; 32],
         None,

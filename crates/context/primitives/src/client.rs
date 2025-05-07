@@ -1,11 +1,16 @@
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{Context, ContextId};
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_store::key::{
+    ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
+    ContextMeta as ContextMetaKey,
+};
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
-use futures_util::{stream, Stream};
+use futures_util::Stream;
+use tokio::sync::oneshot;
 
 use crate::messages::create_context::{CreateContextRequest, CreateContextResponse};
 use crate::messages::delete_context::{DeleteContextRequest, DeleteContextResponse};
@@ -51,20 +56,107 @@ impl ContextClient {
         Ok(Some(context))
     }
 
-    pub async fn get_contexts(&self) -> impl Stream<Item = eyre::Result<ContextId>> {
-        stream::empty()
+    pub async fn get_contexts(
+        &self,
+        start: Option<ContextId>,
+    ) -> impl Stream<Item = eyre::Result<ContextId>> {
+        let datastore = self.datastore.handle();
+
+        try_stream! {
+            let mut iter = datastore.iter::<ContextMetaKey>()?;
+
+            let start = start.and_then(|s| iter.seek(ContextMetaKey::new(s)).transpose());
+
+            for key in start.into_iter().chain(iter.keys()) {
+                yield key?.context_id();
+            }
+        }
     }
 
-    pub async fn delete_context(
+    pub async fn delete_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
+        let mut handle = self.datastore.handle();
+
+        let key = ContextMetaKey::new(*context_id);
+        if !handle.has(&key)? {
+            return Ok(false);
+        }
+
+        handle.delete(&key)?;
+
+        handle.delete(&ContextConfigKey::new(*context_id))?;
+
+        let identity_keys = {
+            let mut iter = handle.iter::<ContextIdentityKey>()?;
+            iter.keys()
+                .filter_map(Result::ok)
+                .filter(|k| k.context_id() == *context_id)
+                .collect::<Vec<_>>()
+        };
+
+        for key in identity_keys {
+            handle.delete(&key)?;
+        }
+
+        Ok(true)
+    }
+
+    pub async fn context_members(
         &self,
         context_id: &ContextId,
-    ) -> eyre::Result<DeleteContextResponse> {
+        only_owned: Option<bool>,
+    ) -> impl Stream<Item = eyre::Result<PublicKey>> {
+        let datastore = self.datastore.handle();
+        let context_id = *context_id;
+        let only_owned = only_owned.unwrap_or(false);
+
+        try_stream! {
+            let mut iter = datastore.iter::<ContextIdentityKey>()?;
+
+            let first = iter
+                .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
+                .transpose()
+                .map(|k| (k, iter.read()));
+
+            for (k, v) in first.into_iter().chain(iter.entries()) {
+                let (k, v) = (k?, v?);
+
+                if k.context_id() != context_id {
+                    break;
+                }
+
+                if !only_owned || v.private_key.is_some() {
+                    yield k.public_key();
+                }
+            }
+        }
+    }
+
+    pub async fn has_member(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
+
+        let key = ContextIdentityKey::new(*context_id, *public_key);
+
+        Ok(handle.has(&key)?)
+    }
+
+    pub async fn update_application(
+        &self,
+        context_id: &ContextId,
+        application_id: &ApplicationId,
+        identity: &PublicKey,
+    ) -> eyre::Result<()> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
-            .send(ContextMessage::DeleteContext {
-                request: DeleteContextRequest {
+            .send(ContextMessage::UpdateApplication {
+                request: UpdateApplicationRequest {
                     context_id: *context_id,
+                    application_id: *application_id,
+                    public_key: *identity,
                 },
                 outcome: sender,
             })
@@ -76,30 +168,88 @@ impl ContextClient {
             .expect("Context manager not to drop response channel")
     }
 
-    pub async fn context_members(
+    pub async fn invite_member(
         &self,
         context_id: &ContextId,
-        only_owned: Option<bool>,
-    ) -> impl Stream<Item = eyre::Result<PublicKey>> {
-        stream::empty()
+        inviter_id: &PublicKey,
+        invitee_id: &PublicKey,
+    ) -> eyre::Result<Option<ContextInvitationPayload>> {
+        let Some(external_config) = self.context_config(context_id)? else {
+            return Ok(None);
+        };
+
+        let external_client = self.external_client(context_id, &external_config)?;
+
+        external_client
+            .config()
+            .add_members(inviter_id, &[*invitee_id])
+            .await?;
+
+        let invitation_payload = ContextInvitationPayload::new(
+            *context_id,
+            *invitee_id,
+            external_config.protocol.into(),
+            external_config.network_id.into(),
+            external_config.contract_id.into(),
+        )?;
+
+        Ok(Some(invitation_payload))
     }
 
-    pub async fn has_member(
+    pub async fn create_context(
         &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-        is_present: bool,
-    ) -> eyre::Result<bool> {
-        todo!()
-    }
-
-    pub async fn update_application_id(
-        &self,
-        context_id: &ContextId,
+        protocol: String,
         application_id: &ApplicationId,
-        identity: &PublicKey,
-    ) -> eyre::Result<()> {
-        todo!()
+        identity_secret: Option<PrivateKey>,
+        init_params: Vec<u8>,
+        seed: Option<[u8; 32]>,
+    ) -> eyre::Result<CreateContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::CreateContext {
+                request: CreateContextRequest {
+                    protocol,
+                    seed,
+                    application_id: *application_id,
+                    identity_secret,
+                    init_params,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Context manager mailbox not to be dropped");
+
+        receiver
+            .await
+            .expect("Context manager not to drop response channel")
+    }
+
+    pub async fn execute(
+        &self,
+        context: &ContextId,
+        method: String,
+        payload: Vec<u8>,
+        executor: &PublicKey,
+    ) -> Result<ExecuteResponse, ExecuteError> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::Execute {
+                request: ExecuteRequest {
+                    context: *context,
+                    method,
+                    payload,
+                    executor: *executor,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Context manager mailbox not to be dropped");
+
+        receiver
+            .await
+            .expect("Context manager not to drop response channel")
     }
 
     pub async fn join_context(
