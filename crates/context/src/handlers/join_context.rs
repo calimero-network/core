@@ -215,12 +215,11 @@ async fn internal_sync_context_config(
                         .install_application_from_url(source, metadata, None)
                         .await?
                 }
-                _ => node_client
-                    .install_application_from_path(
-                        source.path().into(),
-                        metadata,
-                    )
-                    .await?,
+                _ => {
+                    node_client
+                        .install_application_from_path(source.path().into(), metadata)
+                        .await?
+                }
             };
 
             if application_id != derived_application_id {
