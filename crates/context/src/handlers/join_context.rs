@@ -111,7 +111,7 @@ async fn join_context(
     add_context(&datastore, &context, identity_secret, config)?;
 
     // Subscribe to network updates for this context
-    subscribe(&node_client, &context_id).await?;
+    node_client.subscribe(&context_id).await?;
 
     info!(%context_id, "Joined context with pending catchup");
 
@@ -296,14 +296,6 @@ pub fn is_application_installed(
 
 pub fn has_blob_available(node_client: &NodeClient, blob_id: &BlobId) -> eyre::Result<bool> {
     node_client.has_blob(blob_id)
-}
-
-async fn subscribe(network_client: &NodeClient, context_id: &ContextId) -> eyre::Result<()> {
-    network_client.subscribe(context_id).await?;
-
-    info!(%context_id, "Subscribed to context");
-
-    Ok(())
 }
 
 fn add_context(
