@@ -172,9 +172,13 @@ impl ContextIdentityCommand {
 fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) -> EyreResult<()> {
     let context_id = if let Some(ctx) = context {
         // User specified a context - resolve it
-        node.ctx_manager
-            .resolve_alias(ctx, None)?
-            .ok_or_eyre("unable to resolve context")?
+        match node.ctx_manager.resolve_alias(ctx, None)? {
+            Some(id) => id,
+            None => {
+                println!("Error: Unable to resolve context '{}'. Please verify the context ID exists or setup default context.", ctx.cyan());
+                return Ok(());
+            }
+        }
     } else {
         // No context specified fall back to default
         let default_alias: Alias<ContextId> =

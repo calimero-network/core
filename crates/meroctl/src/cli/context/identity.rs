@@ -154,10 +154,16 @@ async fn list_identities(
     )
     .await?;
 
-    let context_id = resolve_response
-        .value()
-        .cloned()
-        .ok_or_eyre("Failed to resolve context: no value found")?;
+    let context_id = match resolve_response.value().cloned() {
+        Some(id) => id,
+        None => {
+            let context_display = context
+                .as_ref()
+                .map(|alias| alias.to_string())
+                .unwrap_or_else(|| "default".to_owned());
+            eyre::bail!("Error: Unable to resolve context '{}'. Please verify the context ID exists or setup default context.", context_display)
+        }
+    };
 
     let endpoint = if owned {
         format!("admin-api/dev/contexts/{}/identities-owned", context_id)
