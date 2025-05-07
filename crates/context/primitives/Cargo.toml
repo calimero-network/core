@@ -8,8 +8,10 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+async-stream.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+rand.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }

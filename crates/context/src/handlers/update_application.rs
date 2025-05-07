@@ -78,7 +78,7 @@ pub async fn update_application_id(
         .await?;
 
     context_client
-        .update_application_id(&context_id, &application_id, &public_key)
+        .update_application(&context_id, &application_id, &public_key)
         .await?;
 
     Ok(blob_id)

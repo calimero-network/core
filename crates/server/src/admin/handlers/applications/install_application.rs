@@ -13,7 +13,7 @@ pub async fn handler(
     Json(req): Json<InstallApplicationRequest>,
 ) -> impl IntoResponse {
     match state
-        .ctx_manager
+        .node_client
         .install_application_from_url(req.url, req.metadata, req.hash)
         .await
     {

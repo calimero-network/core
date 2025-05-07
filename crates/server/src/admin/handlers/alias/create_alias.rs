@@ -22,7 +22,7 @@ where
     let scope = scope.map(|Path(scope)| scope);
 
     if let Err(err) = state
-        .ctx_manager
+        .node_client
         .create_alias(alias, scope, T::from_value(value))
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();

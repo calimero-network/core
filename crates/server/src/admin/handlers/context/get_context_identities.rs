@@ -16,7 +16,7 @@ pub async fn handler(
     req: Request,
 ) -> impl IntoResponse {
     let context = state
-        .ctx_manager
+        .ctx_client
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
@@ -39,8 +39,8 @@ pub async fn handler(
     let owned = req.uri().path().ends_with("identities-owned");
 
     let context_identities = state
-        .ctx_manager
-        .get_context_identities(context.id, owned)
+        .ctx_client
+        .context_members(&context_id, Some(owned))
         .map_err(|err| parse_api_error(err).into_response());
 
     match context_identities {
