@@ -15,7 +15,7 @@ pub async fn handler(
     }): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let result = state
-        .ctx_manager
+        .ctx_client
         .join_context(private_key, invitation_payload)
         .await
         .map_err(parse_api_error);
