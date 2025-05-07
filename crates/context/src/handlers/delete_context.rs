@@ -1,40 +1,29 @@
-use std::collections::{btree_map, BTreeMap};
-use std::mem;
-use std::sync::Arc;
-
 use actix::fut::wrap_future;
-use actix::{ActorResponse, ActorTryFutureExt, Handler, Message};
+use actix::{ActorResponse, Handler, Message};
 use calimero_context_primitives::messages::delete_context::{
     DeleteContextRequest, DeleteContextResponse,
 };
+use core::error::Error;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
-use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::layer::ReadLayer;
-use calimero_store::{key, types, Store};
-use eyre::{bail, OptionExt};
-use rand::rngs::StdRng;
-use rand::SeedableRng;
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use calimero_primitives::context::ContextId;
+use calimero_store::layer::{ReadLayer, WriteLayer};
+use calimero_store::{key, Store};
+use eyre::bail;
+use tracing::info;
 
-use super::execute::execute;
-use super::execute::storage::ContextStorage;
-use crate::{ContextManager, ContextMeta};
+use crate::ContextManager;
 
 impl Handler<DeleteContextRequest> for ContextManager {
-    type Result = <DeleteContextResponse as Message>::Result;
+    type Result = ActorResponse<Self, <DeleteContextRequest as Message>::Result>;
 
     fn handle(
         &mut self,
-        DeleteContextRequest { context_id }: DeleteContextResponse,
+        DeleteContextRequest { context_id }: DeleteContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let task = delete_context(
             self.datastore.clone(),
             self.node_client.clone(),
-            self.context_client.clone(),
             context_id,
         );
 
@@ -45,9 +34,8 @@ impl Handler<DeleteContextRequest> for ContextManager {
 async fn delete_context(
     datastore: Store,
     node_client: NodeClient,
-    context_client: ContextClient,
     context_id: ContextId,
-) -> eyre::Result<()> {
+) -> eyre::Result<DeleteContextResponse> {
     let mut handle = datastore.handle();
 
     let key = key::ContextMeta::new(context_id);
@@ -75,20 +63,20 @@ async fn delete_context(
 
 #[expect(clippy::unwrap_in_result, reason = "pre-validated")]
 fn delete_context_scoped<K, const N: usize>(
-    datastore: Store,
+    mut datastore: Store,
     context_id: &ContextId,
     offset: [u8; N],
     end: Option<[u8; N]>,
 ) -> eyre::Result<()>
 where
-    K: FromKeyParts<Error: Error + Send + Sync>,
+    K: key::FromKeyParts<Error: Error + Send + Sync>,
 {
     let expected_length = key::Key::<K::Components>::len();
 
     if context_id.len().saturating_add(N) != expected_length {
         bail!(
             "key length mismatch, expected: {}, got: {}",
-            Key::<K::Components>::len(),
+            key::Key::<K::Components>::len(),
             N
         )
     }

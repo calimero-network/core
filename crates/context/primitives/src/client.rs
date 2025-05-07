@@ -3,11 +3,8 @@ use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key::{
-    ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
-    ContextMeta as ContextMetaKey,
-};
-use calimero_store::{key, Store};
+use calimero_store::key;
+use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use futures_util::Stream;
 use tokio::sync::oneshot;
@@ -63,9 +60,9 @@ impl ContextClient {
         let datastore = self.datastore.handle();
 
         try_stream! {
-            let mut iter = datastore.iter::<ContextMetaKey>()?;
+            let mut iter = datastore.iter::<key::ContextMeta>()?;
 
-            let start = start.and_then(|s| iter.seek(ContextMetaKey::new(s)).transpose());
+            let start = start.and_then(|s| iter.seek(key::ContextMeta::new(s)).transpose());
 
             for key in start.into_iter().chain(iter.keys()) {
                 yield key?.context_id();
@@ -73,31 +70,22 @@ impl ContextClient {
         }
     }
 
-    pub async fn delete_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
-        let mut handle = self.datastore.handle();
+    pub async fn delete_context(&self, context_id: &ContextId) -> eyre::Result<DeleteContextResponse> {
+        let (sender, receiver) = oneshot::channel();
 
-        let key = ContextMetaKey::new(*context_id);
-        if !handle.has(&key)? {
-            return Ok(false);
-        }
+          self.context_manager
+              .send(ContextMessage::DeleteContext {
+                  request: DeleteContextRequest {
+                      context_id: *context_id,
+                  },
+                  outcome: sender,
+              })
+            .await
+            .expect("Context manager mailbox not to be dropped");
 
-        handle.delete(&key)?;
-
-        handle.delete(&ContextConfigKey::new(*context_id))?;
-
-        let identity_keys = {
-            let mut iter = handle.iter::<ContextIdentityKey>()?;
-            iter.keys()
-                .filter_map(Result::ok)
-                .filter(|k| k.context_id() == *context_id)
-                .collect::<Vec<_>>()
-        };
-
-        for key in identity_keys {
-            handle.delete(&key)?;
-        }
-
-        Ok(true)
+        receiver
+            .await
+            .expect("Context manager not to drop response channel")
     }
 
     pub async fn context_members(
@@ -110,10 +98,10 @@ impl ContextClient {
         let only_owned = only_owned.unwrap_or(false);
 
         try_stream! {
-            let mut iter = datastore.iter::<ContextIdentityKey>()?;
+            let mut iter = datastore.iter::<key::ContextIdentity>()?;
 
             let first = iter
-                .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
+                .seek(key::ContextIdentity::new(context_id, [0; 32].into()))
                 .transpose()
                 .map(|k| (k, iter.read()));
 
@@ -138,7 +126,7 @@ impl ContextClient {
     ) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
 
-        let key = ContextIdentityKey::new(*context_id, *public_key);
+        let key = key::ContextIdentity::new(*context_id, *public_key);
 
         Ok(handle.has(&key)?)
     }

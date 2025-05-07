@@ -1,7 +1,7 @@
 use actix::Message;
 use create_context::CreateContextRequest;
-use delete_context::{DeleteContextRequest, DeleteContextResponse};
-use join_context::{JoinContextRequest, JoinContextResponse};
+use delete_context::DeleteContextRequest;
+use join_context::JoinContextRequest;
 use tokio::sync::oneshot;
 
 pub mod create_context;
@@ -26,11 +26,11 @@ pub enum ContextMessage {
     },
     DeleteContext {
         request: DeleteContextRequest,
-        outcome: oneshot::Sender<<DeleteContextResponse as Message>::Result>,
+        outcome: oneshot::Sender<<DeleteContextRequest as Message>::Result>,
     },
     JoinContext {
         request: JoinContextRequest,
-        outcome: oneshot::Sender<<JoinContextResponse as Message>::Result>,
+        outcome: oneshot::Sender<<JoinContextRequest as Message>::Result>,
     },
     UpdateApplication {
         request: UpdateApplicationRequest,
