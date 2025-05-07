@@ -7,27 +7,14 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-borsh = { workspace = true, optional = true }
-camino.workspace = true
 eyre.workspace = true
-generic-array.workspace = true
 rocksdb.workspace = true
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-strum = { workspace = true, features = ["derive"] }
-thiserror.workspace = true
-thunderdome.workspace = true
+strum.workspace = true
 
-calimero-primitives.workspace = true
 calimero-store.workspace = true
 
 [dev-dependencies]
 tempdir.workspace = true
-
-[features]
-borsh = ["borsh/derive"]
-serde = ["dep:serde", "dep:serde_json"]
-datatypes = ["borsh", "calimero-primitives/borsh"]
 
 [lints]
 workspace = true
