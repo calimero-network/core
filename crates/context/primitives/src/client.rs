@@ -3,8 +3,7 @@ use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key;
-use calimero_store::Store;
+use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
 use futures_util::Stream;
 use tokio::sync::oneshot;
@@ -70,16 +69,19 @@ impl ContextClient {
         }
     }
 
-    pub async fn delete_context(&self, context_id: &ContextId) -> eyre::Result<DeleteContextResponse> {
+    pub async fn delete_context(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<DeleteContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
-          self.context_manager
-              .send(ContextMessage::DeleteContext {
-                  request: DeleteContextRequest {
-                      context_id: *context_id,
-                  },
-                  outcome: sender,
-              })
+        self.context_manager
+            .send(ContextMessage::DeleteContext {
+                request: DeleteContextRequest {
+                    context_id: *context_id,
+                },
+                outcome: sender,
+            })
             .await
             .expect("Context manager mailbox not to be dropped");
 

@@ -1,9 +1,10 @@
+use core::error::Error;
+
 use actix::fut::wrap_future;
 use actix::{ActorResponse, Handler, Message};
 use calimero_context_primitives::messages::delete_context::{
     DeleteContextRequest, DeleteContextResponse,
 };
-use core::error::Error;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_store::layer::{ReadLayer, WriteLayer};
@@ -21,11 +22,7 @@ impl Handler<DeleteContextRequest> for ContextManager {
         DeleteContextRequest { context_id }: DeleteContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let task = delete_context(
-            self.datastore.clone(),
-            self.node_client.clone(),
-            context_id,
-        );
+        let task = delete_context(self.datastore.clone(), self.node_client.clone(), context_id);
 
         ActorResponse::r#async(wrap_future::<_, Self>(Box::pin(task)))
     }
