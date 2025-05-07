@@ -42,5 +42,13 @@ calimero-network.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store.workspace = true
 
+serde = { version = "1.0", features = ["derive"] }
+
+serde_yaml = "0.9"
+
+serde_json = "1.0"
+
+eyre = "0.6"
+
 [lints]
 workspace = true
