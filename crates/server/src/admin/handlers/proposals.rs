@@ -4,8 +4,8 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::ProposalWithApprovals;
 use calimero_context_config::types::{ContextIdentity, ProposalId};
+use calimero_context_config::ProposalWithApprovals;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     GetContextStorageEntriesRequest, GetContextStorageEntriesResponse, GetContextValueRequest,
@@ -41,7 +41,10 @@ pub async fn get_proposals_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -71,16 +74,15 @@ pub async fn get_proposal_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    match external_client
-        .proxy()
-        .get_proposal(&proposal_id)
-        .await
-    {
+    match external_client.proxy().get_proposal(&proposal_id).await {
         Ok(Some(context_proposal)) => ApiResponse {
             payload: GetProposalResponse {
                 data: context_proposal,
@@ -102,7 +104,10 @@ pub async fn get_proxy_contract_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -129,7 +134,10 @@ pub async fn get_context_value_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -160,7 +168,10 @@ pub async fn get_context_storage_entries_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -191,16 +202,15 @@ pub async fn get_number_of_active_proposals_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    match external_client
-        .proxy()
-        .active_proposals()
-        .await
-    {
+    match external_client.proxy().active_proposals().await {
         Ok(active_proposals_number) => ApiResponse {
             payload: GetNumberOfActiveProposalsResponse {
                 data: active_proposals_number,
@@ -221,7 +231,10 @@ pub async fn get_number_of_proposal_approvals_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -237,14 +250,14 @@ pub async fn get_number_of_proposal_approvals_handler(
                 proposal_id: proposal_id.rt().expect("Invalid proposal ID"),
                 num_approvals: number_of_proposal_approvals,
             };
-            
+
             ApiResponse {
                 payload: GetNumberOfProposalApprovalsResponse {
                     data: proposal_with_approvals,
                 },
             }
             .into_response()
-        },
+        }
         Err(err) => parse_api_error(err).into_response(),
     }
 }
@@ -260,7 +273,10 @@ pub async fn get_proposal_approvers_handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = match state.ctx_client.external_client(&context_id, &external_config) {
+    let external_client = match state
+        .ctx_client
+        .external_client(&context_id, &external_config)
+    {
         Ok(client) => client,
         Err(err) => return parse_api_error(err).into_response(),
     };
@@ -280,14 +296,14 @@ pub async fn get_proposal_approvers_handler(
                     Repr::new(id)
                 })
                 .collect();
-                
+
             ApiResponse {
                 payload: GetProposalApproversResponse {
                     data: context_identities,
                 },
             }
             .into_response()
-        },
+        }
         Err(err) => parse_api_error(err).into_response(),
     }
 }

@@ -24,10 +24,7 @@ pub async fn handler(
         .map_err(parse_api_error);
 
     match result {
-        Ok(response) => ApiResponse {
-            payload: response,
-        }
-        .into_response(),
+        Ok(response) => ApiResponse { payload: response }.into_response(),
         Err(err) => err.into_response(),
     }
 }

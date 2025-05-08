@@ -7,7 +7,8 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    ExecuteError, Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody, ResponseBodyError, ResponseBodyResult, ServerResponseError
+    ExecuteError, Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse,
+    ResponseBody, ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
 use eyre::{eyre, Error as EyreError};
 use serde::{Deserialize, Serialize};
@@ -57,7 +58,10 @@ pub(crate) fn service(
         info!("JSON RPC server listening on {}/http{{{}}}", listen, path);
     }
 
-    let state = Arc::new(ServiceState { node_client, ctx_client });
+    let state = Arc::new(ServiceState {
+        node_client,
+        ctx_client,
+    });
 
     Some((path, post(handle_request).layer(Extension(state))))
 }
@@ -151,11 +155,11 @@ pub(crate) async fn call(
     args: Vec<u8>,
     executor_public_key: PublicKey,
 ) -> Result<Option<String>, CallError> {
-
-    let outcome = ctx_client.execute(&context_id, method, args, &executor_public_key)
+    let outcome = ctx_client
+        .execute(&context_id, method, args, &executor_public_key)
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;
-        
+
     let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
     for (i, log) in outcome.logs.iter().enumerate() {
         info!("execution log {i:>x$}| {}", log);
@@ -170,7 +174,7 @@ pub(crate) async fn call(
 
     Ok(Some(String::from_utf8(returns).map_err(|e| {
         CallError::InternalError(eyre!("Failed to convert call result to string: {}", e))
-    })?))  
+    })?))
 }
 
 macro_rules! mount_method {

@@ -18,7 +18,7 @@ pub async fn handler(
     req: Request,
 ) -> impl IntoResponse {
     let owned = req.uri().path().ends_with("identities-owned");
-    
+
     // Get the context info
     let context = match state.ctx_client.get_context(&context_id) {
         Ok(Some(context)) => context,
@@ -35,7 +35,7 @@ pub async fn handler(
     // Clone what we need
     let id = context.id;
     let ctx_client = state.ctx_client.clone();
-    
+
     // Process the stream in a blocking task to handle non-Send types
     let result = task::spawn_blocking(move || {
         // Create a runtime for async operations inside the blocking task
@@ -48,24 +48,24 @@ pub async fn handler(
         rt.block_on(async {
             // Get the stream
             let stream = ctx_client.context_members(&id, Some(owned)).await;
-            
+
             // Collect identities - this happens inside our isolated runtime
-            let identities: Vec<_> = stream
-                .try_collect()
-                .await
-                .unwrap_or_else(|_| Vec::new());
-                
+            let identities: Vec<_> = stream.try_collect().await.unwrap_or_else(|_| Vec::new());
+
             identities
         })
-    }).await;
-    
+    })
+    .await;
+
     match result {
         Ok(identities) => ApiResponse {
             payload: GetContextIdentitiesResponse::new(identities),
-        }.into_response(),
+        }
+        .into_response(),
         Err(_) => ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
             message: "Failed to process identities".into(),
-        }.into_response(),
+        }
+        .into_response(),
     }
 }

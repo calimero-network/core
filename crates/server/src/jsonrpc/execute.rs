@@ -21,7 +21,7 @@ async fn handle(request: ExecuteRequest, state: Arc<ServiceState>) -> EyreResult
 
     match call(
         state.ctx_client.clone(),
-        request.context_id, 
+        request.context_id,
         request.method,
         args,
         request.executor_public_key,
@@ -41,7 +41,7 @@ async fn handle(request: ExecuteRequest, state: Arc<ServiceState>) -> EyreResult
             match err {
                 CallError::CallError(err) => {
                     bail!(err)
-                },
+                }
                 CallError::FunctionCallError(message) => {
                     bail!(ExecuteError::FunctionCallError(message))
                 }
