@@ -6,7 +6,7 @@
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
 use multiaddr::Protocol;
-use tracing::error;
+use tracing::{error, info};
 
 use super::*;
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
@@ -148,26 +148,24 @@ impl EventLoop {
                 trace!("New external address candidate: {}", address);
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
-                debug!("External address confirmed: {}", address);
+                info!("External address confirmed: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         &relayed_addr.relay_peer,
                         RelayReservationStatus::Accepted,
                     );
-
-                    self.broadcast_rendezvous_registrations();
                 }
+                self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::ExternalAddrExpired { address } => {
-                debug!("External address expired: {}", address);
+                info!("External address expired: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         relayed_addr.relay_peer_id(),
                         RelayReservationStatus::Expired,
                     );
-
-                    self.broadcast_rendezvous_registrations();
                 }
+                self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
                 debug!("New external address of peer: {} {}", peer_id, address);

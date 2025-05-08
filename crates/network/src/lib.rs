@@ -5,6 +5,7 @@
 
 use std::collections::hash_map::{Entry, HashMap};
 use std::collections::HashSet;
+use std::net::Ipv4Addr;
 
 use client::NetworkClient;
 use config::NetworkConfig;
@@ -33,11 +34,12 @@ use libp2p::yamux::Config as YamuxConfig;
 use libp2p::{PeerId, StreamProtocol, SwarmBuilder};
 use libp2p_stream::{Behaviour as StreamBehaviour, IncomingStreams};
 use multiaddr::{Multiaddr, Protocol};
+use reqwest::Client;
 use stream::Stream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, Duration};
 use tokio::{select, spawn};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::discovery::Discovery;
 use crate::types::NetworkEvent;
@@ -71,11 +73,22 @@ pub async fn run(
 ) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>)> {
     let peer_id = config.identity.public().to_peer_id();
 
-    let (client, event_receiver, event_loop) = init(peer_id, config)?;
+    let (client, event_receiver, event_loop) = init(peer_id, config).await?;
 
     drop(spawn(event_loop.run()));
 
+    let mut ports = HashSet::new();
     for addr in &config.swarm.listen {
+        info!("Listen addr: {:?}", addr);
+        addr.iter().for_each(|p| {
+            let port = match p {
+                Protocol::Tcp(port) | Protocol::Udp(port) => port,
+                _ => {
+                    return;
+                }
+            };
+            _ = ports.insert(port);
+        });
         client.listen_on(addr.clone()).await?;
     }
 
@@ -84,7 +97,7 @@ pub async fn run(
     Ok((client, event_receiver))
 }
 
-fn init(
+async fn init(
     peer_id: PeerId,
     config: &NetworkConfig,
 ) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>, EventLoop)> {
@@ -188,8 +201,31 @@ fn init(
         &config.discovery.autonat,
     );
 
+    let mut ports = HashSet::new();
+    for addr in &config.swarm.listen {
+        addr.iter().for_each(|p| {
+            let port = match p {
+                Protocol::Tcp(port) => port,
+                Protocol::Udp(port) => port,
+                _ => {
+                    return;
+                }
+            };
+            _ = ports.insert(port);
+        });
+    }
+    let advertise_address = if config.discovery.advertise_address {
+        Some(AdvertiseAddress {
+            ip: get_public_ip().await?,
+            ports,
+        })
+    } else {
+        None
+    };
+
     let event_loop = EventLoop::new(
         swarm,
+        advertise_address,
         incoming_streams,
         command_receiver,
         event_sender,
@@ -199,8 +235,22 @@ fn init(
     Ok((client, event_receiver, event_loop))
 }
 
+async fn get_public_ip() -> EyreResult<Ipv4Addr> {
+    let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
+    let ip_addr = client
+        .get("https://api.ipify.org")
+        .send()
+        .await?
+        .text()
+        .await?
+        .parse()?;
+
+    return Ok(ip_addr);
+}
+
 pub(crate) struct EventLoop {
     swarm: Swarm<Behaviour>,
+    advertise_address: Option<AdvertiseAddress>,
     incoming_streams: IncomingStreams,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<NetworkEvent>,
@@ -211,6 +261,11 @@ pub(crate) struct EventLoop {
     pending_get_providers: HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>,
 }
 
+pub(crate) struct AdvertiseAddress {
+    ip: Ipv4Addr,
+    ports: HashSet<u16>,
+}
+
 #[allow(
     clippy::multiple_inherent_impl,
     reason = "Currently necessary due to code structure"
@@ -218,6 +273,7 @@ pub(crate) struct EventLoop {
 impl EventLoop {
     fn new(
         swarm: Swarm<Behaviour>,
+        advertise_public_ip: Option<AdvertiseAddress>,
         incoming_streams: IncomingStreams,
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<NetworkEvent>,
@@ -225,6 +281,7 @@ impl EventLoop {
     ) -> Self {
         Self {
             swarm,
+            advertise_address: advertise_public_ip,
             incoming_streams,
             command_receiver,
             event_sender,
