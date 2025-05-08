@@ -1,11 +1,11 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
-use eyre::Result as EyreResult;
+use eyre::{eyre, Result as EyreResult};
 use reqwest::Client;
 
-use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::cli::{ConnectionInfo, Environment};
+use crate::common::{do_request, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -31,24 +31,24 @@ impl Report for GetApplicationResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            environment.args.node_name.as_deref().unwrap_or_default(),
-        )?;
+        let (url, keypair) = match &environment.connection {
+            Some(ConnectionInfo::Local { config, multiaddr }) => (
+                multiaddr_to_url(
+                    multiaddr,
+                    &format!("admin-api/dev/applications/{}", self.app_id),
+                )?,
+                Some(&config.identity),
+            ),
+            Some(ConnectionInfo::Remote { api }) => {
+                let mut url = api.clone();
+                url.set_path(&format!("admin-api/dev/applications/{}", self.app_id));
+                (url, None)
+            }
+            None => return Err(eyre!("No connection configured")),
+        };
 
-        let url = multiaddr_to_url(
-            fetch_multiaddr(&config)?,
-            &format!("admin-api/dev/applications/{}", self.app_id),
-        )?;
-
-        let response: GetApplicationResponse = do_request(
-            &Client::new(),
-            url,
-            None::<()>,
-            Some(&config.identity),
-            RequestType::Get,
-        )
-        .await?;
+        let response: GetApplicationResponse =
+            do_request(&Client::new(), url, None::<()>, keypair, RequestType::Get).await?;
 
         environment.output.write(&response);
 

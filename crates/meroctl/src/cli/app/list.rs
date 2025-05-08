@@ -1,11 +1,11 @@
 use calimero_server_primitives::admin::ListApplicationsResponse;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::Result as EyreResult;
+use eyre::{eyre, Result as EyreResult};
 use reqwest::Client;
 
-use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::cli::{ConnectionInfo, Environment};
+use crate::common::{do_request, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -50,19 +50,21 @@ impl Report for ListApplicationsResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            environment.args.node_name.as_deref().unwrap_or_default(),
-        )?;
+        let (url, keypair) = match &environment.connection {
+            Some(ConnectionInfo::Local { config, multiaddr }) => (
+                multiaddr_to_url(multiaddr, "admin-api/dev/applications")?,
+                Some(&config.identity),
+            ),
+            Some(ConnectionInfo::Remote { api }) => {
+                let mut url = api.clone();
+                url.set_path("admin-api/dev/applications");
+                (url, None)
+            }
+            None => return Err(eyre!("No connection configured")),
+        };
 
-        let response: ListApplicationsResponse = do_request(
-            &Client::new(),
-            multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/applications")?,
-            None::<()>,
-            Some(&config.identity),
-            RequestType::Get,
-        )
-        .await?;
+        let response: ListApplicationsResponse =
+            do_request(&Client::new(), url, None::<()>, keypair, RequestType::Get).await?;
 
         environment.output.write(&response);
 
