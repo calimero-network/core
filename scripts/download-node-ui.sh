@@ -2,7 +2,7 @@
 
 URL="https://github.com/calimero-network/admin-dashboard/archive/refs/heads/master.zip"
 
-OUTPUT_PATH="node-ui/build"
+OUTPUT_PATH="../../node-ui/build"
 
 TEMP_DIR="temp_admin_dashboard"
 
