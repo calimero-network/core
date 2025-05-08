@@ -6,7 +6,7 @@ use serde::Serialize;
 pub enum Format {
     Json,
     #[default]
-    PlainText,
+    Human,
 }
 
 #[derive(Debug, Default)]
@@ -31,7 +31,7 @@ impl Output {
                 Ok(json) => println!("{json}"),
                 Err(err) => eprintln!("Failed to serialize to JSON: {err}"),
             },
-            Format::PlainText => value.report(),
+            Format::Human => value.report(),
         }
     }
 }
