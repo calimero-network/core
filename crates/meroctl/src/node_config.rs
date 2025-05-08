@@ -1,22 +1,26 @@
 use std::collections::BTreeMap;
 
 use camino::Utf8PathBuf;
+use eyre::eyre;
+use eyre::Result;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeConfig {
-    pub aliases: BTreeMap<String, NodeConnection>,
+    #[serde(rename = "nodes")]
+    pub nodes: BTreeMap<String, NodeConnection>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum NodeConnection {
     Local { path: Utf8PathBuf },
-    Remote { api: Url },
+    Remote { url: Url },
 }
 
 impl NodeConfig {
-    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
         if !path.exists() {
             return Ok(Self::default());
@@ -26,35 +30,29 @@ impl NodeConfig {
         Ok(config)
     }
 
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
-        let contents = toml::to_string(self)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let contents = toml::to_string_pretty(self)?;
         std::fs::write(path, contents)?;
         Ok(())
     }
 
-    fn config_path() -> Result<Utf8PathBuf, Box<dyn std::error::Error>> {
-        let mut path = dirs::config_dir().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Could not find config directory",
-            )
-        })?;
-        path.push("meroctl");
-        path.push("nodes.toml");
-        Ok(Utf8PathBuf::from_path_buf(path).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Failed to convert path to UTF-8",
-            )
-        })?)
+    fn config_path() -> Result<Utf8PathBuf> {
+        let path = dirs::config_dir()
+            .ok_or_else(|| eyre!("Could not find config directory"))?
+            .join("meroctl/nodes.toml");
+        Utf8PathBuf::from_path_buf(path)
+            .map_err(|_| eyre!("Failed to convert path to UTF-8"))
     }
 }
 
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            aliases: BTreeMap::new(),
+            nodes: BTreeMap::new(),
         }
     }
 }

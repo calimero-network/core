@@ -67,17 +67,46 @@ pub enum SubCommands {
     Bootstrap(BootstrapCommand),
     Peers(PeersCommand),
     #[command(subcommand)]
-    Connect(ConnectCommand),
+    Node(NodeCommand),
 }
 
 #[derive(Debug, Parser)]
-pub enum ConnectCommand {
-    #[command(name = "local")]
-    Local(LocalNodeCommand),
-
-    #[command(name = "remote")]
-    Remote(RemoteNodeCommand),
+pub struct AddNodeCommand {
+    /// Name of the node
+    pub name: String,
+    
+    /// Path to local node
+    #[arg(long, conflicts_with = "url")]
+    pub path: Option<Utf8PathBuf>,
+    
+    /// URL of remote node
+    #[arg(long, conflicts_with = "path")]
+    pub url: Option<Url>,
 }
+
+#[derive(Debug, Parser)]
+pub struct RemoveNodeCommand {
+    /// Name of the node to remove
+    pub name: String,
+}
+
+#[derive(Debug, Parser)]
+pub enum NodeCommand {
+    /// Add or connect to a node
+    #[command(name = "add")]
+    Add(AddNodeCommand),
+    
+    /// Remove a node connection
+    #[command(name = "rm")]
+    Remove(RemoveNodeCommand),
+    
+    /// List all configured nodes
+    #[command(name = "ls")]
+    List,
+}
+
+
+
 
 #[derive(Debug, Parser)]
 pub struct LocalNodeCommand {
@@ -173,14 +202,14 @@ impl RootCommand {
             (None, None, Some(node_alias)) => {
                 // Alias-based connection
                 let node_config = NodeConfig::load().unwrap();
-                match node_config.aliases.get(node_alias) {
+                match node_config.nodes.get(node_alias) {
                     Some(NodeConnection::Local { path }) => {
                         let config = load_config(path, node_alias)?;
                         let multiaddr = fetch_multiaddr(&config).unwrap().clone();
                         ConnectionInfo::Local { config, multiaddr }
                     }
-                    Some(NodeConnection::Remote { api }) => {
-                        ConnectionInfo::Remote { api: api.clone() }
+                    Some(NodeConnection::Remote { url }) => {
+                        ConnectionInfo::Remote { api: url.clone() }
                     }
                     None => return Err(CliError::Other(eyre!("Node alias not found"))),
                 }
@@ -197,7 +226,7 @@ impl RootCommand {
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Bootstrap(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
-            SubCommands::Connect(connect) => connect.run().await,
+            SubCommands::Node(node) => node.run().await,
         };
 
         if let Err(err) = result {
@@ -271,23 +300,43 @@ pub enum ConnectionInfo {
     },
 }
 
-impl ConnectCommand {
+impl NodeCommand {
     pub async fn run(self) -> eyre::Result<()> {
-        let mut config =
-            NodeConfig::load().map_err(|e| eyre!("Failed to load node config: {}", e))?;
+        let mut config = NodeConfig::load()?;
 
-        drop(match self {
-            ConnectCommand::Local(LocalNodeCommand { alias, path }) => {
-                config.aliases.insert(alias, NodeConnection::Local { path })
+        match self {
+            NodeCommand::Add(cmd) => {
+                let connection = match (cmd.path, cmd.url) {
+                    (Some(path), None) => NodeConnection::Local { path },
+                    (None, Some(url)) => NodeConnection::Remote { url },
+                    _ => return Err(eyre!("Either --path or --url must be specified")),
+                };
+                drop(config.nodes.insert(cmd.name, connection));
             }
-            ConnectCommand::Remote(RemoteNodeCommand { alias, api }) => {
-                config.aliases.insert(alias, NodeConnection::Remote { api })
+            NodeCommand::Remove(cmd) => {
+                drop(config.nodes.remove(&cmd.name));
             }
-        });
+            NodeCommand::List => {
+                let mut table = Table::new();
+                let _ = table.set_header(vec!["Name", "Type", "Location"]);
+                
+                for (name, conn) in &config.nodes {
+                    match conn {
+                        NodeConnection::Local { path } => {
+                            let _ = table.add_row(vec![name, "Local", path.as_str()]);
+                        }
+                        NodeConnection::Remote { url } => {
+                            let _ = table.add_row(vec![name, "Remote", url.as_str()]);
+                        }
+                    }
+                }
+                println!("{table}");
+                return Ok(());
+            }
+        }
 
-        config
-            .save()
-            .map_err(|e| eyre!("Failed to save node config: {}", e))?;
+        config.save()?;
         Ok(())
     }
 }
+
