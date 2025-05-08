@@ -14,6 +14,7 @@ pub mod state;
 
 #[derive(Debug)]
 pub struct Discovery {
+    pub(crate) advertise_address: bool,
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: RendezvousConfig,
     pub(crate) relay_config: RelayConfig,
@@ -22,11 +23,13 @@ pub struct Discovery {
 
 impl Discovery {
     pub(crate) fn new(
+        advertise_address: bool,
         rendezvous_config: &RendezvousConfig,
         relay_config: &RelayConfig,
         autonat_config: &AutonatConfig,
     ) -> Self {
         Self {
+            advertise_address,
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
             relay_config: relay_config.clone(),
@@ -282,27 +285,28 @@ impl EventLoop {
         Ok(())
     }
 
-    // Add a peer to the list of servers that may be used for determining our NAT status.
-    // These peers are used for dial-request even if they are currently not connected,
-    // in which case a connection will be established before sending the dial-request.
-    pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
-        let peer_info = self
-            .discovery
-            .state
-            .get_peer_info(autonat_peer)
-            .wrap_err("Failed to get peer info")?;
+    // TODO: Revisit AutoNAT protocol integration
+    // // Add a peer to the list of servers that may be used for determining our NAT status.
+    // // These peers are used for dial-request even if they are currently not connected,
+    // // in which case a connection will be established before sending the dial-request.
+    // pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
+    //     let peer_info = self
+    //         .discovery
+    //         .state
+    //         .get_peer_info(autonat_peer)
+    //         .wrap_err("Failed to get peer info")?;
 
-        debug!(
-            %autonat_peer,
-            ?peer_info,
-            "Adding peer to the list of autonat servers"
-        );
+    //     debug!(
+    //         %autonat_peer,
+    //         ?peer_info,
+    //         "Adding peer to the list of autonat servers"
+    //     );
 
-        self.swarm
-            .behaviour_mut()
-            .autonat
-            .add_server(*autonat_peer, None);
+    //     self.swarm
+    //         .behaviour_mut()
+    //         .autonat
+    //         .add_server(*autonat_peer, None);
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
