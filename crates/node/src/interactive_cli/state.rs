@@ -1,12 +1,13 @@
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
+use calimero_store::Store;
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
 use owo_colors::OwoColorize;
 
-use crate::Node;
 
 /// View the raw state of contexts
 #[derive(Copy, Clone, Debug, Parser)]
@@ -16,16 +17,16 @@ pub struct StateCommand {
 }
 
 impl StateCommand {
-    pub fn run(self, node: &Node) -> EyreResult<()> {
+    pub fn run(self, node_client: &NodeClient, datastore: Store) -> EyreResult<()> {
         let ind = ">>".blue();
 
         let context_id = self
             .context
-            .map(|context| node.ctx_manager.resolve_alias(context, None))
+            .map(|context| node_client.resolve_alias(context, None))
             .transpose()?
             .ok_or_eyre("unable to resolve")?;
 
-        let handle = node.store.handle();
+        let handle = datastore.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 
         println!(
