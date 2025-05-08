@@ -5996,6 +5996,7 @@ version = "0.6.0"
 dependencies = [
  "bs58 0.5.1",
  "calimero-config",
+ "calimero-context-config",
  "calimero-primitives",
  "calimero-server-primitives",
  "camino",

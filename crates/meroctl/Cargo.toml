@@ -31,6 +31,7 @@ tokio-tungstenite.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 calimero-config.workspace = true
+calimero-context-config = { workspace = true, features = ["client"] }
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 

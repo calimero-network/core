@@ -37,7 +37,8 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
-    get_context_storage, get_contexts, invite_to_context, join_context, update_context_application,
+    get_context_storage, get_contexts, grant_permission, invite_to_context, join_context,
+    revoke_permission, update_context_application,
 };
 use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::identity::generate_context_identity;
@@ -106,6 +107,14 @@ pub(crate) fn setup(
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application::handler))
+        .route(
+            "/contexts/grant-permission",
+            post(grant_permission::handler),
+        )
+        .route(
+            "/contexts/revoke-permission",
+            post(revoke_permission::handler),
+        )
         .route(
             "/uninstall-application",
             post(uninstall_application::handler),
