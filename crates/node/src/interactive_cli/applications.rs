@@ -61,11 +61,24 @@ impl ApplicationCommand {
                         metadata,
                     } => {
                         println!("{ind} Downloading application..");
-                        node_client.install_application_from_url(url, metadata.map(|x| x.as_bytes().to_owned()).unwrap_or_default(), hash.as_ref())
+                        node_client
+                            .install_application_from_url(
+                                url,
+                                metadata
+                                    .map(|x| x.as_bytes().to_owned())
+                                    .unwrap_or_default(),
+                                hash.as_ref(),
+                            )
                             .await?
                     }
                     Resource::File { path, metadata } => {
-                        if let Ok(application_id) = node_client.install_application_from_path(path, metadata.map(|x| x.as_bytes().to_owned()).unwrap_or_default())
+                        if let Ok(application_id) = node_client
+                            .install_application_from_path(
+                                path,
+                                metadata
+                                    .map(|x| x.as_bytes().to_owned())
+                                    .unwrap_or_default(),
+                            )
                             .await
                         {
                             application_id

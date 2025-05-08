@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
@@ -5,9 +7,8 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use clap::{Parser, Subcommand};
 use eyre::{OptionExt, Result as EyreResult};
-use owo_colors::OwoColorize;
 use futures_util::TryStreamExt;
-use std::collections::HashSet;
+use owo_colors::OwoColorize;
 
 /// Manage identities
 #[derive(Debug, Parser)]
@@ -95,7 +96,12 @@ impl IdentityCommand {
     }
 }
 
-async fn list_identities(node_client: &NodeClient, ctx_client: &ContextClient, context: Alias<ContextId>, ind: &str) -> EyreResult<()> {
+async fn list_identities(
+    node_client: &NodeClient,
+    ctx_client: &ContextClient,
+    context: Alias<ContextId>,
+    ind: &str,
+) -> EyreResult<()> {
     let context_id = node_client
         .resolve_alias(context, None)?
         .ok_or_eyre("unable to resolve")?;
@@ -105,28 +111,24 @@ async fn list_identities(node_client: &NodeClient, ctx_client: &ContextClient, c
     // Get the stream of identities
     let stream = ctx_client.context_members(&context_id, None).await;
     let stream_owned = ctx_client.context_members(&context_id, Some(true)).await;
-    
+
     // Pin the streams
     futures_util::pin_mut!(stream);
     futures_util::pin_mut!(stream_owned);
-    
+
     // Collect all identities
     let identities = stream.try_collect::<Vec<_>>().await?;
-    
+
     // Collect all owned identities to check which ones are owned
     let owned_identities = stream_owned.try_collect::<Vec<_>>().await?;
-    
+
     // Display each identity
     for identity in identities {
         // Check if this identity is in the owned identities list
         let is_owned = owned_identities.iter().any(|owned| *owned == identity);
-        
-        let entry = format!(
-            "{:44} | {}",
-            identity,
-            if is_owned { "Yes" } else { "No" },
-        );
-        
+
+        let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" },);
+
         for line in entry.lines() {
             println!("{ind} {}", line.cyan());
         }
@@ -141,7 +143,11 @@ fn create_new_identity(ctx_client: &ContextClient, ind: &str) {
     println!("{ind} Public Key: {}", identity.public_key().cyan());
 }
 
-fn handle_alias_command(node_client: &NodeClient, command: AliasSubcommands, ind: &str) -> EyreResult<()> {
+fn handle_alias_command(
+    node_client: &NodeClient,
+    command: AliasSubcommands,
+    ind: &str,
+) -> EyreResult<()> {
     match command {
         AliasSubcommands::Add {
             name,
@@ -170,8 +176,7 @@ fn handle_alias_command(node_client: &NodeClient, command: AliasSubcommands, ind
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve")?;
 
-            let Some(identity_id) = node_client.lookup_alias(identity, Some(context_id))?
-            else {
+            let Some(identity_id) = node_client.lookup_alias(identity, Some(context_id))? else {
                 println!("{ind} Alias '{}' not found", identity.cyan());
 
                 return Ok(());
@@ -196,9 +201,7 @@ fn handle_alias_command(node_client: &NodeClient, command: AliasSubcommands, ind
                 .transpose()?
                 .flatten();
 
-            for (alias, identity, scope) in
-                node_client.list_aliases::<PublicKey>(context_id)?
-            {
+            for (alias, identity, scope) in node_client.list_aliases::<PublicKey>(context_id)? {
                 let context = scope.as_ref().map_or("---", |s| s.as_str());
 
                 println!(

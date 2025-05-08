@@ -3,7 +3,6 @@ use clap::{Parser, Subcommand};
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 
-
 #[derive(Debug, Parser)]
 #[non_exhaustive]
 pub struct StoreCommand {

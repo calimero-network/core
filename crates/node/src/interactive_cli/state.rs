@@ -8,7 +8,6 @@ use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
 use owo_colors::OwoColorize;
 
-
 /// View the raw state of contexts
 #[derive(Copy, Clone, Debug, Parser)]
 pub struct StateCommand {

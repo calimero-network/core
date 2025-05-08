@@ -16,7 +16,7 @@ pub struct PeersCommand {
 impl PeersCommand {
     pub async fn run(self, node_client: &NodeClient) -> EyreResult<()> {
         let ind = ">>".blue();
-        
+
         let context_id = self
             .context
             .map(|context| node_client.resolve_alias(context, None))
@@ -27,7 +27,6 @@ impl PeersCommand {
             "{ind} Peers (General): {:#?}",
             node_client.get_peers_count(context_id).await.cyan()
         );
-
 
         if let Some(context_id) = context_id {
             let topic = TopicHash::from_raw(context_id);

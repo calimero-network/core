@@ -28,12 +28,18 @@ fn serde_value(s: &str) -> serde_json::Result<Value> {
 }
 
 impl CallCommand {
-    pub async fn run(self, node_client: &NodeClient, ctx_client: &ContextClient) -> eyre::Result<()> {
+    pub async fn run(
+        self,
+        node_client: &NodeClient,
+        ctx_client: &ContextClient,
+    ) -> eyre::Result<()> {
         let ind = ">>".blue();
-        let context_id = node_client.resolve_alias(self.context, None)?
+        let context_id = node_client
+            .resolve_alias(self.context, None)?
             .ok_or_eyre("unable to resolve")?;
 
-        let executor = node_client.resolve_alias(self.executor, Some(context_id))?
+        let executor = node_client
+            .resolve_alias(self.executor, Some(context_id))?
             .ok_or_eyre("unable to resolve")?;
 
         let Ok(Some(context)) = ctx_client.get_context(&context_id) else {
@@ -41,12 +47,13 @@ impl CallCommand {
             return Ok(());
         };
 
-        let outcome_result = ctx_client.execute(
-            &context.id,
-            self.method,
-            serde_json::to_vec(&self.args.unwrap_or(json!({})))?,
-            &executor,
-        )
+        let outcome_result = ctx_client
+            .execute(
+                &context.id,
+                self.method,
+                serde_json::to_vec(&self.args.unwrap_or(json!({})))?,
+                &executor,
+            )
             .await;
 
         match outcome_result {

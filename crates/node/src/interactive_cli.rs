@@ -38,7 +38,12 @@ pub enum SubCommand {
     State(state::StateCommand),
 }
 
-pub async fn handle_line(ctx_client: ContextClient, node_client: NodeClient, datastore: Store, line: String) -> eyre::Result<()> {
+pub async fn handle_line(
+    ctx_client: ContextClient,
+    node_client: NodeClient,
+    datastore: Store,
+    line: String,
+) -> eyre::Result<()> {
     let mut args = line.split_whitespace().peekable();
 
     if args.peek().is_none() {

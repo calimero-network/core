@@ -5,9 +5,9 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use futures_util::{pin_mut, TryStreamExt};
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
+use futures_util::{pin_mut, TryStreamExt};
 use owo_colors::OwoColorize;
 use serde_json::Value;
 
@@ -139,11 +139,11 @@ impl ContextCommand {
 
                 // Create a local handle to use within the async block that returns a stream
                 let ctx_client_ref = ctx_client;
-                
+
                 // Use a simpler approach by iterating manually through the stream
                 let mut context_ids = Vec::new();
                 pin_mut!(context_stream);
-                
+
                 // Manually iterate over the stream
                 while let Some(context_id_result) = context_stream.try_next().await? {
                     context_ids.push(context_id_result);
@@ -153,16 +153,16 @@ impl ContextCommand {
                 for context_id in context_ids {
                     if let Ok(Some(context)) = ctx_client_ref.get_context(&context_id) {
                         if let Ok(Some(config)) = ctx_client_ref.context_config(&context_id) {
-                    let entry = format!(
-                        "{c1:44} | {c2:44} | {c3:44} | {c4:8}",
+                            let entry = format!(
+                                "{c1:44} | {c2:44} | {c3:44} | {c4:8}",
                                 c1 = context.id,
                                 c2 = context.application_id,
                                 c3 = context.root_hash,
-                        c4 = config.protocol,
-                    );
+                                c4 = config.protocol,
+                            );
 
-                    for line in entry.lines() {
-                        println!("{ind} {}", line.cyan());
+                            for line in entry.lines() {
+                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
@@ -176,7 +176,7 @@ impl ContextCommand {
                     .join_context(private_key, invitation_payload)
                     .await?;
 
-                    println!(
+                println!(
                     "{ind} Joined context {} as {}, waiting for catchup to complete...",
                     response.context_id, response.member_public_key
                 );
@@ -203,19 +203,24 @@ impl ContextCommand {
                     .resolve_alias(application, None)?
                     .ok_or_eyre("unable to resolve")?;
 
-                let response = ctx_client.create_context(
-                    protocol.as_str().to_string(),
-                    &application_id,
-                    None,
-                    params
-                        .as_ref()
-                        .map(serde_json::to_vec)
-                        .transpose()?
-                        .unwrap_or_default(),
+                let response = ctx_client
+                    .create_context(
+                        protocol.as_str().to_string(),
+                        &application_id,
+                        None,
+                        params
+                            .as_ref()
+                            .map(serde_json::to_vec)
+                            .transpose()?
+                            .unwrap_or_default(),
                         context_seed.map(Into::into),
-                ).await?;
+                    )
+                    .await?;
 
-                println!("{ind} Created context {} for application {}", response.context_id, application_id);
+                println!(
+                    "{ind} Created context {} for application {}",
+                    response.context_id, application_id
+                );
             }
             Commands::Invite {
                 context,
@@ -263,27 +268,35 @@ impl ContextCommand {
                     Ok(None) => {
                         println!("{ind} Context configuration not found for {context_id}");
                         return Ok(());
-                    },
+                    }
                     Err(err) => return Err(err),
                 };
-                
-                let external_client = match ctx_client
-                    .external_client(&context_id, &external_config)
-                {
-                    Ok(client) => client,
-                    Err(err) => return Err(err),
-                };
-                
-                external_client.config().update_proxy_contract(&public_key).await?;
+
+                let external_client =
+                    match ctx_client.external_client(&context_id, &external_config) {
+                        Ok(client) => client,
+                        Err(err) => return Err(err),
+                    };
+
+                external_client
+                    .config()
+                    .update_proxy_contract(&public_key)
+                    .await?;
                 println!("{ind} Updated proxy for context {context_id}");
             }
-            Commands::Alias { command } => handle_alias_command(&node_client, command, &ind.to_string())?,
+            Commands::Alias { command } => {
+                handle_alias_command(&node_client, command, &ind.to_string())?
+            }
         }
         Ok(())
     }
 }
 
-fn handle_alias_command(node_client: &NodeClient, command: AliasCommands, ind: &str) -> EyreResult<()> {
+fn handle_alias_command(
+    node_client: &NodeClient,
+    command: AliasCommands,
+    ind: &str,
+) -> EyreResult<()> {
     match command {
         AliasCommands::Add { alias, context_id } => {
             node_client.create_alias(alias, None, context_id)?;
