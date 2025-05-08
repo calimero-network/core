@@ -73,7 +73,10 @@ pub struct UpdateCommand {
 
 impl UpdateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node_name.as_deref().unwrap_or_default(),
+        )?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
@@ -173,7 +176,7 @@ async fn install_app(
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse =
-        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
+        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
 
     environment.output.write(&response);
 
@@ -197,7 +200,7 @@ async fn update_context_application(
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
     let response: UpdateContextApplicationResponse =
-        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
+        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
 
     environment.output.write(&response);
 

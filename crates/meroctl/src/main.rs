@@ -7,6 +7,7 @@ use crate::cli::RootCommand;
 mod cli;
 mod common;
 mod defaults;
+mod node_config;
 mod output;
 
 #[tokio::main]

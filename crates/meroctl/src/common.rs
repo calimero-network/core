@@ -52,26 +52,28 @@ pub async fn do_request<I, O>(
     client: &Client,
     url: Url,
     body: Option<I>,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     req_type: RequestType,
 ) -> EyreResult<O>
 where
     I: Serialize,
     O: DeserializeOwned,
 {
-    let timestamp = Utc::now().timestamp().to_string();
-    let signature = keypair.sign(timestamp.as_bytes())?;
-
     let mut builder = match req_type {
         RequestType::Get => client.get(url),
         RequestType::Post => client.post(url).json(&body),
         RequestType::Delete => client.delete(url),
     };
 
-    builder = builder
-        .header("X-Signature", bs58::encode(signature).into_string())
-        .header("X-Timestamp", timestamp);
+    // Add authentication if keypair is provided
+    if let Some(keypair) = keypair {
+        let timestamp = Utc::now().timestamp().to_string();
+        let signature = keypair.sign(timestamp.as_bytes())?;
 
+        builder = builder
+            .header("X-Signature", bs58::encode(signature).into_string())
+            .header("X-Timestamp", timestamp);
+    }
     let response = builder.send().await?;
 
     if !response.status().is_success() {
@@ -174,7 +176,7 @@ where
     I: Serialize,
     O: DeserializeOwned + Report + Serialize,
 {
-    let response = do_request::<I, O>(client, url, request, keypair, request_type).await?;
+    let response = do_request::<I, O>(client, url, request, Some(keypair), request_type).await?;
     environment.output.write(&response);
     Ok(())
 }
@@ -267,7 +269,7 @@ where
         &Client::new(),
         multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}{scope}"))?,
         Some(body),
-        keypair,
+        Some(keypair),
         RequestType::Post,
     )
     .await?;
@@ -304,7 +306,7 @@ where
         &Client::new(),
         multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}/{scope}{alias}"))?,
         None::<()>,
-        keypair,
+        Some(keypair),
         RequestType::Post,
     )
     .await?;
@@ -332,7 +334,7 @@ where
         &Client::new(),
         multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}/{scope}{alias}"))?,
         None::<()>,
-        keypair,
+        Some(keypair),
         RequestType::Post,
     )
     .await?;

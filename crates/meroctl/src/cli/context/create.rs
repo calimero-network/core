@@ -99,7 +99,10 @@ impl Report for UpdateContextApplicationResponse {
 
 impl CreateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node_name.as_deref().unwrap_or_default(),
+        )?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
@@ -208,7 +211,7 @@ pub async fn create_context(
     );
 
     let response: CreateContextResponse =
-        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
+        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
 
     environment.output.write(&response);
 
@@ -232,7 +235,7 @@ pub async fn create_context(
             client,
             alias_url,
             Some(alias_request),
-            keypair,
+            Some(keypair),
             RequestType::Post,
         )
         .await?;
@@ -344,7 +347,7 @@ async fn update_context_application(
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
     let response: UpdateContextApplicationResponse =
-        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
+        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
 
     environment.output.write(&response);
 
@@ -363,7 +366,7 @@ async fn app_installed(
     )?;
 
     let response: GetApplicationResponse =
-        do_request(client, url, None::<()>, keypair, RequestType::Get).await?;
+        do_request(client, url, None::<()>, Some(keypair), RequestType::Get).await?;
 
     Ok(response.data.application.is_some())
 }
@@ -381,7 +384,7 @@ async fn install_app(
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse =
-        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
+        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
 
     environment.output.write(&response);
 
