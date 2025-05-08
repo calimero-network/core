@@ -10,7 +10,7 @@ pub mod iter;
 pub mod key;
 pub mod layer;
 pub mod slice;
-mod tx;
+pub mod tx;
 
 use config::StoreConfig;
 use db::Database;
