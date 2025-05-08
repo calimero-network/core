@@ -10,7 +10,6 @@ use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_node_primitives::ServerSender;
 use calimero_primitives::events::NodeEvent;
 use calimero_store::Store;
 use config::ServerConfig;
@@ -72,7 +71,6 @@ impl AdminState {
 #[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
     config: ServerConfig,
-    server_sender: ServerSender,
     ctx_client: ContextClient,
     node_client: NodeClient,
     node_events: broadcast::Sender<NodeEvent>,
@@ -126,13 +124,13 @@ pub async fn start(
     let shared_state = Arc::new(AdminState::new(
         store.clone(),
         config.identity.clone(),
-        ctx_client,
-        node_client,
+        ctx_client.clone(),
+        node_client.clone(),
     ));
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
+        if let Some((path, handler)) = jsonrpc::service(&config, node_client, ctx_client) {
             app = app
                 .route(path, handler.clone())
                 .route_layer(JwtLayer::new(store.clone()))

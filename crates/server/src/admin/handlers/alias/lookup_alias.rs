@@ -4,7 +4,6 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::alias::Alias;
-use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{LookupAliasResponse, LookupAliasResponseData};
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use reqwest::StatusCode;
@@ -19,7 +18,7 @@ pub async fn handler<T>(
     scoped_alias: Option<Path<(T::Scope, Alias<T>)>>,
 ) -> impl IntoResponse
 where
-    T: Aliasable<Scope: StoreScopeCompat> + Serialize + From<Hash>,
+    T: Aliasable<Scope: StoreScopeCompat> + Serialize + From<[u8; 32]>,
 {
     let Some((alias, scope)) = plain_alias
         .map(|Path(alias)| (alias, None))

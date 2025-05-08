@@ -1074,7 +1074,6 @@ name = "calimero-context"
 version = "0.1.0"
 dependencies = [
  "actix",
- "calimero-blobstore",
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-node-primitives",
@@ -1082,16 +1081,12 @@ dependencies = [
  "calimero-runtime",
  "calimero-store",
  "calimero-utils-actix",
- "camino",
- "either",
  "eyre",
- "futures-util",
  "ouroboros",
  "rand 0.8.5",
  "reqwest 0.12.9",
  "serde",
  "tokio 1.41.1",
- "tokio-util 0.7.12",
  "tracing",
 ]
 
@@ -1181,6 +1176,7 @@ dependencies = [
  "calimero-utils-actix",
  "eyre",
  "futures-util",
+ "rand 0.8.5",
  "serde",
  "thiserror 1.0.69",
  "tokio 1.41.1",
@@ -1445,8 +1441,8 @@ dependencies = [
  "base64 0.22.1",
  "borsh",
  "bs58 0.5.1",
- "calimero-context",
  "calimero-context-config",
+ "calimero-context-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server-primitives",
@@ -1490,7 +1486,6 @@ version = "0.1.0"
 dependencies = [
  "calimero-context-config",
  "calimero-context-primitives",
- "calimero-node-primitives",
  "calimero-primitives",
  "camino",
  "eyre",

@@ -6,8 +6,6 @@ use calimero_context_primitives::messages::join_context::{
     JoinContextRequest, JoinContextResponse,
 };
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::ApplicationId;
-use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{
     Context, ContextConfigParams, ContextId, ContextInvitationPayload,
 };
@@ -15,7 +13,6 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PrivateKey;
 use calimero_store::{key, types, Store};
 use eyre;
-use futures_util::AsyncRead;
 use reqwest::Url;
 use tracing::info;
 

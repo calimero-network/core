@@ -22,7 +22,7 @@ pub async fn handler(
 
     match result {
         Ok(result) => ApiResponse {
-            payload: JoinContextResponse::new(result),
+            payload: JoinContextResponse::new(Some((result.context_id, result.member_public_key))),
         }
         .into_response(),
         Err(err) => err.into_response(),

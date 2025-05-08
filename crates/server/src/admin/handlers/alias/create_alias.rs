@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{AliasKind, CreateAliasRequest, CreateAliasResponse};
 use calimero_store::key::{Aliasable, StoreScopeCompat};
 use reqwest::StatusCode;
@@ -17,7 +16,7 @@ pub async fn handler<T>(
     Json(CreateAliasRequest { alias, value }): Json<CreateAliasRequest<T>>,
 ) -> impl IntoResponse
 where
-    T: Aliasable<Scope: StoreScopeCompat> + AliasKind + Into<Hash>,
+    T: Aliasable<Scope: StoreScopeCompat> + AliasKind + AsRef<[u8; 32]>,
 {
     let scope = scope.map(|Path(scope)| scope);
 

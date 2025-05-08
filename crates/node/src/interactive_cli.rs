@@ -36,7 +36,7 @@ pub enum SubCommand {
     // Store(store::StoreCommand),
     State(state::StateCommand),
 }
-
+//instead of node take node client and context client
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     let mut args = line.split_whitespace().peekable();
 

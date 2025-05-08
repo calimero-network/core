@@ -10,7 +10,7 @@ use crate::AdminState;
 pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
     let applications = state
         .node_client
-        .list_installed_applications()
+        .list_applications()
         .map_err(|err| parse_api_error(err).into_response());
     match applications {
         Ok(applications) => {

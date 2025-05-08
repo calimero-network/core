@@ -35,7 +35,9 @@ pub async fn handler(
     match result {
         Ok(result) => ApiResponse {
             payload: DeleteContextResponse {
-                data: DeletedContextResponseData { is_deleted: result },
+                data: DeletedContextResponseData {
+                    is_deleted: result.deleted,
+                },
             },
         }
         .into_response(),
