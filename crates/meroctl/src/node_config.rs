@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use camino::Utf8PathBuf;
-use eyre::eyre;
-use eyre::Result;
+use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -44,8 +43,7 @@ impl NodeConfig {
         let path = dirs::config_dir()
             .ok_or_else(|| eyre!("Could not find config directory"))?
             .join("meroctl/nodes.toml");
-        Utf8PathBuf::from_path_buf(path)
-            .map_err(|_| eyre!("Failed to convert path to UTF-8"))
+        Utf8PathBuf::from_path_buf(path).map_err(|_| eyre!("Failed to convert path to UTF-8"))
     }
 }
 

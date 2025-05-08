@@ -74,11 +74,11 @@ pub enum SubCommands {
 pub struct AddNodeCommand {
     /// Name of the node
     pub name: String,
-    
+
     /// Path to local node
     #[arg(long, conflicts_with = "url")]
     pub path: Option<Utf8PathBuf>,
-    
+
     /// URL of remote node
     #[arg(long, conflicts_with = "path")]
     pub url: Option<Url>,
@@ -95,18 +95,15 @@ pub enum NodeCommand {
     /// Add or connect to a node
     #[command(name = "add")]
     Add(AddNodeCommand),
-    
+
     /// Remove a node connection
     #[command(name = "rm")]
     Remove(RemoveNodeCommand),
-    
+
     /// List all configured nodes
     #[command(name = "ls")]
     List,
 }
-
-
-
 
 #[derive(Debug, Parser)]
 pub struct LocalNodeCommand {
@@ -319,7 +316,7 @@ impl NodeCommand {
             NodeCommand::List => {
                 let mut table = Table::new();
                 let _ = table.set_header(vec!["Name", "Type", "Location"]);
-                
+
                 for (name, conn) in &config.nodes {
                     match conn {
                         NodeConnection::Local { path } => {
@@ -339,4 +336,3 @@ impl NodeCommand {
         Ok(())
     }
 }
-
