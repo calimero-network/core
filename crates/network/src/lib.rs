@@ -183,6 +183,7 @@ fn init(
     };
 
     let discovery = Discovery::new(
+        config.discovery.advertise_address,
         &config.discovery.rendezvous,
         &config.discovery.relay,
         &config.discovery.autonat,

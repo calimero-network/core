@@ -164,9 +164,10 @@ impl DiscoveryState {
         self.rendezvous_index.contains(peer_id)
     }
 
-    pub(crate) fn is_peer_autonat(&self, peer_id: &PeerId) -> bool {
-        self.autonat_index.contains(peer_id)
-    }
+    // TOOD: Revisit AutoNAT protocol integration
+    // pub(crate) fn is_peer_autonat(&self, peer_id: &PeerId) -> bool {
+    //     self.autonat_index.contains(peer_id)
+    // }
 
     #[expect(
         clippy::arithmetic_side_effects,
