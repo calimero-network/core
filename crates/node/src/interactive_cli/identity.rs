@@ -108,11 +108,11 @@ async fn list_identities(
 
     let stream = ctx_client.context_members(&context_id, None).await;
     let mut stream = Box::pin(stream);
-    
+
     while let Some(result) = stream.try_next().await? {
         let (identity, is_owned) = result;
         let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" });
-        
+
         for line in entry.lines() {
             println!("{ind} {}", line.cyan());
         }
