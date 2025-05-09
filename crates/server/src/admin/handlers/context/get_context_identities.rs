@@ -39,7 +39,10 @@ pub async fn handler(
             .unwrap();
 
         rt.block_on(async {
-            let stream = state.ctx_client.context_members(&context.id, Some(owned)).await;
+            let stream = state
+                .ctx_client
+                .context_members(&context.id, Some(owned))
+                .await;
 
             // fixme! Improve error handling for the stream collection
             let identities: Vec<_> = stream.try_collect().await.unwrap_or_else(|_| Vec::new());

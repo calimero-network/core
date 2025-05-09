@@ -286,7 +286,11 @@ pub async fn get_proposal_approvers_handler(
         .await
     {
         Ok(proposal_approvers) => {
-            match proposal_approvers.into_iter().map(|pk| pk.rt()).collect::<Result<_, _>>() {
+            match proposal_approvers
+                .into_iter()
+                .map(|pk| pk.rt())
+                .collect::<Result<_, _>>()
+            {
                 Ok(context_identities) => ApiResponse {
                     payload: GetProposalApproversResponse {
                         data: context_identities,
@@ -295,7 +299,7 @@ pub async fn get_proposal_approvers_handler(
                 .into_response(),
                 Err(err) => parse_api_error(err.into()).into_response(),
             }
-        },
+        }
         Err(err) => parse_api_error(err).into_response(),
     }
 }
