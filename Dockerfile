@@ -7,21 +7,6 @@
 # Want to help us make this template better? Share your feedback here: https://forms.gle/ybq9Krt8jtBL3iCk7
 
 ARG RUST_VERSION=1.81.0
-ARG NODE_VERSION=20
-
-################################################################################
-# Create a stage for building the node-ui application
-FROM node:${NODE_VERSION}-slim AS builder-nodejs
-WORKDIR /app
-
-# Copy node-ui directory
-COPY node-ui ./node-ui
-WORKDIR /app/node-ui
-
-# Install pnpm and build the UI
-RUN npm install -g pnpm && \
-    pnpm install --no-frozen-lockfile && \
-    pnpm run build
 
 ################################################################################
 # Create a stage for building the Rust application
@@ -49,9 +34,6 @@ COPY crates ./crates
 COPY contracts ./contracts
 COPY apps ./apps
 COPY e2e-tests ./e2e-tests
-
-# Copy the built node-ui from the nodejs stage
-COPY --from=builder-nodejs /app/node-ui ./node-ui
 
 # Build merod and meroctl together with caching and copy to persistent locations
 RUN --mount=type=cache,target=/app/target/ \
