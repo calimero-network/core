@@ -141,11 +141,11 @@ impl ContextCommand {
                     let Some(context) = ctx_client.get_context(&context_id)? else {
                         continue;
                     };
-                    
+
                     let Some(config) = ctx_client.context_config(&context_id)? else {
                         continue;
                     };
-                    
+
                     let entry = format!(
                         "{c1:44} | {c2:44} | {c3:44} | {c4:8}",
                         c1 = context.id,
