@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
@@ -110,25 +108,15 @@ async fn list_identities(
 
     // Get the stream of identities
     let stream = ctx_client.context_members(&context_id, None).await;
-    let stream_owned = ctx_client.context_members(&context_id, Some(true)).await;
-
-    // Pin the streams
+    
+    // Pin the stream
     futures_util::pin_mut!(stream);
-    futures_util::pin_mut!(stream_owned);
-
-    // Collect all identities
-    let identities = stream.try_collect::<Vec<_>>().await?;
-
-    // Collect all owned identities to check which ones are owned
-    let owned_identities = stream_owned.try_collect::<Vec<_>>().await?;
-
-    // Display each identity
-    for identity in identities {
-        // Check if this identity is in the owned identities list
-        let is_owned = owned_identities.iter().any(|owned| *owned == identity);
-
-        let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" },);
-
+    
+    // Display all identities with ownership information
+    while let Some(result) = stream.try_next().await? {
+        let (identity, is_owned) = result;
+        let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" });
+        
         for line in entry.lines() {
             println!("{ind} {}", line.cyan());
         }

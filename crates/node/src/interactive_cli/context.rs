@@ -7,7 +7,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
-use futures_util::{pin_mut, TryStreamExt};
+use futures_util::TryStreamExt;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 
@@ -134,25 +134,12 @@ impl ContextCommand {
                     c3 = "Root Hash"
                 );
 
-                // First, get a list of contexts using get_contexts and try_collect
-                let context_stream = ctx_client.get_contexts(None).await;
+                let contexts = ctx_client.get_contexts(None).await;
+                let mut contexts = Box::pin(contexts);
 
-                // Create a local handle to use within the async block that returns a stream
-                let ctx_client_ref = ctx_client;
-
-                // Use a simpler approach by iterating manually through the stream
-                let mut context_ids = Vec::new();
-                pin_mut!(context_stream);
-
-                // Manually iterate over the stream
-                while let Some(context_id_result) = context_stream.try_next().await? {
-                    context_ids.push(context_id_result);
-                }
-
-                // Process each context ID sequentially
-                for context_id in context_ids {
-                    if let Ok(Some(context)) = ctx_client_ref.get_context(&context_id) {
-                        if let Ok(Some(config)) = ctx_client_ref.context_config(&context_id) {
+                while let Some(context_id) = contexts.try_next().await? {
+                    if let Ok(Some(context)) = ctx_client.get_context(&context_id) {
+                        if let Ok(Some(config)) = ctx_client.context_config(&context_id) {
                             let entry = format!(
                                 "{c1:44} | {c2:44} | {c3:44} | {c4:8}",
                                 c1 = context.id,
@@ -203,7 +190,7 @@ impl ContextCommand {
                     .resolve_alias(application, None)?
                     .ok_or_eyre("unable to resolve")?;
 
-                let response = ctx_client
+                match ctx_client
                     .create_context(
                         protocol.as_str().to_string(),
                         &application_id,
@@ -215,12 +202,16 @@ impl ContextCommand {
                             .unwrap_or_default(),
                         context_seed.map(Into::into),
                     )
-                    .await?;
-
-                println!(
-                    "{ind} Created context {} for application {}",
-                    response.context_id, application_id
-                );
+                    .await
+                {
+                    Ok(response) => {
+                        println!("{ind} Created context {} with identity {}", 
+                            response.context_id, response.identity);
+                    }
+                    Err(err) => {
+                        println!("{ind} Unable to create context: {err:?}");
+                    }
+                }
             }
             Commands::Invite {
                 context,
@@ -263,20 +254,12 @@ impl ContextCommand {
                     .resolve_alias(identity, Some(context_id))?
                     .ok_or_eyre("unable to resolve")?;
 
-                let external_config = match ctx_client.context_config(&context_id) {
-                    Ok(Some(config)) => config,
-                    Ok(None) => {
-                        println!("{ind} Context configuration not found for {context_id}");
-                        return Ok(());
-                    }
-                    Err(err) => return Err(err),
+                let Some(external_config) = ctx_client.context_config(&context_id)? else {
+                    println!("{ind} Context configuration not found for {context_id}");
+                    return Ok(());
                 };
 
-                let external_client =
-                    match ctx_client.external_client(&context_id, &external_config) {
-                        Ok(client) => client,
-                        Err(err) => return Err(err),
-                    };
+                let external_client = ctx_client.external_client(&context_id, &external_config)?;
 
                 external_client
                     .config()

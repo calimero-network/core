@@ -98,7 +98,7 @@ impl ContextClient {
         &self,
         context_id: &ContextId,
         only_owned: Option<bool>,
-    ) -> impl Stream<Item = eyre::Result<PublicKey>> {
+    ) -> impl Stream<Item = eyre::Result<(PublicKey, bool)>> {
         let datastore = self.datastore.handle();
         let context_id = *context_id;
         let only_owned = only_owned.unwrap_or(false);
@@ -118,8 +118,9 @@ impl ContextClient {
                     break;
                 }
 
-                if !only_owned || v.private_key.is_some() {
-                    yield k.public_key();
+                let is_owned = v.private_key.is_some();
+                if !only_owned || is_owned {
+                    yield (k.public_key(), is_owned);
                 }
             }
         }

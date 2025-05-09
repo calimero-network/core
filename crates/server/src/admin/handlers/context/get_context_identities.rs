@@ -59,7 +59,7 @@ pub async fn handler(
 
     match result {
         Ok(identities) => ApiResponse {
-            payload: GetContextIdentitiesResponse::new(identities),
+            payload: GetContextIdentitiesResponse::new(identities.into_iter().map(|(id, _)| id).collect()),
         }
         .into_response(),
         Err(_) => ApiError {
