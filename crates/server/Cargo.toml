@@ -63,3 +63,9 @@ admin = ["dep:tower-sessions"]
 
 [lints]
 workspace = true
+
+[build-dependencies]
+cached-path = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+zip = "2.6.1"
