@@ -138,20 +138,24 @@ impl ContextCommand {
                 let mut contexts = Box::pin(contexts);
 
                 while let Some(context_id) = contexts.try_next().await? {
-                    if let Ok(Some(context)) = ctx_client.get_context(&context_id) {
-                        if let Ok(Some(config)) = ctx_client.context_config(&context_id) {
-                            let entry = format!(
-                                "{c1:44} | {c2:44} | {c3:44} | {c4:8}",
-                                c1 = context.id,
-                                c2 = context.application_id,
-                                c3 = context.root_hash,
-                                c4 = config.protocol,
-                            );
+                    let Some(context) = ctx_client.get_context(&context_id)? else {
+                        continue;
+                    };
+                    
+                    let Some(config) = ctx_client.context_config(&context_id)? else {
+                        continue;
+                    };
+                    
+                    let entry = format!(
+                        "{c1:44} | {c2:44} | {c3:44} | {c4:8}",
+                        c1 = context.id,
+                        c2 = context.application_id,
+                        c3 = context.root_hash,
+                        c4 = config.protocol,
+                    );
 
-                            for line in entry.lines() {
-                                println!("{ind} {}", line.cyan());
-                            }
-                        }
+                    for line in entry.lines() {
+                        println!("{ind} {}", line.cyan());
                     }
                 }
             }
