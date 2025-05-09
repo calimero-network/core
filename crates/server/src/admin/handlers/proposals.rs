@@ -178,7 +178,7 @@ pub async fn get_context_storage_entries_handler(
 
     match external_client
         .proxy()
-        .get_context_storage_entries(req.offset, req.limit)
+        .get_external_storage_entries(req.offset, req.limit)
         .await
     {
         Ok(context_storage_entries) => ApiResponse {
@@ -262,7 +262,6 @@ pub async fn get_number_of_proposal_approvals_handler(
     }
 }
 
-// return list of users who approved
 pub async fn get_proposal_approvers_handler(
     Path((context_id, proposal_id)): Path<(ContextId, Repr<ProposalId>)>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -287,23 +286,16 @@ pub async fn get_proposal_approvers_handler(
         .await
     {
         Ok(proposal_approvers) => {
-            // Convert PublicKey to ContextIdentity before creating Repr
-            let context_identities = proposal_approvers
-                .into_iter()
-                .map(|pk| {
-                    // First get the bytes from the PublicKey, then create a ContextIdentity
-                    let id: ContextIdentity = pk.rt().expect("infallible conversion");
-                    Repr::new(id)
-                })
-                .collect();
-
-            ApiResponse {
-                payload: GetProposalApproversResponse {
-                    data: context_identities,
-                },
+            match proposal_approvers.into_iter().map(|pk| pk.rt()).collect::<Result<_, _>>() {
+                Ok(context_identities) => ApiResponse {
+                    payload: GetProposalApproversResponse {
+                        data: context_identities,
+                    },
+                }
+                .into_response(),
+                Err(err) => parse_api_error(err.into()).into_response(),
             }
-            .into_response()
-        }
+        },
         Err(err) => parse_api_error(err).into_response(),
     }
 }

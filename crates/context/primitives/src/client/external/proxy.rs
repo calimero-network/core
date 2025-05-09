@@ -164,7 +164,7 @@ impl ExternalProxyClient<'_, '_> {
         Ok(approvals.num_approvals)
     }
 
-    pub async fn get_context_storage_entries(
+    pub async fn get_external_storage_entries(
         &self,
         offset: usize,
         limit: usize,

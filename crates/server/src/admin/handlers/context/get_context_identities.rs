@@ -19,7 +19,6 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let owned = req.uri().path().ends_with("identities-owned");
 
-    // Get the context info
     let context = match state.ctx_client.get_context(&context_id) {
         Ok(Some(context)) => context,
         Ok(None) => {
@@ -32,24 +31,17 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    // Clone what we need
-    let id = context.id;
-    let ctx_client = state.ctx_client.clone();
-
-    // Process the stream in a blocking task to handle non-Send types
+    // fixme! Remove the need for special accommodations with blocking task and runtime
     let result = task::spawn_blocking(move || {
-        // Create a runtime for async operations inside the blocking task
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        // Execute the async operations inside the runtime
         rt.block_on(async {
-            // Get the stream
-            let stream = ctx_client.context_members(&id, Some(owned)).await;
+            let stream = state.ctx_client.context_members(&context.id, Some(owned)).await;
 
-            // Collect identities - this happens inside our isolated runtime
+            // fixme! Improve error handling for the stream collection
             let identities: Vec<_> = stream.try_collect().await.unwrap_or_else(|_| Vec::new());
 
             identities

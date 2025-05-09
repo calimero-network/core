@@ -15,7 +15,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let state_clone = Arc::clone(&state);
 
-    // Use spawn_blocking to isolate async code with references
+    // fixme! Remove the need for special accommodations with blocking task and runtime
     let result = task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
