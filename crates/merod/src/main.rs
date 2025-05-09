@@ -24,9 +24,8 @@ async fn main() -> EyreResult<()> {
 
     let client = Client::new();
     let mut rng = rand::thread_rng();
-    let mut n: u8 = rng.gen();
-    n = n % 2;
-    if n != 1 {
+    let n: u8 = rng.gen();
+    if n != 11 {
         spawn(async move {
             if let Err(err) = check_for_update(&client.clone()).await {
                 eprintln!("Version check failed: {}", err);
