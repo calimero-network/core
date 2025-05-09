@@ -21,12 +21,12 @@ use calimero_network::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
 };
-use calimero_store_rocksdb::RocksDB;
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, ValueEnum};
 use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
