@@ -1,19 +1,22 @@
-use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
-use zip::ZipArchive;
+use std::{env, fs};
+
 use cached_path::{Cache, Options};
+use zip::ZipArchive;
 
 fn main() {
-    let src = option_env!("CALIMERO_WEB_UI_SRC")
-        .unwrap_or("https://github.com/calimero-network/admin-dashboard/archive/refs/heads/master.zip");
+    let src = option_env!("CALIMERO_WEB_UI_SRC").unwrap_or(
+        "https://github.com/calimero-network/admin-dashboard/archive/refs/heads/master.zip",
+    );
 
     let force = option_env!("CALIMERO_WEB_UI_FETCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
     let cache = Cache::builder()
-        .dir(PathBuf::from(env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into())))
+        .dir(PathBuf::from(
+            env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into()),
+        ))
         .build()
         .expect("Failed to create cache");
 
@@ -35,11 +38,10 @@ fn main() {
 
     let zip_file = fs::File::open(&archive_path).expect("Cannot open downloaded ZIP archive");
     let mut zip = ZipArchive::new(zip_file).expect("Failed to read ZIP archive");
-    zip.extract(&out_dir).expect("Failed to extract ZIP archive");
+    zip.extract(&out_dir)
+        .expect("Failed to extract ZIP archive");
 
-    let extracted_build_path = out_dir
-        .join("admin-dashboard-master")
-        .join("build");
+    let extracted_build_path = out_dir.join("admin-dashboard-master").join("build");
 
     let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let static_files_target = project_root.join("../../node-ui/build");
@@ -71,5 +73,8 @@ fn main() {
         println!("cargo:rerun-if-changed={}", src);
     }
 
-    println!("cargo:rustc-env=CALIMERO_WEB_UI_PATH={}", static_files_target.display());
+    println!(
+        "cargo:rustc-env=CALIMERO_WEB_UI_PATH={}",
+        static_files_target.display()
+    );
 }
