@@ -2,6 +2,9 @@ use std::env::var;
 
 use clap::Parser;
 use eyre::Result as EyreResult;
+use rand::Rng;
+use reqwest::Client;
+use tokio::spawn;
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{registry, EnvFilter};
@@ -19,7 +22,17 @@ async fn main() -> EyreResult<()> {
 
     let command = RootCommand::parse();
 
-    check_for_update().await;
+    let client = Client::new();
+    let mut rng = rand::thread_rng();
+    let mut n: u8 = rng.gen();
+    n = n % 2;
+    if n != 1 {
+        spawn(async move {
+            if let Err(err) = check_for_update(&client.clone()).await {
+                eprintln!("Version check failed: {}", err);
+            }
+        });
+    }
 
     command.run().await
 }

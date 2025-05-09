@@ -1,50 +1,28 @@
-use rand::Rng;
+use eyre::Result as EyreResult;
 use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub async fn check_for_update() {
-    let mut rng = rand::thread_rng();
-    let n: u8 = rng.gen();
-    if n != 11 {
-        return;
-    }
+pub async fn check_for_update(client: &Client) -> EyreResult<()> {
     let url = "https://api.github.com/repos/calimero-network/core/releases/latest";
 
-    let client = Client::new();
-    let response = match client
+    let response = client
         .get(url)
         .header("User-Agent", "meroctl-version-check")
         .send()
-        .await
-    {
-        Ok(resp) => resp,
-        Err(_) => return,
-    };
-
+        .await?;
     #[derive(Deserialize)]
     struct Release {
         tag_name: String,
     }
 
-    let release: Release = match response.json().await {
-        Ok(json) => json,
-        Err(_) => return,
-    };
-
-    let latest = match Version::parse(&release.tag_name) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
-    let current = match Version::parse(CURRENT_VERSION) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
+    let release: Release = response.json().await?;
+    let latest = Version::parse(&release.tag_name)?;
+    let current = Version::parse(CURRENT_VERSION)?;
     if latest > current {
-        println!("A new version {latest} for meroctl is available.");
+        println!("\n🔔 New version of meroctl available: v{latest} (current: v{current})");
     }
+    Ok(())
 }
