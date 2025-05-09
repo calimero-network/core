@@ -4,7 +4,8 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::ProposalId;
+use calimero_context_config::types::{ContextIdentity, ProposalId};
+use calimero_context_config::ProposalWithApprovals;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
     GetContextStorageEntriesRequest, GetContextStorageEntriesResponse, GetContextValueRequest,
@@ -34,16 +35,22 @@ pub async fn get_proposals_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<GetProposalsRequest>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     match external_client
-        .config()
+        .proxy()
         .get_proposals(req.offset, req.limit)
         .await
     {
@@ -61,25 +68,28 @@ pub async fn get_proposal_handler(
     Path((context_id, proposal_id)): Path<(ContextId, Repr<ProposalId>)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
-
-    match external_client
-        .config()
-        .get_proposal(context_id, proposal_id.rt().expect("infallible conversion"))
-        .await
+        .external_client(&context_id, &external_config)
     {
-        Ok(context_proposal) => ApiResponse {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    match external_client.proxy().get_proposal(&proposal_id).await {
+        Ok(Some(context_proposal)) => ApiResponse {
             payload: GetProposalResponse {
                 data: context_proposal,
             },
         }
         .into_response(),
+        Ok(None) => parse_api_error(eyre::eyre!("Proposal not found")).into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
 }
@@ -88,15 +98,21 @@ pub async fn get_proxy_contract_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
-    match external_client.config().get_proxy_id(context_id).await {
+    match external_client.config().get_proxy_contract().await {
         Ok(proxy_contract) => ApiResponse {
             payload: GetProxyContractResponse {
                 data: proxy_contract,
@@ -112,17 +128,23 @@ pub async fn get_context_value_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<GetContextValueRequest>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     match external_client
-        .config()
-        .get_context_value(context_id, req.key.as_bytes().to_vec())
+        .proxy()
+        .get_external_value(req.key.as_bytes().to_vec())
         .await
     {
         Ok(context_value) => ApiResponse {
@@ -140,17 +162,23 @@ pub async fn get_context_storage_entries_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<GetContextStorageEntriesRequest>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     match external_client
-        .config()
-        .get_context_storage_entries(context_id, req.offset, req.limit)
+        .proxy()
+        .get_external_storage_entries(req.offset, req.limit)
         .await
     {
         Ok(context_storage_entries) => ApiResponse {
@@ -168,19 +196,21 @@ pub async fn get_number_of_active_proposals_handler(
     Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
-
-    match external_client
-        .config()
-        .get_number_of_active_proposals(context_id)
-        .await
+        .external_client(&context_id, &external_config)
     {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
+
+    match external_client.proxy().active_proposals().await {
         Ok(active_proposals_number) => ApiResponse {
             payload: GetNumberOfActiveProposalsResponse {
                 data: active_proposals_number,
@@ -195,56 +225,81 @@ pub async fn get_number_of_proposal_approvals_handler(
     Path((context_id, proposal_id)): Path<(ContextId, Repr<ProposalId>)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     match external_client
-        .config()
-        .get_number_of_proposal_approvals(
-            context_id,
-            proposal_id.rt().expect("infallible conversion"),
-        )
+        .proxy()
+        .proposal_approvals(&proposal_id)
         .await
     {
-        Ok(number_of_proposal_approvals) => ApiResponse {
-            payload: GetNumberOfProposalApprovalsResponse {
-                data: number_of_proposal_approvals,
-            },
+        Ok(number_of_proposal_approvals) => {
+            // Create a ProposalWithApprovals struct with the count
+            let proposal_with_approvals = ProposalWithApprovals {
+                proposal_id: proposal_id.rt().expect("Invalid proposal ID"),
+                num_approvals: number_of_proposal_approvals,
+            };
+
+            ApiResponse {
+                payload: GetNumberOfProposalApprovalsResponse {
+                    data: proposal_with_approvals,
+                },
+            }
+            .into_response()
         }
-        .into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
 }
 
-// return list of users who approved
 pub async fn get_proposal_approvers_handler(
     Path((context_id, proposal_id)): Path<(ContextId, Repr<ProposalId>)>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let Some(external_config) = state.ctx_client.context_config(&context_id)? else {
-        return parse_api_error(eyre::eyre!("Context not found")).into_response();
+    let external_config = match state.ctx_client.context_config(&context_id) {
+        Ok(Some(config)) => config,
+        Ok(None) => return parse_api_error(eyre::eyre!("Context not found")).into_response(),
+        Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let external_client = state
+    let external_client = match state
         .ctx_client
-        .external_client(&context_id, &external_config)?;
+        .external_client(&context_id, &external_config)
+    {
+        Ok(client) => client,
+        Err(err) => return parse_api_error(err).into_response(),
+    };
 
     match external_client
-        .config()
-        .get_proposal_approvers(context_id, proposal_id.rt().expect("infallible conversion"))
+        .proxy()
+        .get_proposal_approvers(&proposal_id)
         .await
     {
-        Ok(proposal_approvers) => ApiResponse {
-            payload: GetProposalApproversResponse {
-                data: proposal_approvers.into_iter().map(Repr::new).collect(),
-            },
+        Ok(proposal_approvers) => {
+            match proposal_approvers
+                .into_iter()
+                .map(|pk| pk.rt())
+                .collect::<Result<_, _>>()
+            {
+                Ok(context_identities) => ApiResponse {
+                    payload: GetProposalApproversResponse {
+                        data: context_identities,
+                    },
+                }
+                .into_response(),
+                Err(err) => parse_api_error(err.into()).into_response(),
+            }
         }
-        .into_response(),
         Err(err) => parse_api_error(err).into_response(),
     }
 }

@@ -1,6 +1,6 @@
 use calimero_context_config::client::env::proxy::ContextProxy;
 use calimero_context_config::repr::{ReprBytes, ReprTransmute};
-use calimero_context_config::types::ProposalId;
+use calimero_context_config::types::{ContextStorageEntry, ProposalId};
 use calimero_context_config::{Proposal, ProposalAction};
 use calimero_primitives::identity::PublicKey;
 use eyre::OptionExt;
@@ -162,5 +162,21 @@ impl ExternalProxyClient<'_, '_> {
             .await?;
 
         Ok(approvals.num_approvals)
+    }
+
+    pub async fn get_external_storage_entries(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> eyre::Result<Vec<ContextStorageEntry>> {
+        let client = self.client.query::<ContextProxy>(
+            self.client.config.protocol.as_ref().into(),
+            self.client.config.network_id.as_ref().into(),
+            self.client.config.proxy_contract.as_ref().into(),
+        );
+
+        let entries = client.get_context_storage_entries(offset, limit).await?;
+
+        Ok(entries)
     }
 }

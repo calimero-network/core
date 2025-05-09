@@ -20,7 +20,7 @@ async fn handle(request: ExecuteRequest, state: Arc<ServiceState>) -> EyreResult
     };
 
     match call(
-        state.server_sender.clone(),
+        state.ctx_client.clone(),
         request.context_id,
         request.method,
         args,
@@ -39,7 +39,9 @@ async fn handle(request: ExecuteRequest, state: Arc<ServiceState>) -> EyreResult
             error!(%err, "Failed to execute JSON RPC method");
 
             match err {
-                CallError::CallError(err) => bail!(ExecuteError::CallError(err)),
+                CallError::CallError(err) => {
+                    bail!(err)
+                }
                 CallError::FunctionCallError(message) => {
                     bail!(ExecuteError::FunctionCallError(message))
                 }

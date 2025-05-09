@@ -2,18 +2,18 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{Extension, Json};
-use calimero_node_primitives::{CallError as PrimitiveCallError, ExecutionRequest, ServerSender};
+use calimero_context_primitives::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
-    ResponseBodyError, ResponseBodyResult, ServerResponseError,
+    ExecuteError, Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse,
+    ResponseBody, ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
 use eyre::{eyre, Error as EyreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value as from_json_value, to_value as to_json_value, Value};
 use thiserror::Error as ThisError;
-use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
 use crate::config::ServerConfig;
@@ -35,12 +35,14 @@ impl JsonRpcConfig {
 }
 
 pub(crate) struct ServiceState {
-    server_sender: ServerSender,
+    node_client: NodeClient,
+    ctx_client: ContextClient,
 }
 
 pub(crate) fn service(
     config: &ServerConfig,
-    server_sender: ServerSender,
+    node_client: NodeClient,
+    ctx_client: ContextClient,
 ) -> Option<(&'static str, MethodRouter)> {
     let _config = match &config.jsonrpc {
         Some(config) if config.enabled => config,
@@ -56,7 +58,10 @@ pub(crate) fn service(
         info!("JSON RPC server listening on {}/http{{{}}}", listen, path);
     }
 
-    let state = Arc::new(ServiceState { server_sender });
+    let state = Arc::new(ServiceState {
+        node_client,
+        ctx_client,
+    });
 
     Some((path, post(handle_request).layer(Extension(state))))
 }
@@ -136,7 +141,7 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 #[expect(clippy::enum_variant_names, reason = "Acceptable here")]
 pub(crate) enum CallError {
     #[error(transparent)]
-    CallError(PrimitiveCallError),
+    CallError(ExecuteError),
     #[error("function call error: {0}")]
     FunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
     #[error(transparent)]
@@ -144,47 +149,32 @@ pub(crate) enum CallError {
 }
 
 pub(crate) async fn call(
-    sender: ServerSender,
+    ctx_client: ContextClient,
     context_id: ContextId,
     method: String,
     args: Vec<u8>,
     executor_public_key: PublicKey,
 ) -> Result<Option<String>, CallError> {
-    let (outcome_sender, outcome_receiver) = oneshot::channel();
-
-    sender
-        .send(ExecutionRequest::new(
-            context_id,
-            method,
-            args,
-            executor_public_key,
-            outcome_sender,
-        ))
+    let outcome = ctx_client
+        .execute(&context_id, method, args, &executor_public_key)
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;
 
-    match outcome_receiver.await.map_err(|e| {
-        CallError::InternalError(eyre!("Failed to receive call outcome result: {}", e))
-    })? {
-        Ok(outcome) => {
-            let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
-            for (i, log) in outcome.logs.iter().enumerate() {
-                info!("execution log {i:>x$}| {}", log);
-            }
-
-            let Some(returns) = outcome
-                .returns
-                .map_err(|e| CallError::FunctionCallError(e.to_string()))?
-            else {
-                return Ok(None);
-            };
-
-            Ok(Some(String::from_utf8(returns).map_err(|e| {
-                CallError::InternalError(eyre!("Failed to convert call result to string: {}", e))
-            })?))
-        }
-        Err(err) => Err(CallError::CallError(err)),
+    let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
+    for (i, log) in outcome.logs.iter().enumerate() {
+        info!("execution log {i:>x$}| {}", log);
     }
+
+    let Some(returns) = outcome
+        .returns
+        .map_err(|e| CallError::FunctionCallError(e.to_string()))?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(String::from_utf8(returns).map_err(|e| {
+        CallError::InternalError(eyre!("Failed to convert call result to string: {}", e))
+    })?))
 }
 
 macro_rules! mount_method {

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use actix::Actor;
 use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
-use calimero_network_primitives::client::NetworkClient;
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
 use calimero_store::Store;
 
@@ -29,8 +29,8 @@ pub struct NodeManager {
     pub datastore: Store,
     pub blobstore: BlobManager,
 
-    pub context_manager: ContextClient,
-    pub network_manager: NetworkClient,
+    pub context_client: ContextClient,
+    pub node_client: NodeClient,
 
     // -- blobs --
     // todo! potentially make this a dashmap::DashMap

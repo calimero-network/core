@@ -43,7 +43,6 @@ tracing.workspace = true
 web3.workspace = true
 x509-parser.workspace = true
 
-calimero-context.workspace = true
 calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true
 calimero-node-primitives.workspace = true
