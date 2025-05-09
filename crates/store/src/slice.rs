@@ -8,7 +8,7 @@ use core::fmt::{self, Debug, Formatter};
 use core::ops::Deref;
 use std::rc::Rc;
 
-use calimero_primitives::reflect::{DynReflect, Reflect, ReflectExt};
+use calimero_primitives::reflect::{Reflect, ReflectExt};
 
 #[derive(Clone, Debug)]
 enum SliceInner<'a> {
@@ -50,7 +50,7 @@ impl<'a> Slice<'a> {
         let ref_boxed = match self.inner {
             SliceInner::Ref(inner) => return inner.into(),
             SliceInner::Box(inner) => inner,
-            SliceInner::Any(inner) => match inner.with_rc(<dyn Reflect>::downcast_rc) {
+            SliceInner::Any(inner) => match inner.downcast_rc() {
                 Ok(inner) => inner,
                 Err(inner) => return inner.buf().into(),
             },
@@ -62,7 +62,7 @@ impl<'a> Slice<'a> {
     #[must_use]
     pub fn owned_ref<T: AsRef<[u8]>>(&'a self) -> Option<&'a T> {
         if let SliceInner::Any(inner) = &self.inner {
-            if let Some(inner) = inner.as_dyn().downcast_ref::<T>() {
+            if let Some(inner) = inner.downcast_ref() {
                 return Some(inner);
             }
         }
@@ -72,7 +72,7 @@ impl<'a> Slice<'a> {
     /// Take the inner value if it is of the correct type passed in via `from_owned`.
     pub fn take_owned<T: AsRef<[u8]> + 'a>(self) -> Result<Rc<T>, Self> {
         if let SliceInner::Any(inner) = self.inner {
-            return match inner.with_rc(<dyn Reflect>::downcast_rc) {
+            return match inner.downcast_rc() {
                 Ok(inner) => Ok(inner),
                 Err(inner) => Err(Self {
                     inner: SliceInner::Any(inner),

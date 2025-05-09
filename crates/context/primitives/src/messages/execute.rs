@@ -1,0 +1,57 @@
+use actix::Message;
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
+use serde::{Deserialize, Serialize};
+use thiserror::Error as ThisError;
+
+#[derive(Debug)]
+pub struct ExecuteRequest {
+    pub context: ContextId,
+    pub method: String,
+    pub payload: Vec<u8>,
+    pub executor: PublicKey,
+}
+
+#[derive(Debug)]
+pub struct ExecuteResponse {
+    pub returns: eyre::Result<Option<Vec<u8>>>,
+    pub logs: Vec<String>,
+    pub events: Vec<Event>,
+    pub root_hash: Option<Hash>,
+    pub artifact: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct Event {
+    pub kind: String,
+    pub data: Vec<u8>,
+}
+
+impl Message for ExecuteRequest {
+    type Result = Result<ExecuteResponse, ExecuteError>;
+}
+
+// todo! these types should not be serialize
+// todo! the API should redefine its own types
+// todo! which should prevent unintentional
+// todo! changes to the API
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
+#[serde(tag = "type", content = "data")]
+#[non_exhaustive]
+pub enum ExecuteError {
+    #[error("context not found")]
+    ContextNotFound,
+    #[error("cannot execute request as '{public_key}' on context '{context_id}'")]
+    Unauthorized {
+        context_id: ContextId,
+        public_key: PublicKey,
+    },
+    #[error("context state not initialized, awaiting state sync")]
+    Uninitialized,
+    #[error("application not installed: '{application_id}'")]
+    ApplicationNotInstalled { application_id: ApplicationId },
+    #[error("internal error")]
+    InternalError,
+}

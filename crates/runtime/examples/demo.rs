@@ -80,16 +80,14 @@ fn main() -> EyreResult<()> {
                 .bold()
         );
 
-        let cx = VMContext::new(
-            payload
-                .map(|p| to_json_vec(&p))
-                .transpose()?
-                .unwrap_or_default(),
-            [0; 32],
-            [0; 32],
-        );
+        let input = payload
+            .map(|p| to_json_vec(&p))
+            .transpose()?
+            .unwrap_or_default();
 
-        let outcome = run(&file, name, cx, &mut storage, &limits)?;
+        let cx = VMContext::new(input.into(), [0; 32], [0; 32]);
+
+        let outcome = run(&file, name, cx, &limits, &mut storage)?;
 
         // dbg!(&outcome);
 

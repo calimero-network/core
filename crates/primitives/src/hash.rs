@@ -118,6 +118,12 @@ impl From<Hash> for [u8; BYTES_LEN] {
     }
 }
 
+impl AsRef<[u8; BYTES_LEN]> for Hash {
+    fn as_ref(&self) -> &[u8; BYTES_LEN] {
+        &self.bytes
+    }
+}
+
 impl Deref for Hash {
     type Target = [u8; BYTES_LEN];
 
