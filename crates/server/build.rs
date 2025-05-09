@@ -13,6 +13,19 @@ fn main() {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
+    let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let static_files_target = project_root.join("../../node-ui/build");
+    let marker_file = project_root.join("build-deps-changed.txt");
+
+    let target_missing = !Path::new("target").exists();
+    let node_ui_missing = !static_files_target.exists();
+
+    if target_missing || node_ui_missing {
+        eprintln!("Triggering rebuild because `target/` or `node-ui/build` is missing.");
+        fs::write(&marker_file, format!("trigger: {:?}\n", std::time::SystemTime::now()))
+            .expect("Failed to write marker file");
+    }
+
     let cache = Cache::builder()
         .dir(PathBuf::from(
             env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into()),
@@ -43,9 +56,6 @@ fn main() {
 
     let extracted_build_path = out_dir.join("admin-dashboard-master").join("build");
 
-    let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let static_files_target = project_root.join("../../node-ui/build");
-
     if static_files_target.exists() {
         fs::remove_dir_all(&static_files_target).expect("Failed to clear old static files");
     }
@@ -60,10 +70,11 @@ fn main() {
                 fs::create_dir_all(&dst_path).unwrap();
                 copy_dir_all(&entry.path(), &dst_path);
             } else {
-                fs::copy(entry.path(), dst_path).unwrap();
+                let _ = fs::copy(entry.path(), dst_path).expect("Failed to copy file");
             }
         }
     }
+
     copy_dir_all(&extracted_build_path, &static_files_target);
 
     println!("cargo:rerun-if-env-changed=CALIMERO_WEB_UI_SRC");
@@ -72,6 +83,10 @@ fn main() {
     if Path::new(src).exists() {
         println!("cargo:rerun-if-changed={}", src);
     }
+
+    println!("cargo:rerun-if-changed={}", marker_file.display());
+
+    println!("cargo:rerun-if-changed=build.rs");
 
     println!(
         "cargo:rustc-env=CALIMERO_WEB_UI_PATH={}",
