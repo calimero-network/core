@@ -205,8 +205,10 @@ impl ContextCommand {
                     .await
                 {
                     Ok(response) => {
-                        println!("{ind} Created context {} with identity {}", 
-                            response.context_id, response.identity);
+                        println!(
+                            "{ind} Created context {} with identity {}",
+                            response.context_id, response.identity
+                        );
                     }
                     Err(err) => {
                         println!("{ind} Unable to create context: {err:?}");
