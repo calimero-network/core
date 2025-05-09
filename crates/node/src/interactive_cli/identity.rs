@@ -106,17 +106,13 @@ async fn list_identities(
 
     println!("{ind} {:44} | {}", "Identity", "Owned");
 
-    // Get the stream of identities
     let stream = ctx_client.context_members(&context_id, None).await;
-
-    // Pin the stream
-    futures_util::pin_mut!(stream);
-
-    // Display all identities with ownership information
+    let mut stream = Box::pin(stream);
+    
     while let Some(result) = stream.try_next().await? {
         let (identity, is_owned) = result;
         let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" });
-
+        
         for line in entry.lines() {
             println!("{ind} {}", line.cyan());
         }
