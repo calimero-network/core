@@ -1,5 +1,5 @@
 use actix::Handler;
-use calimero_network_primitives::messages::NetworkEvent;
+use calimero_node::messages::NetworkEvent;
 
 use crate::NodeManager;
 

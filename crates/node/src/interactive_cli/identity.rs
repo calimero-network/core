@@ -1,12 +1,12 @@
+use calimero_context_primitives::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::ContextIdentity as ContextIdentityKey;
 use clap::{Parser, Subcommand};
 use eyre::{OptionExt, Result as EyreResult};
+use futures_util::TryStreamExt;
 use owo_colors::OwoColorize;
-
-use crate::Node;
 
 /// Manage identities
 #[derive(Debug, Parser)]
@@ -75,18 +75,18 @@ enum AliasSubcommands {
 }
 
 impl IdentityCommand {
-    pub fn run(self, node: &Node) -> EyreResult<()> {
+    pub async fn run(self, node_client: &NodeClient, ctx_client: &ContextClient) -> EyreResult<()> {
         let ind = ">>".blue();
 
         match self.subcommand {
             IdentitySubcommands::List { context } => {
-                list_identities(node, context, &ind.to_string())?;
+                list_identities(node_client, ctx_client, context, &ind.to_string()).await?;
             }
             IdentitySubcommands::New => {
-                create_new_identity(node, &ind.to_string());
+                create_new_identity(ctx_client, &ind.to_string());
             }
             IdentitySubcommands::Alias { command } => {
-                handle_alias_command(node, command, &ind.to_string())?;
+                handle_alias_command(node_client, command, &ind.to_string())?;
             }
         }
 
@@ -94,40 +94,25 @@ impl IdentityCommand {
     }
 }
 
-fn list_identities(node: &Node, context: Alias<ContextId>, ind: &str) -> EyreResult<()> {
-    let context_id = node
-        .ctx_manager
+async fn list_identities(
+    node_client: &NodeClient,
+    ctx_client: &ContextClient,
+    context: Alias<ContextId>,
+    ind: &str,
+) -> EyreResult<()> {
+    let context_id = node_client
         .resolve_alias(context, None)?
         .ok_or_eyre("unable to resolve")?;
 
-    let handle = node.store.handle();
-    let mut iter = handle.iter::<ContextIdentityKey>()?;
-
-    let first = 'first: {
-        let Some(k) = iter
-            .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
-            .transpose()
-        else {
-            break 'first None;
-        };
-
-        Some((k, iter.read()))
-    };
-
     println!("{ind} {:44} | {}", "Identity", "Owned");
 
-    for (k, v) in first.into_iter().chain(iter.entries()) {
-        let (k, v) = (k?, v?);
+    let stream = ctx_client.context_members(&context_id, None).await;
+    let mut stream = Box::pin(stream);
 
-        if k.context_id() != context_id {
-            break;
-        }
+    while let Some(result) = stream.try_next().await? {
+        let (identity, is_owned) = result;
+        let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" });
 
-        let entry = format!(
-            "{:44} | {}",
-            k.public_key(),
-            if v.private_key.is_some() { "Yes" } else { "No" },
-        );
         for line in entry.lines() {
             println!("{ind} {}", line.cyan());
         }
@@ -136,47 +121,46 @@ fn list_identities(node: &Node, context: Alias<ContextId>, ind: &str) -> EyreRes
     Ok(())
 }
 
-fn create_new_identity(node: &Node, ind: &str) {
-    let identity = node.ctx_manager.new_private_key();
+fn create_new_identity(ctx_client: &ContextClient, ind: &str) {
+    let identity = ctx_client.new_private_key();
     println!("{ind} Private Key: {}", identity.cyan());
     println!("{ind} Public Key: {}", identity.public_key().cyan());
 }
 
-fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> EyreResult<()> {
+fn handle_alias_command(
+    node_client: &NodeClient,
+    command: AliasSubcommands,
+    ind: &str,
+) -> EyreResult<()> {
     match command {
         AliasSubcommands::Add {
             name,
             identity,
             context,
         } => {
-            let context_id = node
-                .ctx_manager
+            let context_id = node_client
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve")?;
 
-            node.ctx_manager
-                .create_alias(name, Some(context_id), identity)?;
+            node_client.create_alias(name, Some(context_id), identity)?;
 
             println!("{ind} Successfully created alias '{}'", name.cyan());
         }
         AliasSubcommands::Remove { identity, context } => {
-            let context_id = node
-                .ctx_manager
+            let context_id = node_client
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve")?;
 
-            node.ctx_manager.delete_alias(identity, Some(context_id))?;
+            node_client.delete_alias(identity, Some(context_id))?;
 
             println!("{ind} Successfully removed alias '{}'", identity.cyan());
         }
         AliasSubcommands::Get { identity, context } => {
-            let context_id = node
-                .ctx_manager
+            let context_id = node_client
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve")?;
 
-            let Some(identity_id) = node.ctx_manager.lookup_alias(identity, Some(context_id))?
-            else {
+            let Some(identity_id) = node_client.lookup_alias(identity, Some(context_id))? else {
                 println!("{ind} Alias '{}' not found", identity.cyan());
 
                 return Ok(());
@@ -197,13 +181,11 @@ fn handle_alias_command(node: &Node, command: AliasSubcommands, ind: &str) -> Ey
             );
 
             let context_id = context
-                .map(|context| node.ctx_manager.resolve_alias(context, None))
+                .map(|context| node_client.resolve_alias(context, None))
                 .transpose()?
                 .flatten();
 
-            for (alias, identity, scope) in
-                node.ctx_manager.list_aliases::<PublicKey>(context_id)?
-            {
+            for (alias, identity, scope) in node_client.list_aliases::<PublicKey>(context_id)? {
                 let context = scope.as_ref().map_or("---", |s| s.as_str());
 
                 println!(

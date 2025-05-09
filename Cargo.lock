@@ -1305,6 +1305,7 @@ dependencies = [
  "calimero-blobstore",
  "calimero-context",
  "calimero-context-config",
+ "calimero-context-primitives",
  "calimero-crypto",
  "calimero-network",
  "calimero-node-primitives",
