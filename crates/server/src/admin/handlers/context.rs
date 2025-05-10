@@ -5,6 +5,8 @@ pub mod get_context_client_keys;
 pub mod get_context_identities;
 pub mod get_context_storage;
 pub mod get_contexts;
+pub mod grant_capabilities;
 pub mod invite_to_context;
 pub mod join_context;
+pub mod revoke_capabilities;
 pub mod update_context_application;
