@@ -1611,8 +1611,6 @@ impl ContextManager {
         Ok(aliases)
     }
 
-    /// Stores a ContextIdentity value directly.
-    /// Used internally and potentially by admin handlers for pre-storing keys.
     pub fn store_identity_value(
         &self,
         context_id: ContextId,
@@ -1625,7 +1623,6 @@ impl ContextManager {
         Ok(())
     }
 
-    /// Retrieves a complete ContextIdentity value.
     pub fn get_identity_value(
         &self,
         context_id: ContextId,
@@ -1636,7 +1633,6 @@ impl ContextManager {
         handle.get(&key).map_err(eyre::Report::from)
     }
 
-    /// Deletes a ContextIdentity value.
     pub fn delete_identity_value(
         &self,
         context_id: ContextId,
