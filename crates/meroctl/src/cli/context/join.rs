@@ -3,6 +3,7 @@ use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
+use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
 use reqwest::Client;
 
@@ -33,13 +34,19 @@ pub struct JoinCommand {
 
 impl Report for JoinContextResponse {
     fn report(&self) {
-        match self.data {
-            Some(ref payload) => {
-                println!("context_id {}", payload.context_id);
-                println!("member_public_key: {}", payload.member_public_key);
-            }
-            None => todo!(),
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Join Context Response").fg(Color::Blue)]);
+
+        if let Some(payload) = &self.data {
+            let _ = table.add_row(vec![format!("Context ID: {}", payload.context_id)]);
+            let _ = table.add_row(vec![format!(
+                "Member Public Key: {}",
+                payload.member_public_key
+            )]);
+        } else {
+            let _ = table.add_row(vec!["No response data".to_owned()]);
         }
+        println!("{table}");
     }
 }
 
