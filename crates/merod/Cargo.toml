@@ -5,6 +5,7 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -41,6 +42,10 @@ calimero-node.workspace = true
 calimero-network.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store.workspace = true
+
+[build-dependencies]
+rustc_version = "0.4"
+
 
 [lints]
 workspace = true
