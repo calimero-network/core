@@ -1,6 +1,6 @@
-// #[cfg(test)]
-// #[path = "./tests/db/rocksdb.rs"]
-// mod tests;
+#[cfg(test)]
+#[path = "../../../src/tests/db/rocksdb.rs"]
+mod tests;
 
 use calimero_store::config::StoreConfig;
 use calimero_store::db::{Column, Database};
