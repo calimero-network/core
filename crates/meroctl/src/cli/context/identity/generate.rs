@@ -18,7 +18,6 @@ impl Report for GenerateContextIdentityResponse {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Generated Identity").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("Public Key: {}", self.data.public_key)]);
-        let _ = table.add_row(vec![format!("Private Key: {}", self.data.private_key)]);
         println!("{table}");
     }
 }

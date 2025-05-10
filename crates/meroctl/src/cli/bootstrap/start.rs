@@ -214,7 +214,7 @@ impl StartBootstrapCommand {
         );
 
         let join_command = JoinCommand {
-            private_key: invitee_private_key,
+            public_key: invitee_private_key.public_key(),
             invitation_payload,
             context: None,
             identity: None,
