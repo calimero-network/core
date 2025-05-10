@@ -134,16 +134,16 @@ where
 //     return Ok(result);
 // }
 
-pub fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigFile> {
+pub async fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigFile> {
     let path = home.join(node_name);
 
     if !ConfigFile::exists(&path) {
-        bail!("Config file does not exist")
-    };
+        bail!("Config file does not exist");
+    }
 
-    let Ok(config) = ConfigFile::load(&path) else {
-        bail!("Failed to load config file")
-    };
+    let config = ConfigFile::load(&path)
+        .await
+        .wrap_err("Failed to load config file")?;
 
     Ok(config)
 }

@@ -25,8 +25,7 @@ impl RunCommand {
             bail!("Node is not initialized in {:?}", path);
         }
 
-        let config = ConfigFile::load(&path)?;
-
+        let config = ConfigFile::load(&path).await?;
         let mut server_config = ServerConfig::new(
             config.network.server.listen,
             config.identity.clone(),
