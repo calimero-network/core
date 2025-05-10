@@ -22,8 +22,7 @@ impl Test for ContextInviteJoinStep {
         };
 
         for invitee in &ctx.invitees {
-            let (invitee_public_key, invitee_private_key) =
-                ctx.meroctl.identity_generate(invitee).await?;
+            let invitee_public_key = ctx.meroctl.identity_generate(invitee).await?;
 
             let invitation_payload = ctx
                 .meroctl
@@ -37,7 +36,7 @@ impl Test for ContextInviteJoinStep {
 
             let (invitee_context_id, invitee_member_public_key) = ctx
                 .meroctl
-                .context_join(invitee, &invitee_private_key, &invitation_payload)
+                .context_join(invitee, &invitee_public_key, &invitation_payload)
                 .await?;
 
             if *context_id != invitee_context_id {

@@ -136,11 +136,11 @@ impl Meroctl {
     pub async fn context_join(
         &self,
         node_name: &str,
-        private_key: &str,
+        invitee_public_key: &str,
         invitation_data: &str,
     ) -> EyreResult<(String, String)> {
         let json = self
-            .run_cmd(node_name, ["context", "join", private_key, invitation_data])
+            .run_cmd(node_name, ["context", "join", invitee_public_key, invitation_data])
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
@@ -150,16 +150,15 @@ impl Meroctl {
         Ok((context_id, member_public_key))
     }
 
-    pub async fn identity_generate(&self, node_name: &str) -> EyreResult<(String, String)> {
+    pub async fn identity_generate(&self, node_name: &str) -> EyreResult<String> {
         let json = self
             .run_cmd(node_name, ["context", "identity", "generate"])
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
         let public_key = self.get_string_from_object(&data, "publicKey")?;
-        let private_key = self.get_string_from_object(&data, "privateKey")?;
 
-        Ok((public_key, private_key))
+        Ok(public_key)
     }
 
     pub async fn get_proposals(
