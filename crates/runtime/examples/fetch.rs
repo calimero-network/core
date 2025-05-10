@@ -1,7 +1,6 @@
 #![allow(unused_crate_dependencies)]
 
 use std::env;
-use std::io::Read;
 use std::path::Path;
 
 use calimero_runtime::logic::{VMContext, VMLimits};
@@ -11,7 +10,8 @@ use eyre::Result as EyreResult;
 use serde_json::{json, to_vec as to_json_vec};
 use tokio::fs::File;
 
-fn main() -> EyreResult<()> {
+#[tokio::main]
+async fn main() -> EyreResult<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         println!("Usage: {args:?} <path-to-wasm>");
@@ -20,11 +20,15 @@ fn main() -> EyreResult<()> {
 
     let path = &args[1];
     let path = Path::new(path);
-    if !path.exists() {
-        eyre::bail!("Gen-ext wasm file not found");
+
+    if !tokio::fs::try_exists(path).await? {
+        bail!("RPS wasm file not found");
     }
 
-    let file = File::open(path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
+    let file = File::open(path).await?;
+    let mut reader = BufReader::new(file);
+    let mut file_bytes: Vec<u8> = Vec::new();
+    reader.read_to_end(&mut file_bytes).await?;
 
     let mut storage = InMemoryStorage::default();
 
@@ -51,7 +55,7 @@ fn main() -> EyreResult<()> {
         [0; 32],
         [0; 32],
     );
-    let get_outcome = run(&file, "view_account", cx, &mut storage, &limits)?;
+    let get_outcome = run(&file_bytes, "view_account", cx, &mut storage, &limits)?;
     let returns = String::from_utf8(get_outcome.returns.unwrap().unwrap()).unwrap();
     println!("{returns}");
 

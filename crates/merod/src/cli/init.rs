@@ -147,7 +147,7 @@ impl InitCommand {
         clippy::too_many_lines,
         reason = "TODO: Will be refactored"
     )]
-    pub fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
+    pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.home.join(root_args.node_name);
@@ -162,19 +162,23 @@ impl InitCommand {
         }
 
         if ConfigFile::exists(&path) {
-            if let Err(err) = ConfigFile::load(&path) {
-                if self.force {
-                    warn!(
-                        "Failed to load existing configuration, overwriting: {}",
-                        err
-                    );
-                } else {
-                    bail!("Failed to load existing configuration: {}", err);
+            match ConfigFile::load(&path).await {
+                Ok(_) => {
+                    if !self.force {
+                        warn!("Node is already initialized in {:?}", path);
+                        return Ok(());
+                    }
                 }
-            }
-            if !self.force {
-                warn!("Node is already initialized in {:?}", path);
-                return Ok(());
+                Err(err) => {
+                    if self.force {
+                        warn!(
+                            "Failed to load existing configuration, overwriting: {}",
+                            err
+                        );
+                    } else {
+                        bail!("Failed to load existing configuration: {}", err);
+                    }
+                }
             }
         }
 
@@ -420,7 +424,7 @@ impl InitCommand {
             },
         );
 
-        config.save(&path)?;
+        config.save(&path).await?;
 
         drop(Store::open::<RocksDB>(&StoreConfig::new(
             path.join(config.datastore.path),

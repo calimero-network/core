@@ -6,131 +6,119 @@ use calimero_store::{config, db, Store};
 use eyre::Ok as EyreOk;
 use tokio::fs::{remove_dir_all, remove_file};
 
-#[test]
-fn rocks_store() {
+#[tokio::test]
+async fn rocks_store() -> Result<()> {
     let config = config::StoreConfig::new("corpus/rocks".into());
 
     if config.path.exists() {
-        if config.path.metadata().unwrap().is_dir() {
-            remove_dir_all(&config.path).unwrap();
+        if config.path.metadata().await?.is_dir() {
+            remove_dir_all(&config.path).await?;
         } else {
-            remove_file(&config.path).unwrap();
+            remove_file(&config.path).await?;
         }
     }
 
-    let mut store = Store::open::<db::RocksDB>(&config).unwrap();
+    let mut store = Store::open::<db::RocksDB>(&config).await?;
 
     let context_id1 = [0_u8; 32].into();
     let state_key1 = [0_u8; 32];
     let key1 = ContextStateKey::new(context_id1, state_key1);
 
-    assert!(!store.has(&key1).unwrap());
-    assert_eq!(None, store.get(&key1).unwrap());
+    assert!(!store.has(&key1).await?);
+    assert_eq!(None, store.get(&key1).await?);
 
-    store.put(&key1, b"Hello, World".into()).unwrap();
+    store.put(&key1, b"Hello, World".into()).await?;
 
-    assert!(store.has(&key1).unwrap());
-    assert_eq!(Some(b"Hello, World".into()), store.get(&key1).unwrap());
+    assert!(store.has(&key1).await?);
+    assert_eq!(Some(b"Hello, World".into()), store.get(&key1).await?);
 
-    store.put(&key1, b"Some Other Value".into()).unwrap();
+    store.put(&key1, b"Some Other Value".into()).await?;
 
-    assert!(store.has(&key1).unwrap());
-    assert_ne!(Some(b"Hello, World".into()), store.get(&key1).unwrap());
-    assert_eq!(Some(b"Some Other Value".into()), store.get(&key1).unwrap());
+    assert!(store.has(&key1).await?);
+    assert_ne!(Some(b"Hello, World".into()), store.get(&key1).await?);
+    assert_eq!(Some(b"Some Other Value".into()), store.get(&key1).await?);
 
     let state_key2 = [1_u8; 32];
     let key2 = ContextStateKey::new(context_id1, state_key2);
 
-    assert!(store.has(&key1).unwrap());
-    assert!(!store.has(&key2).unwrap());
+    assert!(store.has(&key1).await?);
+    assert!(!store.has(&key2).await?);
 
-    store.put(&key2, b"Another Value".into()).unwrap();
+    store.put(&key2, b"Another Value".into()).await?;
 
-    assert!(store.has(&key1).unwrap());
-    assert!(store.has(&key2).unwrap());
+    assert!(store.has(&key1).await?);
+    assert!(store.has(&key2).await?);
 
-    store.delete(&key1).unwrap();
+    store.delete(&key1).await?;
 
-    assert!(!store.has(&key1).unwrap());
-    assert!(store.has(&key2).unwrap());
+    assert!(!store.has(&key1).await?);
+    assert!(store.has(&key2).await?);
 
-    store.delete(&key2).unwrap();
+    store.delete(&key2).await?;
 
-    assert!(!store.has(&key1).unwrap());
-    assert!(!store.has(&key2).unwrap());
+    assert!(!store.has(&key1).await?);
+    assert!(!store.has(&key2).await?);
 
-    store.put(&key1, b"Hello, World".into()).unwrap();
-    store.put(&key2, b"Another Value".into()).unwrap();
+    store.put(&key1, b"Hello, World".into()).await?;
+    store.put(&key2, b"Another Value".into()).await?;
 
     {
-        let mut iter = store.iter().unwrap();
+        let mut iter = store.iter().await?;
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key1), keys.next().transpose().unwrap());
-        assert_eq!(Some(key2), keys.next().transpose().unwrap());
-        assert_eq!(None, keys.next().transpose().unwrap());
+        assert_eq!(Some(key1), keys.next().transpose()?);
+        assert_eq!(Some(key2), keys.next().transpose()?);
+        assert_eq!(None, keys.next().transpose()?);
 
-        let mut iter = store.iter().unwrap();
+        let mut iter = store.iter().await?;
 
         let mut keys = iter.entries();
 
         assert_eq!(
             Some((key1, b"Hello, World".into())),
-            keys.next()
-                .map(|(k, v)| EyreOk((k?, v?)))
-                .transpose()
-                .unwrap()
+            keys.next().transpose()?
         );
         assert_eq!(
             Some((key2, b"Another Value".into())),
-            keys.next()
-                .map(|(k, v)| EyreOk((k?, v?)))
-                .transpose()
-                .unwrap()
+            keys.next().transpose()?
         );
-        assert_eq!(
-            None,
-            keys.next()
-                .map(|(k, v)| EyreOk((k?, v?)))
-                .transpose()
-                .unwrap()
-        );
+        assert_eq!(None, keys.next().transpose()?);
     }
 
     let public_key1 = [0_u8; 32];
 
     let key3 = ContextIdentityKey::new(context_id1, public_key1.into());
 
-    store.put(&key3, b"Some Associated Value".into()).unwrap();
+    store.put(&key3, b"Some Associated Value".into()).await?;
 
     let public_key2 = [1_u8; 32];
 
     let key4 = ContextIdentityKey::new(context_id1, public_key2.into());
 
-    store
-        .put(&key4, b"Another Associated Value".into())
-        .unwrap();
+    store.put(&key4, b"Another Associated Value".into()).await?;
 
     {
-        let mut iter = store.iter().unwrap();
+        let mut iter = store.iter().await?;
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key1), keys.next().transpose().unwrap());
-        assert_eq!(Some(key2), keys.next().transpose().unwrap());
-        assert_eq!(None, keys.next().transpose().unwrap());
+        assert_eq!(Some(key1), keys.next().transpose()?);
+        assert_eq!(Some(key2), keys.next().transpose()?);
+        assert_eq!(None, keys.next().transpose()?);
     }
 
     {
-        let mut iter = store.iter().unwrap();
+        let mut iter = store.iter().await?;
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key3), keys.next().transpose().unwrap());
-        assert_eq!(Some(key4), keys.next().transpose().unwrap());
-        assert_eq!(None, keys.next().transpose().unwrap());
+        assert_eq!(Some(key3), keys.next().transpose()?);
+        assert_eq!(Some(key4), keys.next().transpose()?);
+        assert_eq!(None, keys.next().transpose()?);
     }
+
+    Ok(())
 }
 
 // #[test]

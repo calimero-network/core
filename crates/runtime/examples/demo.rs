@@ -2,7 +2,6 @@
 
 use core::str;
 use std::env;
-use std::io::Read;
 use std::path::Path;
 
 use calimero_runtime::logic::{VMContext, VMLimits};
@@ -36,7 +35,8 @@ fn parse_payload<const PRETTY: bool>(
     Ok(format!("{:?}", payload))
 }
 
-fn main() -> EyreResult<()> {
+#[tokio::main]
+async fn main() -> EyreResult<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         println!("Usage: {args:?} <path-to-wasm>");
@@ -45,11 +45,15 @@ fn main() -> EyreResult<()> {
 
     let path = &args[1];
     let path = Path::new(path);
-    if !path.exists() {
-        eyre::bail!("KV wasm file not found");
+
+    if !tokio::fs::try_exists(path).await? {
+        bail!("RPS wasm file not found");
     }
 
-    let file = File::open(path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
+    let file = File::open(path).await?;
+    let mut reader = BufReader::new(file);
+    let mut file_bytes: Vec<u8> = Vec::new();
+    reader.read_to_end(&mut file_bytes).await?;
 
     let mut storage = InMemoryStorage::default();
 
@@ -89,7 +93,7 @@ fn main() -> EyreResult<()> {
             [0; 32],
         );
 
-        let outcome = run(&file, name, cx, &mut storage, &limits)?;
+        let outcome = run(&file_bytes, name, cx, &mut storage, &limits)?;
 
         // dbg!(&outcome);
 
