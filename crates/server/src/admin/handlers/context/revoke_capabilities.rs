@@ -36,7 +36,7 @@ pub async fn handler(
     let capabilities_to_revoke: Vec<(ContextIdentity, Capability)> = request
         .capabilities
         .into_iter()
-        .map(|(identity_repr, capability)| (identity_repr.into_inner(), capability))
+        .map(|(identity_repr, capability)| (*identity_repr, capability))
         .collect();
 
     match state
