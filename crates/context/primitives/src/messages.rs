@@ -1,7 +1,4 @@
 use actix::Message;
-use create_context::CreateContextRequest;
-use delete_context::DeleteContextRequest;
-use join_context::JoinContextRequest;
 use tokio::sync::oneshot;
 
 pub mod create_context;
@@ -10,7 +7,10 @@ pub mod execute;
 pub mod join_context;
 pub mod update_application;
 
+use create_context::CreateContextRequest;
+use delete_context::DeleteContextRequest;
 use execute::ExecuteRequest;
+use join_context::JoinContextRequest;
 use update_application::UpdateApplicationRequest;
 
 #[derive(Debug, Message)]

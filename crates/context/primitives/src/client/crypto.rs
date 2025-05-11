@@ -26,6 +26,11 @@ impl ContextIdentity {
 }
 
 impl ContextClient {
+    // fixme! refactor as part of #1066
+    pub fn new_private_key(&self) -> PrivateKey {
+        PrivateKey::random(&mut rand::thread_rng())
+    }
+
     pub fn get_identity(
         &self,
         context_id: &ContextId,

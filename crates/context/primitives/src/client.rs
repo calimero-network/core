@@ -26,6 +26,82 @@ pub struct ContextClient {
 }
 
 impl ContextClient {
+    pub async fn create_context(
+        &self,
+        protocol: String,
+        application_id: &ApplicationId,
+        identity_secret: Option<PrivateKey>,
+        init_params: Vec<u8>,
+        seed: Option<[u8; 32]>,
+    ) -> eyre::Result<CreateContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::CreateContext {
+                request: CreateContextRequest {
+                    protocol,
+                    seed,
+                    application_id: *application_id,
+                    identity_secret,
+                    init_params,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn invite_member(
+        &self,
+        context_id: &ContextId,
+        inviter_id: &PublicKey,
+        invitee_id: &PublicKey,
+    ) -> eyre::Result<Option<ContextInvitationPayload>> {
+        let Some(external_config) = self.context_config(context_id)? else {
+            return Ok(None);
+        };
+
+        let external_client = self.external_client(context_id, &external_config)?;
+
+        external_client
+            .config()
+            .add_members(inviter_id, &[*invitee_id])
+            .await?;
+
+        let invitation_payload = ContextInvitationPayload::new(
+            *context_id,
+            *invitee_id,
+            external_config.protocol.into(),
+            external_config.network_id.into(),
+            external_config.contract_id.into(),
+        )?;
+
+        Ok(Some(invitation_payload))
+    }
+
+    pub async fn join_context(
+        &self,
+        identity_secret: PrivateKey,
+        invitation_payload: ContextInvitationPayload,
+    ) -> eyre::Result<JoinContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::JoinContext {
+                request: JoinContextRequest {
+                    identity_secret,
+                    invitation_payload,
+                },
+                outcome: sender,
+            })
+            .await
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
     pub fn has_context(&self, context_id: &ContextId) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
 
@@ -52,10 +128,6 @@ impl ContextClient {
         Ok(Some(context))
     }
 
-    pub fn new_private_key(&self) -> PrivateKey {
-        PrivateKey::random(&mut rand::thread_rng())
-    }
-
     pub async fn get_contexts(
         &self,
         start: Option<ContextId>,
@@ -73,25 +145,17 @@ impl ContextClient {
         }
     }
 
-    pub async fn delete_context(
+    pub async fn has_member(
         &self,
         context_id: &ContextId,
-    ) -> eyre::Result<DeleteContextResponse> {
-        let (sender, receiver) = oneshot::channel();
+        public_key: &PublicKey,
+        // is_owned: Option<bool>,
+    ) -> eyre::Result<bool> {
+        let handle = self.datastore.handle();
 
-        self.context_manager
-            .send(ContextMessage::DeleteContext {
-                request: DeleteContextRequest {
-                    context_id: *context_id,
-                },
-                outcome: sender,
-            })
-            .await
-            .expect("Context manager mailbox not to be dropped");
+        let key = key::ContextIdentity::new(*context_id, *public_key);
 
-        receiver
-            .await
-            .expect("Context manager not to drop response channel")
+        Ok(handle.has(&key)?)
     }
 
     pub async fn context_members(
@@ -126,100 +190,6 @@ impl ContextClient {
         }
     }
 
-    pub async fn has_member(
-        &self,
-        context_id: &ContextId,
-        public_key: &PublicKey,
-    ) -> eyre::Result<bool> {
-        let handle = self.datastore.handle();
-
-        let key = key::ContextIdentity::new(*context_id, *public_key);
-
-        Ok(handle.has(&key)?)
-    }
-
-    pub async fn update_application(
-        &self,
-        context_id: &ContextId,
-        application_id: &ApplicationId,
-        identity: &PublicKey,
-    ) -> eyre::Result<()> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::UpdateApplication {
-                request: UpdateApplicationRequest {
-                    context_id: *context_id,
-                    application_id: *application_id,
-                    public_key: *identity,
-                },
-                outcome: sender,
-            })
-            .await
-            .expect("Context manager mailbox not to be dropped");
-
-        receiver
-            .await
-            .expect("Context manager not to drop response channel")
-    }
-
-    pub async fn invite_member(
-        &self,
-        context_id: &ContextId,
-        inviter_id: &PublicKey,
-        invitee_id: &PublicKey,
-    ) -> eyre::Result<Option<ContextInvitationPayload>> {
-        let Some(external_config) = self.context_config(context_id)? else {
-            return Ok(None);
-        };
-
-        let external_client = self.external_client(context_id, &external_config)?;
-
-        external_client
-            .config()
-            .add_members(inviter_id, &[*invitee_id])
-            .await?;
-
-        let invitation_payload = ContextInvitationPayload::new(
-            *context_id,
-            *invitee_id,
-            external_config.protocol.into(),
-            external_config.network_id.into(),
-            external_config.contract_id.into(),
-        )?;
-
-        Ok(Some(invitation_payload))
-    }
-
-    pub async fn create_context(
-        &self,
-        protocol: String,
-        application_id: &ApplicationId,
-        identity_secret: Option<PrivateKey>,
-        init_params: Vec<u8>,
-        seed: Option<[u8; 32]>,
-    ) -> eyre::Result<CreateContextResponse> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.context_manager
-            .send(ContextMessage::CreateContext {
-                request: CreateContextRequest {
-                    protocol,
-                    seed,
-                    application_id: *application_id,
-                    identity_secret,
-                    init_params,
-                },
-                outcome: sender,
-            })
-            .await
-            .expect("Context manager mailbox not to be dropped");
-
-        receiver
-            .await
-            .expect("Context manager not to drop response channel")
-    }
-
     pub async fn execute(
         &self,
         context: &ContextId,
@@ -240,33 +210,50 @@ impl ContextClient {
                 outcome: sender,
             })
             .await
-            .expect("Context manager mailbox not to be dropped");
+            .expect("Mailbox not to be dropped");
 
-        receiver
-            .await
-            .expect("Context manager not to drop response channel")
+        receiver.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn join_context(
+    pub async fn update_application(
         &self,
-        identity_secret: PrivateKey,
-        invitation_payload: ContextInvitationPayload,
-    ) -> eyre::Result<JoinContextResponse> {
+        context_id: &ContextId,
+        application_id: &ApplicationId,
+        identity: &PublicKey,
+    ) -> eyre::Result<()> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
-            .send(ContextMessage::JoinContext {
-                request: JoinContextRequest {
-                    identity_secret,
-                    invitation_payload,
+            .send(ContextMessage::UpdateApplication {
+                request: UpdateApplicationRequest {
+                    context_id: *context_id,
+                    application_id: *application_id,
+                    public_key: *identity,
                 },
                 outcome: sender,
             })
             .await
-            .expect("Context manager mailbox not to be dropped");
+            .expect("Mailbox not to be dropped");
 
-        receiver
+        receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn delete_context(
+        &self,
+        context_id: &ContextId,
+    ) -> eyre::Result<DeleteContextResponse> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.context_manager
+            .send(ContextMessage::DeleteContext {
+                request: DeleteContextRequest {
+                    context_id: *context_id,
+                },
+                outcome: sender,
+            })
             .await
-            .expect("Context manager not to drop response channel")
+            .expect("Mailbox not to be dropped");
+
+        receiver.await.expect("Mailbox not to be dropped")
     }
 }

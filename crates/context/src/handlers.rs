@@ -9,7 +9,6 @@ pub mod delete_context;
 pub mod execute;
 pub mod join_context;
 pub mod update_application;
-// pub mod list_contexts;
 
 impl Handler<ContextMessage> for ContextManager {
     type Result = ();
