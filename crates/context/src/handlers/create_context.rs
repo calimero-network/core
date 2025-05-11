@@ -306,5 +306,7 @@ async fn create_context(
         },
     )?;
 
+    node_client.subscribe(&context.id).await?;
+
     Ok(context.root_hash)
 }
