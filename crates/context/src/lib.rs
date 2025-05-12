@@ -1,6 +1,7 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use actix::Actor;
@@ -10,7 +11,8 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
-use tokio::sync::Mutex;
+use either::Either;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 pub mod config;
 pub mod handlers;
@@ -45,6 +47,22 @@ pub struct ContextManager {
 
 impl Actor for ContextManager {
     type Context = actix::Context<Self>;
+}
+
+impl ContextManager {
+    fn get_context_exclusive(
+        &mut self,
+        context_id: &ContextId,
+    ) -> Option<Either<OwnedMutexGuard<ContextId>, impl Future<Output = OwnedMutexGuard<ContextId>>>>
+    {
+        let context = self.contexts.get(&context_id)?;
+
+        let Ok(guard) = context.lock.clone().try_lock_owned() else {
+            return Some(Either::Right(context.lock.clone().lock_owned()));
+        };
+
+        Some(Either::Left(guard))
+    }
 }
 
 // objectives:

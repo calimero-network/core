@@ -1,5 +1,6 @@
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -17,10 +18,12 @@ use crate::messages::ContextMessage;
 
 mod crypto;
 pub mod external;
+mod sync;
 
 #[derive(Clone, Debug)]
 pub struct ContextClient {
     datastore: Store,
+    node_client: NodeClient,
     external_client: ExternalClient<AnyTransport>,
     context_manager: LazyRecipient<ContextMessage>,
 }
@@ -73,9 +76,9 @@ impl ContextClient {
         let invitation_payload = ContextInvitationPayload::new(
             *context_id,
             *invitee_id,
-            external_config.protocol.into(),
-            external_config.network_id.into(),
-            external_config.contract_id.into(),
+            external_config.protocol,
+            external_config.network_id,
+            external_config.contract_id,
         )?;
 
         Ok(Some(invitation_payload))
@@ -128,7 +131,7 @@ impl ContextClient {
         Ok(Some(context))
     }
 
-    pub async fn get_contexts(
+    pub fn get_contexts(
         &self,
         start: Option<ContextId>,
     ) -> impl Stream<Item = eyre::Result<ContextId>> {
@@ -145,7 +148,7 @@ impl ContextClient {
         }
     }
 
-    pub async fn has_member(
+    pub fn has_member(
         &self,
         context_id: &ContextId,
         public_key: &PublicKey,
@@ -158,7 +161,7 @@ impl ContextClient {
         Ok(handle.has(&key)?)
     }
 
-    pub async fn context_members(
+    pub fn context_members(
         &self,
         context_id: &ContextId,
         only_owned: Option<bool>,

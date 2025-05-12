@@ -11,6 +11,7 @@ actix.workspace = true
 borsh.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["derive"] }
+either.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 libp2p.workspace = true
@@ -28,11 +29,13 @@ calimero-context-primitives.workspace = true
 calimero-crypto.workspace = true
 calimero-blobstore.workspace = true
 calimero-network.workspace = true
+calimero-network-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-runtime.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true

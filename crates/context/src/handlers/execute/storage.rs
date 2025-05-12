@@ -4,11 +4,9 @@ use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
 use calimero_runtime::store::{Key, Storage, Value};
-use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::layer::temporal::Temporal;
 use calimero_store::layer::{ReadLayer, WriteLayer};
-use calimero_store::Store;
-use eyre::Result as EyreResult;
+use calimero_store::{key, Store};
 use ouroboros::self_referencing;
 
 #[self_referencing]
@@ -20,7 +18,7 @@ pub struct ContextStorage {
     #[borrows(mut store)]
     inner: Temporal<'this, 'static, Store>,
     // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<Vec<Arc<ContextStateKey>>>,
+    keys: RefCell<Vec<Arc<key::ContextState>>>,
 }
 
 // safety: ContextStorage is constructed exclusively for the runtime
@@ -44,7 +42,7 @@ impl ContextStorage {
         .build()
     }
 
-    fn state_key(&self, key: &[u8]) -> Option<&'static ContextStateKey> {
+    fn state_key(&self, key: &[u8]) -> Option<&'static key::ContextState> {
         let mut state_key = [0; 32];
 
         (key.len() <= state_key.len()).then_some(())?;
@@ -55,18 +53,18 @@ impl ContextStorage {
 
         let context_id = self.borrow_context_id();
 
-        keys.push(Arc::new(ContextStateKey::new(*context_id, state_key)));
+        keys.push(Arc::new(key::ContextState::new(*context_id, state_key)));
 
         // safety: TemporalStore lives as long as Self, so the reference will hold
         //         plus, we never return a reference to the keys externally
         unsafe {
-            mem::transmute::<Option<&ContextStateKey>, Option<&'static ContextStateKey>>(
+            mem::transmute::<Option<&key::ContextState>, Option<&'static key::ContextState>>(
                 keys.last().map(|x| &**x),
             )
         }
     }
 
-    pub fn commit(mut self) -> EyreResult<Store> {
+    pub fn commit(mut self) -> eyre::Result<Store> {
         self.with_inner_mut(|inner| inner.commit())?;
 
         Ok(self.into_heads().store)

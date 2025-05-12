@@ -21,6 +21,7 @@ pub mod sync;
 pub mod types;
 
 use sync::SyncConfig;
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
 pub struct NodeManager {
@@ -35,7 +36,7 @@ pub struct NodeManager {
     // -- blobs --
     // todo! potentially make this a dashmap::DashMap
     // todo! use cached::TimedSizedCache with a gc task
-    blob_cache: BTreeMap<BlobId, Arc<[u8]>>,
+    blob_cache: BTreeMap<BlobId, Arc<Mutex<Option<Arc<[u8]>>>>>,
 }
 
 impl Actor for NodeManager {

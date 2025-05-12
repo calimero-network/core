@@ -1,10 +1,10 @@
-use actix::Handler;
-use calimero_node::messages::NetworkEvent;
+use actix::{Handler, Message};
+use calimero_network_primitives::messages::NetworkEvent;
 
 use crate::NodeManager;
 
 impl Handler<NetworkEvent> for NodeManager {
-    type Result = ();
+    type Result = <NetworkEvent as Message>::Result;
 
     fn handle(&mut self, msg: NetworkEvent, _ctx: &mut Self::Context) -> Self::Result {
         match msg {

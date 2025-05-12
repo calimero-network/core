@@ -1081,13 +1081,12 @@ dependencies = [
  "calimero-runtime",
  "calimero-store",
  "calimero-utils-actix",
+ "either",
  "eyre",
  "ouroboros",
  "rand 0.8.5",
- "reqwest 0.12.9",
  "serde",
  "tokio 1.41.1",
- "tracing",
 ]
 
 [[package]]
@@ -1171,6 +1170,7 @@ dependencies = [
  "actix",
  "async-stream",
  "calimero-context-config",
+ "calimero-node-primitives",
  "calimero-primitives",
  "calimero-store",
  "calimero-utils-actix",
@@ -1180,6 +1180,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tokio 1.41.1",
+ "url",
 ]
 
 [[package]]
@@ -1308,13 +1309,16 @@ dependencies = [
  "calimero-context-primitives",
  "calimero-crypto",
  "calimero-network",
+ "calimero-network-primitives",
  "calimero-node-primitives",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
  "calimero-store",
+ "calimero-utils-actix",
  "camino",
  "clap",
+ "either",
  "eyre",
  "futures-util",
  "libp2p",

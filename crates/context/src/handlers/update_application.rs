@@ -28,24 +28,20 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
             }
         }
 
-        ActorResponse::r#async(Box::pin(
-            update_application_id(
-                self.node_client.clone(),
-                self.context_client.clone(),
-                context_id,
-                application_id,
-                public_key,
-            )
-            .into_actor(self)
-            .and_then(move |blob_id, act, _ctx| {
-                if let Some(context) = act.contexts.get_mut(&context_id) {
-                    context.blob = blob_id;
-                    context.meta.application_id = application_id;
-                }
+        let task = update_application_id(
+            self.node_client.clone(),
+            self.context_client.clone(),
+            context_id,
+            application_id,
+            public_key,
+        );
 
-                async move { Ok(()) }.into_actor(act)
-            }),
-        ))
+        ActorResponse::r#async(task.into_actor(self).map_ok(move |blob_id, act, _ctx| {
+            if let Some(context) = act.contexts.get_mut(&context_id) {
+                context.blob = blob_id;
+                context.meta.application_id = application_id;
+            }
+        }))
     }
 }
 

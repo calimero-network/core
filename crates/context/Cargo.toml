@@ -8,13 +8,12 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+either.workspace = true
 eyre.workspace = true
 ouroboros.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
-tracing.workspace = true
 
 calimero-context-config = { workspace = true, features = ["client"] }
 calimero-context-primitives.workspace = true

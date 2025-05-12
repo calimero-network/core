@@ -2,8 +2,7 @@ use std::collections::{btree_map, BTreeMap};
 use std::mem;
 use std::sync::Arc;
 
-use actix::fut::wrap_future;
-use actix::{ActorResponse, ActorTryFutureExt, Handler, Message};
+use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_config::client::utils::humanize_iter;
 use calimero_context_primitives::client::ContextClient;
@@ -77,7 +76,7 @@ impl Handler<CreateContextRequest> for ContextManager {
         );
 
         ActorResponse::r#async(
-            wrap_future::<_, Self>(Box::pin(task))
+            task.into_actor(self)
                 .map_ok(move |root_hash, act, _ctx| {
                     if let Some(meta) = act.contexts.get_mut(&prepared.context.meta.id) {
                         // this should almost always exist, but with an LruCache, it
