@@ -66,4 +66,3 @@ workspace = true
 
 [build-dependencies]
 cached-path = { workspace = true }
-zip = "2.6.1"

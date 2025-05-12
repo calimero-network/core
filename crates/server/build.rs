@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use cached_path::{Cache, Options};
-use zip::ZipArchive;
 
 const CALIMERO_WEB_UI_SRC: &str =
     "https://github.com/calimero-network/admin-dashboard/archive/refs/heads/master.zip";
@@ -20,24 +19,16 @@ fn main() {
         .build()
         .expect("Failed to create cache");
 
-    let options = Options::default();
+    let mut options = Options::default();
+    options.extract = true;
 
-    let archive_path = cache
+    let extracted_dir = cache
         .cached_path_with_options(src, &options)
         .expect("Failed to fetch or cache UI archive");
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("web-ui");
-    if out_dir.exists() {
-        fs::remove_dir_all(&out_dir).expect("Failed to remove existing output directory");
-    }
-    fs::create_dir_all(&out_dir).expect("Failed to create output directory");
-
-    let zip_file = fs::File::open(&archive_path).expect("Cannot open downloaded ZIP archive");
-    let mut zip = ZipArchive::new(zip_file).expect("Failed to read ZIP archive");
-    zip.extract(&out_dir)
-        .expect("Failed to extract ZIP archive");
-
-    let extracted_build_path = out_dir.join("admin-dashboard-master").join("build");
+    let extracted_build_path = PathBuf::from(&extracted_dir)
+        .join("admin-dashboard-master")
+        .join("build");
 
     if static_files_target.exists() {
         fs::remove_dir_all(&static_files_target).expect("Failed to clear old static files");
