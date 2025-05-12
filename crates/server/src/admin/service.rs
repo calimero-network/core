@@ -339,8 +339,10 @@ pub async fn serve_admin_dashboard(uri: Uri) -> Result<impl IntoResponse, Status
     }
 
     let current_dir = std::env::current_dir().unwrap();
-    let full_path = Path::new(&current_dir).join("/crates/server/").join(base_path).join(rel_path);
-
+    let full_path = Path::new(&current_dir)
+        .join("/crates/server/")
+        .join(base_path)
+        .join(rel_path);
 
     match try_read_file(&full_path).await {
         Ok(response) => Ok(response),
@@ -366,7 +368,7 @@ async fn try_read_file(path: &Path) -> Result<impl IntoResponse, std::io::Error>
     let mime_type = mime_guess::from_path(path)
         .first_or_octet_stream()
         .to_string();
-    
+
     Ok(([(header::CONTENT_TYPE, mime_type)], Bytes::from(contents)).into_response())
 }
 
