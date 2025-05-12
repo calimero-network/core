@@ -7,7 +7,6 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use futures_util::TryStreamExt;
 use reqwest::StatusCode;
-use tokio::task;
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -31,32 +30,11 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    // fixme! Remove the need for special accommodations with blocking task and runtime
-    let result = task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+    let stream = state.ctx_client.context_members(&context.id, Some(owned));
 
-        rt.block_on(async {
-            let stream = state
-                .ctx_client
-                .context_members(&context.id, Some(owned))
-                .await;
-
-            // fixme! Improve error handling for the stream collection
-            let identities: Vec<_> = stream.try_collect().await.unwrap_or_else(|_| Vec::new());
-
-            identities
-        })
-    })
-    .await;
-
-    match result {
+    match stream.map_ok(|(id, _)| id).try_collect().await {
         Ok(identities) => ApiResponse {
-            payload: GetContextIdentitiesResponse::new(
-                identities.into_iter().map(|(id, _)| id).collect(),
-            ),
+            payload: GetContextIdentitiesResponse::new(identities),
         }
         .into_response(),
         Err(_) => ApiError {
