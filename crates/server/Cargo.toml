@@ -49,6 +49,7 @@ calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-store = { workspace = true, features = ["serde"] }
+mime_guess = "2.0.5"
 
 [dev-dependencies]
 color-eyre.workspace = true

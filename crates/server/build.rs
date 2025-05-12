@@ -24,7 +24,7 @@ fn main() {
         .expect("Failed to fetch or cache UI archive");
 
     let extracted_build_path = PathBuf::from(&extracted_dir)
-        .join("admin-dashboard-master")
+        .join("admin-dashboard")
         .join("build");
 
     println!(

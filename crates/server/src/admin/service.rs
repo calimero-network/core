@@ -1,10 +1,11 @@
 use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::str::from_utf8;
+use std::path::Path;
 use std::str;
 use std::sync::Arc;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::middleware::from_fn;
 use axum::response::IntoResponse;
@@ -12,9 +13,9 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use calimero_store::Store;
 use eyre::Report;
-use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
+use tokio::fs;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
@@ -69,11 +70,6 @@ impl AdminConfig {
         }
     }
 }
-
-// Embed the contents of the admin-ui build directory into the binary
-#[derive(RustEmbed)]
-#[folder = "../../node-ui/build/"]
-struct NodeUiStaticFiles;
 
 #[expect(
     clippy::too_many_lines,
@@ -323,69 +319,55 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
 
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()
-        .route("/", get(serve_embedded_file)) // Match /admin-dashboard
-        .route("/*path", get(serve_embedded_file)); // Match /admin-dashboard/* for all sub-paths
+        .route("/", get(serve_admin_dashboard)) // Match /admin-dashboard
+        .route("/*path", get(serve_admin_dashboard)); // Match /admin-dashboard/* for all sub-paths
 
     Some((path, router))
 }
 
-/// Serves embedded static files or falls back to `index.html` for SPA routing.
-///
-/// This function handles requests by removing the "/admin-dashboard/" prefix from the requested URI path,
-/// and then attempting to serve the requested file from the embedded directory. If the requested file
-/// is not found, it serves `index.html` to support client-side routing.
-///
-/// # Parameters
-/// - `uri`: The requested URI, which will be used to determine the file path in the embedded directory.
-///
-/// # Returns
-/// - `Result<impl IntoResponse, StatusCode>`: If the requested file is found or the fallback to index.html
-///   succeeds, it returns an `Ok` with the response. If no file can be served, it returns an `Err` with
-///   a 404 NOT_FOUND status code.
-async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
-    // Extract the path from the URI, removing the "/admin-dashboard/" prefix and any leading slashes
-    let path = uri
+pub async fn serve_admin_dashboard(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
+    let static_dir = env!("CALIMERO_WEB_UI_PATH");
+    let base_path = Path::new(static_dir);
+
+    let mut rel_path = uri
         .path()
         .trim_start_matches("/admin-dashboard/")
         .trim_start_matches('/');
 
-    // Use "index.html" for empty paths (root requests)
-    let path = if path.is_empty() { "index.html" } else { path };
-
-    // Attempt to serve the requested file
-    if let Some(file) = NodeUiStaticFiles::get(path) {
-        return serve_file(file);
+    if rel_path.is_empty() {
+        rel_path = "index.html";
     }
 
-    // Fallback to index.html for SPA routing if the file wasn't found and it's not already "index.html"
-    if path != "index.html" {
-        if let Some(index_file) = NodeUiStaticFiles::get("index.html") {
-            return serve_file(index_file);
+    let current_dir = std::env::current_dir().unwrap();
+    let full_path = Path::new(&current_dir).join("/crates/server/").join(base_path).join(rel_path);
+
+
+    match try_read_file(&full_path).await {
+        Ok(response) => Ok(response),
+        Err(_) if rel_path != "index.html" => {
+            let index_path = base_path.join("index.html");
+            try_read_file(&index_path)
+                .await
+                .map_err(|_| StatusCode::NOT_FOUND)
         }
+        Err(_) => Err(StatusCode::NOT_FOUND),
     }
-
-    // Return 404 if the file is not found and we can't fallback to index.html
-    Err(StatusCode::NOT_FOUND)
 }
 
-/// Serves a static file with the correct MIME type.
-///
-/// This function builds a `Response` with the appropriate content type for the given file
-/// and serves the file's content.
-///
-/// # Parameters
-/// - `file`: A reference to the `EmbeddedFile` to be served.
-///
-/// # Returns
-/// - `Result<impl IntoResponse, StatusCode>`: If the response is successfully built, it returns an `Ok`
-///   with the response. If there is an error building the response, it returns an `Err` with a
-///   500 INTERNAL_SERVER_ERROR status code.
-fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", file.metadata.mimetype())
-        .body(Body::from(file.data.into_owned()))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+async fn try_read_file(path: &Path) -> Result<impl IntoResponse, std::io::Error> {
+    let contents = match fs::read(path).await {
+        Ok(content) => content,
+        Err(err) => {
+            tracing::error!("Failed to read file at {}: {}", path.display(), err);
+            return Err(err);
+        }
+    };
+
+    let mime_type = mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .to_string();
+    
+    Ok(([(header::CONTENT_TYPE, mime_type)], Bytes::from(contents)).into_response())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
