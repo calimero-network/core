@@ -4,30 +4,14 @@ use std::{env, fs};
 use cached_path::{Cache, Options};
 use zip::ZipArchive;
 
-fn main() {
-    let src = option_env!("CALIMERO_WEB_UI_SRC").unwrap_or(
-        "https://github.com/calimero-network/admin-dashboard/archive/refs/heads/master.zip",
-    );
+const CALIMERO_WEB_UI_SRC: &str =
+    "https://github.com/calimero-network/admin-dashboard/archive/refs/heads/master.zip";
 
-    let force = option_env!("CALIMERO_WEB_UI_FETCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+fn main() {
+    let src = option_env!("CALIMERO_WEB_UI_SRC").unwrap_or(CALIMERO_WEB_UI_SRC);
 
     let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let static_files_target = project_root.join("../../node-ui/build");
-    let marker_file = project_root.join("build-deps-changed.txt");
-
-    let target_missing = !Path::new("target").exists();
-    let node_ui_missing = !static_files_target.exists();
-
-    if target_missing || node_ui_missing {
-        eprintln!("Triggering rebuild because `target/` or `node-ui/build` is missing.");
-        fs::write(
-            &marker_file,
-            format!("trigger: {:?}\n", std::time::SystemTime::now()),
-        )
-        .expect("Failed to write marker file");
-    }
 
     let cache = Cache::builder()
         .dir(PathBuf::from(
@@ -36,11 +20,7 @@ fn main() {
         .build()
         .expect("Failed to create cache");
 
-    let options = if force {
-        Options::default().extract()
-    } else {
-        Options::default()
-    };
+    let options = Options::default();
 
     let archive_path = cache
         .cached_path_with_options(src, &options)
@@ -80,16 +60,9 @@ fn main() {
 
     copy_dir_all(&extracted_build_path, &static_files_target);
 
-    println!("cargo:rerun-if-env-changed=CALIMERO_WEB_UI_SRC");
-    println!("cargo:rerun-if-env-changed=CALIMERO_WEB_UI_FETCH");
-
     if Path::new(src).exists() {
         println!("cargo:rerun-if-changed={}", src);
     }
-
-    println!("cargo:rerun-if-changed={}", marker_file.display());
-
-    println!("cargo:rerun-if-changed=build.rs");
 
     println!(
         "cargo:rustc-env=CALIMERO_WEB_UI_PATH={}",
