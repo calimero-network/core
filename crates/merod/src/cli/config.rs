@@ -4,9 +4,9 @@ use std::env::temp_dir;
 use std::fs::{read_to_string, write};
 use std::str::FromStr;
 
-use calimero_config::{ConfigFile, CONFIG_FILE};
+use calimero_config::{ConfigFile, OutputFormat, CONFIG_FILE};
 use camino::Utf8PathBuf;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use eyre::{bail, eyre, Result as EyreResult};
 use toml_edit::{Item, Value};
 use tracing::info;
@@ -16,9 +16,28 @@ use crate::cli;
 /// Configure the node
 #[derive(Debug, Parser)]
 pub struct ConfigCommand {
-    /// Key-value pairs to be added or updated in the TOML file
-    #[clap(value_name = "ARGS")]
-    args: Vec<KeyValuePair>,
+    #[clap(subcommand)]
+    command: ConfigSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigSubcommand {
+    /// Set config values using key=value format
+    Set {
+        /// Key-value pairs to be updated in the config
+        #[clap(value_name = "ARGS")]
+        args: Vec<KeyValuePair>,
+    },
+
+    /// Print the current config (as pretty-printed Rust or JSON)
+    Print {
+        /// Output format: "pretty" or "json"
+        #[clap(long, default_value = "pretty")]
+        format: OutputFormat,
+    },
+
+    /// Show editable config keys and example values
+    Hints,
 }
 
 #[derive(Clone, Debug)]
@@ -50,37 +69,48 @@ impl ConfigCommand {
             bail!("Node is not initialized in {:?}", path);
         }
 
-        let path = path.join(CONFIG_FILE);
+        let config_path = path.join(CONFIG_FILE);
 
-        // Load the existing TOML file
-        let toml_str =
-            read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
-        let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
+        match self.command {
+            ConfigSubcommand::Set { args } => {
+                let toml_str = read_to_string(&config_path)
+                    .map_err(|_| eyre!("Node is not initialized in {:?}", config_path))?;
 
-        // Update the TOML document
-        for kv in self.args.iter() {
-            let key_parts: Vec<&str> = kv.key.split('.').collect();
+                let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
-            let mut current = doc.as_item_mut();
+                for kv in args.iter() {
+                    let key_parts: Vec<&str> = kv.key.split('.').collect();
 
-            for key in &key_parts[..key_parts.len() - 1] {
-                current = &mut current[key];
+                    let mut current = doc.as_item_mut();
+
+                    for key in &key_parts[..key_parts.len() - 1] {
+                        current = &mut current[key];
+                    }
+
+                    current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+                }
+
+                self.validate_toml(&doc)?;
+
+                write(&config_path, doc.to_string())?;
+
+                info!("Node configuration has been updated");
             }
 
-            current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+            ConfigSubcommand::Print { format } => {
+                let config = ConfigFile::load(&path)?;
+                config.print(format)?;
+            }
+
+            ConfigSubcommand::Hints => {
+                ConfigFile::print_hints();
+            }
         }
-
-        self.validate_toml(&doc)?;
-
-        // Save the updated TOML back to the file
-        write(&path, doc.to_string())?;
-
-        info!("Node configuration has been updated");
 
         Ok(())
     }
 
-    pub fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
+    fn validate_toml(&self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
         let tmp_dir = temp_dir();
         let tmp_path = tmp_dir.join(CONFIG_FILE);
 
