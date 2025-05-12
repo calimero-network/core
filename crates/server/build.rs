@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use std::env;
+use std::path::{Path, PathBuf};
 
 use cached_path::{Cache, Options};
 
