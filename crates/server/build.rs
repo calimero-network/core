@@ -22,8 +22,11 @@ fn main() {
 
     if target_missing || node_ui_missing {
         eprintln!("Triggering rebuild because `target/` or `node-ui/build` is missing.");
-        fs::write(&marker_file, format!("trigger: {:?}\n", std::time::SystemTime::now()))
-            .expect("Failed to write marker file");
+        fs::write(
+            &marker_file,
+            format!("trigger: {:?}\n", std::time::SystemTime::now()),
+        )
+        .expect("Failed to write marker file");
     }
 
     let cache = Cache::builder()
