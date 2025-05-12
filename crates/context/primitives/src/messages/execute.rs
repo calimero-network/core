@@ -18,13 +18,13 @@ pub struct ExecuteRequest {
 pub struct ExecuteResponse {
     pub returns: eyre::Result<Option<Vec<u8>>>,
     pub logs: Vec<String>,
-    pub events: Vec<Event>,
+    pub events: Vec<ExecuteEvent>,
     pub root_hash: Option<Hash>,
     pub artifact: Vec<u8>,
 }
 
 #[derive(Debug)]
-pub struct Event {
+pub struct ExecuteEvent {
     pub kind: String,
     pub data: Vec<u8>,
 }

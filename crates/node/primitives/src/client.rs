@@ -1,12 +1,19 @@
 use calimero_blobstore::BlobManager;
+use calimero_crypto::SharedKey;
 use calimero_network_primitives::client::NetworkClient;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::events::NodeEvent;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use libp2p::gossipsub::IdentTopic;
-use tracing::info;
+use eyre::{eyre, OptionExt};
+use libp2p::gossipsub::{IdentTopic, TopicHash};
+use rand::Rng;
+use tokio::sync::broadcast;
+use tracing::{debug, info};
 
 use crate::messages::NodeMessage;
+use crate::sync::BroadcastMessage;
 
 mod alias;
 mod application;
@@ -16,15 +23,16 @@ mod blob;
 pub struct NodeClient {
     datastore: Store,
     blobstore: BlobManager,
-    network_manager: NetworkClient,
+    network_client: NetworkClient,
     node_manager: LazyRecipient<NodeMessage>,
+    event_sender: broadcast::Sender<NodeEvent>,
 }
 
 impl NodeClient {
     pub async fn subscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
         let topic = IdentTopic::new(context_id);
 
-        let _ignored = self.network_manager.subscribe(topic).await?;
+        let _ignored = self.network_client.subscribe(topic).await?;
 
         info!(%context_id, "Subscribed to context");
 
@@ -34,56 +42,71 @@ impl NodeClient {
     pub async fn unsubscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
         let topic = IdentTopic::new(context_id);
 
-        let _ignored = self.network_manager.unsubscribe(topic).await?;
+        let _ignored = self.network_client.unsubscribe(topic).await?;
 
         info!(%context_id, "Unsubscribed from context");
 
         Ok(())
     }
 
-    pub async fn get_peers_count(&self, context: Option<ContextId>) -> eyre::Result<usize> {
+    pub async fn get_peers_count(&self, context: Option<ContextId>) -> usize {
         let Some(context) = context else {
-            let peers = self.network_manager.peer_count().await;
-
-            return Ok(peers);
+            return self.network_client.peer_count().await;
         };
 
-        let topic = IdentTopic::new(context);
+        let topic = TopicHash::from_raw(context);
 
-        let peers = self.network_manager.mesh_peer_count(topic.hash()).await;
-
-        Ok(peers)
+        self.network_client.mesh_peer_count(topic).await
     }
 
-    // // on node, not client
-    // pub async fn get_sender_key() {}
-    // pub async fn update_sender_key() {}
-    // pub async fn get_private_key() {}
-    // approve & propose
-    // // on node, not client
+    pub async fn broadcast(
+        &self,
+        context: &Context,
+        sender: &PublicKey,
+        sender_key: &PrivateKey,
+        artifact: Vec<u8>,
+    ) -> eyre::Result<()> {
+        debug!(
+            %context.id,
+            %sender,
+            %context.root_hash,
+            "Sending state delta"
+        );
 
-    // pub async fn execute(
-    //     &self,
-    //     context_id: ContextId,
-    //     method: String,
-    //     payload: Vec<u8>,
-    //     executor_public_key: PublicKey,
-    // ) -> Result<Outcome, ExecutionError> {
-    //     let (tx, rx) = oneshot::channel();
+        if self.get_peers_count(Some(context.id)).await == 0 {
+            return Ok(());
+        }
 
-    //     self.node_manager
-    //         .send(NodeMessage::Execute {
-    //             request: ExecuteRequest {
-    //                 context_id,
-    //                 method,
-    //                 payload,
-    //                 executor_public_key,
-    //             },
-    //             outcome: tx,
-    //         })
-    //         .await
-    //         .expect("Mailbox to not be dropped");
+        let shared_key = SharedKey::from_sk(sender_key);
+        let nonce = rand::thread_rng().gen();
 
-    //     rx.await.expect("Mailbox to not be dropped")
-    // }
+        let encrypted = shared_key
+            .encrypt(artifact, nonce)
+            .ok_or_eyre("failed to encrypt artifact")?;
+
+        let payload = BroadcastMessage::StateDelta {
+            context_id: context.id,
+            author_id: *sender,
+            root_hash: context.root_hash,
+            artifact: encrypted.into(),
+            nonce,
+        };
+
+        let payload = borsh::to_vec(&payload)?;
+
+        let topic = TopicHash::from_raw(context.id);
+
+        let _ignored = self.network_client.publish(topic, payload).await?;
+
+        Ok(())
+    }
+
+    pub fn send_event(&self, event: NodeEvent) -> eyre::Result<()> {
+        let _ignored = self
+            .event_sender
+            .send(event)
+            .map_err(|_| eyre!("failed to send event"))?;
+
+        Ok(())
+    }
 }

@@ -22,9 +22,13 @@ impl Handler<DeleteContextRequest> for ContextManager {
         DeleteContextRequest { context_id }: DeleteContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let guard = self.get_context_exclusive(&context_id);
+        let context = self.contexts.get(&context_id);
 
-        if guard.is_none() {
+        let mut guard = None;
+
+        if let Some(context) = context {
+            guard = Some(context.lock());
+        } else {
             match self.context_client.has_context(&context_id) {
                 Ok(true) => {}
                 Ok(false) => {

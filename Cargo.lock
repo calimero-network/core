@@ -1074,6 +1074,7 @@ name = "calimero-context"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "borsh",
  "calimero-context-config",
  "calimero-context-primitives",
  "calimero-node-primitives",
@@ -1083,10 +1084,12 @@ dependencies = [
  "calimero-utils-actix",
  "either",
  "eyre",
+ "futures-util",
  "ouroboros",
  "rand 0.8.5",
  "serde",
  "tokio 1.41.1",
+ "tracing",
 ]
 
 [[package]]
@@ -1336,7 +1339,9 @@ name = "calimero-node-primitives"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "borsh",
  "calimero-blobstore",
+ "calimero-crypto",
  "calimero-network-primitives",
  "calimero-primitives",
  "calimero-store",
@@ -1345,6 +1350,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "libp2p",
+ "rand 0.8.5",
  "reqwest 0.12.9",
  "tokio 1.41.1",
  "tokio-util 0.7.12",

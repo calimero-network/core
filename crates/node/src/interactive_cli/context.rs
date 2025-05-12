@@ -1,3 +1,5 @@
+use std::pin::pin;
+
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
@@ -134,8 +136,9 @@ impl ContextCommand {
                     c3 = "Root Hash"
                 );
 
-                let contexts = ctx_client.get_contexts(None).await;
-                let mut contexts = Box::pin(contexts);
+                let contexts = ctx_client.get_contexts(None);
+
+                let mut contexts = pin!(contexts);
 
                 while let Some(context_id) = contexts.try_next().await? {
                     let Some(context) = ctx_client.get_context(&context_id)? else {

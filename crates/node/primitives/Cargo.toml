@@ -8,15 +8,18 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+borsh.workspace = true
 camino.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 libp2p = { workspace = true, features = ["gossipsub"] }
+rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true, features = ["sync"] }
 tokio-util.workspace = true
 tracing.workspace = true
 
+calimero-crypto.workspace = true
 calimero-primitives.workspace = true
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true

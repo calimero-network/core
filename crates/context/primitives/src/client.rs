@@ -16,7 +16,7 @@ use crate::messages::join_context::{JoinContextRequest, JoinContextResponse};
 use crate::messages::update_application::UpdateApplicationRequest;
 use crate::messages::ContextMessage;
 
-mod crypto;
+pub mod crypto;
 pub mod external;
 mod sync;
 

@@ -1,6 +1,6 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 
-use std::collections::BTreeMap;
+use std::collections::{btree_map, BTreeMap};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 pub mod config;
 pub mod handlers;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ContextMeta {
     meta: Context,
     blob: BlobId,
@@ -49,19 +49,51 @@ impl Actor for ContextManager {
     type Context = actix::Context<Self>;
 }
 
-impl ContextManager {
-    fn get_context_exclusive(
-        &mut self,
-        context_id: &ContextId,
-    ) -> Option<Either<OwnedMutexGuard<ContextId>, impl Future<Output = OwnedMutexGuard<ContextId>>>>
-    {
-        let context = self.contexts.get(&context_id)?;
-
-        let Ok(guard) = context.lock.clone().try_lock_owned() else {
-            return Some(Either::Right(context.lock.clone().lock_owned()));
+impl ContextMeta {
+    fn lock(
+        &self,
+    ) -> Either<OwnedMutexGuard<ContextId>, impl Future<Output = OwnedMutexGuard<ContextId>>> {
+        let Ok(guard) = self.lock.clone().try_lock_owned() else {
+            return Either::Right(self.lock.clone().lock_owned());
         };
 
-        Some(Either::Left(guard))
+        Either::Left(guard)
+    }
+}
+
+impl ContextManager {
+    fn get_or_fetch_context(
+        &mut self,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<&ContextMeta>> {
+        let entry = self.contexts.entry(*context_id);
+
+        match entry {
+            btree_map::Entry::Occupied(occupied) => return Ok(Some(occupied.into_mut())),
+            btree_map::Entry::Vacant(vacant) => {
+                let Some(context) = self.context_client.get_context(context_id)? else {
+                    return Ok(None);
+                };
+
+                let Some(application) =
+                    self.node_client.get_application(&context.application_id)?
+                else {
+                    // todo! should we error here?
+
+                    return Ok(None);
+                };
+
+                let lock = Arc::new(Mutex::new(*context_id));
+
+                let item = vacant.insert(ContextMeta {
+                    meta: context,
+                    blob: application.blob,
+                    lock,
+                });
+
+                return Ok(Some(item));
+            }
+        }
     }
 }
 
