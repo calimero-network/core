@@ -153,34 +153,37 @@ impl ExternalConfigClient<'_, '_> {
         public_key: &PublicKey,
         identities: &[PublicKey],
     ) -> eyre::Result<()> {
-        let identity = self
-            .client
-            .context_client()
-            .get_identity(&self.client.context_id, public_key)?
-            .ok_or_eyre("identity not found")?;
+        // let identity = self
+        //     .client
+        //     .context_client()
+        //     .get_identity(&self.client.context_id, public_key)?
+        //     .ok_or_eyre("identity not found")?;
 
-        let private_key = identity.private_key()?;
+        // let private_key = identity.private_key()?;
 
-        let identities = identities
-            .iter()
-            .map(|e| e.rt())
-            .collect::<Result<Vec<_>, _>>()
-            .expect("infallible conversion");
+        // let identities = identities
+        //     .iter()
+        //     .map(|e| e.rt())
+        //     .collect::<Result<Vec<_>, _>>()
+        //     .expect("infallible conversion");
 
+        // fixme! figure out lifetime issues
         self.with_nonce(public_key, async |nonce| {
-            let client = self.client.mutate::<ContextConfig>(
-                self.client.config.protocol.as_ref().into(),
-                self.client.config.network_id.as_ref().into(),
-                self.client.config.proxy_contract.as_ref().into(),
-            );
+            // let client = self.client.mutate::<ContextConfig>(
+            //     self.client.config.protocol.as_ref().into(),
+            //     self.client.config.network_id.as_ref().into(),
+            //     self.client.config.proxy_contract.as_ref().into(),
+            // );
 
-            client
-                .add_members(
-                    self.client.context_id.rt().expect("infallible conversion"),
-                    &identities,
-                )
-                .send(*private_key, nonce)
-                .await
+            // client
+            //     .add_members(
+            //         self.client.context_id.rt().expect("infallible conversion"),
+            //         &identities,
+            //     )
+            //     .send(*private_key, nonce)
+            //     .await
+
+            eyre::Ok(())
         })
         .await?;
 
