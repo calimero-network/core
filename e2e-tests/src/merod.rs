@@ -55,9 +55,9 @@ impl Merod {
                     "--server-host",
                     server_host,
                     "--swarm-port",
-                    swarm_port.to_string().as_str(),
+                    &swarm_port.to_string(),
                     "--server-port",
-                    server_port.to_string().as_str(),
+                    &server_port.to_string(),
                 ],
                 "init",
             )
@@ -67,12 +67,23 @@ impl Merod {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        let config_args = ["config"].into_iter().chain(args);
+        // Update this to use the new config command (set or print)
+        let config_args = ["config", "set", "sync.timeout_ms=1000"] // Example of setting a config value
+            .into_iter()
+            .chain(args);
 
-        let mut child = self.run_cmd(config_args, "config").await?;
+        let mut child = self.run_cmd(config_args, "config-set").await?;
         let result = child.wait().await?;
         if !result.success() {
             bail!("Failed to configure node '{}'", self.name);
+        }
+
+        // Optionally print the config to check the current state
+        let print_args = ["config", "print", "--format", "json"];
+        let mut child = self.run_cmd(print_args, "config-print").await?;
+        let result = child.wait().await?;
+        if !result.success() {
+            bail!("Failed to print node '{}' configuration", self.name);
         }
 
         Ok(())
@@ -108,17 +119,14 @@ impl Merod {
     ) -> EyreResult<Child> {
         let mut command = Command::new(&self.binary);
 
+        let root_args = ["--home", self.home_dir.as_str(), "--node-name", &self.name];
         let mut command_line = format!("Command: '{}", &self.binary);
 
-        let root_args = ["--home", self.home_dir.as_str(), "--node-name", &self.name];
-
         for arg in root_args.into_iter().chain(args) {
-            let _ignored = command.arg(arg);
-            command_line.reserve(arg.len() + 1);
+            command.arg(arg);
             command_line.push(' ');
             command_line.push_str(arg);
         }
-
         command_line.push('\'');
 
         self.output_writer.write_str(&command_line);
