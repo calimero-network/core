@@ -67,24 +67,60 @@ impl Merod {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        // Update this to use the new config command (set or print)
-        let config_args = ["config", "set", "sync.timeout_ms=1000"] // Example of setting a config value
-            .into_iter()
-            .chain(args);
+        let config_args: Vec<String> = args.into_iter().collect();
+        let config_changed = !config_args.is_empty();
 
-        let mut child = self.run_cmd(config_args, "config-set").await?;
-        let result = child.wait().await?;
-        if !result.success() {
-            bail!("Failed to configure node '{}'", self.name);
+        if config_changed {
+            // If there are arguments, proceed with applying the configuration changes
+            let mut child = self.run_cmd(
+                ["config", "set"]
+                    .into_iter()
+                    .chain(config_args.into_iter()),
+                "config-set",
+            )
+            .await?;
+            let result = child.wait().await?;
+            if !result.success() {
+                bail!("Failed to configure node '{}'", self.name);
+            }
+        } else {
+            // If no arguments, print the current config file
+            let print_args = ["config", "print"];
+            let output_format = args
+                .into_iter()
+                .find(|arg| arg.starts_with("--output-format"))
+                .map(|arg| arg.split('=').nth(1).unwrap_or("toml"));
+
+            let print_format = match output_format {
+                Some("json") => "--format json",
+                _ => "",
+            };
+
+            let mut child = self.run_cmd(
+                print_args.into_iter().chain(Some(print_format).into_iter()),
+                "config-print",
+            )
+            .await?;
+            let result = child.wait().await?;
+            if !result.success() {
+                bail!("Failed to print node '{}' configuration", self.name);
+            }
         }
 
-        // Optionally print the config to check the current state
-        let print_args = ["config", "print", "--format", "json"];
-        let mut child = self.run_cmd(print_args, "config-print").await?;
-        let result = child.wait().await?;
-        if !result.success() {
-            bail!("Failed to print node '{}' configuration", self.name);
-        }
+        Ok(())
+    }
+
+    pub async fn hints(&self) -> EyreResult<()> {
+        // Print hints: Show valid configuration keys and possible values
+        let hints = r#"
+        Hints:
+        - sync.timeout_ms: Valid values are any positive integer in milliseconds.
+        - sync.interval_ms: Valid values are any positive integer in milliseconds.
+        - network.swarm.port: The port for the network swarm, valid range is 1024-65535.
+        - network.server.listen: A list of addresses the server will listen on (e.g., "127.0.0.1:8080").
+        "#;
+
+        self.output_writer.write_str(hints);
 
         Ok(())
     }
