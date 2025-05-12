@@ -340,7 +340,7 @@ pub async fn serve_admin_dashboard(uri: Uri) -> Result<impl IntoResponse, Status
 
     let current_dir = std::env::current_dir().unwrap();
     let full_path = Path::new(&current_dir)
-        .join("/crates/server/")
+        .join("crates/server")
         .join(base_path)
         .join(rel_path);
 
