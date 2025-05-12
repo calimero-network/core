@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::{env, fs};
+use std::env;
 
 use cached_path::{Cache, Options};
 
@@ -8,9 +8,6 @@ const CALIMERO_WEB_UI_SRC: &str =
 
 fn main() {
     let src = option_env!("CALIMERO_WEB_UI_SRC").unwrap_or(CALIMERO_WEB_UI_SRC);
-
-    let project_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let static_files_target = project_root.join("../../node-ui/build");
 
     let cache = Cache::builder()
         .dir(PathBuf::from(
@@ -30,33 +27,12 @@ fn main() {
         .join("admin-dashboard-master")
         .join("build");
 
-    if static_files_target.exists() {
-        fs::remove_dir_all(&static_files_target).expect("Failed to clear old static files");
-    }
-    fs::create_dir_all(&static_files_target).expect("Failed to create target static files folder");
-
-    fn copy_dir_all(src: &Path, dst: &Path) {
-        for entry in fs::read_dir(src).unwrap() {
-            let entry = entry.unwrap();
-            let file_type = entry.file_type().unwrap();
-            let dst_path = dst.join(entry.file_name());
-            if file_type.is_dir() {
-                fs::create_dir_all(&dst_path).unwrap();
-                copy_dir_all(&entry.path(), &dst_path);
-            } else {
-                let _ = fs::copy(entry.path(), dst_path).expect("Failed to copy file");
-            }
-        }
-    }
-
-    copy_dir_all(&extracted_build_path, &static_files_target);
+    println!(
+        "cargo:rustc-env=CALIMERO_WEB_UI_PATH={}",
+        extracted_build_path.display()
+    );
 
     if Path::new(src).exists() {
         println!("cargo:rerun-if-changed={}", src);
     }
-
-    println!(
-        "cargo:rustc-env=CALIMERO_WEB_UI_PATH={}",
-        static_files_target.display()
-    );
 }
