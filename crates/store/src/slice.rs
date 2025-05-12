@@ -6,15 +6,15 @@ use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Formatter};
 use core::ops::Deref;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use calimero_primitives::reflect::{Reflect, ReflectExt};
 
 #[derive(Clone, Debug)]
 enum SliceInner<'a> {
     Ref(&'a [u8]),
-    Box(Rc<Box<[u8]>>),
-    Any(Rc<dyn BufRef + 'a>),
+    Box(Arc<Box<[u8]>>),
+    Any(Arc<dyn BufRef + 'a>),
 }
 
 #[derive(Clone)]
@@ -22,11 +22,14 @@ pub struct Slice<'a> {
     inner: SliceInner<'a>,
 }
 
-trait BufRef: Reflect {
+trait BufRef: Reflect + Send + Sync {
     fn buf(&self) -> &[u8];
 }
 
-impl<'a, T: AsRef<[u8]> + 'a> BufRef for T {
+impl<'a, T> BufRef for T
+where
+    T: AsRef<[u8]> + Send + Sync + 'a,
+{
     fn buf(&self) -> &[u8] {
         self.as_ref()
     }
@@ -34,15 +37,19 @@ impl<'a, T: AsRef<[u8]> + 'a> BufRef for T {
 
 impl Debug for dyn BufRef + '_ {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // todo! use `calimero_primitives::utils::compact_path` here
         write!(f, "{}", self.type_name())
     }
 }
 
 impl<'a> Slice<'a> {
     /// Create a new `Slice` from an owned value.
-    pub fn from_owned<T: AsRef<[u8]> + 'a>(inner: T) -> Self {
+    pub fn from_owned<T>(inner: T) -> Self
+    where
+        T: AsRef<[u8]> + Send + Sync + 'a,
+    {
         Self {
-            inner: SliceInner::Any(Rc::new(inner)),
+            inner: SliceInner::Any(Arc::new(inner)),
         }
     }
 
@@ -50,13 +57,13 @@ impl<'a> Slice<'a> {
         let ref_boxed = match self.inner {
             SliceInner::Ref(inner) => return inner.into(),
             SliceInner::Box(inner) => inner,
-            SliceInner::Any(inner) => match inner.downcast_rc() {
+            SliceInner::Any(inner) => match inner.downcast_arc() {
                 Ok(inner) => inner,
                 Err(inner) => return inner.buf().into(),
             },
         };
 
-        Rc::try_unwrap(ref_boxed).unwrap_or_else(|inner| (*inner).clone())
+        Arc::try_unwrap(ref_boxed).unwrap_or_else(|inner| (*inner).clone())
     }
 
     #[must_use]
@@ -70,9 +77,9 @@ impl<'a> Slice<'a> {
     }
 
     /// Take the inner value if it is of the correct type passed in via `from_owned`.
-    pub fn take_owned<T: AsRef<[u8]> + 'a>(self) -> Result<Rc<T>, Self> {
+    pub fn take_owned<T: AsRef<[u8]> + 'a>(self) -> Result<Arc<T>, Self> {
         if let SliceInner::Any(inner) = self.inner {
-            return match inner.downcast_rc() {
+            return match inner.downcast_arc() {
                 Ok(inner) => Ok(inner),
                 Err(inner) => Err(Self {
                     inner: SliceInner::Any(inner),
@@ -121,13 +128,13 @@ impl From<Box<[u8]>> for Slice<'_> {
 impl From<Vec<u8>> for Slice<'_> {
     fn from(inner: Vec<u8>) -> Self {
         Self {
-            inner: SliceInner::Box(Rc::new(inner.into())),
+            inner: SliceInner::Box(Arc::new(inner.into())),
         }
     }
 }
 
-impl From<Rc<Box<[u8]>>> for Slice<'_> {
-    fn from(inner: Rc<Box<[u8]>>) -> Self {
+impl From<Arc<Box<[u8]>>> for Slice<'_> {
+    fn from(inner: Arc<Box<[u8]>>) -> Self {
         Self {
             inner: SliceInner::Box(inner),
         }
