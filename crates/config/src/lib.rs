@@ -1,4 +1,5 @@
 use core::time::Duration;
+use std::collections::HashMap;
 use std::fs::{read_to_string, write};
 
 use calimero_context::config::ContextConfig;
@@ -10,6 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
+use serde_json;
 
 pub const CONFIG_FILE: &str = "config.toml";
 
@@ -46,12 +48,9 @@ pub struct SyncConfig {
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub swarm: SwarmConfig,
-
     pub server: ServerConfig,
-
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
-
     #[serde(default)]
     pub discovery: DiscoveryConfig,
 }
@@ -77,13 +76,10 @@ impl NetworkConfig {
 #[non_exhaustive]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
-
     #[serde(default)]
     pub admin: Option<AdminConfig>,
-
     #[serde(default)]
     pub jsonrpc: Option<JsonRpcConfig>,
-
     #[serde(default)]
     pub websocket: Option<WsConfig>,
 }
@@ -181,6 +177,67 @@ impl ConfigFile {
 
         Ok(())
     }
+
+    /// Only write config file if changes are detected
+    pub fn save_if_changed(&self, dir: &Utf8Path) -> EyreResult<bool> {
+        let path = dir.join(CONFIG_FILE);
+        let new_content = toml::to_string_pretty(self)?;
+
+        let changed = match read_to_string(&path) {
+            Ok(existing) => existing != new_content,
+            Err(_) => true,
+        };
+
+        if changed {
+            write(&path, new_content).wrap_err_with(|| {
+                format!("failed to write configuration to {:?}", path)
+            })?;
+        }
+
+        Ok(changed)
+    }
+
+    /// Print config to stdout
+    pub fn print(&self, format: OutputFormat) -> EyreResult<()> {
+        match format {
+            OutputFormat::Pretty => {
+                println!("{:#?}", self);
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(self)?;
+                println!("{}", json);
+            }
+        }
+        Ok(())
+    }
+
+    /// Provide editable keys with example values
+    pub fn editable_keys() -> HashMap<&'static str, Vec<&'static str>> {
+        let mut map = HashMap::new();
+
+        map.insert("sync.timeout_ms", vec!["100", "1000", "5000"]);
+        map.insert("sync.interval_ms", vec!["100", "1000", "5000"]);
+        map.insert("network.bootstrap.nodes", vec!["multiaddr strings"]);
+        map.insert("datastore.path", vec!["/path/to/data"]);
+        map.insert("blobstore.path", vec!["/path/to/blob"]);
+
+        map
+    }
+
+    pub fn print_hints() {
+        let map = Self::editable_keys();
+        println!("Editable config keys and example values:");
+        for (key, values) in map {
+            println!("  {}: {:?}", key, values);
+        }
+    }
+}
+
+/// Supported output formats for config printing
+#[derive(Debug, Clone, Copy)]
+pub enum OutputFormat {
+    Pretty,
+    Json,
 }
 
 mod serde_duration {
