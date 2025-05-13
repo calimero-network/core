@@ -72,7 +72,7 @@ impl ConfigCommand {
         let config_path = path.join(CONFIG_FILE);
 
         match self.command {
-            ConfigSubcommand::Set { args } => {
+            ConfigSubcommand::Set { ref args } => {
                 let toml_str = read_to_string(&config_path)
                     .map_err(|_| eyre!("Node is not initialized in {:?}", config_path))?;
 

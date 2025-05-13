@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::fs::{read_to_string, write};
@@ -14,6 +15,16 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 
 pub const CONFIG_FILE: &str = "config.toml";
+
+
+
+
+#[derive(Debug, Clone, Copy, ValueEnum)]  // Add ValueEnum here
+#[clap(rename_all = "lower")]
+pub enum OutputFormat {
+    Json,
+    Pretty,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -233,12 +244,7 @@ impl ConfigFile {
     }
 }
 
-/// Supported output formats for config printing
-#[derive(Debug, Clone, Copy)]
-pub enum OutputFormat {
-    Pretty,
-    Json,
-}
+
 
 mod serde_duration {
     use core::time::Duration;

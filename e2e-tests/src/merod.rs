@@ -42,7 +42,7 @@ impl Merod {
         server_host: &str,
         swarm_port: u16,
         server_port: u16,
-        args: impl IntoIterator<Item = &'a str>,
+        args: Vec<&'a str>, // accept owned Vec to allow multiple iterations
     ) -> EyreResult<()> {
         create_dir_all(&self.log_dir).await?;
 
@@ -62,45 +62,52 @@ impl Merod {
                 "init",
             )
             .await?;
+
         let result = child.wait().await?;
         if !result.success() {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        let config_args: Vec<String> = args.into_iter().collect();
+        // Clone for safe reuse
+        let config_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+
         let config_changed = !config_args.is_empty();
 
         if config_changed {
-            // If there are arguments, proceed with applying the configuration changes
-            let mut child = self.run_cmd(
-                ["config", "set"]
-                    .into_iter()
-                    .chain(config_args.into_iter()),
-                "config-set",
-            )
-            .await?;
+            // Reuse original args for chaining
+            let mut child = self
+                .run_cmd(["config", "set"].into_iter().chain(args.iter().copied()), "config")
+                .await?;
+
             let result = child.wait().await?;
             if !result.success() {
                 bail!("Failed to configure node '{}'", self.name);
             }
         } else {
-            // If no arguments, print the current config file
-            let print_args = ["config", "print"];
+            // Check for output format
             let output_format = args
-                .into_iter()
+                .iter()
                 .find(|arg| arg.starts_with("--output-format"))
-                .map(|arg| arg.split('=').nth(1).unwrap_or("toml"));
+                .and_then(|arg| arg.split('=').nth(1));
 
             let print_format = match output_format {
                 Some("json") => "--format json",
                 _ => "",
             };
 
-            let mut child = self.run_cmd(
-                print_args.into_iter().chain(Some(print_format).into_iter()),
-                "config-print",
-            )
-            .await?;
+            let mut child = self
+                .run_cmd(
+                    ["config", "print"]
+                        .into_iter()
+                        .chain(if print_format.is_empty() {
+                            None
+                        } else {
+                            Some(print_format)
+                        }),
+                    "config-print",
+                )
+                .await?;
+
             let result = child.wait().await?;
             if !result.success() {
                 bail!("Failed to print node '{}' configuration", self.name);
@@ -111,7 +118,6 @@ impl Merod {
     }
 
     pub async fn hints(&self) -> EyreResult<()> {
-        // Print hints: Show valid configuration keys and possible values
         let hints = r#"
         Hints:
         - sync.timeout_ms: Valid values are any positive integer in milliseconds.
@@ -121,15 +127,12 @@ impl Merod {
         "#;
 
         self.output_writer.write_str(hints);
-
         Ok(())
     }
 
     pub async fn run(&self) -> EyreResult<()> {
         let child = self.run_cmd(["run"], "run").await?;
-
         *self.process.borrow_mut() = Some(child);
-
         Ok(())
     }
 
