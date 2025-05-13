@@ -42,7 +42,26 @@ pub struct ContextManager {
     //
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
-    // runtimes: TimedSizedCache<Exclusive<RuntimeInstance>>,
+    // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
+}
+
+impl ContextManager {
+    pub fn new(
+        datastore: Store,
+        node_client: NodeClient,
+        context_client: ContextClient,
+        external_config: ExternalClientConfig,
+    ) -> Self {
+        Self {
+            datastore,
+            node_client,
+            context_client,
+            runtime_engine: Default::default(),
+            external_config,
+
+            contexts: BTreeMap::new(),
+        }
+    }
 }
 
 impl Actor for ContextManager {

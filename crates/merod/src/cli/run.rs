@@ -1,7 +1,7 @@
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
-use calimero_network::config::NetworkConfig;
-use calimero_node::sync::SyncConfig;
+use calimero_network_primitives::config::NetworkConfig;
+// use calimero_node::sync::SyncConfig;
 use calimero_node::{start, NodeConfig};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
@@ -24,30 +24,30 @@ impl RunCommand {
 
         let config = ConfigFile::load(&path)?;
 
-        start(NodeConfig::new(
-            path.clone(),
-            config.identity.clone(),
-            NetworkConfig::new(
+        start(NodeConfig {
+            home: path.clone(),
+            identity: config.identity.clone(),
+            network: NetworkConfig::new(
                 config.identity.clone(),
                 config.network.swarm,
                 config.network.bootstrap,
                 config.network.discovery,
             ),
-            SyncConfig {
-                timeout: config.sync.timeout,
-                interval: config.sync.interval,
-            },
-            StoreConfig::new(path.join(config.datastore.path)),
-            BlobStoreConfig::new(path.join(config.blobstore.path)),
-            config.context,
-            ServerConfig::new(
+            // SyncConfig {
+            //     timeout: config.sync.timeout,
+            //     interval: config.sync.interval,
+            // },
+            datastore: StoreConfig::new(path.join(config.datastore.path)),
+            blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
+            context: config.context,
+            server: ServerConfig::new(
                 config.network.server.listen,
                 config.identity.clone(),
                 config.network.server.admin,
                 config.network.server.jsonrpc,
                 config.network.server.websocket,
             ),
-        ))
+        })
         .await
     }
 }

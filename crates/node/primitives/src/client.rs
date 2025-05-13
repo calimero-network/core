@@ -29,6 +29,22 @@ pub struct NodeClient {
 }
 
 impl NodeClient {
+    pub fn new(
+        datastore: Store,
+        blobstore: BlobManager,
+        network_client: NetworkClient,
+        node_manager: LazyRecipient<NodeMessage>,
+        event_sender: broadcast::Sender<NodeEvent>,
+    ) -> Self {
+        Self {
+            datastore,
+            blobstore,
+            network_client,
+            node_manager,
+            event_sender,
+        }
+    }
+
     pub async fn subscribe(&self, context_id: &ContextId) -> eyre::Result<()> {
         let topic = IdentTopic::new(context_id);
 

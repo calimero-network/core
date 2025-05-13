@@ -9,7 +9,6 @@
 use std::collections::hash_map::HashMap;
 
 use actix::{Actor, AsyncContext, Context};
-use calimero_network_primitives::client::NetworkClient;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::stream::CALIMERO_STREAM_PROTOCOL;
@@ -19,7 +18,7 @@ use futures_util::StreamExt;
 use libp2p::kad::QueryId;
 use libp2p::swarm::Swarm;
 use libp2p::PeerId;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
 use tracing::error;
@@ -33,27 +32,6 @@ use discovery::Discovery;
 use handlers::stream::incoming::FromIncoming;
 use handlers::stream::rendezvous::RendezvousTick;
 use handlers::stream::swarm::FromSwarm;
-
-pub async fn run(
-    config: &NetworkConfig,
-) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>)> {
-    let mgr = LazyRecipient::new();
-
-    let network_manager = NetworkManager::new(config, LazyRecipient::new())?;
-
-    let client = NetworkClient::new(mgr.clone());
-
-    let _ignored = Actor::create(|ctx| {
-        assert!(mgr.init(ctx));
-        network_manager
-    });
-
-    client.bootstrap().await?;
-
-    let (_event_sender, event_receiver) = mpsc::channel(32);
-
-    Ok((client, event_receiver))
-}
 
 #[expect(
     missing_debug_implementations,

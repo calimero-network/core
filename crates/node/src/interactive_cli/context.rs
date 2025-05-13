@@ -252,7 +252,13 @@ impl ContextCommand {
                     .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve")?;
 
-                ctx_client.delete_context(&context_id).await?;
+                let result = ctx_client.delete_context(&context_id).await?;
+
+                if !result.deleted {
+                    println!("{ind} Unable to delete context {context_id}");
+                    return Ok(());
+                }
+
                 println!("{ind} Deleted context {context_id}");
             }
             Commands::UpdateProxy { context, identity } => {

@@ -16,7 +16,7 @@ use calimero_context_config::client::protocol::{
     icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
     stellar as stellar_protocol,
 };
-use calimero_network::config::{
+use calimero_network_primitives::config::{
     BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
@@ -69,7 +69,7 @@ pub struct InitCommand {
 
     /// Port to listen on
     #[clap(long, value_name = "PORT")]
-    #[clap(default_value_t = calimero_network::config::DEFAULT_PORT)]
+    #[clap(default_value_t = calimero_network_primitives::config::DEFAULT_PORT)]
     pub swarm_port: u16,
 
     /// Host to listen on for RPC

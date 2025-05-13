@@ -1059,7 +1059,7 @@ version = "0.1.1"
 dependencies = [
  "bs58 0.5.1",
  "calimero-context",
- "calimero-network",
+ "calimero-network-primitives",
  "calimero-server",
  "camino",
  "eyre",
@@ -5357,6 +5357,7 @@ dependencies = [
  "calimero-context",
  "calimero-context-config",
  "calimero-network",
+ "calimero-network-primitives",
  "calimero-node",
  "calimero-server",
  "calimero-store",

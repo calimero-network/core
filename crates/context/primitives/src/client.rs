@@ -29,6 +29,20 @@ pub struct ContextClient {
 }
 
 impl ContextClient {
+    pub fn new(
+        datastore: Store,
+        node_client: NodeClient,
+        external_client: ExternalClient<AnyTransport>,
+        context_manager: LazyRecipient<ContextMessage>,
+    ) -> Self {
+        Self {
+            datastore,
+            node_client,
+            external_client,
+            context_manager,
+        }
+    }
+
     pub async fn create_context(
         &self,
         protocol: String,

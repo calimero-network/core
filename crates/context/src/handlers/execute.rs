@@ -172,7 +172,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 artifact: outcome.artifact,
             })
             .map_err(|err| {
-                error!(%err, "failed to execute request");
+                error!(?err, "failed to execute request");
 
                 err.downcast::<ExecuteError>()
                     .unwrap_or_else(|_| ExecuteError::InternalError)
