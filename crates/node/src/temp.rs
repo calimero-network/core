@@ -138,7 +138,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let node_manager = NodeManager::new(
         // config.sync,
-        datastore.clone(),
+        // datastore.clone(),
         blobstore.clone(),
         context_client.clone(),
         node_client.clone(),
@@ -153,12 +153,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         },
     );
 
-    let mut server = tokio::spawn(calimero_server::start(
+    let server = calimero_server::start(
         config.server,
         context_client.clone(),
         node_client.clone(),
         datastore.clone(),
-    ));
+    );
+
+    let mut server = tokio::spawn(server);
 
     let mut stdin = BufReader::new(io::stdin()).lines();
 
