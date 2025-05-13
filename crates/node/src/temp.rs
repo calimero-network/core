@@ -164,11 +164,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         },
     );
 
+    let mut server = tokio::spawn(calimero_server::start(
+        config.server,
+        context_client.clone(),
+        node_client.clone(),
+        datastore.clone(),
+    ));
+
     let mut stdin = BufReader::new(io::stdin()).lines();
 
     loop {
         tokio::select! {
             res = &mut system => res?,
+            res = &mut server => res??,
             line = stdin.next_line() => {
                 let Some(line) = line? else {
                     continue;
