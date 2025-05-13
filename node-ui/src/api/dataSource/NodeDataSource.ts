@@ -303,6 +303,11 @@ export interface CreateTokenResponse {
   data: JsonWebToken;
 }
 
+export interface CapabilitiesRequest {
+  capabilities: Array<[string, string]>; // [ContextIdentity, Capability]
+  signer_id: string;
+}
+
 export class NodeDataSource implements NodeApi {
   private client: HttpClient;
 
@@ -674,5 +679,67 @@ export class NodeDataSource implements NodeApi {
       },
       headers,
     );
+  }
+
+  async grantCapabilities(
+    contextId: string,
+    request: CapabilitiesRequest,
+  ): ApiResponse<void> {
+    try {
+      const headers: Header | null = await createAuthHeader(
+        contextId,
+        getNearEnvironment(),
+      );
+      if (!headers) {
+        return { error: { code: 401, message: t.unauthorizedErrorMessage } };
+      }
+
+      const data = {
+        capabilities: request.capabilities,
+        signer_id: request.signer_id,
+      };
+      const url = `/contexts/${contextId}/capabilities/grant`;
+      const response: ResponseData<void> = await this.client.post<void>(
+        `${getAppEndpointKey()}/admin-api${url}`,
+        data,
+        headers,
+      );
+      return response;
+    } catch (error) {
+      console.error('Error granting capabilities:', error);
+      return { error: { code: 500, message: 'Failed to grant capabilities.' } };
+    }
+  }
+
+  async revokeCapabilities(
+    contextId: string,
+    request: CapabilitiesRequest,
+  ): ApiResponse<void> {
+    try {
+      const headers: Header | null = await createAuthHeader(
+        contextId,
+        getNearEnvironment(),
+      );
+      if (!headers) {
+        return { error: { code: 401, message: t.unauthorizedErrorMessage } };
+      }
+
+      const data = {
+        capabilities: request.capabilities,
+        signer_id: request.signer_id,
+      };
+      const url = `/contexts/${contextId}/capabilities/revoke`;
+      const response: ResponseData<void> = await this.client.post<void>(
+        `${getAppEndpointKey()}/admin-api${url}`,
+        data,
+        headers,
+      );
+      return response;
+    } catch (error) {
+      console.error('Error revoking capabilities:', error);
+      return {
+        error: { code: 500, message: 'Failed to revoke capabilities.' },
+      };
+    }
   }
 }
