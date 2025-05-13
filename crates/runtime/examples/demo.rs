@@ -2,6 +2,8 @@
 
 use core::str;
 use std::env;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use calimero_runtime::logic::{VMContext, VMLimits};
@@ -10,7 +12,6 @@ use calimero_runtime::{run, Constraint};
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use serde_json::{json, to_vec as to_json_vec, Value};
-use tokio::fs::File;
 
 fn parse_payload<const PRETTY: bool>(
     payload: impl AsRef<[u8]> + ToOwned<Owned = Vec<u8>>,
@@ -35,8 +36,7 @@ fn parse_payload<const PRETTY: bool>(
     Ok(format!("{:?}", payload))
 }
 
-#[tokio::main]
-async fn main() -> EyreResult<()> {
+fn main() -> EyreResult<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         println!("Usage: {args:?} <path-to-wasm>");
@@ -45,15 +45,11 @@ async fn main() -> EyreResult<()> {
 
     let path = &args[1];
     let path = Path::new(path);
-
-    if !tokio::fs::try_exists(path).await? {
-        bail!("RPS wasm file not found");
+    if !path.exists() {
+        eyre::bail!("KV wasm file not found");
     }
 
-    let file = File::open(path).await?;
-    let mut reader = BufReader::new(file);
-    let mut file_bytes: Vec<u8> = Vec::new();
-    reader.read_to_end(&mut file_bytes).await?;
+    let file = File::open(path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
 
     let mut storage = InMemoryStorage::default();
 
@@ -93,7 +89,7 @@ async fn main() -> EyreResult<()> {
             [0; 32],
         );
 
-        let outcome = run(&file_bytes, name, cx, &mut storage, &limits)?;
+        let outcome = run(&file, name, cx, &mut storage, &limits)?;
 
         // dbg!(&outcome);
 

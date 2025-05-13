@@ -154,32 +154,27 @@ impl InitCommand {
 
         if !path.exists() {
             if root_args.home == defaults::default_node_dir() {
-                create_dir_all(&path)
+                create_dir_all(&path).await
             } else {
-                create_dir(&path)
+                create_dir(&path).await
             }
             .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
         if ConfigFile::exists(&path) {
-            match ConfigFile::load(&path).await {
-                Ok(_) => {
-                    if !self.force {
-                        warn!("Node is already initialized in {:?}", path);
-                        return Ok(());
-                    }
+            if let Err(err) = ConfigFile::load(&path).await {
+                if self.force {
+                    warn!(
+                        "Failed to load existing configuration, overwriting: {}",
+                        err
+                    );
+                } else {
+                    bail!("Failed to load existing configuration: {}", err);
                 }
-                Err(err) => {
-                    if self.force {
-                        warn!(
-                            "Failed to load existing configuration, overwriting: {}",
-                            err
-                        );
-                    } else {
-                        bail!("Failed to load existing configuration: {}", err);
-                    }
-                }
-            }
+            } else if !self.force {
+                warn!("Node is already initialized in {:?}", path);
+                return Ok(());
+            }            
         }
 
         let identity = Keypair::generate_ed25519();
