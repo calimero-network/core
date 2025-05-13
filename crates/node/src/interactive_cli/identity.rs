@@ -1,3 +1,5 @@
+use std::pin::pin;
+
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
@@ -106,11 +108,11 @@ async fn list_identities(
 
     println!("{ind} {:44} | {}", "Identity", "Owned");
 
-    let stream = ctx_client.context_members(&context_id, None).await;
-    let mut stream = Box::pin(stream);
+    let members = ctx_client.context_members(&context_id, None);
 
-    while let Some(result) = stream.try_next().await? {
-        let (identity, is_owned) = result;
+    let mut members = pin!(members);
+
+    while let Some((identity, is_owned)) = members.try_next().await? {
         let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" });
 
         for line in entry.lines() {

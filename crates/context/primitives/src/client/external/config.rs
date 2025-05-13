@@ -31,7 +31,7 @@ impl ExternalConfigClient<'_> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         let context_id = self.client.context_id.rt().expect("infallible conversion");
@@ -89,7 +89,7 @@ impl ExternalConfigClient<'_> {
         let client = self.client.mutate::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         client
@@ -127,7 +127,7 @@ impl ExternalConfigClient<'_> {
             let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
-                self.client.config.proxy_contract.as_ref().into(),
+                self.client.config.contract_id.as_ref().into(),
             );
 
             client
@@ -174,7 +174,7 @@ impl ExternalConfigClient<'_> {
             let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
-                self.client.config.proxy_contract.as_ref().into(),
+                self.client.config.contract_id.as_ref().into(),
             );
 
             client
@@ -213,7 +213,7 @@ impl ExternalConfigClient<'_> {
             let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
-                self.client.config.proxy_contract.as_ref().into(),
+                self.client.config.contract_id.as_ref().into(),
             );
 
             client
@@ -252,7 +252,7 @@ impl ExternalConfigClient<'_> {
             let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
-                self.client.config.proxy_contract.as_ref().into(),
+                self.client.config.contract_id.as_ref().into(),
             );
 
             client
@@ -291,7 +291,7 @@ impl ExternalConfigClient<'_> {
             let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
-                self.client.config.proxy_contract.as_ref().into(),
+                self.client.config.contract_id.as_ref().into(),
             );
 
             client
@@ -320,7 +320,7 @@ impl ExternalConfigClient<'_> {
             let client = self.client.mutate::<ContextConfig>(
                 self.client.config.protocol.as_ref().into(),
                 self.client.config.network_id.as_ref().into(),
-                self.client.config.proxy_contract.as_ref().into(),
+                self.client.config.contract_id.as_ref().into(),
             );
 
             client
@@ -337,7 +337,7 @@ impl ExternalConfigClient<'_> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         let application = client
@@ -359,7 +359,7 @@ impl ExternalConfigClient<'_> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         let revision = client
@@ -373,7 +373,7 @@ impl ExternalConfigClient<'_> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         let members = client
@@ -392,11 +392,11 @@ impl ExternalConfigClient<'_> {
         Ok(members)
     }
 
-    pub async fn has_member(&self, identity: PublicKey) -> eyre::Result<bool> {
+    pub async fn has_member(&self, identity: &PublicKey) -> eyre::Result<bool> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         let has_member = client
@@ -413,7 +413,7 @@ impl ExternalConfigClient<'_> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         let revision = client
@@ -431,7 +431,7 @@ impl ExternalConfigClient<'_> {
     //     let client = self.client.query::<ContextConfig>(
     //         self.client.config.protocol.as_ref().into(),
     //         self.client.config.network_id.as_ref().into(),
-    //         self.client.config.proxy_contract.as_ref().into(),
+    //         self.client.config.contract_id.as_ref().into(),
     //     );
 
     //     let identities = identities
@@ -459,7 +459,7 @@ impl ExternalConfigClient<'_> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
-            self.client.config.proxy_contract.as_ref().into(),
+            self.client.config.contract_id.as_ref().into(),
         );
 
         let proxy_contract = client

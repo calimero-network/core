@@ -131,7 +131,7 @@ impl Prepared<'_> {
 
         let external_config = ContextConfigParams {
             protocol: external_config.protocol.clone().into(),
-            network_id: external_config.protocol.clone().into(),
+            network_id: external_config.network.clone().into(),
             contract_id: external_config.contract_id.clone().into(),
             // vv not used for context creation --
             proxy_contract: "".into(),
