@@ -1,12 +1,14 @@
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::pin::pin;
 use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
 use calimero_server_primitives::ws::{
@@ -23,7 +25,7 @@ use serde_json::{
     to_value as to_json_value, Value,
 };
 use tokio::spawn;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
 
 mod subscribe;
@@ -55,13 +57,13 @@ pub(crate) struct ConnectionState {
 }
 
 pub(crate) struct ServiceState {
-    node_events: broadcast::Sender<NodeEvent>,
+    node_client: NodeClient,
     connections: RwLock<HashMap<ConnectionId, ConnectionState>>,
 }
 
 pub(crate) fn service(
     config: &ServerConfig,
-    node_events: broadcast::Sender<NodeEvent>,
+    node_client: NodeClient,
 ) -> Option<(&'static str, MethodRouter)> {
     let _config = match &config.websocket {
         Some(config) if config.enabled => config,
@@ -78,7 +80,7 @@ pub(crate) fn service(
     }
 
     let state = Arc::new(ServiceState {
-        node_events,
+        node_client,
         connections: RwLock::default(),
     });
 
@@ -116,7 +118,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     drop(spawn(handle_node_events(
         connection_id,
         Arc::clone(&state),
-        state.node_events.subscribe(),
         commands_sender.clone(),
     )));
 
@@ -170,10 +171,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 async fn handle_node_events(
     connection_id: ConnectionId,
     state: Arc<ServiceState>,
-    mut node_events_receiver: broadcast::Receiver<NodeEvent>,
     command_sender: mpsc::Sender<Command>,
 ) {
-    while let Ok(event) = node_events_receiver.recv().await {
+    let events = state.node_client.receive_events();
+
+    let mut events = pin!(events);
+
+    while let Some(event) = events.next().await {
         let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned()
         else {
             error!(%connection_id, "Unexpected state, client_id not found in client state map");

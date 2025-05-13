@@ -10,14 +10,12 @@ use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::events::NodeEvent;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use multiaddr::Protocol;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
@@ -73,7 +71,6 @@ pub async fn start(
     config: ServerConfig,
     ctx_client: ContextClient,
     node_client: NodeClient,
-    node_events: broadcast::Sender<NodeEvent>,
     store: Store,
 ) -> EyreResult<()> {
     let mut config = config;
@@ -130,7 +127,7 @@ pub async fn start(
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, handler)) = jsonrpc::service(&config, node_client, ctx_client) {
+        if let Some((path, handler)) = jsonrpc::service(&config, node_client.clone(), ctx_client) {
             app = app
                 .route(path, handler.clone())
                 .route_layer(JwtLayer::new(store.clone()))
@@ -148,7 +145,7 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = ws::service(&config, node_events.clone()) {
+        if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
             app = app.route(path, handler);
 
             serviced = true;

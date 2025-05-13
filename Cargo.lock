@@ -1339,6 +1339,7 @@ name = "calimero-node-primitives"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "async-stream",
  "borsh",
  "calimero-blobstore",
  "calimero-crypto",

@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+async-stream.workspace = true
 borsh.workspace = true
 camino.workspace = true
 eyre.workspace = true
