@@ -90,21 +90,17 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let mut arbs = pin!(arbs);
 
-    let network_manager = NetworkManager::new(&config.network, network_event_recipient)?;
+    let network_manager = NetworkManager::new(&config.network, network_event_recipient.clone())?;
+
+    let network_client = NetworkClient::new(network_recipient.clone());
 
     let _ignored = Actor::start_in_arbiter(
         &arbs.try_next().await?.ok_or_eyre("failed to get arbiter")?,
-        {
-            let network_recipient = network_recipient.clone();
-
-            move |ctx| {
-                assert!(network_recipient.init(ctx));
-                network_manager
-            }
+        move |ctx| {
+            assert!(network_recipient.init(ctx));
+            network_manager
         },
     );
-
-    let network_client = NetworkClient::new(network_recipient);
 
     let (event_sender, _) = broadcast::channel(32);
 
@@ -134,13 +130,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let _ignored = Actor::start_in_arbiter(
         &arbs.try_next().await?.ok_or_eyre("failed to get arbiter")?,
-        {
-            let context_recipient = context_recipient.clone();
-
-            move |ctx| {
-                assert!(context_recipient.init(ctx));
-                context_manager
-            }
+        move |ctx| {
+            assert!(context_recipient.init(ctx));
+            context_manager
         },
     );
 
@@ -154,13 +146,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let _ignored = Actor::start_in_arbiter(
         &arbs.try_next().await?.ok_or_eyre("failed to get arbiter")?,
-        {
-            let node_recipient = node_recipient.clone();
-
-            move |ctx| {
-                assert!(node_recipient.init(ctx));
-                node_manager
-            }
+        move |ctx| {
+            assert!(node_recipient.init(ctx));
+            assert!(network_event_recipient.init(ctx));
+            node_manager
         },
     );
 

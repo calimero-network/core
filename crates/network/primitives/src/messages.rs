@@ -149,5 +149,5 @@ pub enum NetworkEvent {
 }
 
 impl actix::Message for NetworkEvent {
-    type Result = eyre::Result<()>;
+    type Result = ();
 }
