@@ -18,7 +18,7 @@ use calimero_store::Store;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(multicall = true, bin_name = "{repl}")]
+#[command(multicall = true)]
 #[non_exhaustive]
 pub struct RootCommand {
     #[command(subcommand)]
@@ -44,6 +44,9 @@ pub async fn handle_line(
     datastore: Store,
     line: String,
 ) -> eyre::Result<()> {
+    // todo! use shell parsing
+    // todo! employ clap completions
+
     let mut args = line.split_whitespace().peekable();
 
     if args.peek().is_none() {
