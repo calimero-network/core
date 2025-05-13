@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use calimero_context_config::client::env::config::ContextConfig;
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{self as types, Capability};
@@ -10,13 +12,13 @@ use super::ExternalClient;
 const MAX_RETRIES: u8 = 3;
 
 #[derive(Debug)]
-pub struct ExternalConfigClient<'a, 'b> {
+pub struct ExternalConfigClient<'a> {
     nonce: Option<u64>,
-    client: &'a ExternalClient<'b>,
+    client: &'a ExternalClient<'a>,
 }
 
 impl ExternalClient<'_> {
-    pub const fn config(&self) -> ExternalConfigClient<'_, '_> {
+    pub const fn config(&self) -> ExternalConfigClient<'_> {
         ExternalConfigClient {
             nonce: None,
             client: self,
@@ -24,7 +26,7 @@ impl ExternalClient<'_> {
     }
 }
 
-impl ExternalConfigClient<'_, '_> {
+impl ExternalConfigClient<'_> {
     pub async fn fetch_nonce(&self, public_key: &PublicKey) -> eyre::Result<u64> {
         let client = self.client.query::<ContextConfig>(
             self.client.config.protocol.as_ref().into(),
@@ -43,13 +45,14 @@ impl ExternalConfigClient<'_, '_> {
         Ok(nonce)
     }
 
-    async fn with_nonce<T, E>(
+    async fn with_nonce<T, E, F>(
         &mut self,
         public_key: &PublicKey,
-        f: impl AsyncFn(u64) -> Result<T, E>,
+        f: impl Fn(u64) -> F,
     ) -> eyre::Result<T>
     where
         E: Into<eyre::Report>,
+        F: Future<Output = Result<T, E>>,
     {
         let retries = MAX_RETRIES + (self.nonce.is_none() as u8);
 
@@ -153,37 +156,34 @@ impl ExternalConfigClient<'_, '_> {
         public_key: &PublicKey,
         identities: &[PublicKey],
     ) -> eyre::Result<()> {
-        // let identity = self
-        //     .client
-        //     .context_client()
-        //     .get_identity(&self.client.context_id, public_key)?
-        //     .ok_or_eyre("identity not found")?;
+        let identity = self
+            .client
+            .context_client()
+            .get_identity(&self.client.context_id, public_key)?
+            .ok_or_eyre("identity not found")?;
 
-        // let private_key = identity.private_key()?;
+        let private_key = identity.private_key()?;
 
-        // let identities = identities
-        //     .iter()
-        //     .map(|e| e.rt())
-        //     .collect::<Result<Vec<_>, _>>()
-        //     .expect("infallible conversion");
+        let identities = identities
+            .iter()
+            .map(|e| e.rt())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("infallible conversion");
 
-        // fixme! figure out lifetime issues
         self.with_nonce(public_key, async |nonce| {
-            // let client = self.client.mutate::<ContextConfig>(
-            //     self.client.config.protocol.as_ref().into(),
-            //     self.client.config.network_id.as_ref().into(),
-            //     self.client.config.proxy_contract.as_ref().into(),
-            // );
+            let client = self.client.mutate::<ContextConfig>(
+                self.client.config.protocol.as_ref().into(),
+                self.client.config.network_id.as_ref().into(),
+                self.client.config.proxy_contract.as_ref().into(),
+            );
 
-            // client
-            //     .add_members(
-            //         self.client.context_id.rt().expect("infallible conversion"),
-            //         &identities,
-            //     )
-            //     .send(*private_key, nonce)
-            //     .await
-
-            eyre::Ok(())
+            client
+                .add_members(
+                    self.client.context_id.rt().expect("infallible conversion"),
+                    &identities,
+                )
+                .send(*private_key, nonce)
+                .await
         })
         .await?;
 

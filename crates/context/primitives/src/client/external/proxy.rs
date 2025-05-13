@@ -8,17 +8,17 @@ use eyre::OptionExt;
 use super::ExternalClient;
 
 #[derive(Debug)]
-pub struct ExternalProxyClient<'a, 'b> {
-    client: &'a ExternalClient<'b>,
+pub struct ExternalProxyClient<'a> {
+    client: &'a ExternalClient<'a>,
 }
 
 impl ExternalClient<'_> {
-    pub fn proxy(&self) -> ExternalProxyClient<'_, '_> {
+    pub fn proxy(&self) -> ExternalProxyClient<'_> {
         ExternalProxyClient { client: self }
     }
 }
 
-impl ExternalProxyClient<'_, '_> {
+impl ExternalProxyClient<'_> {
     pub async fn propose(
         &self,
         public_key: &PublicKey,
