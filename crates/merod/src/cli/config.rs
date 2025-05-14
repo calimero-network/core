@@ -1,194 +1,112 @@
-// crates/merod/src/cli/config.rs
-
-use std::fs::{read_to_string, write};
-use std::path::PathBuf;
-
-use camino::Utf8PathBuf;
-use colored::*;
-use eyre::{bail, eyre, Result as EyreResult};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::fs::File;
+use std::io::{self, Write};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use toml_edit::{DocumentMut, Item};
 
-use crate::cli::RootArgs;
-use config::{ConfigFile, OutputFormat};
-
-#[derive(Debug, clap::Subcommand)]
-pub enum ConfigSubcommand {
-    /// View or modify configuration values
-    #[command(alias = "set")]
-    Set {
-        /// Key-value pairs to edit, or schema hint keys (key?)
-        #[arg(value_name = "KEY=VALUE / KEY?")]
-        args: Vec<String>,
-
-        /// Format to print output [default|toml|json]
-        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
-        print: OutputFormat,
-
-        /// Save changes to file
-        #[arg(short, long)]
-        save: bool,
-    },
-
-    /// Print the config file
-    Print {
-        /// Output format [default|toml|json]
-        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
-        format: OutputFormat,
-
-        /// Specific keys to filter and print
-        #[arg(value_name = "KEYS")]
-        filter: Vec<String>,
-
-        /// Optional output path
-        #[arg(long)]
-        output: Option<PathBuf>,
-    },
-
-    /// Show config schema hints
-    Hints,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Item {
+    Value(String),
+    Map(HashMap<String, Item>),
 }
 
-#[derive(Debug, clap::Args)]
-pub struct ConfigCommand {
-    #[command(subcommand)]
-    pub command: ConfigSubcommand,
-}
+// Function to navigate and set a value in the nested HashMap
+fn set_value_in_config(current: &mut HashMap<String, Item>, key_parts: &[&str], value: String) -> Result<(), String> {
+    let mut current_map = current;
 
-impl ConfigCommand {
-    pub fn run(self, root_args: &RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-        if !ConfigFile::exists(&path) {
-            bail!("Node is not initialized in {:?}", path);
-        }
-
-        let config_path = path.join(config::CONFIG_FILE);
-
-        match self.command {
-            ConfigSubcommand::Hints => {
-                ConfigFile::print_hints();
+    // Iterate through key parts to navigate the nested structure
+    for &key in &key_parts[..key_parts.len() - 1] {
+        match current_map.get_mut(key) {
+            Some(Item::Map(map)) => {
+                current_map = map; // Navigate deeper if it's a Map
             }
-
-            ConfigSubcommand::Print { format, filter, output } => {
-                let config = ConfigFile::load(&path)?;
-                if filter.is_empty() {
-                    let output_str = match format {
-                        OutputFormat::Pretty => format!("{:#?}", config),
-                        OutputFormat::Json => serde_json::to_string_pretty(&config)?,
-                    };
-
-                    if let Some(out) = output {
-                        write(&out, output_str)?;
-                        eprintln!("Config written to {:?}", out);
-                    } else {
-                        println!("{}", output_str);
-                    }
-                } else {
-                    for key in filter {
-                        if let Some(value) = config.get_value(&key) {
-                            println!("{} = {}", key, value);
-                        } else {
-                            eprintln!("Key `{}` not found in config", key);
-                        }
-                    }
-                }
+            Some(_) => {
+                // If we find a value but not a map, return an error
+                return Err(format!("Expected a map at key '{}', but found a value", key));
             }
-
-            ConfigSubcommand::Set { args, print, save } => {
-                let mut hint_keys = vec![];
-                let mut kv_edits = vec![];
-
-                for arg in args {
-                    if arg.ends_with('?') {
-                        hint_keys.push(arg.trim_end_matches('?').to_string());
-                    } else if let Some((k, v)) = arg.split_once('=') {
-                        kv_edits.push((k.to_string(), v.to_string()));
-                    } else {
-                        eprintln!("Invalid argument format: {}", arg);
-                        continue;
-                    }
-                }
-
-                if !hint_keys.is_empty() {
-                    for key in hint_keys {
-                        ConfigFile::print_hint_for_key(&key);
-                    }
-                    return Ok(()); // Don't apply any changes if hints are requested
-                }
-
-                let original = read_to_string(&config_path)?;
-                let mut doc = original.parse::<DocumentMut>()?;
-
-                let mut changed = false;
-                let mut diffs = vec![];
-
-                for (key, val) in kv_edits {
-                    let parts: Vec<&str> = key.split('.').collect();
-                    let mut current = doc.as_item_mut();
-
-                    for part in &parts[..parts.len() - 1] {
-                        current = current
-                            .as_table_like_mut()
-                            .unwrap()
-                            .entry(part)
-                            .or_insert(Item::Table(toml_edit::Table::new()));
-                    }
-
-                    let last = parts.last().unwrap();
-                    let new_value = toml_edit::value(val.clone());
-
-                    let old_item = current.get(last).cloned();
-                    if old_item != Some(Item::Value(new_value.clone())) {
-                        changed = true;
-                        diffs.push((key.clone(), old_item, Some(new_value.clone())));
-                        current[last] = Item::Value(new_value);
-                    }
-                }
-
-                if changed {
-                    // Validate changes
-                    self.validate_toml(&doc)?;
-
-                    match print {
-                        OutputFormat::Pretty => {
-                            for (k, old, new) in &diffs {
-                                if let Some(o) = old {
-                                    eprintln!("{}", format!("-{} = {}", k, o).red());
-                                }
-                                if let Some(n) = new {
-                                    eprintln!("{}", format!("+{} = {}", k, n).green());
-                                }
-                            }
-                        }
-                        OutputFormat::Json => {
-                            let json_obj: serde_json::Value = toml::de::from_str(&doc.to_string())?;
-                            println!("{}", serde_json::to_string_pretty(&json_obj)?);
-                        }
-                    }
-
-                    eprintln!(
-                        "{}",
-                        "note: if this looks right, use `-s, --save` to persist these modifications"
-                            .yellow()
-                    );
-
-                    if save {
-                        write(&config_path, doc.to_string())?;
-                        eprintln!("Changes saved to config.");
-                    }
-                } else {
-                    eprintln!("No changes detected.");
+            None => {
+                // If the key does not exist, insert a new Map at that level
+                let new_map = HashMap::new();
+                current_map.insert(key.to_string(), Item::Map(new_map));
+                if let Item::Map(ref mut map) = current_map[key] {
+                    current_map = map; // Navigate into the new map
                 }
             }
         }
-
-        Ok(())
     }
 
-    fn validate_toml(&self, doc: &DocumentMut) -> EyreResult<()> {
-        let tmp_path = std::env::temp_dir().join(config::CONFIG_FILE);
-        write(&tmp_path, doc.to_string())?;
-        drop(ConfigFile::load(&Utf8PathBuf::from_path_buf(tmp_path)?));
-        Ok(())
+    // Set the value for the final key part
+    let last_key = key_parts[key_parts.len() - 1];
+    current_map.insert(last_key.to_string(), Item::Value(value));
+
+    Ok(())
+}
+
+// Function to print the configuration based on the format
+fn print_config(config: &HashMap<String, Item>, print_format: &str) {
+    match print_format {
+        "json" => {
+            let json = serde_json::to_string(config).unwrap();
+            println!("{}", json);
+        },
+        "toml" => {
+            // Use your own TOML serialization here
+            let toml = toml::to_string(config).unwrap();
+            println!("{}", toml);
+        },
+        "default" => {
+            for (key, value) in config.iter() {
+                match value {
+                    Item::Value(val) => println!("{} = {}", key, val),
+                    Item::Map(map) => {
+                        println!("{} = {{", key);
+                        print_config(map, "default");
+                        println!("}}");
+                    }
+                }
+            }
+        },
+        _ => {
+            eprintln!("Unsupported print format: {}", print_format);
+        }
     }
+}
+
+// Main function to parse and run commands
+fn main() {
+    // Example configuration structure
+    let mut config: HashMap<String, Item> = HashMap::new();
+
+    // Simulate setting a value in a nested configuration
+    let key_parts = ["a", "b", "c"];
+    let value = "new_value".to_string();
+    if let Err(e) = set_value_in_config(&mut config, &key_parts, value) {
+        eprintln!("Error: {}", e);
+    } else {
+        println!("Config updated successfully!");
+    }
+
+    // Example: Print the config in JSON format
+    println!("Printing configuration in JSON format:");
+    print_config(&config, "json");
+
+    // Example: Save the updated config to a file if needed
+    if let Err(e) = save_config_to_file(&config, "config.toml") {
+        eprintln!("Error saving config to file: {}", e);
+    }
+}
+
+// Function to save the config to a file
+fn save_config_to_file(config: &HashMap<String, Item>, path: &str) -> io::Result<()> {
+    let file = File::create(path)?;
+    let mut writer = io::BufWriter::new(file);
+
+    // Serialize to TOML or JSON and write to the file
+    let toml = toml::to_string(config).unwrap();  // Ensure proper error handling here
+    writer.write_all(toml.as_bytes())?;
+    writer.flush()?;
+
+    println!("Configuration saved to {}", path);
+    Ok(())
 }
