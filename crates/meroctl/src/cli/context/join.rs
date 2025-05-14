@@ -1,6 +1,6 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
@@ -17,10 +17,10 @@ use crate::output::Report;
 #[command(about = "Join an application context")]
 pub struct JoinCommand {
     #[clap(
-        value_name = "PRIVATE_KEY",
-        help = "The private key for signing the join context request"
+        value_name = "PUBLIC_KEY",
+        help = "The public key of the identity joining the context (obtained from 'context identity generate')"
     )]
-    pub private_key: PrivateKey,
+    pub public_key: PublicKey,
     #[clap(
         value_name = "INVITE",
         help = "The invitation payload for joining the context"
@@ -59,7 +59,7 @@ impl JoinCommand {
             &Client::new(),
             multiaddr_to_url(multiaddr, "admin-api/dev/contexts/join")?,
             Some(JoinContextRequest::new(
-                self.private_key,
+                self.public_key,
                 self.invitation_payload,
             )),
             &config.identity,
