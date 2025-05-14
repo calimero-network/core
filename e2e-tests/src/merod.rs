@@ -8,6 +8,7 @@ use tokio::io::copy;
 use tokio::process::{Child, Command};
 
 use crate::output::OutputWriter;
+use crate::config::configHints::CONFIG_HINTS;  // Importing from configHints.rs
 
 pub struct Merod {
     pub name: String,
@@ -118,15 +119,13 @@ impl Merod {
     }
 
     pub async fn hints(&self) -> EyreResult<()> {
-        let hints = r#"
-        Hints:
-        - sync.timeout_ms: Valid values are any positive integer in milliseconds.
-        - sync.interval_ms: Valid values are any positive integer in milliseconds.
-        - network.swarm.port: The port for the network swarm, valid range is 1024-65535.
-        - network.server.listen: A list of addresses the server will listen on (e.g., "127.0.0.1:8080").
-        "#;
+        self.output_writer.write_str("Hints:");
 
-        self.output_writer.write_str(hints);
+        for hint in CONFIG_HINTS {
+            let line = format!("  - {}: {}", hint.key, hint.description);
+            self.output_writer.write_str(&line);
+        }
+
         Ok(())
     }
 

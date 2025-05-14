@@ -16,8 +16,7 @@ use serde_json;
 
 pub const CONFIG_FILE: &str = "config.toml";
 
-
-
+pub mod configHints;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]  // Add ValueEnum here
 #[clap(rename_all = "lower")]
@@ -243,8 +242,6 @@ impl ConfigFile {
         }
     }
 }
-
-
 
 mod serde_duration {
     use core::time::Duration;

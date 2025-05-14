@@ -10,13 +10,16 @@ use crate::cli::RootCommand;
 
 mod cli;
 mod defaults;
+mod config; // Make sure config.rs is included
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
     setup()?;
 
+    // Parse the root command
     let command = RootCommand::parse();
 
+    // Execute the parsed command (which includes `ConfigCommand`)
     command.run().await
 }
 
