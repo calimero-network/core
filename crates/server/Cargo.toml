@@ -67,3 +67,5 @@ workspace = true
 
 [build-dependencies]
 cached-path = { workspace = true }
+reqwest = { workspace = true, features = ["json", "blocking"] }
+serde = { workspace = true, features = ["derive"] }
