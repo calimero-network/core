@@ -25,14 +25,15 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info};
 
 use crate::interactive_cli::handle_line;
-// use crate::sync::SyncConfig;
+use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
 
+#[derive(Debug)]
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
     pub network: NetworkConfig,
-    // pub sync: SyncConfig,
+    pub sync: SyncConfig,
     pub datastore: StoreConfig,
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
@@ -136,10 +137,16 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         },
     );
 
+    let sync_manager = SyncManager::new(
+        config.sync,
+        node_client.clone(),
+        context_client.clone(),
+        network_client.clone(),
+    );
+
     let node_manager = NodeManager::new(
-        // config.sync,
-        // datastore.clone(),
         blobstore.clone(),
+        sync_manager.clone(),
         context_client.clone(),
         node_client.clone(),
     );
@@ -160,12 +167,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
     );
 
+    let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
 
     let mut stdin = BufReader::new(io::stdin()).lines();
 
     loop {
         tokio::select! {
+            _ = &mut sync => {},
             res = &mut system => res?,
             res = &mut server => res??,
             line = stdin.next_line() => {

@@ -13,28 +13,23 @@ use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
-use calimero_store::Store;
 
 pub mod handlers;
 pub mod interactive_cli;
-pub mod runtime_compat;
-// pub mod sync;
-pub mod types;
+pub mod sync;
 // fixme! here temporarily until interactive_cli moves to merod
 mod temp;
 
 use futures_util::StreamExt;
-// use sync::SyncConfig;
+use sync::SyncManager;
 pub use temp::{start, NodeConfig};
 use tokio::sync::Mutex;
 use tracing::error;
 
 #[derive(Debug)]
 pub struct NodeManager {
-    // sync_config: SyncConfig,
-    //
-    // datastore: Store,
     blobstore: BlobManager,
+    sync_manager: SyncManager,
 
     context_client: ContextClient,
     node_client: NodeClient,
@@ -47,16 +42,14 @@ pub struct NodeManager {
 
 impl NodeManager {
     pub fn new(
-        // sync_config: SyncConfig,
-        // datastore: Store,
         blobstore: BlobManager,
+        sync_manager: SyncManager,
         context_client: ContextClient,
         node_client: NodeClient,
     ) -> Self {
         Self {
-            // sync_config,
-            // datastore,
             blobstore,
+            sync_manager,
             context_client,
             node_client,
 

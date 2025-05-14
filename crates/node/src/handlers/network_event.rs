@@ -10,6 +10,7 @@ use eyre::bail;
 use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
+use crate::sync::SyncManager;
 use crate::NodeManager;
 
 impl Handler<NetworkEvent> for NodeManager {
@@ -95,11 +96,13 @@ impl Handler<NetworkEvent> for NodeManager {
                         nonce,
                     } => {
                         let context_client = self.context_client.clone();
+                        let sync_manager = self.sync_manager.clone();
 
                         let _ignored = ctx.spawn(
                             async move {
                                 if let Err(err) = handle_state_delta(
                                     context_client,
+                                    sync_manager,
                                     source,
                                     context_id,
                                     author_id,
@@ -123,9 +126,16 @@ impl Handler<NetworkEvent> for NodeManager {
             NetworkEvent::StreamOpened { peer_id, stream } => {
                 debug!(%peer_id, "Stream opened!");
 
-                // self.handle_opened_stream(stream).await;
+                let sync_manager = self.sync_manager.clone();
 
-                debug!(%peer_id, "Stream closed!");
+                let _ignored = ctx.spawn(
+                    async move {
+                        sync_manager.handle_opened_stream(stream).await;
+
+                        debug!(%peer_id, "Stream closed!");
+                    }
+                    .into_actor(self),
+                );
             }
         }
     }
@@ -133,6 +143,7 @@ impl Handler<NetworkEvent> for NodeManager {
 
 async fn handle_state_delta(
     context_client: ContextClient,
+    sync_manager: SyncManager,
     source: PeerId,
     context_id: ContextId,
     author_id: PublicKey,
@@ -162,8 +173,7 @@ async fn handle_state_delta(
     else {
         debug!(%author_id, %context_id, "Missing sender key, initiating sync");
 
-        return Ok(());
-        // return self.initiate_sync(context_id, source).await;
+        return sync_manager.initiate_sync(context_id, source).await;
     };
 
     let shared_key = SharedKey::from_sk(&sender_key);
@@ -171,8 +181,7 @@ async fn handle_state_delta(
     let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
         debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
 
-        return Ok(());
-        // return self.initiate_sync(context_id, source).await;
+        return sync_manager.initiate_sync(context_id, source).await;
     };
 
     let outcome = context_client
@@ -186,8 +195,7 @@ async fn handle_state_delta(
 
     if let Some(derived_root_hash) = outcome.root_hash {
         if derived_root_hash != root_hash {
-            return Ok(());
-            // return self.initiate_sync(context_id, source).await;
+            return sync_manager.initiate_sync(context_id, source).await;
         }
     }
 

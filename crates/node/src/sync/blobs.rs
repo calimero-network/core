@@ -1,5 +1,6 @@
 use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
-use calimero_network::stream::Stream;
+use calimero_network_primitives::stream::Stream;
+use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
@@ -10,11 +11,9 @@ use rand::{thread_rng, Rng};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::{recv, send, Sequencer};
-use crate::types::{InitPayload, MessagePayload, StreamMessage};
-use crate::Node;
+use super::{Sequencer, SyncManager};
 
-impl Node {
+impl SyncManager {
     pub(super) async fn initiate_blob_share_process(
         &self,
         context: &Context,
@@ -32,7 +31,7 @@ impl Node {
 
         let our_nonce = thread_rng().gen::<Nonce>();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
@@ -44,7 +43,7 @@ impl Node {
         )
         .await?;
 
-        let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
+        let Some(ack) = self.recv(stream, self.sync_config.timeout, None).await? else {
             bail!("connection closed while awaiting blob share handshake");
         };
 
@@ -76,15 +75,16 @@ impl Node {
         };
 
         let private_key = self
-            .ctx_manager
-            .get_private_key(context.id, our_identity)?
+            .context_client
+            .get_identity(&context.id, &our_identity)?
+            .and_then(|i| i.sender_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
 
         let (tx, mut rx) = mpsc::channel(1);
 
-        let add_task = self.ctx_manager.add_blob(
+        let add_task = self.node_client.add_blob(
             poll_fn(|cx| rx.poll_recv(cx)).into_async_read(),
             Some(size),
             None,
@@ -93,12 +93,13 @@ impl Node {
         let read_task = async {
             let mut sequencer = Sequencer::default();
 
-            while let Some(msg) = recv(
-                stream,
-                self.sync_config.timeout,
-                Some((shared_key, their_nonce)),
-            )
-            .await?
+            while let Some(msg) = self
+                .recv(
+                    stream,
+                    self.sync_config.timeout,
+                    Some((shared_key, their_nonce)),
+                )
+                .await?
             {
                 let (sequence_id, chunk, their_new_nonce) = match msg {
                     StreamMessage::OpaqueError => bail!("other peer ran into an error"),
@@ -165,21 +166,22 @@ impl Node {
             "Received blob share request",
         );
 
-        let Some(mut blob) = self.ctx_manager.get_blob(blob_id)? else {
+        let Some(mut blob) = self.node_client.get_blob(&blob_id)? else {
             warn!(%blob_id, "blob not found");
 
             return Ok(());
         };
 
         let private_key = self
-            .ctx_manager
-            .get_private_key(context.id, our_identity)?
+            .context_client
+            .get_identity(&context.id, &our_identity)?
+            .and_then(|i| i.sender_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
         let mut our_nonce = thread_rng().gen::<Nonce>();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
@@ -195,7 +197,7 @@ impl Node {
 
         while let Some(chunk) = blob.try_next().await? {
             let our_new_nonce = thread_rng().gen::<Nonce>();
-            send(
+            self.send(
                 stream,
                 &StreamMessage::Message {
                     sequence_id: sequencer.next(),
@@ -211,7 +213,7 @@ impl Node {
             our_nonce = our_new_nonce;
         }
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Message {
                 sequence_id: sequencer.next(),

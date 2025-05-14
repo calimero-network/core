@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
 use calimero_crypto::{Nonce, SharedKey};
-use calimero_network::stream::Stream;
+use calimero_network_primitives::stream::Stream;
+use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
@@ -10,11 +11,9 @@ use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
 use tracing::debug;
 
-use crate::sync::{recv, send, Sequencer};
-use crate::types::{InitPayload, MessagePayload, StreamMessage};
-use crate::Node;
+use super::{Sequencer, SyncManager};
 
-impl Node {
+impl SyncManager {
     pub(super) async fn initiate_state_sync_process(
         &self,
         context: &mut Context,
@@ -31,7 +30,7 @@ impl Node {
 
         let our_nonce = thread_rng().gen::<Nonce>();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
@@ -49,7 +48,7 @@ impl Node {
         let mut triple = None;
 
         for _ in 1..=2 {
-            let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
+            let Some(ack) = self.recv(stream, self.sync_config.timeout, None).await? else {
                 bail!("connection closed while awaiting state sync handshake");
             };
 
@@ -120,14 +119,15 @@ impl Node {
         let mut sqx_out = Sequencer::default();
 
         let private_key = self
-            .ctx_manager
-            .get_private_key(context.id, our_identity)?
+            .context_client
+            .get_identity(&context.id, &our_identity)?
+            .and_then(|i| i.sender_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
         let our_new_nonce = thread_rng().gen::<Nonce>();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
@@ -185,11 +185,11 @@ impl Node {
         }
 
         let application = self
-            .ctx_manager
+            .node_client
             .get_application(&context.application_id)?
             .ok_or_eyre("fatal: the application (even if just a sparse reference) should exist")?;
 
-        if !self.ctx_manager.has_blob_available(application.blob)? {
+        if !self.node_client.has_blob(&application.blob)? {
             debug!(
                 context_id=%context.id,
                 application_id=%context.application_id,
@@ -210,7 +210,7 @@ impl Node {
 
         let our_nonce = thread_rng().gen::<Nonce>();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
@@ -237,8 +237,9 @@ impl Node {
         }
 
         let private_key = self
-            .ctx_manager
-            .get_private_key(context.id, our_identity)?
+            .context_client
+            .get_identity(&context.id, &our_identity)?
+            .and_then(|i| i.sender_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
@@ -280,12 +281,13 @@ impl Node {
 
         let mut sqx_in = Sequencer::default();
 
-        while let Some(msg) = recv(
-            stream,
-            self.sync_config.timeout,
-            Some((shared_key, their_nonce)),
-        )
-        .await?
+        while let Some(msg) = self
+            .recv(
+                stream,
+                self.sync_config.timeout,
+                Some((shared_key, their_nonce)),
+            )
+            .await?
         {
             let (sequence_id, artifact, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
@@ -308,14 +310,14 @@ impl Node {
             }
 
             let outcome = self
+                .context_client
                 .execute(
-                    context,
-                    "__calimero_sync_next",
+                    &context.id,
+                    "__calimero_sync_next".to_owned(),
                     artifact.into_owned(),
-                    our_identity,
+                    &our_identity,
                 )
-                .await?
-                .ok_or_eyre("the application was not found??")?;
+                .await?;
 
             debug!(
                 context_id=%context.id,
@@ -327,7 +329,7 @@ impl Node {
                 .then(|| thread_rng().gen())
                 .unwrap_or_default();
 
-            send(
+            self.send(
                 stream,
                 &StreamMessage::Message {
                     sequence_id: sqx_out.next(),
