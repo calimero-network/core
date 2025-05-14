@@ -1,11 +1,8 @@
 use calimero_context_primitives::messages::execute;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use eyre::Error as EyreError;
-use serde::de::Error as SerdeError;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
-use thiserror::Error as ThisError;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use thiserror::Error;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -28,7 +25,7 @@ impl Serialize for Version {
     where
         S: Serializer,
     {
-        match *self {
+        match self {
             Self::TwoPointZero => serializer.serialize_str("2.0"),
         }
     }
@@ -42,7 +39,7 @@ impl<'de> Deserialize<'de> for Version {
         let version_str = String::deserialize(deserializer)?;
         match version_str.as_str() {
             "2.0" => Ok(Self::TwoPointZero),
-            _ => Err(SerdeError::custom("Invalid JSON-RPC version")),
+            _ => Err(de::Error::custom("Invalid JSON-RPC version")),
         }
     }
 }
@@ -108,19 +105,19 @@ pub enum ResponseBody {
     clippy::exhaustive_structs,
     reason = "This will never have any other fields"
 )]
-pub struct ResponseBodyResult(pub Value);
+pub struct ResponseBodyResult(pub serde_json::Value);
 
-#[derive(Debug, Deserialize, Serialize, ThisError)]
+#[derive(Debug, Deserialize, Serialize, Error)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum ResponseBodyError {
     #[error(transparent)]
     ServerError(ServerResponseError),
     #[error("handler error: {0}")]
-    HandlerError(Value),
+    HandlerError(serde_json::Value),
 }
 
-#[derive(Debug, Deserialize, Serialize, ThisError)]
+#[derive(Debug, Deserialize, Serialize, Error)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum ServerResponseError {
@@ -128,11 +125,11 @@ pub enum ServerResponseError {
     ParseError(String),
     #[error(
         "internal error: {}",
-        err.as_ref().map_or_else(|| "<opaque>".to_owned(), ToString::to_string)
+        err.as_ref().map_or_else(|| "<opaque>".to_owned(), |e| e.to_string())
     )]
     InternalError {
         #[serde(skip)]
-        err: Option<EyreError>,
+        err: Option<eyre::Report>,
     },
 }
 
@@ -142,7 +139,7 @@ pub enum ServerResponseError {
 pub struct ExecuteRequest {
     pub context_id: ContextId,
     pub method: String,
-    pub args_json: Value,
+    pub args_json: serde_json::Value,
     pub executor_public_key: PublicKey,
 }
 
@@ -151,7 +148,7 @@ impl ExecuteRequest {
     pub const fn new(
         context_id: ContextId,
         method: String,
-        args_json: Value,
+        args_json: serde_json::Value,
         executor_public_key: PublicKey,
     ) -> Self {
         Self {
@@ -167,17 +164,17 @@ impl ExecuteRequest {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct ExecuteResponse {
-    pub output: Option<Value>,
+    pub output: Option<serde_json::Value>,
 }
 
 impl ExecuteResponse {
     #[must_use]
-    pub const fn new(output: Option<Value>) -> Self {
+    pub const fn new(output: Option<serde_json::Value>) -> Self {
         Self { output }
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, ThisError)]
+#[derive(Debug, Deserialize, Serialize, Error)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum ExecuteError {

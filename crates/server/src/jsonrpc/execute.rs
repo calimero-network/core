@@ -1,52 +1,60 @@
 use std::sync::Arc;
 
 use calimero_server_primitives::jsonrpc::{ExecuteError, ExecuteRequest, ExecuteResponse};
-use eyre::{bail, Result as EyreResult};
-use serde_json::{from_str as from_json_str, to_vec as to_json_vec, Value};
-use tracing::error;
+use tracing::{error, info};
 
-use crate::jsonrpc::{call, mount_method, CallError, ServiceState};
+use super::{Request, RpcError, ServiceState};
 
-mount_method!(ExecuteRequest-> Result<ExecuteResponse, ExecuteError>, handle);
+impl Request for ExecuteRequest {
+    type Response = ExecuteResponse;
+    type Error = ExecuteError;
 
-async fn handle(request: ExecuteRequest, state: Arc<ServiceState>) -> EyreResult<ExecuteResponse> {
-    let args = match to_json_vec(&request.args_json) {
-        Ok(args) => args,
-        Err(err) => {
-            bail!(ExecuteError::SerdeError {
-                message: err.to_string()
-            })
-        }
+    async fn handle(
+        self,
+        state: Arc<ServiceState>,
+    ) -> Result<Self::Response, RpcError<Self::Error>> {
+        handle(self, &state).await.map_err(|err| {
+            error!(?err, "Failed to execute JSON RPC method");
+
+            RpcError::MethodCallError(err)
+        })
+    }
+}
+
+async fn handle(
+    request: ExecuteRequest,
+    state: &ServiceState,
+) -> Result<ExecuteResponse, ExecuteError> {
+    let args = serde_json::to_vec(&request.args_json).map_err(|err| ExecuteError::SerdeError {
+        message: err.to_string(),
+    })?;
+
+    let outcome = state
+        .ctx_client
+        .execute(
+            &request.context_id,
+            request.method,
+            args,
+            &request.executor_public_key,
+        )
+        .await
+        .map_err(ExecuteError::ExecuteError)?;
+
+    let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
+    for (i, log) in outcome.logs.iter().enumerate() {
+        info!("execution log {i:>x$}| {}", log);
+    }
+
+    let Some(returns) = outcome
+        .returns
+        .map_err(|e| ExecuteError::FunctionCallError(e.to_string()))?
+    else {
+        return Ok(ExecuteResponse::new(None));
     };
 
-    match call(
-        state.ctx_client.clone(),
-        request.context_id,
-        request.method,
-        args,
-        request.executor_public_key,
-    )
-    .await
-    {
-        Ok(Some(output)) => match from_json_str::<Value>(&output) {
-            Ok(v) => Ok(ExecuteResponse::new(Some(v))),
-            Err(err) => bail!(ExecuteError::SerdeError {
-                message: err.to_string()
-            }),
-        },
-        Ok(None) => Ok(ExecuteResponse::new(None)),
-        Err(err) => {
-            error!(%err, "Failed to execute JSON RPC method");
+    let returns = serde_json::from_slice(&returns).map_err(|err| ExecuteError::SerdeError {
+        message: err.to_string(),
+    })?;
 
-            match err {
-                CallError::CallError(err) => {
-                    bail!(err)
-                }
-                CallError::FunctionCallError(message) => {
-                    bail!(ExecuteError::FunctionCallError(message))
-                }
-                CallError::InternalError(err) => bail!(err),
-            }
-        }
-    }
+    Ok(ExecuteResponse::new(Some(returns)))
 }

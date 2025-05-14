@@ -127,7 +127,7 @@ pub async fn start(
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, handler)) = jsonrpc::service(&config, node_client.clone(), ctx_client) {
+        if let Some((path, handler)) = jsonrpc::service(&config, ctx_client) {
             app = app
                 .route(path, handler.clone())
                 .route_layer(JwtLayer::new(store.clone()))
