@@ -1658,18 +1658,15 @@ impl ContextManager {
         Ok(())
     }
 
-    /// Generates a new private/public key pair, stores the private key associated
-    /// with a placeholder context ID (all zeros), and returns the public key.
-    /// This is used for pre-authorizing an identity before it's formally joined to a context.
+
     pub fn pre_store_new_identity(&self) -> EyreResult<PublicKey> {
         let private_key = self.new_private_key();
         let public_key = private_key.public_key();
 
-        // Using an all-zeros ContextId as a placeholder for pre-stored identities.
         let placeholder_context_id = ContextId::from([0u8; 32]);
         let value = ContextIdentityValue {
-            private_key: Some(*private_key), // Store the actual private key bytes
-            sender_key: None,                // Sender key can be initialized later if needed
+            private_key: Some(*private_key),
+            sender_key: None,
         };
 
         self.store_identity_value(placeholder_context_id, public_key, value)?;
