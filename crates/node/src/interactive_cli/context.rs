@@ -232,7 +232,7 @@ impl ContextCommand {
             } => {
                 let response = node
                     .ctx_manager
-                    .join_context(private_key, invitation_payload)
+                    .join_context(private_key.public_key(), invitation_payload)
                     .await?;
 
                 if let Some((context_id, public_key)) = response {

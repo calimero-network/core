@@ -345,20 +345,35 @@ impl ContextManager {
 
     pub async fn join_context(
         &self,
-        identity_secret: PrivateKey,
+        invitee_public_key_from_payload: PublicKey,
         invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
-        let (context_id, invitee_id, protocol, network_id, contract_id) =
+        let (context_id, invitee_id_from_payload, protocol, network_id, contract_id) =
             invitation_payload.parts()?;
 
-        if identity_secret.public_key() != invitee_id {
-            bail!("identity mismatch")
+        if invitee_public_key_from_payload != invitee_id_from_payload {
+            bail!("Public key provided for join does not match invitee ID in payload");
         }
 
+        let placeholder_context_id = ContextId::from([0; 32]);
+
+        let stored_identity = self
+            .get_identity_value(placeholder_context_id, invitee_public_key_from_payload)?
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Pre-stored private key not found for public key: {}",
+                    invitee_public_key_from_payload
+                )
+            })?;
+
+        let identity_secret = stored_identity
+            .private_key
+            .ok_or_else(|| eyre::eyre!("Stored identity value is missing private key"))?;
+
+        self.delete_identity_value(placeholder_context_id, invitee_public_key_from_payload)?;
+
         let handle = self.store.handle();
-
-        let identity_key = ContextIdentityKey::new(context_id, invitee_id);
-
+        let identity_key = ContextIdentityKey::new(context_id, invitee_public_key_from_payload);
         if handle.has(&identity_key)? {
             return Ok(None);
         }
@@ -395,14 +410,13 @@ impl ContextManager {
             bail!("unable to join context: not a member, invalid invitation?")
         }
 
-        self.add_context(&context, identity_secret, config)?;
+        self.add_context(&context, PrivateKey::from(identity_secret), config)?;
         self.subscribe(&context.id).await?;
 
         let _ignored = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
-
-        Ok(Some((context_id, invitee_id)))
+        Ok(Some((context_id, invitee_public_key_from_payload)))
     }
 
     #[expect(clippy::similar_names, reason = "Different enough")]
@@ -1642,5 +1656,23 @@ impl ContextManager {
         let mut handle = self.store.handle();
         handle.delete(&key)?;
         Ok(())
+    }
+
+    /// Generates a new private/public key pair, stores the private key associated
+    /// with a placeholder context ID (all zeros), and returns the public key.
+    /// This is used for pre-authorizing an identity before it's formally joined to a context.
+    pub fn pre_store_new_identity(&self) -> EyreResult<PublicKey> {
+        let private_key = self.new_private_key();
+        let public_key = private_key.public_key();
+
+        // Using an all-zeros ContextId as a placeholder for pre-stored identities.
+        let placeholder_context_id = ContextId::from([0u8; 32]);
+        let value = ContextIdentityValue {
+            private_key: Some(*private_key), // Store the actual private key bytes
+            sender_key: None,                // Sender key can be initialized later if needed
+        };
+
+        self.store_identity_value(placeholder_context_id, public_key, value)?;
+        Ok(public_key)
     }
 }

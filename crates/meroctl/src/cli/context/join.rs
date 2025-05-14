@@ -58,10 +58,7 @@ impl JoinCommand {
         let response: JoinContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(multiaddr, "admin-api/dev/contexts/join")?,
-            Some(JoinContextRequest::new(
-                self.public_key,
-                self.invitation_payload,
-            )),
+            Some(JoinContextRequest::new(self.invitation_payload)),
             &config.identity,
             RequestType::Post,
         )

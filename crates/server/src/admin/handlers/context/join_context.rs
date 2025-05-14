@@ -3,35 +3,19 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use tracing::error;
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
 
-const PLACEHOLDER_CONTEXT_ID_BYTES: [u8; 32] = [0; 32];
-
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(JoinContextRequest {
-        public_key,
-        invitation_payload,
-    }): Json<JoinContextRequest>,
+    Json(JoinContextRequest { invitation_payload }): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let invitee_id_result = invitation_payload.parts().map(|(_, id, _, _, _)| id);
-    let _invitee_id = match invitee_id_result {
-        Ok(id) => {
-            if id != public_key {
-                error!("Public key in request does not match invitee ID in payload");
-                return ApiError {
-                    status_code: StatusCode::BAD_REQUEST,
-                    message: "Public key mismatch".into(),
-                }
-                .into_response();
-            }
-            id
-        }
+    let invitee_public_key = match invitee_id_result {
+        Ok(id) => id,
         Err(e) => {
             error!("Failed to parse invitation payload: {}", e);
             return ApiError {
@@ -42,52 +26,9 @@ pub async fn handler(
         }
     };
 
-    let private_key_result = (|| {
-        let placeholder_context_id = ContextId::from(PLACEHOLDER_CONTEXT_ID_BYTES);
-
-        let stored_identity = state
-            .ctx_manager
-            .get_identity_value(placeholder_context_id, public_key)?
-            .ok_or_else(|| {
-                eyre::eyre!(
-                    "Pre-stored private key not found for public key: {}",
-                    public_key
-                )
-            })?;
-
-        let private_key = stored_identity
-            .private_key
-            .ok_or_else(|| eyre::eyre!("Stored identity value is missing private key"))?;
-
-        state
-            .ctx_manager
-            .delete_identity_value(placeholder_context_id, public_key)?;
-
-        Ok::<_, eyre::Report>(private_key.into())
-    })();
-
-    let private_key = match private_key_result {
-        Ok(pk) => pk,
-        Err(e) => {
-            error!("Failed to retrieve or delete pre-stored key: {}", e);
-            let api_error = if e.to_string().contains("Pre-stored private key not found") {
-                ApiError {
-                    status_code: StatusCode::BAD_REQUEST, // Or NOT_FOUND?
-                    message: "Identity generation process not completed or key expired".into(),
-                }
-            } else {
-                ApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "Failed to process join request".into(),
-                }
-            };
-            return api_error.into_response();
-        }
-    };
-
     let result = state
         .ctx_manager
-        .join_context(private_key, invitation_payload)
+        .join_context(invitee_public_key, invitation_payload)
         .await
         .map_err(parse_api_error);
 
