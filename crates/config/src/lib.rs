@@ -1,3 +1,5 @@
+// crates/config/src/lib.rs
+
 use clap::ValueEnum;
 use core::time::Duration;
 use std::collections::HashMap;
@@ -241,6 +243,35 @@ impl ConfigFile {
             println!("  {}: {:?}", key, values);
         }
     }
+
+    /// Get the value for a specific config key
+    pub fn get_value(&self, key: &str) -> Option<String> {
+        match key {
+            "sync.timeout_ms" => Some(self.sync.timeout.as_millis().to_string()),
+            "sync.interval_ms" => Some(self.sync.interval.as_millis().to_string()),
+            "network.swarm.port" => Some(self.network.swarm.port.to_string()),
+            "network.server.listen" => Some(
+                self.network
+                    .server
+                    .listen
+                    .iter()
+                    .map(|addr| addr.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Print the hint for a specific key
+    pub fn print_hint_for_key(key: &str) {
+        if let Some(hint) = configHints::CONFIG_HINTS.iter().find(|h| h.key == key) {
+            println!("Key: {}", hint.key);
+            println!("Description: {}", hint.description);
+        } else {
+            println!("No hint available for key: {}", key);
+        }
+    }
 }
 
 mod serde_duration {
@@ -307,31 +338,21 @@ pub mod serde_identity {
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "peer_id" => peer_id = Some(map.next_value()?),
-                        "keypair" => priv_key = Some(map.next_value()?),
-                        _ => {
-                            drop(map.next_value::<de::IgnoredAny>());
-                        }
-                    }
-                }
+                        "keypair" => priv_key = Some(map.next_value()?
+),
+_ => {}
+}
+}
 
-                let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("peer_id"))?;
-                let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("keypair"))?;
 
-                let priv_key = bs58::decode(priv_key)
-                    .into_vec()
-                    .map_err(|_| de::Error::custom("invalid base58"))?;
+                        let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("peer_id"))?;
+            let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("keypair"))?;
 
-                let keypair = Keypair::from_protobuf_encoding(&priv_key)
-                    .map_err(|_| de::Error::custom("invalid protobuf"))?;
+            let decoded_priv_key = bs58::decode(&priv_key).into_vec().map_err(de::Error::custom)?;
 
-                if peer_id != keypair.public().to_peer_id().to_base58() {
-                    return Err(de::Error::custom("Peer ID does not match public key"));
-                }
-
-                Ok(keypair)
-            }
+            Keypair::from_protobuf_encoding(&decoded_priv_key).map_err(de::Error::custom)
         }
-
-        deserializer.deserialize_struct("Keypair", &["peer_id", "keypair"], IdentityVisitor)
     }
+
+    deserializer.deserialize_map(IdentityVisitor)
 }
