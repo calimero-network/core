@@ -1,4 +1,4 @@
-use calimero_context_primitives::messages::execute;
+use calimero_context_primitives::messages::execute::ExecuteError;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
@@ -69,7 +69,7 @@ impl Request<RequestPayload> {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum RequestPayload {
-    Execute(ExecuteRequest),
+    Execute(ExecutionRequest),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -136,14 +136,14 @@ pub enum ServerResponseError {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct ExecuteRequest {
+pub struct ExecutionRequest {
     pub context_id: ContextId,
     pub method: String,
     pub args_json: serde_json::Value,
     pub executor_public_key: PublicKey,
 }
 
-impl ExecuteRequest {
+impl ExecutionRequest {
     #[must_use]
     pub const fn new(
         context_id: ContextId,
@@ -163,11 +163,11 @@ impl ExecuteRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct ExecuteResponse {
+pub struct ExecutionResponse {
     pub output: Option<serde_json::Value>,
 }
 
-impl ExecuteResponse {
+impl ExecutionResponse {
     #[must_use]
     pub const fn new(output: Option<serde_json::Value>) -> Self {
         Self { output }
@@ -177,11 +177,12 @@ impl ExecuteResponse {
 #[derive(Debug, Deserialize, Serialize, Error)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
-pub enum ExecuteError {
+pub enum ExecutionError {
     #[error("codec error: {message}")]
     SerdeError { message: String },
-    #[error("error occurred while handling request: {0}")]
-    ExecuteError(execute::ExecuteError),
     #[error("function call error: {0}")]
     FunctionCallError(String),
+    #[serde(untagged)]
+    #[error(transparent)]
+    ExecuteError(ExecuteError),
 }

@@ -1,20 +1,23 @@
 use std::sync::Arc;
 
-use calimero_server_primitives::jsonrpc::{ExecuteError, ExecuteRequest, ExecuteResponse};
+use calimero_server_primitives::jsonrpc::{ExecutionError, ExecutionRequest, ExecutionResponse};
 use tracing::{error, info};
 
 use super::{Request, RpcError, ServiceState};
 
-impl Request for ExecuteRequest {
-    type Response = ExecuteResponse;
-    type Error = ExecuteError;
+impl Request for ExecutionRequest {
+    type Response = ExecutionResponse;
+    type Error = ExecutionError;
 
     async fn handle(
         self,
         state: Arc<ServiceState>,
     ) -> Result<Self::Response, RpcError<Self::Error>> {
+        let context_id = self.context_id;
+        let executor_id = self.executor_public_key;
+
         handle(self, &state).await.map_err(|err| {
-            error!(?err, "Failed to execute JSON RPC method");
+            error!(%context_id, %executor_id, %err, "Failed to execute request");
 
             RpcError::MethodCallError(err)
         })
@@ -22,12 +25,13 @@ impl Request for ExecuteRequest {
 }
 
 async fn handle(
-    request: ExecuteRequest,
+    request: ExecutionRequest,
     state: &ServiceState,
-) -> Result<ExecuteResponse, ExecuteError> {
-    let args = serde_json::to_vec(&request.args_json).map_err(|err| ExecuteError::SerdeError {
-        message: err.to_string(),
-    })?;
+) -> Result<ExecutionResponse, ExecutionError> {
+    let args =
+        serde_json::to_vec(&request.args_json).map_err(|err| ExecutionError::SerdeError {
+            message: err.to_string(),
+        })?;
 
     let outcome = state
         .ctx_client
@@ -38,7 +42,7 @@ async fn handle(
             &request.executor_public_key,
         )
         .await
-        .map_err(ExecuteError::ExecuteError)?;
+        .map_err(ExecutionError::ExecuteError)?;
 
     let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
     for (i, log) in outcome.logs.iter().enumerate() {
@@ -47,14 +51,14 @@ async fn handle(
 
     let Some(returns) = outcome
         .returns
-        .map_err(|e| ExecuteError::FunctionCallError(e.to_string()))?
+        .map_err(|e| ExecutionError::FunctionCallError(e.to_string()))?
     else {
-        return Ok(ExecuteResponse::new(None));
+        return Ok(ExecutionResponse::new(None));
     };
 
-    let returns = serde_json::from_slice(&returns).map_err(|err| ExecuteError::SerdeError {
+    let returns = serde_json::from_slice(&returns).map_err(|err| ExecutionError::SerdeError {
         message: err.to_string(),
     })?;
 
-    Ok(ExecuteResponse::new(Some(returns)))
+    Ok(ExecutionResponse::new(Some(returns)))
 }

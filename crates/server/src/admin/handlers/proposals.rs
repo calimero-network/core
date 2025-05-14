@@ -4,7 +4,7 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{ContextIdentity, ProposalId};
+use calimero_context_config::types::ProposalId;
 use calimero_context_config::ProposalWithApprovals;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{

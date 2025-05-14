@@ -16,6 +16,8 @@ pub struct ExecuteRequest {
 
 #[derive(Debug)]
 pub struct ExecuteResponse {
+    // fixme! this is an eyre::Result temporarily until calimero-runtime
+    // fixme! exports it's primitives in a lightweight crate
     pub returns: eyre::Result<Option<Vec<u8>>>,
     pub logs: Vec<String>,
     pub events: Vec<ExecuteEvent>,
