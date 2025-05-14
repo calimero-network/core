@@ -1658,7 +1658,6 @@ impl ContextManager {
         Ok(())
     }
 
-
     pub fn pre_store_new_identity(&self) -> EyreResult<PublicKey> {
         let private_key = self.new_private_key();
         let public_key = private_key.public_key();
