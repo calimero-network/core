@@ -13,11 +13,11 @@ pub mod __private {
 
     pub use actix::dev::channel;
     use actix::dev::ToEnvelope;
-    use actix::{Actor, Message};
-    pub use actix::{Addr, ArbiterHandle, AsyncContext, Context, Handler, StreamHandler};
+    pub use actix::{
+        Actor, Addr, ArbiterHandle, AsyncContext, Context, Handler, Message, StreamHandler,
+    };
     pub use futures_util::future::poll_fn;
-    use futures_util::Stream;
-    pub use futures_util::{FutureExt, StreamExt};
+    pub use futures_util::{FutureExt, Stream, StreamExt};
     pub use paste::paste;
     pub use tokio::task;
 
@@ -26,13 +26,6 @@ pub mod __private {
     pub trait ActorSpawn: Actor {
         fn spawn(self, ctx: Self::Context);
     }
-
-    #[diagnostic::on_unimplemented(
-        message = "the trait bound `{Self}: StreamHandler<{T}>` is not satisfied"
-    )]
-    pub trait StreamHandlerExt<T>: StreamHandler<T> {}
-
-    impl<T, A> StreamHandlerExt<T> for A where A: StreamHandler<T> {}
 
     #[derive(Debug, Message)]
     #[rtype("()")]
@@ -45,7 +38,7 @@ pub mod __private {
     impl<T: Send> FromStreamInner<T> {
         pub fn send<A>(self, addr: &Addr<A>)
         where
-            A: Actor<Context: ToEnvelope<A, Self>> + Handler<Self> + StreamHandlerExt<T>,
+            A: Actor<Context: ToEnvelope<A, Self>> + Handler<Self> + StreamHandler<T>,
         {
             addr.do_send(self);
         }
@@ -128,9 +121,10 @@ macro_rules! actor {
     };
     (@handler $actor:ty) => {
         #[allow(non_local_definitions)]
+        #[diagnostic::do_not_recommend]
         impl<T> Handler<FromStreamInner<T>> for $actor
         where
-            Self: StreamHandlerExt<T>,
+            Self: StreamHandler<T>,
         {
             type Result = ();
 
