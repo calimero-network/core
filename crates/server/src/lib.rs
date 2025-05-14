@@ -5,6 +5,8 @@ use std::sync::Arc;
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
 use axum::Router;
+use axum::routing::get;
+use axum::Json;
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context::ContextManager;
@@ -15,6 +17,7 @@ use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use multiaddr::Protocol;
+use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
@@ -54,6 +57,31 @@ impl AdminState {
             ctx_manager,
         }
     }
+}
+
+/// Identity response struct
+#[derive(Debug, Serialize)]
+pub struct Identity {
+    pub node_id: String,
+    pub version: String,
+    pub authentication_mode: String,
+}
+
+/// Identity endpoint handler
+async fn identity_handler() -> Json<Identity> {
+    // Generate a simple node ID instead of using UUID
+    let node_id = format!("node-{}", chrono::Utc::now().timestamp());
+    
+    // Get the version from Cargo.toml
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    
+    // Return identity with "none" authentication mode since this endpoint is only
+    // accessible in development mode
+    Json(Identity {
+        node_id,
+        version,
+        authentication_mode: "none".to_string(),
+    })
 }
 
 // TODO: Consider splitting this long function into multiple parts.
@@ -116,6 +144,9 @@ pub async fn start(
         config.identity.clone(),
         ctx_manager,
     ));
+
+    // Add the identity endpoint for development mode detection
+    app = app.route("/identity", get(identity_handler));
 
     #[cfg(feature = "jsonrpc")]
     {

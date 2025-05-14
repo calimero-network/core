@@ -1,0 +1,74 @@
+[package]
+name = "calimero-auth"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/calimero-network/core"
+description = "Forward Authentication Service for Calimero Network"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["cors", "trace", "catch-panic"] }
+axum = { workspace = true, features = ["macros"] }
+# hyper = { version = "1.1", features = ["full"] }
+tower-sessions.workspace = true
+
+# Database
+rocksdb = { workspace = true }
+# redis = { version = "0.24.0", features = ["tokio-comp", "connection-manager"], optional = true }
+# sqlx = { version = "0.7.3", features = ["runtime-tokio-rustls", "macros", "postgres", "sqlite", "any"], optional = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Authentication & Cryptography
+jsonwebtoken = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+bs58 = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+hex = { workspace = true }
+
+# Web3 & Wallet Authentication
+web3 = { workspace = true }
+near-primitives = { workspace = true }
+near-jsonrpc-client = { workspace = true }
+near-crypto = { workspace = true }
+starknet = { workspace = true }
+ic-agent = { workspace = true, optional = true }
+
+# Utilities
+eyre.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+chrono = { workspace = true, features = ["serde"] }
+url = "2.4"
+config = { version = "0.13", features = ["yaml"] }
+lazy_static = "1.4"
+async-trait = "0.1.88"
+# derive_more = "0.99"
+clap = { workspace = true, features = ["derive", "env"] }
+parking_lot = { workspace = true }
+
+# Calimero dependencies
+calimero-primitives = { path = "../primitives" }
+calimero-store = { path = "../store" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.11"
+tempfile = "3.8"
+reqwest = { workspace = true, features = ["json"] }
+
+[features]
+default = []
+# redis-storage = ["redis"]
+# postgres = ["sqlx/postgres"]
+# sqlite = ["sqlx/sqlite"]
+# icp = ["ic-agent"] 

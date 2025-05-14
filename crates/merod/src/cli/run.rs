@@ -13,8 +13,34 @@ use crate::cli::RootArgs;
 /// Run a node
 #[derive(Debug, Parser)]
 pub struct RunCommand {
+    /// Enable authentication (deprecated, use --auth-mode instead)
     #[arg(long, default_value_t)]
+    #[clap(hide = true)]
     pub auth: bool,
+    
+    /// Authentication mode: [none, embedded, forward]
+    /// - none: No authentication (development mode)
+    /// - forward: Use forward authentication (requires external auth service)
+    #[arg(long, default_value = "embedded")]
+    pub auth_mode: AuthMode,
+}
+
+/// Authentication modes
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum AuthMode {
+    /// No authentication (development mode)
+    None,
+    /// Forward authentication (requires external auth service)
+    Forward,
+}
+
+impl std::fmt::Display for AuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthMode::None => write!(f, "none"),
+            AuthMode::Forward => write!(f, "forward"),
+        }
+    }
 }
 
 impl RunCommand {
@@ -35,12 +61,30 @@ impl RunCommand {
             config.network.server.websocket,
         );
 
-        if let Some(admin) = &mut server_config.admin {
-            admin.auth_enabled = self.auth;
-        }
-
-        if let Some(jsonrpc) = &mut server_config.jsonrpc {
-            jsonrpc.auth_enabled = self.auth;
+        // Configure authentication based on the selected mode
+        match self.auth_mode {
+            AuthMode::None => {
+                // Development mode: disable all authentication
+                if let Some(admin) = &mut server_config.admin {
+                    admin.auth_enabled = false;
+                }
+                if let Some(jsonrpc) = &mut server_config.jsonrpc {
+                    jsonrpc.auth_enabled = false;
+                }
+                println!("Running in development mode with NO authentication");
+            },
+            AuthMode::Forward => {
+                // Forward authentication mode - needs to integrate with external auth service
+                // This is a placeholder for future implementation
+                if let Some(admin) = &mut server_config.admin {
+                    admin.auth_enabled = false; // Disable embedded auth since we'll use forward auth
+                }
+                if let Some(jsonrpc) = &mut server_config.jsonrpc {
+                    jsonrpc.auth_enabled = false; // Disable embedded auth since we'll use forward auth
+                }
+                println!("Running with forward authentication - external auth service required");
+                println!("NOTE: Forward authentication is not fully implemented yet");
+            },
         }
 
         start(NodeConfig::new(

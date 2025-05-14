@@ -1,0 +1,47 @@
+# Calimero Authentication Service Configuration
+
+# Server configuration
+listen_addr = "127.0.0.1:3001"
+node_url = "http://localhost:2428"
+
+# JWT token settings - used for all auth providers
+[jwt]
+secret = "your-secure-random-secret-key-here"
+issuer = "calimero-auth"
+access_token_expiry = 3600        # 1 hour
+refresh_token_expiry = 2592000    # 30 days
+
+# Storage configuration
+[storage]
+type = "rocksdb"
+path = "./data/auth_db"
+
+# CORS configuration
+[cors]
+allow_all_origins = true
+allowed_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+allowed_headers = ["Authorization", "Content-Type", "Accept"]
+
+# Authentication providers configuration
+[providers]
+# Enable NEAR wallet authentication
+near_wallet = true
+
+# Enable Ethereum wallet authentication
+eth_wallet = false
+
+# Enable Starknet wallet authentication 
+starknet_wallet = false
+
+# Enable Internet Computer authentication
+icp = false
+
+# Enable OAuth authentication
+oauth = false
+
+# NEAR wallet configuration
+[near]
+network = "testnet"                               # Use testnet for development
+rpc_url = "https://rpc.testnet.near.org"          # NEAR RPC endpoint
+wallet_url = "https://wallet.testnet.near.org"    # NEAR wallet URL
+helper_url = "https://helper.testnet.near.org"    # Optional helper URL 

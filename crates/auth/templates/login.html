@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calimero Authentication</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f5f5f5;
+        }
+        .auth-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            width: 400px;
+            max-width: 90%;
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        .auth-options {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .auth-button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 16px;
+            background-color: #ffffff;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.2s ease;
+        }
+        .auth-button:hover {
+            background-color: #f0f0f0;
+        }
+        .auth-button img {
+            width: 24px;
+            height: 24px;
+            margin-right: 12px;
+        }
+        .near-button {
+            background-color: #5f8afa;
+            color: white;
+            border: none;
+        }
+        .near-button:hover {
+            background-color: #4a75e6;
+        }
+        .wallet-connect-button {
+            background-color: #3b99fc;
+            color: white;
+            border: none;
+        }
+        .wallet-connect-button:hover {
+            background-color: #2d8af0;
+        }
+        .info-text {
+            margin-top: 24px;
+            color: #666;
+            font-size: 14px;
+            text-align: center;
+        }
+        #login-status {
+            text-align: center;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        #sign-message-btn {
+            margin-top: 20px;
+            padding: 10px 15px;
+            background-color: #5f8afa;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #sign-message-btn:hover {
+            background-color: #4a75e6;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            display: none;
+            word-break: break-all;
+        }
+    </style>
+    <!-- NEAR API JS -->
+    <script src="https://cdn.jsdelivr.net/npm/near-api-js@2.1.4/dist/near-api-js.min.js"></script>
+    
+    <!-- NEAR Wallet Selector - simple implementation with only NEAR API JS -->
+    <script>
+      // Make selector available globally
+      window.selector = null;
+      
+      // Initialize when DOM is ready
+      window.nearInit = async function() {
+          try {
+              // Use NEAR API JS directly since the wallet selector is having issues
+              const { connect, keyStores, WalletConnection } = nearApi;
+              
+              // // Configure connection to NEAR
+              // const config = {
+              //     networkId: "testnet",
+              //     keyStore: new keyStores.BrowserLocalStorageKeyStore(),
+              //     nodeUrl: "https://rpc.testnet.near.org",
+              //     walletUrl: "https://wallet.testnet.near.org",
+              //     helperUrl: "https://helper.testnet.near.org"
+              // };
+              
+              // // Connect to NEAR
+              // const near = await connect(config);
+              
+              // // Create wallet connection
+              // const wallet = new WalletConnection(near, "calimero-auth");
+              
+              // // Store in global window object
+              // window.selector = {
+              //     wallet: wallet,
+              //     accountId: wallet.getAccountId(),
+              //     isSignedIn: wallet.isSignedIn()
+              // };
+              
+              // console.log("NEAR API object:", window.selector);
+
+              // const wallet = selector.wallet("my-near-wallet");
+
+
+          } catch (error) {
+              console.error("Error initializing NEAR:", error);
+          }
+      }
+      
+      // Call the init function when DOM is loaded
+      document.addEventListener('DOMContentLoaded', window.nearInit);
+    </script>
+  
+</head>
+<body>
+    <div class="auth-container">
+        <h1>Calimero Authentication</h1>
+       
+        <div class="auth-options">
+            <button id="near-login" class="auth-button near-button" style="display: none;">
+                Connect with NEAR Wallet
+            </button>
+            <button id="wallet-connect-login" class="auth-button wallet-connect-button" style="display: none;">
+                <img src="https://docs.walletconnect.com/img/walletconnect-logo-white.svg" alt="WalletConnect Logo">
+                Connect with WalletConnect
+            </button>
+            <button id="sign-message-btn">Sign Message</button>
+            <div id="result"></div>
+        </div>
+        <p class="info-text">Connect your wallet to access Calimero services</p>
+    </div>
+</body>
+</html>
