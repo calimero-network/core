@@ -1,6 +1,8 @@
 # Calimero Authentication Service
 
-This is a forward authentication service for Calimero Network. It provides authentication for web applications and APIs using various authentication providers.
+This is a forward authentication service for Calimero Network. It provides
+authentication for web applications and APIs using various authentication
+providers.
 
 ## Features
 
@@ -15,7 +17,8 @@ This is a forward authentication service for Calimero Network. It provides authe
 
 The service supports two authentication modes:
 
-- `none`: Development mode with no authentication required (all requests pass through)
+- `none`: Development mode with no authentication required (all requests pass
+  through)
 - `forward`: Production mode with full authentication required
 
 ## Building
@@ -36,7 +39,8 @@ cargo run --bin calimero-auth -- --auth-mode forward
 
 ## Docker Setup
 
-The service can be run in Docker using the provided `docker-compose.auth.yml` file:
+The service can be run in Docker using the provided `docker-compose.auth.yml`
+file:
 
 ```bash
 # Build and start the authentication service, Traefik, and Calimero node
@@ -114,11 +118,13 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost/
 
 ### 5. Check the Traefik Dashboard
 
-The Traefik dashboard is available at http://localhost:8080, where you can see the routing and middleware configuration.
+The Traefik dashboard is available at http://localhost:8080, where you can see
+the routing and middleware configuration.
 
 ## Configuration
 
-The service can be configured using environment variables or a configuration file:
+The service can be configured using environment variables or a configuration
+file:
 
 ```bash
 # Using environment variables
@@ -158,4 +164,4 @@ network_id = "mainnet"
 
 [cors]
 allow_all_origins = true
-``` 
+```

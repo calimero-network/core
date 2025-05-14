@@ -10,25 +10,25 @@ pub struct AuthConfig {
     /// The address to listen on
     #[serde(default = "default_listen_addr")]
     pub listen_addr: SocketAddr,
-    
+
     /// The URL of the node to forward authenticated requests to
     pub node_url: String,
-    
+
     /// JWT settings
     #[serde(default)]
     pub jwt: JwtConfig,
-    
+
     /// Storage settings
     pub storage: StorageConfig,
-    
+
     /// Enabled authentication providers
     #[serde(default)]
     pub providers: ProvidersConfig,
-    
+
     /// CORS settings
     #[serde(default)]
     pub cors: CorsConfig,
-    
+
     /// NEAR wallet configuration
     pub near: NearWalletConfig,
 }
@@ -92,36 +92,36 @@ pub enum StorageConfig {
         /// The path to the RocksDB database
         path: PathBuf,
     },
-    
+
     /// Redis storage
     #[serde(rename = "redis")]
     Redis {
         /// The Redis URL
         url: String,
-        
+
         /// Connection pool size
         #[serde(default = "default_connection_pool_size")]
         pool_size: usize,
     },
-    
+
     /// PostgreSQL storage
     #[serde(rename = "postgres")]
     Postgres {
         /// The PostgreSQL connection URL
         url: String,
-        
+
         /// Connection pool size
         #[serde(default = "default_connection_pool_size")]
         pool_size: usize,
     },
-    
+
     /// SQLite storage
     #[serde(rename = "sqlite")]
     SQLite {
         /// The path to the SQLite database
         path: PathBuf,
     },
-    
+
     /// In-memory storage (for development only)
     #[serde(rename = "memory")]
     Memory,
@@ -137,35 +137,35 @@ pub struct ProvidersConfig {
     /// Enable NEAR wallet authentication
     #[serde(default = "default_false")]
     pub near_wallet: bool,
-    
+
     /// Enable Ethereum wallet authentication
     #[serde(default)]
     pub eth_wallet: bool,
-    
+
     /// Configure Ethereum wallet settings
     #[serde(default)]
     pub eth_wallet_config: EthWalletConfig,
-    
+
     /// Enable Starknet wallet authentication
     #[serde(default)]
     pub starknet_wallet: bool,
-    
+
     /// Configure Starknet wallet settings
     #[serde(default)]
     pub starknet_wallet_config: StarknetWalletConfig,
-    
+
     /// Enable Internet Computer authentication
     #[serde(default)]
     pub icp: bool,
-    
+
     /// Configure Internet Computer settings
     #[serde(default)]
     pub icp_config: IcpConfig,
-    
+
     /// Enable OAuth authentication
     #[serde(default)]
     pub oauth: bool,
-    
+
     /// Configure OAuth providers
     #[serde(default)]
     pub oauth_providers: HashMap<String, OAuthProviderConfig>,
@@ -184,14 +184,14 @@ fn default_false() -> bool {
 pub struct NearWalletConfig {
     /// Network
     pub network: String,
-    
+
     /// RPC URL for NEAR network
     #[serde(default = "default_near_mainnet_url")]
     pub rpc_url: String,
-    
+
     /// Wallet URL
     pub wallet_url: String,
-    
+
     /// Helper URL (optional)
     pub helper_url: Option<String>,
 }
@@ -206,7 +206,7 @@ pub struct EthWalletConfig {
     /// RPC URL for Ethereum network
     #[serde(default = "default_eth_mainnet_url")]
     pub rpc_url: String,
-    
+
     /// Chain ID
     #[serde(default = "default_eth_chain_id")]
     pub chain_id: u64,
@@ -226,7 +226,7 @@ pub struct StarknetWalletConfig {
     /// RPC URL for Starknet network
     #[serde(default = "default_starknet_mainnet_url")]
     pub rpc_url: String,
-    
+
     /// Chain ID
     #[serde(default = "default_starknet_chain_id")]
     pub chain_id: String,
@@ -257,22 +257,22 @@ fn default_icp_host() -> String {
 pub struct OAuthProviderConfig {
     /// Client ID
     pub client_id: String,
-    
+
     /// Client secret
     pub client_secret: String,
-    
+
     /// Authorization URL
     pub auth_url: String,
-    
+
     /// Token URL
     pub token_url: String,
-    
+
     /// User info URL (if applicable)
     pub user_info_url: Option<String>,
-    
+
     /// Redirect URL
     pub redirect_url: String,
-    
+
     /// Scopes to request
     #[serde(default)]
     pub scopes: Vec<String>,
@@ -284,27 +284,27 @@ pub struct CorsConfig {
     /// Allow all origins
     #[serde(default = "default_true")]
     pub allow_all_origins: bool,
-    
+
     /// Allowed origins (if allow_all_origins is false)
     #[serde(default)]
     pub allowed_origins: Vec<String>,
-    
+
     /// Allow credentials
     #[serde(default = "default_true")]
     pub allow_credentials: bool,
-    
+
     /// Allowed methods
     #[serde(default = "default_allowed_methods")]
     pub allowed_methods: Vec<String>,
-    
+
     /// Allowed headers
     #[serde(default = "default_allowed_headers")]
     pub allowed_headers: Vec<String>,
-    
+
     /// Expose headers
     #[serde(default)]
     pub exposed_headers: Vec<String>,
-    
+
     /// Max age in seconds
     #[serde(default = "default_max_age")]
     pub max_age: u64,
@@ -347,13 +347,13 @@ impl Default for CorsConfig {
 }
 
 /// Load the configuration from a file
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `path` - The path to the configuration file
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Result<AuthConfig, eyre::Error>` - The loaded configuration
 pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
     let config = config::Config::builder()
@@ -361,7 +361,7 @@ pub fn load_config(path: &str) -> eyre::Result<AuthConfig> {
         .add_source(config::Environment::with_prefix("AUTH").separator("__"))
         .build()?
         .try_deserialize()?;
-    
+
     Ok(config)
 }
 
@@ -370,7 +370,7 @@ fn generate_default_secret() -> String {
     use rand::{thread_rng, Rng};
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     const SECRET_LEN: usize = 32;
-    
+
     let mut rng = thread_rng();
     let secret: String = (0..SECRET_LEN)
         .map(|_| {
@@ -378,18 +378,18 @@ fn generate_default_secret() -> String {
             CHARSET[idx] as char
         })
         .collect();
-    
+
     secret
 }
 
 /// Generate a default configuration
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `AuthConfig` - The default configuration
 pub fn default_config() -> AuthConfig {
     let default_db_path = PathBuf::from("./data/auth_db");
-    
+
     AuthConfig {
         listen_addr: default_listen_addr(),
         node_url: "http://localhost:2428".to_string(),
@@ -411,4 +411,4 @@ pub fn default_config() -> AuthConfig {
             helper_url: None,
         },
     }
-} 
+}

@@ -3,10 +3,10 @@
 ## Formatting
 
 ### Use rustfmt with nightly features to maintain consistent code formatting
-  
-  ```bash
-  cargo +nightly fmt
-  ```
+
+```bash
+cargo +nightly fmt
+```
 
 ### Sort `Cargo.toml` dependencies alphabetically
 
@@ -95,14 +95,16 @@ crates/meroctl/src/cli/app/list.rs
 ## Error Handling
 
 ### We use the eyre crate extensively in our code, and import it as follows
-  
+
 ```rust
 use eyre::{Result as EyreResult};
 ```
 
 ### Employ maximum caution dealing with panic points (.unwrap(), .expect(..), assert!, panic!, etc)
 
-Only introduce them when you have maximum confidence it will NEVER panic, or if it does, it's a fatal error from which we cannot recover and aborting the node is the best thing to do. In this case, introduce a comment stating why
+Only introduce them when you have maximum confidence it will NEVER panic, or if
+it does, it's a fatal error from which we cannot recover and aborting the node
+is the best thing to do. In this case, introduce a comment stating why
 
 ### If unwrapping is absolutely necessary, explain why with a comment
 
@@ -130,7 +132,9 @@ if !some_condition {
 
 ### Use `let..else` for deep conditionals
 
-When using `if let..else` with the consequent block extending beyond just a couple of lines and the alternative effectively bails, prefer the `let..else` syntax to reduce indentation.
+When using `if let..else` with the consequent block extending beyond just a
+couple of lines and the alternative effectively bails, prefer the `let..else`
+syntax to reduce indentation.
 
 ```rust
 // NOT RECOMMENDED:
@@ -154,7 +158,8 @@ do_ok_2;
 do_ok_3;
 ```
 
-This syntax helps flatten out indentation and keeps short-circuits closer to the condition that triggered them, making code easier to read.
+This syntax helps flatten out indentation and keeps short-circuits closer to the
+condition that triggered them, making code easier to read.
 
 ## Code Organization
 

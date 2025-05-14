@@ -12,13 +12,13 @@ pub struct RocksDBStorage {
 
 impl RocksDBStorage {
     /// Create a new RocksDB storage instance
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `path` - Path to the RocksDB database
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `Result<Self, StorageError>` - The new instance
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
         let options = rocksdb::Options::default();
@@ -58,7 +58,10 @@ impl Storage for RocksDBStorage {
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
         let prefix_bytes = prefix.as_bytes();
-        let iter = self.db.iterator(IteratorMode::From(prefix_bytes, rocksdb::Direction::Forward));
+        let iter = self.db.iterator(IteratorMode::From(
+            prefix_bytes,
+            rocksdb::Direction::Forward,
+        ));
 
         let mut keys = Vec::new();
         for item in iter {
@@ -84,8 +87,9 @@ impl Storage for RocksDBStorage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::TempDir;
+
+    use super::*;
 
     async fn setup_db() -> (RocksDBStorage, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -175,4 +179,4 @@ mod tests {
             assert!(!result.contains(&key.to_string()));
         }
     }
-} 
+}

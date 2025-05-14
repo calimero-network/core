@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
-use axum::Router;
 use axum::routing::get;
-use axum::Json;
+use axum::{Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context::ContextManager;
@@ -71,10 +70,10 @@ pub struct Identity {
 async fn identity_handler() -> Json<Identity> {
     // Generate a simple node ID instead of using UUID
     let node_id = format!("node-{}", chrono::Utc::now().timestamp());
-    
+
     // Get the version from Cargo.toml
     let version = env!("CARGO_PKG_VERSION").to_string();
-    
+
     // Return identity with "none" authentication mode since this endpoint is only
     // accessible in development mode
     Json(Identity {

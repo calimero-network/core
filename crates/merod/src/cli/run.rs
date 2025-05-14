@@ -17,7 +17,7 @@ pub struct RunCommand {
     #[arg(long, default_value_t)]
     #[clap(hide = true)]
     pub auth: bool,
-    
+
     /// Authentication mode: [none, embedded, forward]
     /// - none: No authentication (development mode)
     /// - forward: Use forward authentication (requires external auth service)
@@ -72,7 +72,7 @@ impl RunCommand {
                     jsonrpc.auth_enabled = false;
                 }
                 println!("Running in development mode with NO authentication");
-            },
+            }
             AuthMode::Forward => {
                 // Forward authentication mode - needs to integrate with external auth service
                 // This is a placeholder for future implementation
@@ -84,7 +84,7 @@ impl RunCommand {
                 }
                 println!("Running with forward authentication - external auth service required");
                 println!("NOTE: Forward authentication is not fully implemented yet");
-            },
+            }
         }
 
         start(NodeConfig::new(
