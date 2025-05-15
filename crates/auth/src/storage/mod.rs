@@ -87,7 +87,7 @@ pub trait Storage: Send + Sync + 'static {
     ///
     /// * `Result<Vec<String>, StorageError>` - The keys
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError>;
-    
+
     /// Get multiple values from storage
     ///
     /// # Arguments
@@ -97,10 +97,7 @@ pub trait Storage: Send + Sync + 'static {
     /// # Returns
     ///
     /// * `Result<HashMap<String, Vec<u8>>, StorageError>` - The values for keys that exist
-    async fn get_batch(
-        &self,
-        keys: &[String],
-    ) -> Result<HashMap<String, Vec<u8>>, StorageError> {
+    async fn get_batch(&self, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, StorageError> {
         // Default implementation uses single get operations
         let mut result = HashMap::new();
         for key in keys {
@@ -120,10 +117,7 @@ pub trait Storage: Send + Sync + 'static {
     /// # Returns
     ///
     /// * `Result<(), StorageError>` - Success or error
-    async fn set_batch(
-        &self,
-        values: &HashMap<String, Vec<u8>>,
-    ) -> Result<(), StorageError> {
+    async fn set_batch(&self, values: &HashMap<String, Vec<u8>>) -> Result<(), StorageError> {
         // Default implementation uses single set operations
         for (key, value) in values {
             self.set(key, value).await?;
@@ -148,7 +142,7 @@ pub trait Storage: Send + Sync + 'static {
         }
         Ok(())
     }
-    
+
     /// Create a secondary index
     ///
     /// # Arguments
@@ -188,7 +182,7 @@ pub trait Storage: Send + Sync + 'static {
     ) -> Result<Vec<String>, StorageError> {
         let index_prefix = format!("index:{}:{}", index_name, index_key);
         let keys = self.list_keys(&index_prefix).await?;
-        
+
         // Extract primary keys from index keys
         let primary_keys = keys
             .iter()
@@ -201,10 +195,10 @@ pub trait Storage: Send + Sync + 'static {
                 }
             })
             .collect();
-            
+
         Ok(primary_keys)
     }
-    
+
     /// Delete an index
     ///
     /// # Arguments
@@ -225,7 +219,7 @@ pub trait Storage: Send + Sync + 'static {
         let index_storage_key = format!("index:{}:{}:{}", index_name, index_key, key);
         self.delete(&index_storage_key).await
     }
-    
+
     /// Get storage health status
     ///
     /// # Returns
@@ -235,15 +229,15 @@ pub trait Storage: Send + Sync + 'static {
         // Implement a basic health check by default
         let health_key = "_health_check_key";
         let health_value = b"ok";
-        
+
         // Try to write and read a value
         self.set(health_key, health_value).await?;
         let read_result = self.get(health_key).await?;
         let read_ok = read_result.is_some() && read_result.unwrap() == health_value;
-        
+
         // Clean up
         let _ = self.delete(health_key).await;
-        
+
         Ok(serde_json::json!({
             "status": if read_ok { "healthy" } else { "unhealthy" },
             "read_write_test": read_ok,
@@ -300,45 +294,39 @@ impl Storage for MemoryStorage {
             .collect();
         Ok(keys)
     }
-    
+
     // Override default batch implementations with optimized versions
-    
-    async fn get_batch(
-        &self,
-        keys: &[String],
-    ) -> Result<HashMap<String, Vec<u8>>, StorageError> {
+
+    async fn get_batch(&self, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, StorageError> {
         let data = self.data.read();
         let mut result = HashMap::new();
-        
+
         for key in keys {
             if let Some(value) = data.get(key) {
                 result.insert(key.clone(), value.clone());
             }
         }
-        
+
         Ok(result)
     }
-    
-    async fn set_batch(
-        &self,
-        values: &HashMap<String, Vec<u8>>,
-    ) -> Result<(), StorageError> {
+
+    async fn set_batch(&self, values: &HashMap<String, Vec<u8>>) -> Result<(), StorageError> {
         let mut data = self.data.write();
-        
+
         for (key, value) in values {
             data.insert(key.clone(), value.clone());
         }
-        
+
         Ok(())
     }
-    
+
     async fn delete_batch(&self, keys: &[String]) -> Result<(), StorageError> {
         let mut data = self.data.write();
-        
+
         for key in keys {
             data.remove(key);
         }
-        
+
         Ok(())
     }
 }

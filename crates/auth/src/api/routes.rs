@@ -6,21 +6,20 @@ use axum::{Extension, Router};
 use tower_http::cors::CorsLayer;
 
 use crate::api::handlers::auth::{
-    callback_handler, challenge_handler, login_handler, refresh_token_handler, revoke_token_handler, token_handler,
-    validate_handler,
+    callback_handler, challenge_handler, login_handler, refresh_token_handler,
+    revoke_token_handler, token_handler, validate_handler,
 };
 use crate::api::handlers::clients::{
     create_client_handler, delete_client_handler, list_clients_handler,
 };
-use crate::api::handlers::identity_handler;
 use crate::api::handlers::keys::{create_key_handler, delete_key_handler, list_keys_handler};
 use crate::api::handlers::permissions::{
     get_key_permissions_handler, list_permissions_handler, update_key_permissions_handler,
 };
+use crate::api::handlers::{health_handler, identity_handler, metrics_handler, providers_handler};
 use crate::auth::middleware::forward_auth_middleware;
 use crate::config::AuthConfig;
 use crate::server::AppState;
-use crate::api::handlers::{health_handler, metrics_handler, providers_handler};
 
 /// Creates and configures the router with all routes and middleware
 pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {

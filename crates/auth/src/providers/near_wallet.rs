@@ -137,30 +137,45 @@ impl NearWalletProvider {
     ) -> Result<bool, AuthError> {
         // Validate inputs
         if public_key_str.is_empty() {
-            return Err(AuthError::InvalidRequest("Public key cannot be empty".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Public key cannot be empty".to_string(),
+            ));
         }
-        
+
         if message.is_empty() {
-            return Err(AuthError::InvalidRequest("Message cannot be empty".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Message cannot be empty".to_string(),
+            ));
         }
-        
+
         if signature_str.is_empty() {
-            return Err(AuthError::InvalidRequest("Signature cannot be empty".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Signature cannot be empty".to_string(),
+            ));
         }
 
         // Parse the public key
         let public_key = PublicKey::from_str(public_key_str).map_err(|err| {
-            AuthError::SignatureVerificationFailed(format!("Invalid NEAR public key format: {}", err))
+            AuthError::SignatureVerificationFailed(format!(
+                "Invalid NEAR public key format: {}",
+                err
+            ))
         })?;
 
         // Parse the signature
         let signature_bytes = STANDARD.decode(signature_str).map_err(|err| {
-            AuthError::SignatureVerificationFailed(format!("Invalid NEAR signature encoding: {}", err))
+            AuthError::SignatureVerificationFailed(format!(
+                "Invalid NEAR signature encoding: {}",
+                err
+            ))
         })?;
 
         let signature =
             Signature::from_parts(KeyType::ED25519, &signature_bytes).map_err(|err| {
-                AuthError::SignatureVerificationFailed(format!("Invalid NEAR signature format: {}", err))
+                AuthError::SignatureVerificationFailed(format!(
+                    "Invalid NEAR signature format: {}",
+                    err
+                ))
             })?;
 
         // Verify the signature
@@ -190,17 +205,21 @@ impl NearWalletProvider {
     ) -> Result<bool, AuthError> {
         // Validate inputs
         if account_id.is_empty() {
-            return Err(AuthError::InvalidRequest("Account ID cannot be empty".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Account ID cannot be empty".to_string(),
+            ));
         }
-        
+
         if public_key.is_empty() {
-            return Err(AuthError::InvalidRequest("Public key cannot be empty".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Public key cannot be empty".to_string(),
+            ));
         }
 
         // Parse the account ID
-        let account_id: AccountId = account_id
-            .parse()
-            .map_err(|err| AuthError::KeyOwnershipFailed(format!("Invalid NEAR account ID: {}", err)))?;
+        let account_id: AccountId = account_id.parse().map_err(|err| {
+            AuthError::KeyOwnershipFailed(format!("Invalid NEAR account ID: {}", err))
+        })?;
 
         // Parse the public key - use a variable first to avoid type annotation issues
         let public_key_result = public_key.parse::<near_crypto::PublicKey>();
@@ -215,10 +234,10 @@ impl NearWalletProvider {
 
         while attempt < max_retries {
             attempt += 1;
-            
+
             // Create a new client for each attempt
             let client = JsonRpcClient::connect(&self.config.rpc_url);
-            
+
             // Query the account's access keys
             let request = methods::query::RpcQueryRequest {
                 block_reference: BlockReference::Finality(Finality::Final),
@@ -232,9 +251,12 @@ impl NearWalletProvider {
             match client.call(request).await {
                 Ok(_) => return Ok(true), // If we get a valid response, the key belongs to the account
                 Err(err) => {
-                    debug!("Failed to verify NEAR account key (attempt {}/{}): {}", attempt, max_retries, err);
+                    debug!(
+                        "Failed to verify NEAR account key (attempt {}/{}): {}",
+                        attempt, max_retries, err
+                    );
                     last_error = Some(err.to_string());
-                    
+
                     if attempt < max_retries {
                         // Wait before retrying with exponential backoff
                         let delay_ms = 100 * (2_u64.pow(attempt as u32));
@@ -246,9 +268,12 @@ impl NearWalletProvider {
 
         // If we're here, all retries failed
         if last_error.is_some() {
-            debug!("Final error verifying account key ownership: {}", last_error.unwrap());
+            debug!(
+                "Final error verifying account key ownership: {}",
+                last_error.unwrap()
+            );
         }
-        
+
         // If we get an error, it might be because the key doesn't exist
         // But it could also be a network issue, so we'll check for specific error patterns
         // For now, to be safe, we'll return false
@@ -579,23 +604,23 @@ impl AuthProvider for NearWalletProvider {
     fn name(&self) -> &str {
         "near_wallet"
     }
-    
+
     fn provider_type(&self) -> &str {
         "wallet"
     }
-    
+
     fn description(&self) -> &str {
         "Authenticates users with a NEAR wallet through cryptographic signatures"
     }
-    
+
     fn supports_method(&self, method: &str) -> bool {
         method == "near_wallet" || method == "near"
     }
-    
+
     fn is_configured(&self) -> bool {
         !self.config.rpc_url.is_empty()
     }
-    
+
     fn get_config_options(&self) -> serde_json::Value {
         serde_json::json!({
             "rpc_url": self.config.rpc_url,
@@ -654,11 +679,11 @@ impl AuthProvider for NearWalletProvider {
 
         Ok(AuthRequestVerifier::new(verifier))
     }
-    
+
     fn get_health_status(&self) -> eyre::Result<serde_json::Value> {
         // Test the RPC connection to verify if the provider is healthy
         let client = JsonRpcClient::connect(&self.config.rpc_url);
-        
+
         // We'll do a minimal check that doesn't require waiting for response
         // Just check if we can create a client and make a request
         Ok(serde_json::json!({

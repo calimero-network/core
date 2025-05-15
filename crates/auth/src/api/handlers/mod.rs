@@ -48,7 +48,7 @@ pub async fn identity_handler(state: Extension<Arc<AppState>>) -> impl IntoRespo
 /// * `impl IntoResponse` - The response
 pub async fn metrics_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     let metrics = state.metrics.get_metrics().await;
-    
+
     (StatusCode::OK, Json(metrics))
 }
 
@@ -66,19 +66,19 @@ pub async fn metrics_handler(state: Extension<Arc<AppState>>) -> impl IntoRespon
 pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     // Check the connection to the storage backend
     let storage_ok = state.storage.exists("health-check").await.is_ok();
-    
+
     let status = if storage_ok {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    
+
     let response = json!({
         "status": if status == StatusCode::OK { "healthy" } else { "unhealthy" },
         "storage": storage_ok,
         "uptime_seconds": state.metrics.get_uptime_seconds(),
     });
-    
+
     (status, Json(response))
 }
 

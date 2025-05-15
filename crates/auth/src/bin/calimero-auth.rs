@@ -1,17 +1,14 @@
 use std::path::PathBuf;
 
+use calimero_auth::config::{default_config, load_config, AuthConfig};
+use calimero_auth::server::{shutdown_signal, start_server};
+use calimero_auth::storage::create_storage;
+use calimero_auth::{providers, AuthService};
 use clap::Parser;
 use eyre::Result;
 use tracing::{info, warn};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-use calimero_auth::{
-    config::{default_config, load_config, AuthConfig},
-    providers,
-    server::{shutdown_signal, start_server},
-    storage::create_storage,
-    AuthService,
-};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// Calimero Authentication Service
 #[derive(Parser, Debug)]
@@ -82,7 +79,8 @@ async fn main() -> Result<()> {
     }
 
     // Create the storage backend
-    let storage = create_storage(&config.storage).await
+    let storage = create_storage(&config.storage)
+        .await
         .expect("Failed to create storage");
 
     // Check auth mode
@@ -103,18 +101,18 @@ async fn main() -> Result<()> {
         info!("Starting in production mode with authentication");
         let providers = providers::create_providers(storage.clone(), &config)
             .expect("Failed to create authentication providers");
-            
+
         info!("Initialized {} authentication providers", providers.len());
         for provider in &providers {
             info!("  - {} ({})", provider.name(), provider.description());
         }
-        
+
         AuthService::new(providers)
     };
 
     // Start the server
     info!("Starting auth server on {}", config.listen_addr);
-    
+
     tokio::select! {
         result = start_server(auth_service, storage, config) => {
             if let Err(err) = result {

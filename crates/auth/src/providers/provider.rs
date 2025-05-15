@@ -6,8 +6,7 @@ use axum::http::Request;
 use eyre::Result;
 
 use crate::api::handlers::auth::TokenRequest;
-use crate::AuthResponse;
-use crate::AuthError;
+use crate::{AuthError, AuthResponse};
 
 /// Authentication provider trait
 ///
@@ -58,7 +57,7 @@ pub trait AuthProvider: Send + Sync {
             "Token request verification not supported by this provider"
         ))
     }
-    
+
     /// Get provider-specific health status
     fn get_health_status(&self) -> eyre::Result<serde_json::Value> {
         // Default implementation returns basic health info
@@ -103,4 +102,4 @@ impl AuthRequestVerifier {
     pub async fn verify(&self) -> Result<AuthResponse, AuthError> {
         self.verifier.verify().await
     }
-} 
+}

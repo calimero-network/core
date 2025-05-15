@@ -65,7 +65,10 @@ pub async fn start_server(
     // Bind to the address
     let addr = config.listen_addr;
     info!("Auth service listening on {}", addr);
-    info!("Using {} auth provider(s)", state.auth_service.providers().len());
+    info!(
+        "Using {} auth provider(s)",
+        state.auth_service.providers().len()
+    );
 
     // Start the server using Axum's built-in server
     let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -271,9 +271,12 @@ impl TokenManager {
                     AuthError::StorageError(format!("Failed to serialize client key: {}", err))
                 })?;
 
-                self.storage.set(&client_key_path, &data).await.map_err(|err| {
-                    AuthError::StorageError(format!("Failed to update client key: {}", err))
-                })?;
+                self.storage
+                    .set(&client_key_path, &data)
+                    .await
+                    .map_err(|err| {
+                        AuthError::StorageError(format!("Failed to update client key: {}", err))
+                    })?;
 
                 Ok(())
             }
@@ -306,9 +309,7 @@ impl TokenManager {
         // Extract the Authorization header
         let auth_header = headers
             .get("Authorization")
-            .ok_or_else(|| {
-                AuthError::InvalidRequest("Missing Authorization header".to_string())
-            })?
+            .ok_or_else(|| AuthError::InvalidRequest("Missing Authorization header".to_string()))?
             .to_str()
             .map_err(|err| {
                 AuthError::InvalidRequest(format!("Invalid Authorization header: {}", err))
@@ -324,29 +325,30 @@ impl TokenManager {
         // Extract the token
         let token = auth_header.trim_start_matches("Bearer ").trim();
         if token.is_empty() {
-            return Err(AuthError::InvalidRequest("Empty token provided".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Empty token provided".to_string(),
+            ));
         }
 
         // Decode the token
         let validation = Validation::new(Algorithm::HS256);
         let decoding_key = DecodingKey::from_secret(self.config.secret.as_bytes());
 
-        let token_data = decode::<Claims>(token, &decoding_key, &validation)
-            .map_err(|err| {
-                // Provide more specific error messages based on the failure type
-                match err.kind() {
-                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-                        AuthError::InvalidToken("Token has expired".to_string())
-                    }
-                    jsonwebtoken::errors::ErrorKind::InvalidSignature => {
-                        AuthError::InvalidToken("Invalid token signature".to_string())
-                    }
-                    jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
-                        AuthError::InvalidToken("Invalid token issuer".to_string())
-                    }
-                    _ => AuthError::InvalidToken(format!("Invalid token: {}", err)),
+        let token_data = decode::<Claims>(token, &decoding_key, &validation).map_err(|err| {
+            // Provide more specific error messages based on the failure type
+            match err.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+                    AuthError::InvalidToken("Token has expired".to_string())
                 }
-            })?;
+                jsonwebtoken::errors::ErrorKind::InvalidSignature => {
+                    AuthError::InvalidToken("Invalid token signature".to_string())
+                }
+                jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
+                    AuthError::InvalidToken("Invalid token issuer".to_string())
+                }
+                _ => AuthError::InvalidToken(format!("Invalid token: {}", err)),
+            }
+        })?;
 
         let claims = token_data.claims;
 

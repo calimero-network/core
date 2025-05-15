@@ -514,11 +514,19 @@ pub async fn revoke_token_handler(
         );
     }
 
-    match state.0.token_generator.revoke_client_tokens(&request.client_id).await {
+    match state
+        .0
+        .token_generator
+        .revoke_client_tokens(&request.client_id)
+        .await
+    {
         Ok(_) => {
             // Log successful revocation
-            debug!("Successfully revoked tokens for client {}", request.client_id);
-            
+            debug!(
+                "Successfully revoked tokens for client {}",
+                request.client_id
+            );
+
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -529,14 +537,17 @@ pub async fn revoke_token_handler(
         }
         Err(err) => {
             // Log error
-            error!("Failed to revoke tokens for client {}: {}", request.client_id, err);
-            
+            error!(
+                "Failed to revoke tokens for client {}: {}",
+                request.client_id, err
+            );
+
             let status_code = match err {
                 AuthError::AuthenticationFailed(_) => StatusCode::NOT_FOUND,
                 AuthError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 _ => StatusCode::BAD_REQUEST,
             };
-            
+
             (
                 status_code,
                 Json(serde_json::json!({

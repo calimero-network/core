@@ -1,11 +1,12 @@
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
-use rand::{thread_rng, Rng};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use rand::{thread_rng, Rng};
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// Challenge request
@@ -82,7 +83,7 @@ impl AuthMetrics {
     /// Record a successful authentication with the given duration
     pub async fn record_auth_success(&self, duration_ms: u64) {
         self.auth_successes.fetch_add(1, Ordering::Relaxed);
-        
+
         // Update average duration
         let mut data = self.auth_duration_ms.write().await;
         let (total, count) = *data;
@@ -92,11 +93,11 @@ impl AuthMetrics {
     /// Record a failed authentication with the given duration and error type
     pub async fn record_auth_failure(&self, duration_ms: u64, error_type: &str) {
         self.auth_failures.fetch_add(1, Ordering::Relaxed);
-        
+
         // Update failure by type count
         let mut failures = self.auth_failures_by_type.write().await;
         *failures.entry(error_type.to_string()).or_insert(0) += 1;
-        
+
         // Update average duration
         let mut data = self.auth_duration_ms.write().await;
         let (total, count) = *data;
@@ -116,21 +117,27 @@ impl AuthMetrics {
     /// Get all metrics as a JSON-serializable map
     pub async fn get_metrics(&self) -> HashMap<String, serde_json::Value> {
         let mut metrics = HashMap::new();
-        
+
         // Basic counts
         metrics.insert(
-            "auth_attempts".to_string(), 
-            serde_json::Value::Number(serde_json::Number::from(self.auth_attempts.load(Ordering::Relaxed)))
+            "auth_attempts".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(
+                self.auth_attempts.load(Ordering::Relaxed),
+            )),
         );
         metrics.insert(
-            "auth_successes".to_string(), 
-            serde_json::Value::Number(serde_json::Number::from(self.auth_successes.load(Ordering::Relaxed)))
+            "auth_successes".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(
+                self.auth_successes.load(Ordering::Relaxed),
+            )),
         );
         metrics.insert(
-            "auth_failures".to_string(), 
-            serde_json::Value::Number(serde_json::Number::from(self.auth_failures.load(Ordering::Relaxed)))
+            "auth_failures".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(
+                self.auth_failures.load(Ordering::Relaxed),
+            )),
         );
-        
+
         // Calculate success rate
         let attempts = self.auth_attempts.load(Ordering::Relaxed);
         let successes = self.auth_successes.load(Ordering::Relaxed);
@@ -141,33 +148,40 @@ impl AuthMetrics {
         };
         metrics.insert(
             "auth_success_rate".to_string(),
-            serde_json::Value::Number(serde_json::Number::from_f64(success_rate).unwrap_or(serde_json::Number::from(0)))
+            serde_json::Value::Number(
+                serde_json::Number::from_f64(success_rate).unwrap_or(serde_json::Number::from(0)),
+            ),
         );
-        
+
         // Average duration
         let data = self.auth_duration_ms.read().await;
         let (total, count) = *data;
         let avg_duration = if count > 0 { total / count } else { 0 };
         metrics.insert(
             "auth_avg_duration_ms".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(avg_duration))
+            serde_json::Value::Number(serde_json::Number::from(avg_duration)),
         );
-        
+
         // Failures by type
         let failures = self.auth_failures_by_type.read().await;
-        let failures_json = serde_json::to_value(&*failures).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+        let failures_json = serde_json::to_value(&*failures)
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
         metrics.insert("auth_failures_by_type".to_string(), failures_json);
-        
+
         // Token operations
         metrics.insert(
             "token_refreshes".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(self.token_refreshes.load(Ordering::Relaxed)))
+            serde_json::Value::Number(serde_json::Number::from(
+                self.token_refreshes.load(Ordering::Relaxed),
+            )),
         );
         metrics.insert(
             "token_revocations".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(self.token_revocations.load(Ordering::Relaxed)))
+            serde_json::Value::Number(serde_json::Number::from(
+                self.token_revocations.load(Ordering::Relaxed),
+            )),
         );
-        
+
         metrics
     }
 
@@ -187,12 +201,16 @@ impl AuthTimer {
     /// Record a successful authentication
     pub async fn success(self) {
         let duration = self.start_time.elapsed();
-        self.metrics.record_auth_success(duration.as_millis() as u64).await;
+        self.metrics
+            .record_auth_success(duration.as_millis() as u64)
+            .await;
     }
-    
+
     /// Record a failed authentication
     pub async fn failure(self, error_type: &str) {
         let duration = self.start_time.elapsed();
-        self.metrics.record_auth_failure(duration.as_millis() as u64, error_type).await;
+        self.metrics
+            .record_auth_failure(duration.as_millis() as u64, error_type)
+            .await;
     }
 }

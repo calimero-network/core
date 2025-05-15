@@ -30,7 +30,7 @@ pub struct AuthConfig {
     /// CORS configuration
     #[serde(default)]
     pub cors: CorsConfig,
-    
+
     /// Enabled authentication providers
     #[serde(default = "default_enabled_providers")]
     pub enabled_providers: Vec<String>,
