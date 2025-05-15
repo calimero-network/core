@@ -213,10 +213,6 @@ impl SyncManager {
             .mesh_peers(TopicHash::from_raw(context_id))
             .await;
 
-        if context_id.as_str() == "E13pvE8dqgmZcPgFN21HNgiMRjFYczej8tuqayKTPaD1" {
-            time::sleep(Duration::from_secs(15)).await;
-        }
-
         for peer_id in peers {
             debug!(%context_id, %peer_id, "Attempting to perform interval triggered sync");
 
