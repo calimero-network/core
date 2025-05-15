@@ -30,7 +30,6 @@ members = [
     "./crates/store/blobs",
     "./crates/utils/actix",
 
-    "./apps/kv-store",
     "./apps/gen-ext",
     "./apps/visited",
 
@@ -170,7 +169,6 @@ calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 
-kv-store = { path = "./apps/kv-store" }
 gen-ext = { path = "./apps/gen-ext" }
 visited = { path = "./apps/visited" }
 

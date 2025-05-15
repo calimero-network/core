@@ -5142,15 +5142,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kv-store"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "lambdaworks-crypto"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
