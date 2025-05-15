@@ -5,7 +5,7 @@ use eyre::Result;
 use serde_json::Value;
 
 use crate::auth::token::TokenManager;
-use crate::config::{AuthConfig, NearWalletConfig};
+use crate::config::AuthConfig;
 use crate::storage::Storage;
 
 pub mod near_wallet;

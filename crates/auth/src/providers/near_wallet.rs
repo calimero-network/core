@@ -18,7 +18,7 @@ use tracing::{debug, error};
 use crate::auth::token::TokenManager;
 use crate::config::NearWalletConfig;
 use crate::storage::models::{prefixes, RootKey};
-use crate::storage::{deserialize, serialize, Storage, StorageError};
+use crate::storage::{deserialize, serialize, Storage};
 use crate::{
     AuthError, AuthProvider, AuthRequestVerifier, AuthResponse, AuthVerifierFn, RequestValidator,
 };

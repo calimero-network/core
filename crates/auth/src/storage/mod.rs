@@ -347,27 +347,6 @@ pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn Storage>, 
                 .map_err(|e| StorageError::StorageError(e.to_string()))?;
             Ok(Arc::new(storage))
         }
-        #[cfg(feature = "redis-storage")]
-        StorageConfig::Redis { url, pool_size } => {
-            let storage = redis_storage::RedisStorage::new(url, *pool_size)
-                .await
-                .map_err(|e| StorageError::StorageError(e.to_string()))?;
-            Ok(Arc::new(storage))
-        }
-        #[cfg(feature = "postgres")]
-        StorageConfig::Postgres { url, pool_size } => {
-            let storage = postgres_storage::PostgresStorage::new(url, *pool_size)
-                .await
-                .map_err(|e| StorageError::StorageError(e.to_string()))?;
-            Ok(Arc::new(storage))
-        }
-        #[cfg(feature = "sqlite")]
-        StorageConfig::SQLite { path } => {
-            let storage = sqlite_storage::SQLiteStorage::new(path)
-                .await
-                .map_err(|e| StorageError::StorageError(e.to_string()))?;
-            Ok(Arc::new(storage))
-        }
         StorageConfig::Memory => {
             let storage = MemoryStorage::new();
             Ok(Arc::new(storage))

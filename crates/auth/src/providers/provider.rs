@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
@@ -50,7 +48,7 @@ pub trait AuthProvider: Send + Sync {
     /// * `eyre::Result<AuthRequestVerifier>` - The verifier
     fn verify_token_request(
         &self,
-        token_request: &TokenRequest,
+        _token_request: &TokenRequest,
     ) -> eyre::Result<AuthRequestVerifier> {
         // Default implementation returns an error
         Err(eyre::eyre!(

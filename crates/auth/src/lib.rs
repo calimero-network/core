@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
-use axum::body::Body;
-use axum::http::{HeaderMap, Request};
+use axum::http::Request;
 use eyre::Result;
 use thiserror::Error;
 
