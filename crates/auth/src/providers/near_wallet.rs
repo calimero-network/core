@@ -16,8 +16,9 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, error};
 
 use crate::config::NearWalletConfig;
-use crate::providers::jwt::TokenManager;
-use crate::storage::{deserialize, prefixes, serialize, RootKey, Storage, StorageError};
+use crate::auth::token::TokenManager;
+use crate::storage::models::{prefixes, RootKey};
+use crate::storage::{deserialize, serialize, Storage, StorageError};
 use crate::{
     AuthError, AuthProvider, AuthRequestVerifier, AuthResponse, AuthVerifierFn, RequestValidator,
 };
@@ -338,39 +339,29 @@ impl NearWalletProvider {
         }
     }
 
-    /// Handle authentication and generate tokens
+    /// Core authentication logic for NEAR wallet
+    ///
+    /// This is the shared authentication logic used by both the request handler and verifier
     ///
     /// # Arguments
     ///
-    /// * `request` - The request to authenticate
-    /// * `account_id` - The account ID
+    /// * `account_id` - The NEAR account ID
     /// * `public_key` - The public key
+    /// * `message` - The message that was signed
     /// * `signature` - The signature
-    /// * `message` - The message
     ///
     /// # Returns
     ///
-    /// * `Result<AuthResponse, AuthError>` - Authentication response
-    async fn authenticate<B>(
+    /// * `Result<(String, Vec<String>), AuthError>` - The key ID and permissions
+    async fn authenticate_core(
         &self,
-        request: &Request<B>,
         account_id: &str,
         public_key: &str,
         message: &[u8],
-    ) -> Result<AuthResponse, AuthError>
-    where
-        B: Send + Sync,
-    {
+        signature: &str,
+    ) -> Result<(String, Vec<String>), AuthError> {
         // Verify the signature
-        let signature = request
-            .headers()
-            .get("x-near-signature")
-            .ok_or_else(|| AuthError::AuthenticationFailed("Missing NEAR signature".to_string()))?
-            .to_str()
-            .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR signature".to_string()))?;
-
-        self.verify_signature(public_key, message, signature)
-            .await?;
+        self.verify_signature(public_key, message, signature).await?;
 
         // Verify the account owns the key
         if !self.verify_account_owns_key(account_id, public_key).await? {
@@ -395,6 +386,42 @@ impl NearWalletProvider {
         // For now, grant admin permissions to all NEAR wallets
         // In a real implementation, you would look up the permissions from storage
         let permissions = vec!["admin".to_string()];
+
+        Ok((key_id, permissions))
+    }
+
+    /// Handle authentication and generate tokens
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The request to authenticate
+    /// * `account_id` - The account ID
+    /// * `public_key` - The public key
+    /// * `message` - The message
+    ///
+    /// # Returns
+    ///
+    /// * `Result<AuthResponse, AuthError>` - Authentication response
+    async fn authenticate<B>(
+        &self,
+        request: &Request<B>,
+        account_id: &str,
+        public_key: &str,
+        message: &[u8],
+    ) -> Result<AuthResponse, AuthError>
+    where
+        B: Send + Sync,
+    {
+        // Extract the signature from headers
+        let signature = request
+            .headers()
+            .get("x-near-signature")
+            .ok_or_else(|| AuthError::AuthenticationFailed("Missing NEAR signature".to_string()))?
+            .to_str()
+            .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR signature".to_string()))?;
+
+        // Authenticate using the core authentication logic
+        let (key_id, permissions) = self.authenticate_core(account_id, public_key, message, signature).await?;
 
         // If we have a token manager, generate a JWT token for the client
         if let Some(token_manager) = &self.token_manager {
@@ -465,49 +492,17 @@ impl AuthVerifierFn for NearWalletVerifier {
     async fn verify(&self) -> Result<AuthResponse, AuthError> {
         let auth_data = &self.auth_data;
 
-        // Verify the signature
-        self.provider
-            .verify_signature(
+        // Authenticate using the core authentication logic
+        let (key_id, permissions) = self.provider
+            .authenticate_core(
+                &auth_data.account_id,
                 &auth_data.public_key,
                 &auth_data.message,
                 &auth_data.signature,
             )
             .await?;
 
-        // Verify the account owns the key
-        if !self
-            .provider
-            .verify_account_owns_key(&auth_data.account_id, &auth_data.public_key)
-            .await?
-        {
-            return Err(AuthError::AuthenticationFailed(
-                "Public key does not belong to account".to_string(),
-            ));
-        }
-
-        // Get or create the root key
-        let (key_id, _root_key) = match self
-            .provider
-            .get_root_key_for_account(&auth_data.account_id)
-            .await?
-        {
-            Some((key_id, root_key)) => {
-                // Update the last used timestamp
-                self.provider.update_last_used(&key_id).await?;
-                (key_id, root_key)
-            }
-            None => {
-                // Create a new root key
-                self.provider
-                    .create_root_key(&auth_data.account_id, &auth_data.public_key)
-                    .await?
-            }
-        };
-
-        // For now, grant admin permissions to all NEAR wallets
-        // In a real implementation, you would look up the permissions from storage
-        let permissions = vec!["admin".to_string()];
-
+        // Return the authentication response
         Ok(AuthResponse {
             is_valid: true,
             key_id: Some(key_id),

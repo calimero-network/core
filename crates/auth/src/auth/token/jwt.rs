@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::body::Body;
-use axum::http::{HeaderMap, Request};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 
 use crate::config::JwtConfig;
-use crate::storage::{deserialize, prefixes, ClientKey, Storage, StorageError};
-use crate::{AuthError, AuthRequestVerifier, AuthResponse, AuthVerifierFn};
+use crate::storage::models::{prefixes, ClientKey};
+use crate::storage::{deserialize, Storage};
+use crate::AuthError;
+use crate::AuthResponse;
 
 /// JWT Claims structure
 #[derive(Debug, Serialize, Deserialize)]
@@ -257,7 +257,7 @@ impl TokenManager {
     /// * `Result<AuthResponse, AuthError>` - The authentication response
     pub async fn verify_token_from_headers(
         &self,
-        headers: &HeaderMap,
+        headers: &axum::http::HeaderMap,
     ) -> Result<AuthResponse, AuthError> {
         // Extract the Authorization header
         let auth_header = headers
@@ -348,4 +348,4 @@ impl TokenManager {
             }
         }
     }
-}
+} 

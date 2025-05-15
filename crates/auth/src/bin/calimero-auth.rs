@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use calimero_auth::config::{default_config, load_config, AuthConfig};
-use calimero_auth::providers::jwt::TokenManager;
 use calimero_auth::providers::near_wallet::NearWalletProvider;
-use calimero_auth::service::start_server;
+use calimero_auth::server::start_server;
+use calimero_auth::auth::token::TokenManager;
 use calimero_auth::storage::create_storage;
 use calimero_auth::{AuthProvider, AuthService};
 use clap::Parser;

@@ -8,7 +8,11 @@ use thiserror::Error;
 
 use crate::config::StorageConfig;
 
+pub mod models;
 pub mod rocksdb;
+
+pub use models::{ClientKey, Permission, RootKey};
+pub use models::prefixes;
 
 /// Storage error
 #[derive(Debug, Error)]
@@ -185,66 +189,6 @@ pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn Storage>, 
     }
 }
 
-/// Root key storage model
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RootKey {
-    /// The public key
-    pub public_key: String,
-
-    /// The authentication method
-    pub auth_method: String,
-
-    /// When the key was created
-    pub created_at: u64,
-
-    /// When the key was revoked (if it was)
-    pub revoked_at: Option<u64>,
-
-    /// When the key was last used
-    pub last_used_at: Option<u64>,
-}
-
-/// Client key storage model
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClientKey {
-    /// The client ID
-    pub client_id: String,
-
-    /// The root key ID
-    pub root_key_id: String,
-
-    /// The name of the client
-    pub name: String,
-
-    /// The permissions granted to the client
-    pub permissions: Vec<String>,
-
-    /// When the client key was created
-    pub created_at: u64,
-
-    /// When the client key expires
-    pub expires_at: Option<u64>,
-
-    /// When the client key was revoked (if it was)
-    pub revoked_at: Option<u64>,
-}
-
-/// Permission storage model
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Permission {
-    /// The permission ID
-    pub permission_id: String,
-
-    /// The name of the permission
-    pub name: String,
-
-    /// The description of the permission
-    pub description: String,
-
-    /// The resource type
-    pub resource_type: String,
-}
-
 /// Helper function to serialize an object to JSON
 ///
 /// # Arguments
@@ -269,22 +213,4 @@ pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, StorageError> {
 /// * `Result<T, StorageError>` - The deserialized value
 pub fn deserialize<T: for<'de> Deserialize<'de>>(data: &[u8]) -> Result<T, StorageError> {
     serde_json::from_slice(data).map_err(|e| StorageError::SerializationError(e.to_string()))
-}
-
-/// Storage prefixes for different types of data
-pub mod prefixes {
-    /// Prefix for root keys
-    pub const ROOT_KEY: &str = "root:";
-
-    /// Prefix for client keys
-    pub const CLIENT_KEY: &str = "client:";
-
-    /// Prefix for permissions
-    pub const PERMISSION: &str = "permission:";
-
-    /// Prefix for refresh tokens
-    pub const REFRESH_TOKEN: &str = "refresh:";
-
-    /// Prefix for the secondary index of root key to client keys
-    pub const ROOT_CLIENTS: &str = "root_clients:";
 }
