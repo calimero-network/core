@@ -9,13 +9,14 @@ use calimero_network_primitives::stream::{Message, Stream};
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::{InitPayload, StreamMessage};
 use calimero_primitives::context::ContextId;
-use eyre::{bail, OptionExt};
+use eyre::{bail, OptionExt, WrapErr};
 use futures_util::stream::FuturesUnordered;
-use futures_util::{FutureExt, SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
-use rand::{thread_rng, Rng};
-use tokio::time::{self, timeout, Instant, MissedTickBehavior};
+use rand::seq::SliceRandom;
+use rand::Rng;
+use tokio::time::{self, timeout, timeout_at, Instant, MissedTickBehavior};
 use tracing::{debug, error, warn};
 
 mod blobs;
@@ -114,16 +115,18 @@ impl SyncManager {
         let mut futs = FuturesUnordered::new();
 
         let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>| {
-            let (context_id, result) = futs.next().await?;
+            let (context_id, start, result) = futs.next().await?;
 
             let _ignored = state
                 .entry(context_id)
                 .and_modify(|state| state.last_sync = Some(Instant::now()));
 
-            if let Err(_) = result {
-                warn!(%context_id, "Timeout while performing sync");
+            let took = Instant::elapsed(&start).as_secs_f32();
+
+            if let Ok(_) = result {
+                debug!(%context_id, %took, "Sync finished successfully");
             } else {
-                debug!(%context_id, "Sync finished successfully");
+                warn!(%context_id, %took, "Sync timed out");
             }
 
             Some(())
@@ -137,6 +140,8 @@ impl SyncManager {
                 } => {},
             }
 
+            debug!("Performing interval sync");
+
             let contexts = self.context_client.get_contexts(None);
 
             let mut contexts = pin!(contexts);
@@ -145,7 +150,7 @@ impl SyncManager {
                 let context_id = match context_id {
                     Ok(context_id) => context_id,
                     Err(err) => {
-                        error!(%err, "Failed to get context id");
+                        error!(%err, "Failed reading context id to sync");
                         continue;
                     }
                 };
@@ -163,13 +168,15 @@ impl SyncManager {
                             continue;
                         };
 
-                        let long_ago = last_sync.elapsed();
+                        let minimum = self.sync_config.interval * 3 / 4;
+                        let time_since = last_sync.elapsed();
 
-                        if long_ago + Duration::from_secs(1) < self.sync_config.interval {
+                        if time_since < minimum {
                             debug!(
                                 %context_id,
-                                long_ago=%long_ago.as_secs(),
-                                "Skipping sync, last sync was too recent"
+                                time_since_sec=%time_since.as_secs_f32(),
+                                minimum_sec=%minimum.as_secs_f32(),
+                                "Skipping sync, last one was too recent"
                             );
 
                             continue;
@@ -180,25 +187,25 @@ impl SyncManager {
                     hash_map::Entry::Vacant(state) => {
                         debug!(
                             %context_id,
-                            "Sync not started yet, starting now"
+                            "Syncing for the first time"
                         );
 
                         let _ignored = state.insert(SyncState { last_sync: None });
                     }
                 };
 
-                debug!(
-                    %context_id,
-                    "Performing interval triggered sync"
-                );
+                debug!(%context_id, "Scheduled sync");
 
-                futs.push(
-                    timeout(
-                        self.sync_config.timeout,
-                        self.perform_interval_sync(context_id),
-                    )
-                    .map(move |res| (context_id, res)),
-                );
+                let start = Instant::now();
+                let Some(deadline) = start.checked_add(self.sync_config.timeout) else {
+                    error!(?start, timeout=?self.sync_config.timeout, "Unable to determine when to timeout sync procedure");
+                    return;
+                };
+
+                let fut = timeout_at(deadline, self.perform_interval_sync(context_id))
+                    .map(move |res| (context_id, start, res));
+
+                futs.push(fut);
 
                 if futs.len() == 30 {
                     let _ignored = advance(&mut futs, &mut state).await;
@@ -213,15 +220,19 @@ impl SyncManager {
             .mesh_peers(TopicHash::from_raw(context_id))
             .await;
 
-        for peer_id in peers {
-            debug!(%context_id, %peer_id, "Attempting to perform interval triggered sync");
+        if peers.is_empty() {
+            warn!(%context_id, "No peers to sync with");
+        }
 
-            let Err(err) = self.initiate_sync(context_id, peer_id).await else {
-                debug!(%context_id, %peer_id, "Interval triggered sync successfully finished");
+        for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
+            debug!(%context_id, %peer_id, "Attempting to sync with peer");
+
+            let Err(err) = self.initiate_sync(context_id, *peer_id).await else {
+                debug!(%context_id, %peer_id, "Sync with peer successfully finished");
                 break;
             };
 
-            error!(%err, "Failed to perform interval sync, trying another peer");
+            error!(%context_id, %peer_id, %err, "Failed to sync with peer, trying another..");
         }
     }
 
@@ -248,10 +259,16 @@ impl SyncManager {
     async fn recv(
         &self,
         stream: &mut Stream,
-        duration: Duration,
         shared_key: Option<(SharedKey, Nonce)>,
     ) -> eyre::Result<Option<StreamMessage<'static>>> {
-        let Some(message) = timeout(duration, stream.next()).await?.transpose()? else {
+        let budget = self.sync_config.timeout / 3;
+
+        let message = timeout(budget, stream.try_next())
+            .await
+            .wrap_err("timeout receiving message from ")?
+            .wrap_err("error receiving message from peer")?;
+
+        let Some(message) = message else {
             return Ok(None);
         };
 
@@ -285,7 +302,7 @@ impl SyncManager {
 
         let identities = self.context_client.context_members(&context.id, Some(true));
 
-        let Some((our_identity, _)) = choose_stream(identities, &mut thread_rng())
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
             .await
             .transpose()?
         else {
@@ -379,7 +396,7 @@ impl SyncManager {
 
         let identities = self.context_client.context_members(&context.id, Some(true));
 
-        let Some((our_identity, _)) = choose_stream(identities, &mut thread_rng())
+        let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
             .await
             .transpose()?
         else {
