@@ -44,11 +44,8 @@ impl ProviderFactory {
         self.register("near_wallet", |storage, config| {
             let near_config = config.near.clone();
             let token_manager = TokenManager::new(config.jwt.clone(), storage.clone());
-            let provider = near_wallet::NearWalletProvider::new(
-                near_config,
-                storage,
-                token_manager,
-            );
+            let provider =
+                near_wallet::NearWalletProvider::new(near_config, storage, token_manager);
             Ok(Box::new(provider))
         });
     }

@@ -38,7 +38,11 @@ impl NearWalletProvider {
     /// * `config` - NEAR wallet configuration
     /// * `storage` - Storage backend
     /// * `token_manager` - JWT token manager
-    pub fn new(config: NearWalletConfig, storage: Arc<dyn Storage>, token_manager: TokenManager) -> Self {
+    pub fn new(
+        config: NearWalletConfig,
+        storage: Arc<dyn Storage>,
+        token_manager: TokenManager,
+    ) -> Self {
         Self {
             config,
             storage,
@@ -486,7 +490,8 @@ impl NearWalletProvider {
         let client_id = format!("client_{}", Utc::now().timestamp());
 
         // Generate tokens for the client
-        match self.token_manager
+        match self
+            .token_manager
             .generate_token_pair(&client_id, &key_id, &permissions)
             .await
         {
