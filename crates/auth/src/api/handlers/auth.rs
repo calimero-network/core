@@ -18,14 +18,72 @@ use crate::AuthError;
 ///
 /// This endpoint serves the login page.
 pub async fn login_handler(
-    _state: Extension<Arc<AppState>>,
+    state: Extension<Arc<AppState>>,
     Query(_params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    // Read the login template
-    let html = include_str!("../../../templates/login.html");
-
-    // In a real implementation, you would customize the HTML with any needed parameters
-
+    // Read the main login template
+    let mut html = include_str!("../../../templates/login.html").to_string();
+    
+    // Get enabled providers
+    let enabled_providers = state.0.auth_service.providers();
+    
+    // Variables to store provider-specific content
+    let mut provider_scripts = String::new();
+    let mut provider_buttons = String::new();
+    let mut provider_init = String::new();
+    
+    // Check if NEAR wallet provider is available
+    if let Some(near_wallet) = enabled_providers.iter().find(|p| p.name() == "near_wallet") {
+        if near_wallet.is_configured() {
+            // Read the NEAR wallet template
+            let near_template = include_str!("../../../templates/providers/near_wallet.html");
+            
+            // Extract the provider script
+            if let Some(script_start) = near_template.find("<script id=\"near-wallet-script\">") {
+                if let Some(script_end) = near_template[script_start..].find("</script>") {
+                    let script = &near_template[script_start..script_start + script_end + 9]; // +9 to include </script>
+                    provider_scripts.push_str(script);
+                }
+            }
+            
+            // Extract the provider button
+            if let Some(button_start) = near_template.find("<button id=\"near-login\"") {
+                if let Some(result_end) = near_template[button_start..].find("</div>") {
+                    let button = &near_template[button_start..button_start + result_end + 6]; // +6 to include </div>
+                    provider_buttons.push_str(button);
+                }
+            }
+            
+            // Extract the provider initialization
+            if let Some(init_start) = near_template.find("<script id=\"near-wallet-init\">") {
+                if let Some(init_end) = near_template[init_start..].find("</script>") {
+                    let init = &near_template[init_start..init_start + init_end + 9]; // +9 to include </script>
+                    
+                    // Replace configuration placeholders with actual values
+                    let config = &state.0.config.near;
+                    let init = init
+                        .replace("{{NEAR_NETWORK}}", &config.network)
+                        .replace("{{NEAR_RPC_URL}}", &config.rpc_url)
+                        .replace("{{NEAR_WALLET_URL}}", &config.wallet_url)
+                        .replace(
+                            "{{NEAR_HELPER_URL}}",
+                            &config.helper_url.clone().unwrap_or_default(),
+                        );
+                    
+                    provider_init.push_str(&init);
+                }
+            }
+        }
+    }
+    
+    // Add other providers here in the future...
+    
+    // Replace placeholders in the main template
+    html = html
+        .replace("<!-- PROVIDER_SCRIPTS -->", &provider_scripts)
+        .replace("<!-- PROVIDER_BUTTONS -->", &provider_buttons)
+        .replace("<!-- PROVIDER_INIT -->", &provider_init);
+    
     (StatusCode::OK, [("Content-Type", "text/html")], html)
 }
 

@@ -81,19 +81,7 @@
             margin-bottom: 20px;
             font-weight: bold;
         }
-        #sign-message-btn {
-            margin-top: 20px;
-            padding: 10px 15px;
-            background-color: #5f8afa;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        #sign-message-btn:hover {
-            background-color: #4a75e6;
-        }
-        #result {
+        .result {
             margin-top: 20px;
             padding: 10px;
             border: 1px solid #eee;
@@ -102,73 +90,49 @@
             word-break: break-all;
         }
     </style>
-    <!-- NEAR API JS -->
-    <script src="https://cdn.jsdelivr.net/npm/near-api-js@2.1.4/dist/near-api-js.min.js"></script>
     
-    <!-- NEAR Wallet Selector - simple implementation with only NEAR API JS -->
-    <script>
-      // Make selector available globally
-      window.selector = null;
-      
-      // Initialize when DOM is ready
-      window.nearInit = async function() {
-          try {
-              // Use NEAR API JS directly since the wallet selector is having issues
-              const { connect, keyStores, WalletConnection } = nearApi;
-              
-              // // Configure connection to NEAR
-              // const config = {
-              //     networkId: "testnet",
-              //     keyStore: new keyStores.BrowserLocalStorageKeyStore(),
-              //     nodeUrl: "https://rpc.testnet.near.org",
-              //     walletUrl: "https://wallet.testnet.near.org",
-              //     helperUrl: "https://helper.testnet.near.org"
-              // };
-              
-              // // Connect to NEAR
-              // const near = await connect(config);
-              
-              // // Create wallet connection
-              // const wallet = new WalletConnection(near, "calimero-auth");
-              
-              // // Store in global window object
-              // window.selector = {
-              //     wallet: wallet,
-              //     accountId: wallet.getAccountId(),
-              //     isSignedIn: wallet.isSignedIn()
-              // };
-              
-              // console.log("NEAR API object:", window.selector);
-
-              // const wallet = selector.wallet("my-near-wallet");
-
-
-          } catch (error) {
-              console.error("Error initializing NEAR:", error);
-          }
-      }
-      
-      // Call the init function when DOM is loaded
-      document.addEventListener('DOMContentLoaded', window.nearInit);
-    </script>
-  
+    <!-- Provider-specific scripts will be included here -->
+    <!-- PROVIDER_SCRIPTS -->
 </head>
 <body>
     <div class="auth-container">
         <h1>Calimero Authentication</h1>
        
-        <div class="auth-options">
-            <button id="near-login" class="auth-button near-button" style="display: none;">
-                Connect with NEAR Wallet
-            </button>
-            <button id="wallet-connect-login" class="auth-button wallet-connect-button" style="display: none;">
-                <img src="https://docs.walletconnect.com/img/walletconnect-logo-white.svg" alt="WalletConnect Logo">
-                Connect with WalletConnect
-            </button>
-            <button id="sign-message-btn">Sign Message</button>
-            <div id="result"></div>
+        <div class="auth-options" id="auth-options">
+            <!-- Provider-specific buttons will be included here -->
+            <!-- PROVIDER_BUTTONS -->
+            
+            <!-- If no providers are enabled, show a message -->
+            <div id="no-providers-message" style="display: none;">
+                <p>No authentication providers are currently enabled. Please contact your administrator.</p>
+            </div>
         </div>
         <p class="info-text">Connect your wallet to access Calimero services</p>
     </div>
+
+    <!-- Common JavaScript -->
+    <script>
+        // Check if any auth providers are available
+        function checkProvidersAvailable() {
+            const authOptions = document.getElementById('auth-options');
+            const buttons = authOptions.querySelectorAll('button:not([style*="display: none"])');
+            if (buttons.length === 0) {
+                document.getElementById('no-providers-message').style.display = 'block';
+            }
+        }
+        
+        // Initialize when DOM is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            checkProvidersAvailable();
+            
+            // Initialize any provider-specific code
+            if (typeof initializeProviders === 'function') {
+                initializeProviders();
+            }
+        });
+    </script>
+    
+    <!-- Provider-specific initialization scripts -->
+    <!-- PROVIDER_INIT -->
 </body>
 </html>

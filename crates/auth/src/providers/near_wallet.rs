@@ -27,7 +27,7 @@ use crate::{
 pub struct NearWalletProvider {
     config: NearWalletConfig,
     storage: Arc<dyn Storage>,
-    token_manager: Option<TokenManager>,
+    token_manager: TokenManager,
 }
 
 impl NearWalletProvider {
@@ -37,30 +37,12 @@ impl NearWalletProvider {
     ///
     /// * `config` - NEAR wallet configuration
     /// * `storage` - Storage backend
-    pub fn new(config: NearWalletConfig, storage: Arc<dyn Storage>) -> Self {
-        Self {
-            config,
-            storage,
-            token_manager: None,
-        }
-    }
-
-    /// Create a new NEAR wallet provider with a token generator
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - NEAR wallet configuration
-    /// * `storage` - Storage backend
     /// * `token_manager` - JWT token manager
-    pub fn with_token_manager(
-        config: NearWalletConfig,
-        storage: Arc<dyn Storage>,
-        token_manager: TokenManager,
-    ) -> Self {
+    pub fn new(config: NearWalletConfig, storage: Arc<dyn Storage>, token_manager: TokenManager) -> Self {
         Self {
             config,
             storage,
-            token_manager: Some(token_manager),
+            token_manager,
         }
     }
 
@@ -500,32 +482,30 @@ impl NearWalletProvider {
             .authenticate_core(account_id, public_key, message, signature)
             .await?;
 
-        // If we have a token manager, generate a JWT token for the client
-        if let Some(token_manager) = &self.token_manager {
-            // Generate a client ID and client key, or find an existing one
-            let client_id = format!("client_{}", Utc::now().timestamp());
+        // Generate a client ID and client key
+        let client_id = format!("client_{}", Utc::now().timestamp());
 
-            // Generate tokens for the client
-            match token_manager
-                .generate_token_pair(&client_id, &key_id, &permissions)
-                .await
-            {
-                Ok((access_token, refresh_token)) => {
-                    // Store the token info in request extensions (as a HashMap) for later use
-                    if let Some(extensions) = request
-                        .extensions()
-                        .get::<std::collections::HashMap<String, String>>()
-                    {
-                        let mut new_extensions = extensions.clone();
-                        new_extensions.insert("access_token".to_string(), access_token);
-                        new_extensions.insert("refresh_token".to_string(), refresh_token);
-                        new_extensions.insert("client_id".to_string(), client_id);
-                    }
+        // Generate tokens for the client
+        match self.token_manager
+            .generate_token_pair(&client_id, &key_id, &permissions)
+            .await
+        {
+            Ok((access_token, refresh_token)) => {
+                // Store the token info in request extensions (as a HashMap) for later use
+                if let Some(extensions) = request
+                    .extensions()
+                    .get::<std::collections::HashMap<String, String>>()
+                {
+                    let mut new_extensions = extensions.clone();
+                    new_extensions.insert("access_token".to_string(), access_token);
+                    new_extensions.insert("refresh_token".to_string(), refresh_token);
+                    new_extensions.insert("client_id".to_string(), client_id);
                 }
-                Err(err) => {
-                    error!("Failed to generate tokens: {}", err);
-                    // Continue anyway, authentication is still valid
-                }
+            }
+            Err(err) => {
+                error!("Failed to generate tokens: {}", err);
+                // Return error since token generation is now required
+                return Err(AuthError::TokenGenerationFailed(err.to_string()));
             }
         }
 
