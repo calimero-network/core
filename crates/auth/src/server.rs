@@ -8,6 +8,7 @@ use crate::api::routes::create_router;
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::storage::Storage;
+use crate::utils::AuthMetrics;
 use crate::AuthService;
 
 /// Application state
@@ -20,6 +21,8 @@ pub struct AppState {
     pub token_generator: TokenManager,
     /// Configuration
     pub config: AuthConfig,
+    /// Metrics
+    pub metrics: AuthMetrics,
 }
 
 /// Start the authentication service
@@ -39,6 +42,7 @@ pub async fn start_server(
     config: AuthConfig,
 ) -> eyre::Result<()> {
     let token_generator = TokenManager::new(config.jwt.clone(), storage.clone());
+    let metrics = AuthMetrics::new();
 
     // Create the application state
     let state = Arc::new(AppState {
@@ -46,6 +50,7 @@ pub async fn start_server(
         storage,
         token_generator,
         config: config.clone(),
+        metrics,
     });
 
     // Create the session store
@@ -60,6 +65,7 @@ pub async fn start_server(
     // Bind to the address
     let addr = config.listen_addr;
     info!("Auth service listening on {}", addr);
+    info!("Using {} auth provider(s)", state.auth_service.providers().len());
 
     // Start the server using Axum's built-in server
     let listener = tokio::net::TcpListener::bind(addr).await?;

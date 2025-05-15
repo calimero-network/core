@@ -6,7 +6,7 @@ use axum::{Extension, Router};
 use tower_http::cors::CorsLayer;
 
 use crate::api::handlers::auth::{
-    callback_handler, challenge_handler, login_handler, refresh_token_handler, token_handler,
+    callback_handler, challenge_handler, login_handler, refresh_token_handler, revoke_token_handler, token_handler,
     validate_handler,
 };
 use crate::api::handlers::clients::{
@@ -20,6 +20,7 @@ use crate::api::handlers::permissions::{
 use crate::auth::middleware::forward_auth_middleware;
 use crate::config::AuthConfig;
 use crate::server::AppState;
+use crate::api::handlers::{health_handler, metrics_handler, providers_handler};
 
 /// Creates and configures the router with all routes and middleware
 pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
@@ -62,6 +63,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/auth/login", get(login_handler))
         .route("/auth/token", post(token_handler))
         .route("/auth/refresh", post(refresh_token_handler))
+        .route("/auth/revoke", post(revoke_token_handler))
         .route("/auth/validate", post(validate_handler))
         .route("/auth/callback", get(callback_handler))
         .route("/auth/challenge", get(challenge_handler))
@@ -88,6 +90,11 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         )
         // Identity endpoint for development detection
         .route("/identity", get(identity_handler))
+        // Health and metrics endpoints
+        .route("/health", get(health_handler))
+        .route("/metrics", get(metrics_handler))
+        // Provider information
+        .route("/providers", get(providers_handler))
         // Apply CORS layer
         .layer(cors_layer)
         // Forward auth middleware for reverse proxy

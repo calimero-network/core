@@ -5,32 +5,40 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Authentication service configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AuthConfig {
-    /// The address to listen on
+    /// Listen address
     #[serde(default = "default_listen_addr")]
     pub listen_addr: SocketAddr,
 
-    /// The URL of the node to forward authenticated requests to
+    /// Node URL
+    #[serde(default)]
     pub node_url: String,
 
-    /// JWT settings
+    /// NEAR wallet configuration
+    #[serde(default)]
+    pub near: NearWalletConfig,
+
+    /// JWT configuration
     #[serde(default)]
     pub jwt: JwtConfig,
 
-    /// Storage settings
+    /// Storage configuration
+    #[serde(default)]
     pub storage: StorageConfig,
 
-    /// Enabled authentication providers
-    #[serde(default)]
-    pub providers: ProvidersConfig,
-
-    /// CORS settings
+    /// CORS configuration
     #[serde(default)]
     pub cors: CorsConfig,
+    
+    /// Enabled authentication providers
+    #[serde(default = "default_enabled_providers")]
+    pub enabled_providers: Vec<String>,
+}
 
-    /// NEAR wallet configuration
-    pub near: NearWalletConfig,
+/// Default enabled providers
+fn default_enabled_providers() -> Vec<String> {
+    vec!["near_wallet".to_string()]
 }
 
 fn default_listen_addr() -> SocketAddr {
@@ -125,6 +133,15 @@ pub enum StorageConfig {
     /// In-memory storage (for development only)
     #[serde(rename = "memory")]
     Memory,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        let default_db_path = PathBuf::from("./data/auth_db");
+        Self::RocksDB {
+            path: default_db_path,
+        }
+    }
 }
 
 fn default_connection_pool_size() -> usize {
@@ -388,21 +405,11 @@ fn generate_default_secret() -> String {
 ///
 /// * `AuthConfig` - The default configuration
 pub fn default_config() -> AuthConfig {
-    let default_db_path = PathBuf::from("./data/auth_db");
-
     AuthConfig {
         listen_addr: default_listen_addr(),
         node_url: "http://localhost:2428".to_string(),
-        jwt: JwtConfig {
-            secret: generate_default_secret(),
-            access_token_expiry: default_access_token_expiry(),
-            refresh_token_expiry: default_refresh_token_expiry(),
-            issuer: default_jwt_issuer(),
-        },
-        storage: StorageConfig::RocksDB {
-            path: default_db_path,
-        },
-        providers: ProvidersConfig::default(),
+        jwt: JwtConfig::default(),
+        storage: StorageConfig::default(),
         cors: CorsConfig::default(),
         near: NearWalletConfig {
             network: "mainnet".to_string(),
@@ -410,5 +417,6 @@ pub fn default_config() -> AuthConfig {
             wallet_url: "https://wallet.mainnet.near.org".to_string(),
             helper_url: None,
         },
+        enabled_providers: default_enabled_providers(),
     }
 }

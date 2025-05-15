@@ -87,6 +87,168 @@ pub trait Storage: Send + Sync + 'static {
     ///
     /// * `Result<Vec<String>, StorageError>` - The keys
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError>;
+    
+    /// Get multiple values from storage
+    ///
+    /// # Arguments
+    ///
+    /// * `keys` - The keys to get
+    ///
+    /// # Returns
+    ///
+    /// * `Result<HashMap<String, Vec<u8>>, StorageError>` - The values for keys that exist
+    async fn get_batch(
+        &self,
+        keys: &[String],
+    ) -> Result<HashMap<String, Vec<u8>>, StorageError> {
+        // Default implementation uses single get operations
+        let mut result = HashMap::new();
+        for key in keys {
+            if let Some(value) = self.get(key).await? {
+                result.insert(key.clone(), value);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Set multiple values in storage
+    ///
+    /// # Arguments
+    ///
+    /// * `values` - The key-value pairs to set
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), StorageError>` - Success or error
+    async fn set_batch(
+        &self,
+        values: &HashMap<String, Vec<u8>>,
+    ) -> Result<(), StorageError> {
+        // Default implementation uses single set operations
+        for (key, value) in values {
+            self.set(key, value).await?;
+        }
+        Ok(())
+    }
+
+    /// Delete multiple values from storage
+    ///
+    /// # Arguments
+    ///
+    /// * `keys` - The keys to delete
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), StorageError>` - Success or error
+    async fn delete_batch(&self, keys: &[String]) -> Result<(), StorageError> {
+        // Default implementation uses single delete operations
+        for key in keys {
+            // Ignore "not found" errors
+            let _ = self.delete(key).await;
+        }
+        Ok(())
+    }
+    
+    /// Create a secondary index
+    ///
+    /// # Arguments
+    ///
+    /// * `index_name` - The name of the index
+    /// * `key` - The primary key
+    /// * `index_key` - The index key
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), StorageError>` - Success or error
+    async fn create_index(
+        &self,
+        index_name: &str,
+        key: &str,
+        index_key: &str,
+    ) -> Result<(), StorageError> {
+        // Store a reference from the index key to the primary key
+        let index_storage_key = format!("index:{}:{}:{}", index_name, index_key, key);
+        self.set(&index_storage_key, &[]).await
+    }
+
+    /// Find keys by a secondary index
+    ///
+    /// # Arguments
+    ///
+    /// * `index_name` - The name of the index
+    /// * `index_key` - The index key
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Vec<String>, StorageError>` - The primary keys found
+    async fn find_by_index(
+        &self,
+        index_name: &str,
+        index_key: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let index_prefix = format!("index:{}:{}", index_name, index_key);
+        let keys = self.list_keys(&index_prefix).await?;
+        
+        // Extract primary keys from index keys
+        let primary_keys = keys
+            .iter()
+            .filter_map(|index_key| {
+                let parts: Vec<&str> = index_key.split(':').collect();
+                if parts.len() >= 4 {
+                    Some(parts[3].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+            
+        Ok(primary_keys)
+    }
+    
+    /// Delete an index
+    ///
+    /// # Arguments
+    ///
+    /// * `index_name` - The name of the index
+    /// * `key` - The primary key
+    /// * `index_key` - The index key
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), StorageError>` - Success or error
+    async fn delete_index(
+        &self,
+        index_name: &str,
+        key: &str,
+        index_key: &str,
+    ) -> Result<(), StorageError> {
+        let index_storage_key = format!("index:{}:{}:{}", index_name, index_key, key);
+        self.delete(&index_storage_key).await
+    }
+    
+    /// Get storage health status
+    ///
+    /// # Returns
+    ///
+    /// * `Result<serde_json::Value, StorageError>` - Health information
+    async fn health_check(&self) -> Result<serde_json::Value, StorageError> {
+        // Implement a basic health check by default
+        let health_key = "_health_check_key";
+        let health_value = b"ok";
+        
+        // Try to write and read a value
+        self.set(health_key, health_value).await?;
+        let read_result = self.get(health_key).await?;
+        let read_ok = read_result.is_some() && read_result.unwrap() == health_value;
+        
+        // Clean up
+        let _ = self.delete(health_key).await;
+        
+        Ok(serde_json::json!({
+            "status": if read_ok { "healthy" } else { "unhealthy" },
+            "read_write_test": read_ok,
+        }))
+    }
 }
 
 /// Simple in-memory storage implementation for development
@@ -137,6 +299,47 @@ impl Storage for MemoryStorage {
             .cloned()
             .collect();
         Ok(keys)
+    }
+    
+    // Override default batch implementations with optimized versions
+    
+    async fn get_batch(
+        &self,
+        keys: &[String],
+    ) -> Result<HashMap<String, Vec<u8>>, StorageError> {
+        let data = self.data.read();
+        let mut result = HashMap::new();
+        
+        for key in keys {
+            if let Some(value) = data.get(key) {
+                result.insert(key.clone(), value.clone());
+            }
+        }
+        
+        Ok(result)
+    }
+    
+    async fn set_batch(
+        &self,
+        values: &HashMap<String, Vec<u8>>,
+    ) -> Result<(), StorageError> {
+        let mut data = self.data.write();
+        
+        for (key, value) in values {
+            data.insert(key.clone(), value.clone());
+        }
+        
+        Ok(())
+    }
+    
+    async fn delete_batch(&self, keys: &[String]) -> Result<(), StorageError> {
+        let mut data = self.data.write();
+        
+        for key in keys {
+            data.remove(key);
+        }
+        
+        Ok(())
     }
 }
 

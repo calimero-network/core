@@ -480,3 +480,69 @@ pub async fn challenge_handler(
 
     (StatusCode::OK, Json(response)).into_response()
 }
+
+/// Revoke token request
+#[derive(Debug, Deserialize)]
+pub struct RevokeTokenRequest {
+    /// Client ID to revoke
+    client_id: String,
+}
+
+/// Revoke token handler
+///
+/// This endpoint revokes a client's tokens.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+/// * `request` - The revoke token request
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - The response
+pub async fn revoke_token_handler(
+    state: Extension<Arc<AppState>>,
+    Json(request): Json<RevokeTokenRequest>,
+) -> impl IntoResponse {
+    // Validate the client ID
+    if request.client_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Client ID cannot be empty"
+            })),
+        );
+    }
+
+    match state.0.token_generator.revoke_client_tokens(&request.client_id).await {
+        Ok(_) => {
+            // Log successful revocation
+            debug!("Successfully revoked tokens for client {}", request.client_id);
+            
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "success": true,
+                    "message": "Tokens revoked successfully"
+                })),
+            )
+        }
+        Err(err) => {
+            // Log error
+            error!("Failed to revoke tokens for client {}: {}", request.client_id, err);
+            
+            let status_code = match err {
+                AuthError::AuthenticationFailed(_) => StatusCode::NOT_FOUND,
+                AuthError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            
+            (
+                status_code,
+                Json(serde_json::json!({
+                    "error": format!("Failed to revoke tokens: {}", err)
+                })),
+            )
+        }
+    }
+}

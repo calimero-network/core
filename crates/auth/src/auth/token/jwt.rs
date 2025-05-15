@@ -8,7 +8,7 @@ use tracing::{debug, error};
 
 use crate::config::JwtConfig;
 use crate::storage::models::{prefixes, ClientKey};
-use crate::storage::{deserialize, Storage};
+use crate::storage::{deserialize, serialize, Storage};
 use crate::{AuthError, AuthResponse};
 
 /// JWT Claims structure
@@ -245,7 +245,52 @@ impl TokenManager {
         }
     }
 
-    /// Verify a JWT token from a request
+    /// Revoke a client's tokens
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The client ID to revoke
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), AuthError>` - Success or error
+    pub async fn revoke_client_tokens(&self, client_id: &str) -> Result<(), AuthError> {
+        let client_key_path = format!("{}{}", prefixes::CLIENT_KEY, client_id);
+
+        match self.storage.get(&client_key_path).await {
+            Ok(Some(data)) => {
+                let mut client_key: ClientKey = deserialize(&data).map_err(|err| {
+                    AuthError::StorageError(format!("Failed to deserialize client key: {}", err))
+                })?;
+
+                // Revoke the client key
+                client_key.revoke();
+
+                // Save the updated client key
+                let data = serialize(&client_key).map_err(|err| {
+                    AuthError::StorageError(format!("Failed to serialize client key: {}", err))
+                })?;
+
+                self.storage.set(&client_key_path, &data).await.map_err(|err| {
+                    AuthError::StorageError(format!("Failed to update client key: {}", err))
+                })?;
+
+                Ok(())
+            }
+            Ok(None) => Err(AuthError::AuthenticationFailed(
+                "Client key not found".to_string(),
+            )),
+            Err(err) => {
+                error!("Failed to get client key: {}", err);
+                Err(AuthError::StorageError(format!(
+                    "Failed to get client key: {}",
+                    err
+                )))
+            }
+        }
+    }
+
+    /// Verify a JWT token from a request with enhanced error handling
     ///
     /// # Arguments
     ///
@@ -262,35 +307,52 @@ impl TokenManager {
         let auth_header = headers
             .get("Authorization")
             .ok_or_else(|| {
-                AuthError::AuthenticationFailed("Missing Authorization header".to_string())
+                AuthError::InvalidRequest("Missing Authorization header".to_string())
             })?
             .to_str()
-            .map_err(|_| {
-                AuthError::AuthenticationFailed("Invalid Authorization header".to_string())
+            .map_err(|err| {
+                AuthError::InvalidRequest(format!("Invalid Authorization header: {}", err))
             })?;
 
         // Check that it's a Bearer token
         if !auth_header.starts_with("Bearer ") {
-            return Err(AuthError::AuthenticationFailed(
-                "Invalid Authorization header format".to_string(),
+            return Err(AuthError::InvalidRequest(
+                "Invalid Authorization header format. Expected 'Bearer <token>'".to_string(),
             ));
         }
 
         // Extract the token
         let token = auth_header.trim_start_matches("Bearer ").trim();
+        if token.is_empty() {
+            return Err(AuthError::InvalidRequest("Empty token provided".to_string()));
+        }
 
         // Decode the token
         let validation = Validation::new(Algorithm::HS256);
         let decoding_key = DecodingKey::from_secret(self.config.secret.as_bytes());
 
         let token_data = decode::<Claims>(token, &decoding_key, &validation)
-            .map_err(|err| AuthError::AuthenticationFailed(format!("Invalid token: {}", err)))?;
+            .map_err(|err| {
+                // Provide more specific error messages based on the failure type
+                match err.kind() {
+                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+                        AuthError::InvalidToken("Token has expired".to_string())
+                    }
+                    jsonwebtoken::errors::ErrorKind::InvalidSignature => {
+                        AuthError::InvalidToken("Invalid token signature".to_string())
+                    }
+                    jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
+                        AuthError::InvalidToken("Invalid token issuer".to_string())
+                    }
+                    _ => AuthError::InvalidToken(format!("Invalid token: {}", err)),
+                }
+            })?;
 
         let claims = token_data.claims;
 
         // Check that the token is not a refresh token
         if claims.jti.starts_with("refresh_") {
-            return Err(AuthError::AuthenticationFailed(
+            return Err(AuthError::InvalidRequest(
                 "Cannot use refresh token for authentication".to_string(),
             ));
         }
@@ -306,19 +368,17 @@ impl TokenManager {
                 })?;
 
                 // Check if the client key has been revoked
-                if client_key.revoked_at.is_some() {
+                if client_key.is_revoked() {
                     return Err(AuthError::AuthenticationFailed(
                         "Client key has been revoked".to_string(),
                     ));
                 }
 
                 // Check if the key has expired
-                if let Some(expires_at) = client_key.expires_at {
-                    if expires_at < Utc::now().timestamp() as u64 {
-                        return Err(AuthError::AuthenticationFailed(
-                            "Client key has expired".to_string(),
-                        ));
-                    }
+                if client_key.is_expired() {
+                    return Err(AuthError::AuthenticationFailed(
+                        "Client key has expired".to_string(),
+                    ));
                 }
 
                 // Return the authentication response

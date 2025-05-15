@@ -9,51 +9,110 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use serde::Serialize;
+use serde_json::json;
 
 use crate::server::AppState;
 
-/// Identity response
-#[derive(Debug, Serialize)]
-struct IdentityResponse {
-    /// Node ID
-    node_id: String,
-    /// Version
-    version: String,
-    /// Authentication mode
-    authentication_mode: String,
-}
-
 /// Identity handler
 ///
-/// This endpoint returns information about the node identity.
-/// It's used by clients to detect authentication mode.
+/// This endpoint returns information about the authentication mode and service identity.
 ///
 /// # Arguments
 ///
-/// * `state` - The application state (optional)
+/// * `state` - The application state
 ///
 /// # Returns
 ///
 /// * `impl IntoResponse` - The response
-pub async fn identity_handler(state: Option<Extension<Arc<AppState>>>) -> impl IntoResponse {
-    // Determine the authentication mode based on the number of providers (or standalone mode)
-    let auth_mode = match &state {
-        Some(state) if !state.0.auth_service.providers().is_empty() => "forward",
-        _ => "none",
-    };
+pub async fn identity_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
+    let response = json!({
+        "service": "calimero-auth",
+        "version": env!("CARGO_PKG_VERSION"),
+        "authentication_mode": "forward",
+        "providers": state.auth_service.providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
+    });
 
-    // Create a node ID using a timestamp instead of UUID
-    let node_id = match &state {
-        Some(state) if !state.0.config.node_url.is_empty() => state.0.config.node_url.clone(),
-        _ => format!("auth-node-{}", chrono::Utc::now().timestamp()),
-    };
+    (StatusCode::OK, Json(response))
+}
 
-    let response = IdentityResponse {
-        node_id,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        authentication_mode: auth_mode.to_string(),
+/// Metrics handler
+///
+/// This endpoint returns metrics about the authentication service.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - The response
+pub async fn metrics_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
+    let metrics = state.metrics.get_metrics().await;
+    
+    (StatusCode::OK, Json(metrics))
+}
+
+/// Health check handler
+///
+/// This endpoint returns the health status of the authentication service.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - The response
+pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
+    // Check the connection to the storage backend
+    let storage_ok = state.storage.exists("health-check").await.is_ok();
+    
+    let status = if storage_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
     };
+    
+    let response = json!({
+        "status": if status == StatusCode::OK { "healthy" } else { "unhealthy" },
+        "storage": storage_ok,
+        "uptime_seconds": state.metrics.get_uptime_seconds(),
+    });
+    
+    (status, Json(response))
+}
+
+/// Providers information handler
+///
+/// This endpoint returns information about available authentication providers.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - The response
+pub async fn providers_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
+    let providers = state
+        .auth_service
+        .providers()
+        .iter()
+        .map(|provider| {
+            json!({
+                "name": provider.name(),
+                "type": provider.provider_type(),
+                "description": provider.description(),
+                "configured": provider.is_configured(),
+                "config": provider.get_config_options(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let response = json!({
+        "providers": providers,
+        "count": providers.len(),
+    });
 
     (StatusCode::OK, Json(response))
 }

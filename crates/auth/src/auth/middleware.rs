@@ -26,10 +26,18 @@ pub async fn forward_auth_middleware(
     request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    // Extract request details for logging
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let start_time = std::time::Instant::now();
+
     // Skip authentication for login and token endpoints
-    let path = request.uri().path();
     if path.starts_with("/auth/") {
-        return Ok(next.run(request).await);
+        tracing::debug!("Skipping auth for {} {}", method, path);
+        let response = next.run(request).await;
+        let duration = start_time.elapsed();
+        tracing::debug!("Request {} {} completed in {:?}", method, path, duration);
+        return Ok(response);
     }
 
     // Extract headers for token validation
@@ -39,11 +47,24 @@ pub async fn forward_auth_middleware(
     match state.auth_service.verify_token_from_headers(&headers).await {
         Ok(auth_response) => {
             if !auth_response.is_valid {
+                tracing::warn!("Invalid authentication for {} {}", method, path);
                 return Err(StatusCode::UNAUTHORIZED);
+            }
+
+            // Log successful authentication
+            if let Some(key_id) = auth_response.key_id.as_ref() {
+                tracing::debug!(
+                    "Successful authentication for {} {} by user {}",
+                    method,
+                    path,
+                    key_id
+                );
             }
 
             // Continue with normal request
             let mut response = next.run(request).await;
+            let duration = start_time.elapsed();
+            tracing::debug!("Request {} {} completed in {:?}", method, path, duration);
 
             // Add authentication headers
             if let Some(key_id) = auth_response.key_id.as_ref() {
@@ -62,6 +83,16 @@ pub async fn forward_auth_middleware(
 
             Ok(response)
         }
-        Err(_) => Err(StatusCode::UNAUTHORIZED),
+        Err(err) => {
+            let duration = start_time.elapsed();
+            tracing::warn!(
+                "Authentication failed for {} {}: {} (took {:?})",
+                method,
+                path,
+                err,
+                duration
+            );
+            Err(StatusCode::UNAUTHORIZED)
+        }
     }
 }
