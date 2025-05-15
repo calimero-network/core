@@ -26,10 +26,6 @@ struct Cli {
     #[clap(short, long, value_parser)]
     node_url: Option<String>,
 
-    /// Authentication mode: "none" for development mode with no authentication
-    #[clap(short = 'm', long, value_parser, default_value = "forward")]
-    auth_mode: String,
-
     /// Enable verbose logging (can be specified multiple times)
     #[clap(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -83,32 +79,17 @@ async fn main() -> Result<()> {
         .await
         .expect("Failed to create storage");
 
-    // Check auth mode
-    let auth_mode = cli.auth_mode.to_lowercase();
-    if auth_mode != "none" && auth_mode != "forward" {
-        return Err(eyre::eyre!(
-            "Invalid auth mode. Must be 'none' or 'forward'"
-        ));
+    // Create providers using the provider factory
+    info!("Starting authentication service");
+    let providers = providers::create_providers(storage.clone(), &config)
+        .expect("Failed to create authentication providers");
+
+    info!("Initialized {} authentication providers", providers.len());
+    for provider in &providers {
+        info!("  - {} ({})", provider.name(), provider.description());
     }
 
-    // Create the authentication service
-    let auth_service = if auth_mode == "none" {
-        info!("Starting in development mode with no authentication");
-        // Create empty auth service with no providers
-        AuthService::new(vec![])
-    } else {
-        // Create providers using the provider factory
-        info!("Starting in production mode with authentication");
-        let providers = providers::create_providers(storage.clone(), &config)
-            .expect("Failed to create authentication providers");
-
-        info!("Initialized {} authentication providers", providers.len());
-        for provider in &providers {
-            info!("  - {} ({})", provider.name(), provider.description());
-        }
-
-        AuthService::new(providers)
-    };
+    let auth_service = AuthService::new(providers);
 
     // Start the server
     info!("Starting auth server on {}", config.listen_addr);

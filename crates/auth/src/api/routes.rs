@@ -56,7 +56,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         layer
     };
 
-    // Create the router
+    // Create the main router
     Router::new()
         // Authentication endpoints
         .route("/auth/login", get(login_handler))

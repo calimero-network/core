@@ -46,11 +46,6 @@ pub async fn forward_auth_middleware(
     // Validate the request using the headers
     match state.auth_service.verify_token_from_headers(&headers).await {
         Ok(auth_response) => {
-            if !auth_response.is_valid {
-                tracing::warn!("Invalid authentication for {} {}", method, path);
-                return Err(StatusCode::UNAUTHORIZED);
-            }
-
             // Log successful authentication
             if let Some(key_id) = auth_response.key_id.as_ref() {
                 tracing::debug!(

@@ -22,6 +22,7 @@ use crate::storage::{deserialize, serialize, Storage};
 use crate::{
     AuthError, AuthProvider, AuthRequestVerifier, AuthResponse, AuthVerifierFn, RequestValidator,
 };
+use crate::providers::provider::AuthData;
 
 /// NEAR wallet authentication provider
 pub struct NearWalletProvider {
@@ -520,6 +521,47 @@ impl NearWalletProvider {
             permissions,
         })
     }
+
+    /// Authenticate directly with NEAR wallet data
+    ///
+    /// # Arguments
+    ///
+    /// * `account_id` - The NEAR account ID
+    /// * `public_key` - The public key
+    /// * `message` - The message that was signed
+    /// * `signature` - The signature
+    ///
+    /// # Returns
+    ///
+    /// * `Result<AuthResponse, AuthError>` - The authentication response
+    pub async fn authenticate_near_wallet(
+        &self,
+        account_id: &str,
+        public_key: &str,
+        message: &[u8],
+        signature: &str,
+    ) -> Result<AuthResponse, AuthError> {
+        // Authenticate using the core authentication logic
+        let (key_id, permissions) = self
+            .authenticate_core(account_id, public_key, message, signature)
+            .await?;
+
+        // Return the authentication response
+        Ok(AuthResponse {
+            is_valid: true,
+            key_id: Some(key_id),
+            permissions,
+        })
+    }
+
+    /// Get the token manager
+    ///
+    /// # Returns
+    ///
+    /// * `&TokenManager` - Reference to the token manager
+    pub fn get_token_manager(&self) -> &TokenManager {
+        &self.token_manager
+    }
 }
 
 #[async_trait]
@@ -680,5 +722,9 @@ impl AuthProvider for NearWalletProvider {
             "rpc_url": self.config.rpc_url,
             "network": self.config.network,
         }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

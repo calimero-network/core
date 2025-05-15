@@ -2,9 +2,32 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
 use eyre::Result;
+use serde::{Deserialize, Serialize};
+use std::any::Any;
 
 use crate::api::handlers::auth::TokenRequest;
 use crate::{AuthError, AuthResponse};
+
+/// Authentication data enum
+///
+/// This enum represents different types of authentication data
+/// that can be passed to providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AuthData {
+    /// NEAR wallet authentication data
+    NearWallet {
+        /// Account ID of the NEAR wallet
+        account_id: String,
+        /// Public key of the NEAR wallet
+        public_key: String,
+        /// Message to sign
+        message: Vec<u8>,
+        /// Signature of the message
+        signature: String,
+    },
+    
+    // Add other authentication methods as needed
+}
 
 /// Authentication provider trait
 ///
@@ -35,27 +58,6 @@ pub trait AuthProvider: Send + Sync {
     /// The split approach avoids capturing references to Body in async code.
     fn verify_request(&self, request: &Request<Body>) -> eyre::Result<AuthRequestVerifier>;
 
-    /// Verify a token request directly
-    ///
-    /// This method creates a verifier from a token request.
-    ///
-    /// # Arguments
-    ///
-    /// * `token_request` - The token request
-    ///
-    /// # Returns
-    ///
-    /// * `eyre::Result<AuthRequestVerifier>` - The verifier
-    fn verify_token_request(
-        &self,
-        _token_request: &TokenRequest,
-    ) -> eyre::Result<AuthRequestVerifier> {
-        // Default implementation returns an error
-        Err(eyre::eyre!(
-            "Token request verification not supported by this provider"
-        ))
-    }
-
     /// Get provider-specific health status
     fn get_health_status(&self) -> eyre::Result<serde_json::Value> {
         // Default implementation returns basic health info
@@ -65,6 +67,11 @@ pub trait AuthProvider: Send + Sync {
             "configured": self.is_configured(),
         }))
     }
+    
+    /// Convert to Any for downcasting
+    ///
+    /// This is used to downcast to specific provider implementations.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Auth verifier function trait

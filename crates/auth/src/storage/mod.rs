@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -10,8 +9,10 @@ use crate::config::StorageConfig;
 
 pub mod models;
 pub mod rocksdb;
+pub mod memory;
 
 pub use models::{prefixes, ClientKey, Permission, RootKey};
+pub use memory::MemoryStorage;
 
 /// Storage error
 #[derive(Debug, Error)]
@@ -242,92 +243,6 @@ pub trait Storage: Send + Sync + 'static {
             "status": if read_ok { "healthy" } else { "unhealthy" },
             "read_write_test": read_ok,
         }))
-    }
-}
-
-/// Simple in-memory storage implementation for development
-pub struct MemoryStorage {
-    data: RwLock<HashMap<String, Vec<u8>>>,
-}
-
-impl MemoryStorage {
-    /// Create a new memory storage
-    pub fn new() -> Self {
-        Self {
-            data: RwLock::new(HashMap::new()),
-        }
-    }
-}
-
-#[async_trait]
-impl Storage for MemoryStorage {
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let data = self.data.read();
-        Ok(data.get(key).cloned())
-    }
-
-    async fn set(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
-        let mut data = self.data.write();
-        data.insert(key.to_string(), value.to_vec());
-        Ok(())
-    }
-
-    async fn delete(&self, key: &str) -> Result<(), StorageError> {
-        let mut data = self.data.write();
-        if data.remove(key).is_none() {
-            return Err(StorageError::NotFound);
-        }
-        Ok(())
-    }
-
-    async fn exists(&self, key: &str) -> Result<bool, StorageError> {
-        let data = self.data.read();
-        Ok(data.contains_key(key))
-    }
-
-    async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
-        let data = self.data.read();
-        let keys = data
-            .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
-            .collect();
-        Ok(keys)
-    }
-
-    // Override default batch implementations with optimized versions
-
-    async fn get_batch(&self, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, StorageError> {
-        let data = self.data.read();
-        let mut result = HashMap::new();
-
-        for key in keys {
-            if let Some(value) = data.get(key) {
-                result.insert(key.clone(), value.clone());
-            }
-        }
-
-        Ok(result)
-    }
-
-    async fn set_batch(&self, values: &HashMap<String, Vec<u8>>) -> Result<(), StorageError> {
-        let mut data = self.data.write();
-
-        for (key, value) in values {
-            data.insert(key.clone(), value.clone());
-        }
-
-        Ok(())
-    }
-
-    async fn delete_batch(&self, keys: &[String]) -> Result<(), StorageError> {
-        let mut data = self.data.write();
-
-        for key in keys {
-            data.remove(key);
-        }
-
-        Ok(())
     }
 }
 
