@@ -75,6 +75,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
             async {
                 let _ignored: eyre::Result<()> = task.await;
+
+                System::current().stop();
             }
         });
 
