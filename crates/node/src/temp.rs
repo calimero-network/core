@@ -65,11 +65,15 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             let tx = tx.clone();
 
             let task = async move {
-                tx.send(Ok(Some(arb))).await?;
+                let mut arb = arb;
 
                 loop {
+                    tx.send(Ok(Some(arb))).await?;
+
                     tx.send(Ok(None)).await?;
-                    tx.send(Ok(Some(Arbiter::new().handle()))).await?;
+                    tx.send(Ok(None)).await?;
+
+                    arb = Arbiter::new().handle();
                 }
             };
 
