@@ -1,4 +1,4 @@
-use std::pin::pin;
+use std::pin::{pin, Pin};
 
 use actix::{Actor, Arbiter, System};
 use calimero_blobstore::config::BlobStoreConfig;
@@ -89,21 +89,24 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         }
     });
 
-    let arbs = stream::poll_fn(|cx| rx.poll_recv(cx)).try_filter_map(async |t| Ok(t));
+    let mut new_arbiter = {
+        let mut arbs = stream::poll_fn(|cx| rx.poll_recv(cx)).try_filter_map(async |t| Ok(t));
 
-    let mut arbs = pin!(arbs);
+        async move || {
+            let mut arbs = unsafe { Pin::new_unchecked(&mut arbs) };
+
+            arbs.try_next().await?.ok_or_eyre("failed to get arbiter")
+        }
+    };
 
     let network_manager = NetworkManager::new(&config.network, network_event_recipient.clone())?;
 
     let network_client = NetworkClient::new(network_recipient.clone());
 
-    let _ignored = Actor::start_in_arbiter(
-        &arbs.try_next().await?.ok_or_eyre("failed to get arbiter")?,
-        move |ctx| {
-            assert!(network_recipient.init(ctx));
-            network_manager
-        },
-    );
+    let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
+        assert!(network_recipient.init(ctx));
+        network_manager
+    });
 
     let (event_sender, _) = broadcast::channel(32);
 
@@ -131,13 +134,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         config.context.client.clone(),
     );
 
-    let _ignored = Actor::start_in_arbiter(
-        &arbs.try_next().await?.ok_or_eyre("failed to get arbiter")?,
-        move |ctx| {
-            assert!(context_recipient.init(ctx));
-            context_manager
-        },
-    );
+    let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
+        assert!(context_recipient.init(ctx));
+        context_manager
+    });
 
     let sync_manager = SyncManager::new(
         config.sync,
@@ -153,14 +153,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
     );
 
-    let _ignored = Actor::start_in_arbiter(
-        &arbs.try_next().await?.ok_or_eyre("failed to get arbiter")?,
-        move |ctx| {
-            assert!(node_recipient.init(ctx));
-            assert!(network_event_recipient.init(ctx));
-            node_manager
-        },
-    );
+    let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
+        assert!(node_recipient.init(ctx));
+        assert!(network_event_recipient.init(ctx));
+        node_manager
+    });
 
     let server = calimero_server::start(
         config.server,
