@@ -75,7 +75,7 @@ impl Default for JwtConfig {
 
 // Define default functions for JwtConfig fields
 fn default_jwt_secret() -> String {
-    "insecure_default_secret_please_change_in_production".to_string()
+    generate_default_secret()
 }
 
 fn default_jwt_issuer() -> String {
