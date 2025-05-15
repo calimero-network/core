@@ -164,9 +164,10 @@ impl DiscoveryState {
         self.rendezvous_index.contains(peer_id)
     }
 
-    pub(crate) fn is_peer_autonat(&self, peer_id: &PeerId) -> bool {
-        self.autonat_index.contains(peer_id)
-    }
+    // TOOD: Revisit AutoNAT protocol integration
+    // pub(crate) fn is_peer_autonat(&self, peer_id: &PeerId) -> bool {
+    //     self.autonat_index.contains(peer_id)
+    // }
 
     #[expect(
         clippy::arithmetic_side_effects,
@@ -217,20 +218,21 @@ impl DiscoveryState {
             self.autonat.last_status_public = true;
         }
 
-        self.autonat.status = status
+        self.autonat.status = status;
     }
 
-    pub(crate) fn is_autonat_status_public(&self) -> bool {
-        matches!(self.autonat.status, NatStatus::Public(_))
-    }
+    // TODO: Revisit AutoNAT protocol integration
+    // pub(crate) fn is_autonat_status_public(&self) -> bool {
+    //     matches!(self.autonat.status, NatStatus::Public(_))
+    // }
 
-    pub(crate) fn is_autonat_status_private(&self) -> bool {
-        matches!(self.autonat.status, NatStatus::Private)
-    }
+    // pub(crate) fn is_autonat_status_private(&self) -> bool {
+    //     matches!(self.autonat.status, NatStatus::Private)
+    // }
 
-    pub(crate) fn autonat_became_private(&self) -> bool {
-        self.autonat.last_status_public
-    }
+    // pub(crate) fn autonat_became_private(&self) -> bool {
+    //     self.autonat.last_status_public
+    // }
 }
 
 /// PeerInfo is a struct that holds information about a peer.
