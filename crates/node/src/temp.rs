@@ -17,8 +17,8 @@ use calimero_store::db::RocksDB;
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
-use eyre::{eyre, OptionExt};
-use futures_util::{stream, TryStreamExt};
+use eyre::{OptionExt, WrapErr};
+use futures_util::{stream, StreamExt};
 use libp2p::identity::Keypair;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc};
@@ -59,19 +59,15 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut system = tokio::task::spawn_blocking(move || {
         let system = System::new();
 
-        let arb = Arbiter::current();
-
-        let spawned = arb.clone().spawn({
-            let tx = tx.clone();
-
+        let _ignored = system.runtime().spawn({
             let task = async move {
-                let mut arb = arb;
+                let mut arb = Arbiter::current();
 
                 loop {
-                    tx.send(Ok(Some(arb))).await?;
+                    tx.send(Some(arb)).await?;
 
-                    tx.send(Ok(None)).await?;
-                    tx.send(Ok(None)).await?;
+                    tx.send(None).await?;
+                    tx.send(None).await?;
 
                     arb = Arbiter::new().handle();
                 }
@@ -84,22 +80,18 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             }
         });
 
-        if !spawned {
-            let _ignored = tx.blocking_send(Err(eyre!("failed to derive arbiters")));
-        }
-
-        if let Err(err) = system.run() {
-            let _ignored = tx.blocking_send(Err(err.into()));
-        }
+        system
+            .run()
+            .wrap_err("the actix subsystem ran into an error")
     });
 
     let mut new_arbiter = {
-        let mut arbs = stream::poll_fn(|cx| rx.poll_recv(cx)).try_filter_map(async |t| Ok(t));
+        let mut arbs = stream::poll_fn(|cx| rx.poll_recv(cx)).filter_map(async |t| t);
 
         async move || {
             let mut arbs = unsafe { Pin::new_unchecked(&mut arbs) };
 
-            arbs.try_next().await?.ok_or_eyre("failed to get arbiter")
+            arbs.next().await.ok_or_eyre("failed to get arbiter")
         }
     };
 
@@ -178,8 +170,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     loop {
         tokio::select! {
             _ = &mut sync => {},
-            res = &mut system => res?,
             res = &mut server => res??,
+            res = &mut system => break res?,
             line = stdin.next_line() => {
                 let Some(line) = line? else {
                     continue;
