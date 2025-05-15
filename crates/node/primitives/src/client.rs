@@ -7,7 +7,7 @@ use calimero_primitives::events::NodeEvent;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::Store;
 use calimero_utils_actix::LazyRecipient;
-use eyre::{eyre, OptionExt, WrapErr};
+use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use rand::Rng;

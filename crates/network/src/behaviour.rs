@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use calimero_network_primitives::config::NetworkConfig;
+use eyre::WrapErr;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
@@ -105,7 +106,9 @@ impl Behaviour {
             .build();
 
         for addr in &config.swarm.listen {
-            let _ignored = swarm.listen_on(addr.clone())?;
+            let _ignored = swarm
+                .listen_on(addr.clone())
+                .wrap_err_with(|| format!("failed to listen on '{}'", addr))?;
         }
 
         Ok(swarm)
