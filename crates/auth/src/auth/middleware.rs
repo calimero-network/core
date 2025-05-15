@@ -64,4 +64,4 @@ pub async fn forward_auth_middleware(
         }
         Err(_) => Err(StatusCode::UNAUTHORIZED),
     }
-} 
+}

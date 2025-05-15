@@ -9,8 +9,7 @@ use tracing::{debug, error};
 use crate::config::JwtConfig;
 use crate::storage::models::{prefixes, ClientKey};
 use crate::storage::{deserialize, Storage};
-use crate::AuthError;
-use crate::AuthResponse;
+use crate::{AuthError, AuthResponse};
 
 /// JWT Claims structure
 #[derive(Debug, Serialize, Deserialize)]
@@ -348,4 +347,4 @@ impl TokenManager {
             }
         }
     }
-} 
+}

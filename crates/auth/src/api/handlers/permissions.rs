@@ -8,8 +8,8 @@ use serde::Deserialize;
 use tracing::error;
 
 use crate::server::AppState;
-use crate::storage::models::{prefixes, Permission};
 use crate::storage::deserialize;
+use crate::storage::models::{prefixes, Permission};
 
 /// Key permissions update request
 #[derive(Debug, Deserialize)]
@@ -120,4 +120,4 @@ pub async fn update_key_permissions_handler(
             "permissions": ["admin"]
         })),
     )
-} 
+}

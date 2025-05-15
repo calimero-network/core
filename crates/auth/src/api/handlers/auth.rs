@@ -479,4 +479,4 @@ pub async fn challenge_handler(
     };
 
     (StatusCode::OK, Json(response)).into_response()
-} 
+}

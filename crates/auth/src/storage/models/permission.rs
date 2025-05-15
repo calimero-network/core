@@ -47,4 +47,4 @@ impl Permission {
     pub fn display_name(&self) -> String {
         format!("{} ({})", self.name, self.resource_type)
     }
-} 
+}

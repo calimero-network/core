@@ -11,8 +11,7 @@ use crate::config::StorageConfig;
 pub mod models;
 pub mod rocksdb;
 
-pub use models::{ClientKey, Permission, RootKey};
-pub use models::prefixes;
+pub use models::{prefixes, ClientKey, Permission, RootKey};
 
 /// Storage error
 #[derive(Debug, Error)]

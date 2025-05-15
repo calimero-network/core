@@ -54,4 +54,4 @@ impl RootKey {
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()
     }
-} 
+}

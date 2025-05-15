@@ -290,4 +290,4 @@ pub async fn delete_client_handler(
             )
         }
     }
-} 
+}

@@ -27,4 +27,4 @@ pub fn generate_random_challenge() -> String {
     let mut rng = thread_rng();
     let random_bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
     STANDARD.encode(random_bytes)
-} 
+}

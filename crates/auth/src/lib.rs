@@ -6,16 +6,15 @@ use axum::http::{HeaderMap, Request};
 use eyre::Result;
 use thiserror::Error;
 
+pub mod api;
+pub mod auth;
 pub mod config;
 pub mod providers;
-pub mod storage;
-pub mod api;
 pub mod server;
+pub mod storage;
 pub mod utils;
-pub mod auth;
 
-pub use auth::AuthService;
-pub use auth::forward_auth_middleware;
+pub use auth::{forward_auth_middleware, AuthService};
 
 /// Response from an authentication validation attempt
 #[derive(Debug, Clone)]

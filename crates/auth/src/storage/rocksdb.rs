@@ -3,10 +3,8 @@ use std::path::Path;
 use async_trait::async_trait;
 use rocksdb::{IteratorMode, DB};
 
-use super::{
-    deserialize, models::prefixes, serialize, ClientKey, Permission, RootKey, Storage,
-    StorageError,
-};
+use super::models::prefixes;
+use super::{deserialize, serialize, ClientKey, Permission, RootKey, Storage, StorageError};
 
 /// RocksDB storage implementation
 pub struct RocksDBStorage {
@@ -134,13 +132,13 @@ impl RocksDBStorage {
     ) -> Result<(), StorageError> {
         let key = format!("{}{}", prefixes::CLIENT_KEY, client_id);
         let value = serialize(client_key)?;
-        
+
         // Store the client key
         self.set(&key, &value).await?;
 
         // Also store a secondary index from root key to client key
         let root_clients_key = format!("{}{}", prefixes::ROOT_CLIENTS, client_key.root_key_id);
-        
+
         // Check if the index already exists
         let index_value = match self.get(&root_clients_key).await? {
             Some(data) => {
@@ -179,11 +177,11 @@ impl RocksDBStorage {
 
             // Update the root key to client index
             let root_clients_key = format!("{}{}", prefixes::ROOT_CLIENTS, client_key.root_key_id);
-            
+
             if let Some(data) = self.get(&root_clients_key).await? {
                 let mut client_ids: Vec<String> = deserialize(&data)?;
                 client_ids.retain(|id| id != client_id);
-                
+
                 if client_ids.is_empty() {
                     // If no more clients, delete the index
                     self.delete(&root_clients_key).await?;
@@ -214,18 +212,18 @@ impl RocksDBStorage {
         root_key_id: &str,
     ) -> Result<Vec<ClientKey>, StorageError> {
         let root_clients_key = format!("{}{}", prefixes::ROOT_CLIENTS, root_key_id);
-        
+
         match self.get(&root_clients_key).await? {
             Some(data) => {
                 let client_ids: Vec<String> = deserialize(&data)?;
                 let mut result = Vec::with_capacity(client_ids.len());
-                
+
                 for client_id in client_ids {
                     if let Some(client_key) = self.get_client_key(&client_id).await? {
                         result.push(client_key);
                     }
                 }
-                
+
                 Ok(result)
             }
             None => Ok(Vec::new()),

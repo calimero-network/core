@@ -164,4 +164,4 @@ network_id = "mainnet"
 
 [cors]
 allow_all_origins = true
-``` 
+```

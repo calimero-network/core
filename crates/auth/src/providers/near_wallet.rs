@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error};
 
-use crate::config::NearWalletConfig;
 use crate::auth::token::TokenManager;
+use crate::config::NearWalletConfig;
 use crate::storage::models::{prefixes, RootKey};
 use crate::storage::{deserialize, serialize, Storage, StorageError};
 use crate::{
@@ -361,7 +361,8 @@ impl NearWalletProvider {
         signature: &str,
     ) -> Result<(String, Vec<String>), AuthError> {
         // Verify the signature
-        self.verify_signature(public_key, message, signature).await?;
+        self.verify_signature(public_key, message, signature)
+            .await?;
 
         // Verify the account owns the key
         if !self.verify_account_owns_key(account_id, public_key).await? {
@@ -421,7 +422,9 @@ impl NearWalletProvider {
             .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR signature".to_string()))?;
 
         // Authenticate using the core authentication logic
-        let (key_id, permissions) = self.authenticate_core(account_id, public_key, message, signature).await?;
+        let (key_id, permissions) = self
+            .authenticate_core(account_id, public_key, message, signature)
+            .await?;
 
         // If we have a token manager, generate a JWT token for the client
         if let Some(token_manager) = &self.token_manager {
@@ -493,7 +496,8 @@ impl AuthVerifierFn for NearWalletVerifier {
         let auth_data = &self.auth_data;
 
         // Authenticate using the core authentication logic
-        let (key_id, permissions) = self.provider
+        let (key_id, permissions) = self
+            .provider
             .authenticate_core(
                 &auth_data.account_id,
                 &auth_data.public_key,

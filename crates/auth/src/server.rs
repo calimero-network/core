@@ -4,8 +4,8 @@ use tokio::signal;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use crate::auth::token::TokenManager;
 use crate::api::routes::create_router;
+use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::storage::Storage;
 use crate::AuthService;
@@ -93,4 +93,4 @@ pub async fn shutdown_signal() {
     }
 
     info!("Shutdown signal received, shutting down");
-} 
+}

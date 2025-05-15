@@ -1,10 +1,10 @@
-mod root_key;
 mod client_key;
 mod permission;
+mod root_key;
 
-pub use root_key::RootKey;
 pub use client_key::ClientKey;
 pub use permission::Permission;
+pub use root_key::RootKey;
 
 /// Storage prefixes for different types of data
 pub mod prefixes {
@@ -22,4 +22,4 @@ pub mod prefixes {
 
     /// Prefix for the secondary index of root key to client keys
     pub const ROOT_CLIENTS: &str = "root_clients:";
-} 
+}

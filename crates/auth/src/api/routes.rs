@@ -5,13 +5,20 @@ use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
 use tower_http::cors::CorsLayer;
 
-use crate::api::handlers::auth::{callback_handler, challenge_handler, login_handler, refresh_token_handler, token_handler, validate_handler};
-use crate::api::handlers::clients::{create_client_handler, delete_client_handler, list_clients_handler};
+use crate::api::handlers::auth::{
+    callback_handler, challenge_handler, login_handler, refresh_token_handler, token_handler,
+    validate_handler,
+};
+use crate::api::handlers::clients::{
+    create_client_handler, delete_client_handler, list_clients_handler,
+};
 use crate::api::handlers::identity_handler;
 use crate::api::handlers::keys::{create_key_handler, delete_key_handler, list_keys_handler};
-use crate::api::handlers::permissions::{get_key_permissions_handler, list_permissions_handler, update_key_permissions_handler};
-use crate::config::AuthConfig;
+use crate::api::handlers::permissions::{
+    get_key_permissions_handler, list_permissions_handler, update_key_permissions_handler,
+};
 use crate::auth::middleware::forward_auth_middleware;
+use crate::config::AuthConfig;
 use crate::server::AppState;
 
 /// Creates and configures the router with all routes and middleware
@@ -87,4 +94,4 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .layer(from_fn(forward_auth_middleware))
         // Add the state as Extension - this needs to be at the end
         .layer(Extension(Arc::clone(&state)))
-} 
+}

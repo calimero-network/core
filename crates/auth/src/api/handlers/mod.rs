@@ -56,4 +56,4 @@ pub async fn identity_handler(state: Option<Extension<Arc<AppState>>>) -> impl I
     };
 
     (StatusCode::OK, Json(response))
-} 
+}

@@ -4,11 +4,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request};
 
-use crate::AuthError;
-use crate::AuthResponse;
-use crate::AuthProvider;
-use crate::AuthRequestVerifier;
 use crate::api::handlers::auth::TokenRequest;
+use crate::{AuthError, AuthProvider, AuthRequestVerifier, AuthResponse};
 
 /// Authentication service
 ///
@@ -174,4 +171,4 @@ impl AuthService {
     pub fn providers(&self) -> &[Box<dyn AuthProvider>] {
         &self.providers
     }
-} 
+}
