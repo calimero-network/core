@@ -34,7 +34,6 @@ serde_json.workspace = true
 sha2.workspace = true
 starknet.workspace = true
 starknet-crypto.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }

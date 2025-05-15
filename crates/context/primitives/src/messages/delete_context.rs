@@ -1,7 +1,7 @@
 use actix::Message;
 use calimero_primitives::context::ContextId;
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct DeleteContextRequest {
     pub context_id: ContextId,
 }

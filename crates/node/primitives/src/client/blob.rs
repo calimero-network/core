@@ -61,4 +61,8 @@ impl NodeClient {
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
         self.blobstore.has(*blob_id)
     }
+
+    // pub fn remove_blob() -> eyre::Result<()> {
+    //     todo!("consider what this means for application blobs bound to contexts")
+    // }
 }
