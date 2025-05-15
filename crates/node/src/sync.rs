@@ -30,7 +30,7 @@ pub struct SyncConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct SyncManager {
+pub(crate) struct SyncManager {
     sync_config: SyncConfig,
 
     node_client: NodeClient,
@@ -220,6 +220,10 @@ impl SyncManager {
             .mesh_peers(TopicHash::from_raw(context_id))
             .await;
 
+        if context_id.as_str() == "E13pvE8dqgmZcPgFN21HNgiMRjFYczej8tuqayKTPaD1" {
+            time::sleep(Duration::from_secs(15)).await;
+        }
+
         if peers.is_empty() {
             warn!(%context_id, "No peers to sync with");
         }
@@ -286,7 +290,7 @@ impl SyncManager {
         Ok(Some(decoded))
     }
 
-    pub(crate) async fn initiate_sync(
+    pub async fn initiate_sync(
         &self,
         context_id: ContextId,
         chosen_peer: PeerId,
