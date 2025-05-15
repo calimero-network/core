@@ -43,7 +43,7 @@ impl SyncManager {
         )
         .await?;
 
-        let Some(ack) = self.recv(stream, self.sync_config.timeout, None).await? else {
+        let Some(ack) = self.recv(stream, None).await? else {
             bail!("connection closed while awaiting blob share handshake");
         };
 
@@ -93,14 +93,7 @@ impl SyncManager {
         let read_task = async {
             let mut sequencer = Sequencer::default();
 
-            while let Some(msg) = self
-                .recv(
-                    stream,
-                    self.sync_config.timeout,
-                    Some((shared_key, their_nonce)),
-                )
-                .await?
-            {
+            while let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? {
                 let (sequence_id, chunk, their_new_nonce) = match msg {
                     StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                     StreamMessage::Message {

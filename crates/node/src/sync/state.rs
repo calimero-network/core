@@ -48,7 +48,7 @@ impl SyncManager {
         let mut triple = None;
 
         for _ in 1..=2 {
-            let Some(ack) = self.recv(stream, self.sync_config.timeout, None).await? else {
+            let Some(ack) = self.recv(stream, None).await? else {
                 bail!("connection closed while awaiting state sync handshake");
             };
 
@@ -281,14 +281,7 @@ impl SyncManager {
 
         let mut sqx_in = Sequencer::default();
 
-        while let Some(msg) = self
-            .recv(
-                stream,
-                self.sync_config.timeout,
-                Some((shared_key, their_nonce)),
-            )
-            .await?
-        {
+        while let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? {
             let (sequence_id, artifact, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {

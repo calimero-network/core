@@ -36,7 +36,7 @@ impl SyncManager {
         )
         .await?;
 
-        let Some(ack) = self.recv(stream, self.sync_config.timeout, None).await? else {
+        let Some(ack) = self.recv(stream, None).await? else {
             bail!("connection closed while awaiting state sync handshake");
         };
 
@@ -147,14 +147,7 @@ impl SyncManager {
         )
         .await?;
 
-        let Some(msg) = self
-            .recv(
-                stream,
-                self.sync_config.timeout,
-                Some((shared_key, their_nonce)),
-            )
-            .await?
-        else {
+        let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? else {
             bail!("connection closed while awaiting key share");
         };
 

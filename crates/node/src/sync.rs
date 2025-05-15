@@ -349,7 +349,7 @@ impl SyncManager {
     }
 
     async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> eyre::Result<Option<()>> {
-        let Some(message) = self.recv(stream, self.sync_config.timeout, None).await? else {
+        let Some(message) = self.recv(stream, None).await? else {
             return Ok(None);
         };
 
