@@ -682,7 +682,8 @@ impl AuthProvider for NearWalletProvider {
 
     fn get_health_status(&self) -> eyre::Result<serde_json::Value> {
         // Test the RPC connection to verify if the provider is healthy
-        let client = JsonRpcClient::connect(&self.config.rpc_url);
+        // We're just checking if we can create a connection, but not actually making the request
+        let _client = JsonRpcClient::connect(&self.config.rpc_url);
 
         // We'll do a minimal check that doesn't require waiting for response
         // Just check if we can create a client and make a request
