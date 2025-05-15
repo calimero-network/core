@@ -56,17 +56,28 @@ fn main() {
 
     let renamed_path = extracted_dir.join("admin-dashboard");
 
-    if renamed_path.exists() {
-        fs::remove_dir_all(&renamed_path)
-            .unwrap_or_else(|e| panic!("Failed to remove directory {:?}: {}", renamed_path, e));
-    }
+    if extracted_folder != renamed_path {
+        if renamed_path.exists() {
+            fs::remove_dir_all(&renamed_path)
+                .unwrap_or_else(|e| panic!("Failed to remove directory {:?}: {}", renamed_path, e));
+        }
 
-    fs::rename(&extracted_folder, &renamed_path).unwrap_or_else(|e| {
-        panic!(
-            "Failed to rename {:?} to {:?}: {}",
-            extracted_folder, renamed_path, e
-        )
-    });
+        if extracted_folder.exists() {
+            fs::rename(&extracted_folder, &renamed_path).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to rename {:?} to {:?}: {}",
+                    extracted_folder, renamed_path, e
+                )
+            });
+        } else {
+            panic!(
+                "Expected extracted folder {:?} does not exist. Archive structure may have changed.",
+                extracted_folder
+            );
+        }
+    } else {
+        println!("Extracted folder already named 'admin-dashboard', skipping rename.");
+    }
 
     let extracted_build_path = renamed_path.join("build");
 
