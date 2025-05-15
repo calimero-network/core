@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use calimero_auth::config::{default_config, load_config, AuthConfig};
+use calimero_auth::config::{default_config, load_config};
 use calimero_auth::server::{shutdown_signal, start_server};
 use calimero_auth::storage::create_storage;
 use calimero_auth::{providers, AuthService};

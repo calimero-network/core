@@ -22,8 +22,11 @@ impl RocksDBStorage {
     ///
     /// * `Result<Self, StorageError>` - The new instance
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
-        let options = rocksdb::Options::default();
-        let db = DB::open_default(path)
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        
+        let db = DB::open(&options, path)
             .map_err(|e| StorageError::StorageError(format!("Failed to open RocksDB: {e}")))?;
 
         Ok(Self { db })

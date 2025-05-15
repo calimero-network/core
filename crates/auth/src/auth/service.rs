@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request};
 
 use crate::api::handlers::auth::TokenRequest;
-use crate::{AuthError, AuthProvider, AuthRequestVerifier, AuthResponse};
+use crate::{AuthError, AuthProvider, AuthResponse};
 
 /// Authentication service
 ///
