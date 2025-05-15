@@ -117,16 +117,18 @@ impl SyncManager {
         let advance = async |futs: &mut FuturesUnordered<_>, state: &mut HashMap<_, SyncState>| {
             let (context_id, start, result) = futs.next().await?;
 
+            let now = Instant::now();
+
             let _ignored = state
                 .entry(context_id)
-                .and_modify(|state| state.last_sync = Some(Instant::now()));
+                .and_modify(|state| state.last_sync = Some(now));
 
-            let took = Instant::elapsed(&start).as_secs_f32();
+            let took = Instant::saturating_duration_since(&now, start).as_secs_f32();
 
             if let Ok(_) = result {
-                debug!(%context_id, %took, "Sync finished successfully");
+                debug!(%context_id, took_sec=%took, "Sync finished");
             } else {
-                warn!(%context_id, %took, "Sync timed out");
+                error!(%context_id, took_sec=%took, "Sync timed out");
             }
 
             Some(())
@@ -221,11 +223,11 @@ impl SyncManager {
             .await;
 
         if context_id.as_str() == "E13pvE8dqgmZcPgFN21HNgiMRjFYczej8tuqayKTPaD1" {
-            time::sleep(Duration::from_secs(15)).await;
+            time::sleep(Duration::from_secs(21)).await;
         }
 
         if peers.is_empty() {
-            warn!(%context_id, "No peers to sync with");
+            debug!(%context_id, "No peers to sync with");
         }
 
         for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
