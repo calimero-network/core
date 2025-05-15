@@ -44,14 +44,22 @@ impl AuthService {
     ) -> Result<AuthResponse, AuthError> {
         // Find a provider that has a token manager
         for provider in self.providers.iter() {
-            if let Some(near_provider) = provider.as_any().downcast_ref::<crate::providers::near_wallet::NearWalletProvider>() {
+            if let Some(near_provider) = provider
+                .as_any()
+                .downcast_ref::<crate::providers::near_wallet::NearWalletProvider>(
+            ) {
                 // Use the token manager to verify the token
-                return near_provider.get_token_manager().verify_token_from_headers(headers).await;
+                return near_provider
+                    .get_token_manager()
+                    .verify_token_from_headers(headers)
+                    .await;
             }
         }
-        
+
         // If no provider with a token manager is found
-        Err(AuthError::InvalidRequest("No JWT token provider available".to_string()))
+        Err(AuthError::InvalidRequest(
+            "No JWT token provider available".to_string(),
+        ))
     }
 
     /// Authenticate a token request
@@ -81,7 +89,7 @@ impl AuthService {
                         ));
                     }
                 };
-                
+
                 let account_id = match &token_request.wallet_address {
                     Some(addr) => addr.clone(),
                     None => {
@@ -90,14 +98,14 @@ impl AuthService {
                         ));
                     }
                 };
-                
+
                 AuthData::NearWallet {
                     account_id,
                     public_key: token_request.public_key.clone(),
                     message,
                     signature: token_request.signature.clone(),
                 }
-            },
+            }
             // No other auth methods supported yet
             method => {
                 return Err(AuthError::InvalidRequest(format!(
@@ -106,7 +114,7 @@ impl AuthService {
                 )));
             }
         };
-        
+
         // Use the authenticate_with_data method which now uses the direct approach
         self.authenticate_with_data(auth_data).await
     }
@@ -132,21 +140,26 @@ impl AuthService {
                 self.providers.iter().find(|p| p.name() == "near_wallet")
             }
         };
-        
+
         // Try to authenticate with the selected provider
         if let Some(provider) = provider {
             // Extract data from the AuthData enum
             match &auth_data {
-                AuthData::NearWallet { account_id, public_key, message, signature } => {
+                AuthData::NearWallet {
+                    account_id,
+                    public_key,
+                    message,
+                    signature,
+                } => {
                     // Get a reference to the specific provider (we already know it's a NearWalletProvider)
-                    if let Some(near_provider) = provider.as_any().downcast_ref::<crate::providers::near_wallet::NearWalletProvider>() {
+                    if let Some(near_provider) = provider
+                        .as_any()
+                        .downcast_ref::<crate::providers::near_wallet::NearWalletProvider>(
+                    ) {
                         // Call the direct authentication method on the provider
-                        return near_provider.authenticate_near_wallet(
-                            account_id, 
-                            public_key, 
-                            message, 
-                            signature
-                        ).await;
+                        return near_provider
+                            .authenticate_near_wallet(account_id, public_key, message, signature)
+                            .await;
                     }
                 }
             }

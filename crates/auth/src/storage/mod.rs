@@ -7,12 +7,12 @@ use thiserror::Error;
 
 use crate::config::StorageConfig;
 
+pub mod memory;
 pub mod models;
 pub mod rocksdb;
-pub mod memory;
 
-pub use models::{prefixes, ClientKey, Permission, RootKey};
 pub use memory::MemoryStorage;
+pub use models::{prefixes, ClientKey, Permission, RootKey};
 
 /// Storage error
 #[derive(Debug, Error)]

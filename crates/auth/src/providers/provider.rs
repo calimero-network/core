@@ -1,9 +1,10 @@
+use std::any::Any;
+
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 
 use crate::api::handlers::auth::TokenRequest;
 use crate::{AuthError, AuthResponse};
@@ -25,7 +26,6 @@ pub enum AuthData {
         /// Signature of the message
         signature: String,
     },
-    
     // Add other authentication methods as needed
 }
 
@@ -67,7 +67,7 @@ pub trait AuthProvider: Send + Sync {
             "configured": self.is_configured(),
         }))
     }
-    
+
     /// Convert to Any for downcasting
     ///
     /// This is used to downcast to specific provider implementations.

@@ -109,13 +109,7 @@ impl ClientKey {
         permissions: Vec<String>,
         expires_at: Option<u64>,
     ) -> Self {
-        Self::new(
-            client_id,
-            root_key_id,
-            name,
-            permissions,
-            expires_at,
-        )
+        Self::new(client_id, root_key_id, name, permissions, expires_at)
     }
 
     /// Revoke the client key

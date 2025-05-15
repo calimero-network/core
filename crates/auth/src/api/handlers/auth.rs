@@ -9,10 +9,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
+use crate::providers::provider::AuthData;
 use crate::server::AppState;
 use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;
-use crate::providers::provider::AuthData;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, Json<serde_json::Value>);
@@ -55,7 +55,7 @@ impl HeaderBuilder {
     fn new() -> Self {
         Self(HeaderMap::new())
     }
-    
+
     fn add_if_some<T: ToString>(mut self, key: &'static str, value: &Option<T>) -> Self {
         if let Some(v) = value {
             if let Ok(header_value) = v.to_string().parse::<HeaderValue>() {
@@ -64,14 +64,14 @@ impl HeaderBuilder {
         }
         self
     }
-    
+
     fn add<T: ToString>(mut self, key: &'static str, value: T) -> Self {
         if let Ok(header_value) = value.to_string().parse::<HeaderValue>() {
             self.0.insert(key, header_value);
         }
         self
     }
-    
+
     fn build(self) -> HeaderMap {
         self.0
     }
@@ -86,7 +86,7 @@ pub async fn login_handler(
 ) -> impl IntoResponse {
     // Get enabled providers
     let enabled_providers = state.0.auth_service.providers();
-    
+
     // Check if NEAR wallet provider is available
     if let Some(near_wallet) = enabled_providers.iter().find(|p| p.name() == "near_wallet") {
         if near_wallet.is_configured() {
@@ -94,18 +94,22 @@ pub async fn login_handler(
             // Read the HTML template and the JavaScript bundle
             let mut html = include_str!("../../../frontend/index.html").to_string();
             let js_bundle = include_str!("../../../frontend/dist/bundle.js");
-            
+
             // Replace the script placeholder with the actual script content
             html = html.replace("<!-- SCRIPT_CONTENT -->", js_bundle);
-            
+
             return (StatusCode::OK, [("Content-Type", "text/html")], html);
         }
     }
-    
+
     warn!("NEAR wallet provider is not available");
     // Fall back to a simple error message if no provider is available
     let html = "<html><body><h1>No authentication provider is available</h1></body></html>";
-    (StatusCode::OK, [("Content-Type", "text/html")], html.to_string())
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/html")],
+        html.to_string(),
+    )
 }
 
 /// Token request
@@ -170,10 +174,10 @@ pub struct TokenResponse {
 impl TokenResponse {
     /// Create a new success token response
     fn new(
-        access_token: String, 
-        refresh_token: String, 
-        client_id: String, 
-        expires_in: u64
+        access_token: String,
+        refresh_token: String,
+        client_id: String,
+        expires_in: u64,
     ) -> Self {
         Self {
             access_token,
@@ -184,7 +188,7 @@ impl TokenResponse {
             error: None,
         }
     }
-    
+
     /// Create an error token response
     fn error(msg: &str) -> Self {
         Self {
@@ -204,8 +208,7 @@ fn generate_authentication_challenge() -> (String, u64) {
     let challenge = generate_random_challenge();
     let message = format!(
         "Calimero Authentication Request {}:{}",
-        timestamp,
-        challenge
+        timestamp, challenge
     );
     (message, timestamp)
 }
@@ -230,12 +233,12 @@ pub async fn token_handler(
     if let Err(msg) = token_request.validate() {
         return bad_request_response(&msg);
     }
-    
+
     // Check if auth_method is provided
     if token_request.auth_method.is_empty() {
         return bad_request_response("Authentication method is required");
     }
-    
+
     // Convert the token request to type-safe auth data
     let auth_data = match token_request.auth_method.as_str() {
         "near_wallet" => {
@@ -246,30 +249,29 @@ pub async fn token_handler(
                     return bad_request_response("Missing message for NEAR wallet authentication");
                 }
             };
-            
+
             let account_id = match token_request.wallet_address {
                 Some(addr) => addr,
                 None => {
-                    return bad_request_response("Missing wallet address for NEAR wallet authentication");
+                    return bad_request_response(
+                        "Missing wallet address for NEAR wallet authentication",
+                    );
                 }
             };
-            
+
             AuthData::NearWallet {
                 account_id,
                 public_key: token_request.public_key.clone(),
                 message,
                 signature: token_request.signature.clone(),
             }
-        },
+        }
         // No other auth methods supported yet
         method => {
-            return bad_request_response(&format!(
-                "Unsupported authentication method: {}",
-                method
-            ));
+            return bad_request_response(&format!("Unsupported authentication method: {}", method));
         }
     };
-    
+
     // Authenticate using the type-safe auth data
     // This will return an error if authentication fails
     let auth_response = match state.0.auth_service.authenticate_with_data(auth_data).await {
@@ -285,20 +287,22 @@ pub async fn token_handler(
         Some(id) => id,
         None => return internal_error_response("No key ID available"),
     };
-    
-                // Generate a client ID
-                let client_id = token_request.client_name.clone();
+
+    // Generate a client ID
+    let client_id = token_request.client_name.clone();
 
     // Generate tokens
-    match state.0.token_generator
+    match state
+        .0
+        .token_generator
         .generate_token_pair(&client_id, &key_id, &auth_response.permissions)
-                    .await
-                {
-                    Ok((access_token, refresh_token)) => {
+        .await
+    {
+        Ok((access_token, refresh_token)) => {
             let response = TokenResponse::new(
-                            access_token,
-                            refresh_token,
-                            client_id,
+                access_token,
+                refresh_token,
+                client_id,
                 state.0.config.jwt.access_token_expiry,
             );
             success_response(response)
@@ -345,12 +349,17 @@ pub async fn refresh_token_handler(
     if let Err(msg) = request.validate() {
         return bad_request_response(&msg);
     }
-    
-    match state.0.token_generator.refresh_token_pair(&request.refresh_token).await {
+
+    match state
+        .0
+        .token_generator
+        .refresh_token_pair(&request.refresh_token)
+        .await
+    {
         Ok((access_token, refresh_token)) => {
             // TODO: Extract client_id from the refresh token
             let client_id = "default_client".to_string();
-            
+
             let response = TokenResponse::new(
                 access_token,
                 refresh_token,
@@ -362,7 +371,10 @@ pub async fn refresh_token_handler(
         Err(err) => {
             debug!("Failed to refresh token: {}", err);
             let error_response = TokenResponse::error("Invalid refresh token");
-            (StatusCode::UNAUTHORIZED, Json(serde_json::json!(error_response)))
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!(error_response)),
+            )
         }
     }
 }
@@ -385,7 +397,12 @@ pub async fn validate_handler(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     // Validate the request using the headers
-    match state.0.auth_service.verify_token_from_headers(&headers).await {
+    match state
+        .0
+        .auth_service
+        .verify_token_from_headers(&headers)
+        .await
+    {
         Ok(auth_response) => {
             if !auth_response.is_valid {
                 return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
@@ -521,10 +538,18 @@ pub async fn revoke_token_handler(
         return bad_request_response(&msg);
     }
 
-    match state.0.token_generator.revoke_client_tokens(&request.client_id).await {
+    match state
+        .0
+        .token_generator
+        .revoke_client_tokens(&request.client_id)
+        .await
+    {
         Ok(_) => {
             // Log successful revocation
-            debug!("Successfully revoked tokens for client {}", request.client_id);
+            debug!(
+                "Successfully revoked tokens for client {}",
+                request.client_id
+            );
 
             success_response(serde_json::json!({
                     "success": true,
@@ -533,7 +558,10 @@ pub async fn revoke_token_handler(
         }
         Err(err) => {
             // Log error
-            error!("Failed to revoke tokens for client {}: {}", request.client_id, err);
+            error!(
+                "Failed to revoke tokens for client {}: {}",
+                request.client_id, err
+            );
 
             let status_code = match err {
                 AuthError::AuthenticationFailed(_) => StatusCode::NOT_FOUND,

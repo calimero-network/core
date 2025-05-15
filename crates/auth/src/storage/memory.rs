@@ -30,9 +30,7 @@ impl Storage for MemoryStorage {
     }
 
     async fn set(&self, key: &str, value: &[u8]) -> Result<(), StorageError> {
-        self.data
-            .write()
-            .insert(key.to_string(), value.to_vec());
+        self.data.write().insert(key.to_string(), value.to_vec());
         Ok(())
     }
 
@@ -90,29 +88,29 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage() {
         let storage = MemoryStorage::new();
-        
+
         // Test set and get
         storage.set("test_key", b"test_value").await.unwrap();
         let value = storage.get("test_key").await.unwrap();
         assert_eq!(value, Some(b"test_value".to_vec()));
-        
+
         // Test exists
         assert!(storage.exists("test_key").await.unwrap());
         assert!(!storage.exists("nonexistent_key").await.unwrap());
-        
+
         // Test delete
         storage.delete("test_key").await.unwrap();
         let value = storage.get("test_key").await.unwrap();
         assert_eq!(value, None);
-        
+
         // Test list_keys
         storage.set("prefix1:key1", b"value1").await.unwrap();
         storage.set("prefix1:key2", b"value2").await.unwrap();
         storage.set("prefix2:key3", b"value3").await.unwrap();
-        
+
         let keys = storage.list_keys("prefix1:").await.unwrap();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&"prefix1:key1".to_string()));
         assert!(keys.contains(&"prefix1:key2".to_string()));
     }
-} 
+}
