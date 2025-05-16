@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
-use crate::storage::Storage;
+use crate::storage::KeyStorage;
 
 pub mod near_wallet;
 pub mod provider;
@@ -19,7 +19,7 @@ pub struct ProviderFactory {
     providers: HashMap<
         String,
         Box<
-            dyn Fn(Arc<dyn Storage>, &AuthConfig) -> Result<Box<dyn AuthProvider>, eyre::Error>
+            dyn Fn(Arc<dyn KeyStorage>, &AuthConfig) -> Result<Box<dyn AuthProvider>, eyre::Error>
                 + Send
                 + Sync,
         >,
@@ -53,7 +53,7 @@ impl ProviderFactory {
     /// Register a provider factory function
     pub fn register<F>(&mut self, name: &str, factory: F)
     where
-        F: Fn(Arc<dyn Storage>, &AuthConfig) -> Result<Box<dyn AuthProvider>, eyre::Error>
+        F: Fn(Arc<dyn KeyStorage>, &AuthConfig) -> Result<Box<dyn AuthProvider>, eyre::Error>
             + Send
             + Sync
             + 'static,
@@ -64,7 +64,7 @@ impl ProviderFactory {
     /// Create all enabled providers from configuration
     pub fn create_providers(
         &self,
-        storage: Arc<dyn Storage>,
+        storage: Arc<dyn KeyStorage>,
         config: &AuthConfig,
     ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
         let mut providers = Vec::new();
@@ -85,7 +85,7 @@ impl ProviderFactory {
     pub fn create_provider(
         &self,
         name: &str,
-        storage: Arc<dyn Storage>,
+        storage: Arc<dyn KeyStorage>,
         config: &AuthConfig,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
         if let Some(factory) = self.providers.get(name) {
@@ -111,7 +111,7 @@ impl ProviderFactory {
 
 /// Create all enabled providers from configuration
 pub fn create_providers(
-    storage: Arc<dyn Storage>,
+    storage: Arc<dyn KeyStorage>,
     config: &AuthConfig,
 ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
     let factory = ProviderFactory::new();

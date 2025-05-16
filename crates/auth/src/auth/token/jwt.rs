@@ -7,7 +7,7 @@ use tracing::{debug, error};
 
 use crate::config::JwtConfig;
 use crate::storage::models::{prefixes, ClientKey};
-use crate::storage::{deserialize, serialize, Storage};
+use crate::storage::{deserialize, serialize, KeyStorage};
 use crate::{AuthError, AuthResponse};
 
 /// JWT Claims structure
@@ -35,7 +35,7 @@ pub struct Claims {
 #[derive(Clone)]
 pub struct TokenManager {
     config: JwtConfig,
-    storage: Arc<dyn Storage>,
+    storage: Arc<dyn KeyStorage>,
 }
 
 impl TokenManager {
@@ -49,7 +49,7 @@ impl TokenManager {
     /// # Returns
     ///
     /// * `Self` - The token generator
-    pub fn new(config: JwtConfig, storage: Arc<dyn Storage>) -> Self {
+    pub fn new(config: JwtConfig, storage: Arc<dyn KeyStorage>) -> Self {
         Self { config, storage }
     }
 

@@ -19,7 +19,7 @@ use crate::auth::token::TokenManager;
 use crate::config::NearWalletConfig;
 use crate::providers::provider::AuthData;
 use crate::storage::models::{prefixes, RootKey};
-use crate::storage::{deserialize, serialize, Storage};
+use crate::storage::{deserialize, serialize, KeyStorage};
 use crate::{
     AuthError, AuthProvider, AuthRequestVerifier, AuthResponse, AuthVerifierFn, RequestValidator,
 };
@@ -27,7 +27,7 @@ use crate::{
 /// NEAR wallet authentication provider
 pub struct NearWalletProvider {
     config: NearWalletConfig,
-    storage: Arc<dyn Storage>,
+    storage: Arc<dyn KeyStorage>,
     token_manager: TokenManager,
 }
 
@@ -41,7 +41,7 @@ impl NearWalletProvider {
     /// * `token_manager` - JWT token manager
     pub fn new(
         config: NearWalletConfig,
-        storage: Arc<dyn Storage>,
+        storage: Arc<dyn KeyStorage>,
         token_manager: TokenManager,
     ) -> Self {
         Self {
@@ -341,6 +341,8 @@ impl NearWalletProvider {
             created_at: Utc::now().timestamp() as u64,
             revoked_at: None,
             last_used_at: Some(Utc::now().timestamp() as u64),
+            permissions: vec!["admin".to_string()], // Default admin permission
+            metadata: None,
         };
 
         // Store the root key

@@ -7,7 +7,7 @@ use tracing::info;
 use crate::api::routes::create_router;
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
-use crate::storage::Storage;
+use crate::storage::KeyStorage;
 use crate::utils::AuthMetrics;
 use crate::AuthService;
 
@@ -16,7 +16,7 @@ pub struct AppState {
     /// Authentication service
     pub auth_service: AuthService,
     /// Storage backend
-    pub storage: Arc<dyn Storage>,
+    pub storage: Arc<dyn KeyStorage>,
     /// Token generator
     pub token_generator: TokenManager,
     /// Configuration
@@ -38,7 +38,7 @@ pub struct AppState {
 /// * `Result<(), eyre::Error>` - Success or error
 pub async fn start_server(
     auth_service: AuthService,
-    storage: Arc<dyn Storage>,
+    storage: Arc<dyn KeyStorage>,
     config: AuthConfig,
 ) -> eyre::Result<()> {
     let token_generator = TokenManager::new(config.jwt.clone(), storage.clone());

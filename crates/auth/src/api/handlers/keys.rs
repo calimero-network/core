@@ -108,6 +108,8 @@ pub async fn create_key_handler(
         created_at: Utc::now().timestamp() as u64,
         revoked_at: None,
         last_used_at: None,
+        permissions: Vec::new(), // Empty permissions by default
+        metadata: None,
     };
 
     // Store the root key
