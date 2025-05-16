@@ -16,23 +16,26 @@ const CALIMERO_WEB_UI_SRC: &str =
     "https://github.com/calimero-network/admin-dashboard/archive/refs/tags/";
 
 fn main() {
-    let client = Client::new();
-    let release: Release = client
-        .get(CALIMERO_WEB_UI_RELEASE)
-        .header("User-Agent", "rust-client")
-        .send()
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to send request: {e}");
-            std::process::exit(1);
-        })
-        .json()
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to parse JSON: {e}");
-            std::process::exit(1);
-        });
+    let src = if let Some(env_src) = option_env!("CALIMERO_WEB_UI_SRC") {
+        env_src
+    } else {
+        let client = Client::new();
+        let release: Release = client
+            .get(CALIMERO_WEB_UI_RELEASE)
+            .header("User-Agent", "rust-client")
+            .send()
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to send request: {e}");
+                std::process::exit(1);
+            })
+            .json()
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to parse JSON: {e}");
+                std::process::exit(1);
+            });
 
-    let latest_release_src = format!("{}{}.zip", CALIMERO_WEB_UI_SRC, release.tag_name);
-    let src = option_env!("CALIMERO_WEB_UI_SRC").unwrap_or(&latest_release_src);
+        Box::leak(format!("{}{}.zip", CALIMERO_WEB_UI_SRC, release.tag_name).into_boxed_str())
+    };
 
     let cache = Cache::builder()
         .dir(PathBuf::from(
