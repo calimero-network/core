@@ -51,7 +51,9 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
-        if method != "init" && &*context.meta.root_hash == &[0; 32] {
+        if !["init", "__calimero_sync_next"].contains(&&*method)
+            && *context.meta.root_hash == [0; 32]
+        {
             return ActorResponse::reply(Err(ExecuteError::Uninitialized));
         }
 
