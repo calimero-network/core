@@ -15,7 +15,6 @@ eyre.workspace = true
 libp2p-identity = { workspace = true, features = ["peerid", "serde"] }
 multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["fs"] }
 toml.workspace = true
 
 calimero-context.workspace = true
