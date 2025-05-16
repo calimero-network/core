@@ -2091,7 +2091,6 @@ dependencies = [
  "ic-signature-verification",
  "jsonwebtoken",
  "libp2p",
- "local-ip-address",
  "mime_guess",
  "multiaddr",
  "rand 0.8.5",

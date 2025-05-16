@@ -21,7 +21,6 @@ ic-canister-sig-creation.workspace = true
 ic-signature-verification.workspace = true
 jsonwebtoken.workspace = true
 libp2p.workspace = true
-local-ip-address.workspace = true
 mime_guess.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
