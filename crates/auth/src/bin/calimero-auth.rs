@@ -36,7 +36,7 @@ struct Cli {
 fn create_default_config() -> AuthConfig {
     let mut providers = HashMap::new();
     providers.insert("near_wallet".to_string(), true);
-    
+
     AuthConfig {
         listen_addr: "127.0.0.1:3001".parse().unwrap(),
         node_url: "http://localhost:2428".to_string(),

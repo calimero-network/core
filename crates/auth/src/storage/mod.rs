@@ -12,8 +12,8 @@ pub mod providers;
 pub mod registry;
 
 // Re-export storage implementations for backward compatibility
-pub use providers::memory::MemoryStorage;
 pub use models::{prefixes, ClientKey, Permission, RootKey};
+pub use providers::memory::MemoryStorage;
 
 /// Storage error
 #[derive(Debug, Error)]
@@ -317,18 +317,19 @@ pub trait KeyStorage: Storage {
 pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError> {
     // Get all registered providers
     let providers = registry::get_all_providers();
-    
+
     // Find a provider that supports this configuration
     for provider in providers {
         if provider.supports_config(config) {
             return provider.create_storage(config);
         }
     }
-    
+
     // If no registered provider is found, return an error
-    Err(StorageError::StorageError(
-        format!("No registered storage provider found for configuration: {:?}", config)
-    ))
+    Err(StorageError::StorageError(format!(
+        "No registered storage provider found for configuration: {:?}",
+        config
+    )))
 }
 
 /// Helper function to serialize an object to JSON

@@ -4,4 +4,4 @@ pub mod rocksdb;
 
 // Re-export provider structs for convenience
 pub use memory::MemoryStorageProvider;
-pub use rocksdb::RocksDBProvider; 
+pub use rocksdb::RocksDBProvider;

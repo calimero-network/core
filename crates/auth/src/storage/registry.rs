@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex, Once};
+
 use lazy_static::lazy_static;
 
 use crate::config::StorageConfig;
@@ -11,10 +12,10 @@ use crate::storage::{KeyStorage, StorageError};
 pub trait StorageProvider: Send + Sync {
     /// Get the name of this storage provider
     fn name(&self) -> &str;
-    
+
     /// Check if this provider supports the given configuration
     fn supports_config(&self, config: &StorageConfig) -> bool;
-    
+
     /// Create a storage instance from the configuration
     fn create_storage(&self, config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError>;
 }
@@ -32,16 +33,16 @@ pub struct StorageRegistry {
 
 impl StorageRegistry {
     fn new() -> Self {
-        Self { 
-            providers: Vec::new() 
+        Self {
+            providers: Vec::new(),
         }
     }
-    
+
     /// Register a storage provider
     pub fn register(&mut self, provider: Arc<dyn StorageProvider>) {
         self.providers.push(provider);
     }
-    
+
     /// Get all registered providers
     pub fn get_providers(&self) -> Vec<Arc<dyn StorageProvider>> {
         self.providers.clone()
@@ -53,7 +54,7 @@ pub fn register_provider(provider: Arc<dyn StorageProvider>) {
     INIT.call_once(|| {
         // Initialize any global state if needed
     });
-    
+
     let mut registry = STORAGE_REGISTRY.lock().unwrap();
     registry.register(provider);
 }
@@ -74,4 +75,4 @@ macro_rules! register_storage_provider {
             $crate::storage::registry::register_provider(Arc::new($provider));
         }
     };
-} 
+}

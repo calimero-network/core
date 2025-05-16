@@ -4,15 +4,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
+// Import the registry
+use crate::config::StorageConfig;
+use crate::register_storage_provider;
 use crate::storage::models::prefixes;
+use crate::storage::registry::StorageProvider;
 use crate::storage::{
     deserialize, serialize, ClientKey, KeyStorage, Permission, RootKey, Storage, StorageError,
 };
-
-// Import the registry
-use crate::config::StorageConfig;
-use crate::storage::registry::StorageProvider;
-use crate::register_storage_provider;
 
 /// In-memory storage implementation
 ///
@@ -310,17 +309,19 @@ impl StorageProvider for MemoryStorageProvider {
     fn name(&self) -> &str {
         "memory"
     }
-    
+
     fn supports_config(&self, config: &StorageConfig) -> bool {
         matches!(config, StorageConfig::Memory)
     }
-    
+
     fn create_storage(&self, config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError> {
         if matches!(config, StorageConfig::Memory) {
             let storage = MemoryStorage::new();
             Ok(Arc::new(storage))
         } else {
-            Err(StorageError::StorageError("Invalid configuration for Memory storage".to_string()))
+            Err(StorageError::StorageError(
+                "Invalid configuration for Memory storage".to_string(),
+            ))
         }
     }
 }

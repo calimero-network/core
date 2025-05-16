@@ -42,13 +42,13 @@ fn default_listen_addr() -> SocketAddr {
 pub struct JwtConfig {
     /// Secret key for signing and verifying tokens
     pub secret: String,
-    
+
     /// Token issuer
     pub issuer: String,
-    
+
     /// Access token expiry time in seconds (default: 1 hour)
     pub access_token_expiry: u64,
-    
+
     /// Refresh token expiry time in seconds (default: 30 days)
     pub refresh_token_expiry: u64,
 }
