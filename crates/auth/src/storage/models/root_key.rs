@@ -17,10 +17,10 @@ pub struct RootKey {
 
     /// When the key was last used
     pub last_used_at: Option<u64>,
-    
+
     /// Permissions assigned to this key
     pub permissions: Vec<String>,
-    
+
     /// Optional metadata (for future extensions)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
@@ -60,7 +60,11 @@ impl RootKey {
     /// # Returns
     ///
     /// * `Self` - The new root key
-    pub fn new_with_permissions(public_key: String, auth_method: String, permissions: Vec<String>) -> Self {
+    pub fn new_with_permissions(
+        public_key: String,
+        auth_method: String,
+        permissions: Vec<String>,
+    ) -> Self {
         Self {
             public_key,
             auth_method,
@@ -86,34 +90,34 @@ impl RootKey {
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()
     }
-    
+
     /// Check if the key is valid (not revoked)
     pub fn is_valid(&self) -> bool {
         !self.is_revoked()
     }
-    
+
     /// Set permissions for this key
     pub fn set_permissions(&mut self, permissions: Vec<String>) {
         self.permissions = permissions;
     }
-    
+
     /// Add a permission
     pub fn add_permission(&mut self, permission: String) {
         if !self.permissions.contains(&permission) {
             self.permissions.push(permission);
         }
     }
-    
+
     /// Check if the key has a specific permission
     pub fn has_permission(&self, permission: &str) -> bool {
         // Wildcard permission grants all
         if self.permissions.contains(&"*".to_string()) {
             return true;
         }
-        
+
         self.permissions.contains(&permission.to_string())
     }
-    
+
     /// Set metadata for this key
     pub fn set_metadata(&mut self, metadata: serde_json::Value) {
         self.metadata = Some(metadata);

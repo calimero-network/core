@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 
 use super::models::prefixes;
-use super::{deserialize, serialize, ClientKey, KeyStorage, Permission, RootKey, Storage, StorageError};
+use super::{
+    deserialize, serialize, ClientKey, KeyStorage, Permission, RootKey, Storage, StorageError,
+};
 
 /// In-memory storage implementation
 ///
@@ -90,41 +92,41 @@ impl KeyStorage for MemoryStorage {
             None => Ok(None),
         }
     }
-    
+
     async fn set_root_key(&self, key_id: &str, root_key: &RootKey) -> Result<(), StorageError> {
         let key = format!("{}{}", prefixes::ROOT_KEY, key_id);
         let value = serialize(root_key)?;
-        
+
         // Store the main key-value
         self.set(&key, &value).await?;
-        
+
         // Create secondary index for public key lookups
         let public_key_index = format!("{}{}", prefixes::PUBLIC_KEY_INDEX, root_key.public_key);
         self.set(&public_key_index, key_id.as_bytes()).await?;
-        
+
         Ok(())
     }
-    
+
     async fn delete_root_key(&self, key_id: &str) -> Result<(), StorageError> {
         if let Some(root_key) = self.get_root_key(key_id).await? {
             // Delete the main key
             let key = format!("{}{}", prefixes::ROOT_KEY, key_id);
             self.delete(&key).await?;
-            
+
             // Delete the public key index
             let public_key_index = format!("{}{}", prefixes::PUBLIC_KEY_INDEX, root_key.public_key);
             self.delete(&public_key_index).await?;
-            
-            // Also delete the root-to-client index 
+
+            // Also delete the root-to-client index
             let root_clients_key = format!("{}{}", prefixes::ROOT_CLIENTS, key_id);
             self.delete(&root_clients_key).await?;
-            
+
             Ok(())
         } else {
             Err(StorageError::NotFound)
         }
     }
-    
+
     async fn list_root_keys(&self) -> Result<Vec<(String, RootKey)>, StorageError> {
         let keys = self.list_keys(prefixes::ROOT_KEY).await?;
         let mut result = Vec::with_capacity(keys.len());
@@ -139,19 +141,23 @@ impl KeyStorage for MemoryStorage {
 
         Ok(result)
     }
-    
-    async fn find_root_key_by_public_key(&self, public_key: &str) -> Result<Option<(String, RootKey)>, StorageError> {
+
+    async fn find_root_key_by_public_key(
+        &self,
+        public_key: &str,
+    ) -> Result<Option<(String, RootKey)>, StorageError> {
         let public_key_index = format!("{}{}", prefixes::PUBLIC_KEY_INDEX, public_key);
-        
+
         if let Some(key_id_bytes) = self.get(&public_key_index).await? {
-            let key_id = String::from_utf8(key_id_bytes)
-                .map_err(|e| StorageError::SerializationError(format!("Invalid UTF-8 in key ID: {}", e)))?;
-            
+            let key_id = String::from_utf8(key_id_bytes).map_err(|e| {
+                StorageError::SerializationError(format!("Invalid UTF-8 in key ID: {}", e))
+            })?;
+
             if let Some(root_key) = self.get_root_key(&key_id).await? {
                 return Ok(Some((key_id, root_key)));
             }
         }
-        
+
         Ok(None)
     }
 
@@ -163,7 +169,11 @@ impl KeyStorage for MemoryStorage {
         }
     }
 
-    async fn set_client_key(&self, client_id: &str, client_key: &ClientKey) -> Result<(), StorageError> {
+    async fn set_client_key(
+        &self,
+        client_id: &str,
+        client_key: &ClientKey,
+    ) -> Result<(), StorageError> {
         let key = format!("{}{}", prefixes::CLIENT_KEY, client_id);
         let value = serialize(client_key)?;
 
@@ -223,7 +233,10 @@ impl KeyStorage for MemoryStorage {
         }
     }
 
-    async fn list_client_keys_for_root(&self, root_key_id: &str) -> Result<Vec<ClientKey>, StorageError> {
+    async fn list_client_keys_for_root(
+        &self,
+        root_key_id: &str,
+    ) -> Result<Vec<ClientKey>, StorageError> {
         let root_clients_key = format!("{}{}", prefixes::ROOT_CLIENTS, root_key_id);
 
         match self.get(&root_clients_key).await? {
@@ -243,7 +256,10 @@ impl KeyStorage for MemoryStorage {
         }
     }
 
-    async fn get_permission(&self, permission_id: &str) -> Result<Option<Permission>, StorageError> {
+    async fn get_permission(
+        &self,
+        permission_id: &str,
+    ) -> Result<Option<Permission>, StorageError> {
         let key = format!("{}{}", prefixes::PERMISSION, permission_id);
         match self.get(&key).await? {
             Some(data) => Ok(Some(deserialize(&data)?)),
@@ -251,7 +267,11 @@ impl KeyStorage for MemoryStorage {
         }
     }
 
-    async fn set_permission(&self, permission_id: &str, permission: &Permission) -> Result<(), StorageError> {
+    async fn set_permission(
+        &self,
+        permission_id: &str,
+        permission: &Permission,
+    ) -> Result<(), StorageError> {
         let key = format!("{}{}", prefixes::PERMISSION, permission_id);
         let value = serialize(permission)?;
         self.set(&key, &value).await
@@ -309,33 +329,36 @@ mod tests {
         assert!(keys.contains(&"prefix1:key1".to_string()));
         assert!(keys.contains(&"prefix1:key2".to_string()));
     }
-    
+
     #[tokio::test]
     async fn test_key_storage_operations() {
         let storage = MemoryStorage::new();
-        
+
         // Test root key operations
         let root_key_id = "test-root";
         let root_key = RootKey::new("pk12345".to_string(), "near".to_string());
-        
+
         // Set root key
         storage.set_root_key(root_key_id, &root_key).await.unwrap();
-        
+
         // Get root key
         let retrieved = storage.get_root_key(root_key_id).await.unwrap().unwrap();
         assert_eq!(retrieved.public_key, root_key.public_key);
-        
+
         // Find by public key
-        let (found_id, found_key) = storage.find_root_key_by_public_key(&root_key.public_key)
-            .await.unwrap().unwrap();
+        let (found_id, found_key) = storage
+            .find_root_key_by_public_key(&root_key.public_key)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found_id, root_key_id);
         assert_eq!(found_key.public_key, root_key.public_key);
-        
+
         // List root keys
         let keys = storage.list_root_keys().await.unwrap();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].0, root_key_id);
-        
+
         // Test permission operations
         let perm_id = "test-perm";
         let permission = Permission::new(
@@ -344,15 +367,15 @@ mod tests {
             "A test permission".to_string(),
             "test".to_string(),
         );
-        
+
         storage.set_permission(perm_id, &permission).await.unwrap();
-        
+
         let retrieved_perm = storage.get_permission(perm_id).await.unwrap().unwrap();
         assert_eq!(retrieved_perm.permission_id, permission.permission_id);
-        
+
         let perms = storage.list_permissions().await.unwrap();
         assert_eq!(perms.len(), 1);
-        
+
         // Test client key operations
         let client_id = "test-client";
         let client_key = ClientKey::new(
@@ -362,37 +385,47 @@ mod tests {
             vec![perm_id.to_string()],
             None,
         );
-        
-        storage.set_client_key(client_id, &client_key).await.unwrap();
-        
+
+        storage
+            .set_client_key(client_id, &client_key)
+            .await
+            .unwrap();
+
         let retrieved_client = storage.get_client_key(client_id).await.unwrap().unwrap();
         assert_eq!(retrieved_client.client_id, client_key.client_id);
-        
-        let clients = storage.list_client_keys_for_root(root_key_id).await.unwrap();
+
+        let clients = storage
+            .list_client_keys_for_root(root_key_id)
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].client_id, client_id);
-        
+
         // Test delete operations
         storage.delete_client_key(client_id).await.unwrap();
         assert!(storage.get_client_key(client_id).await.unwrap().is_none());
-        
+
         storage.delete_permission(perm_id).await.unwrap();
         assert!(storage.get_permission(perm_id).await.unwrap().is_none());
-        
+
         storage.delete_root_key(root_key_id).await.unwrap();
         assert!(storage.get_root_key(root_key_id).await.unwrap().is_none());
-        assert!(storage.find_root_key_by_public_key(&root_key.public_key).await.unwrap().is_none());
+        assert!(storage
+            .find_root_key_by_public_key(&root_key.public_key)
+            .await
+            .unwrap()
+            .is_none());
     }
-    
+
     #[tokio::test]
     async fn test_multiple_clients_per_root() {
         let storage = MemoryStorage::new();
-        
+
         // Create a root key
         let root_key_id = "multi-client-root";
         let root_key = RootKey::new("pk-multi".to_string(), "near".to_string());
         storage.set_root_key(root_key_id, &root_key).await.unwrap();
-        
+
         // Create multiple client keys
         for i in 1..=5 {
             let client_id = format!("client{}", i);
@@ -403,47 +436,62 @@ mod tests {
                 vec![],
                 None,
             );
-            
-            storage.set_client_key(&client_id, &client_key).await.unwrap();
+
+            storage
+                .set_client_key(&client_id, &client_key)
+                .await
+                .unwrap();
         }
-        
+
         // Verify we can list all clients
-        let clients = storage.list_client_keys_for_root(root_key_id).await.unwrap();
+        let clients = storage
+            .list_client_keys_for_root(root_key_id)
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 5);
-        
+
         // Delete a couple of clients
         storage.delete_client_key("client1").await.unwrap();
         storage.delete_client_key("client3").await.unwrap();
-        
+
         // Verify the remaining clients
-        let clients = storage.list_client_keys_for_root(root_key_id).await.unwrap();
+        let clients = storage
+            .list_client_keys_for_root(root_key_id)
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 3);
-        
+
         // Collect client IDs for verification
         let client_ids: Vec<String> = clients.iter().map(|c| c.client_id.clone()).collect();
         assert!(client_ids.contains(&"client2".to_string()));
         assert!(client_ids.contains(&"client4".to_string()));
         assert!(client_ids.contains(&"client5".to_string()));
-        
+
         // Delete the root key and ensure the list is empty
         storage.delete_root_key(root_key_id).await.unwrap();
-        let clients_after_delete = storage.list_client_keys_for_root(root_key_id).await.unwrap();
+        let clients_after_delete = storage
+            .list_client_keys_for_root(root_key_id)
+            .await
+            .unwrap();
         assert_eq!(clients_after_delete.len(), 0);
     }
-    
+
     #[tokio::test]
     async fn test_error_handling() {
         let storage = MemoryStorage::new();
-        
+
         // Test not found error
         let result = storage.delete_root_key("nonexistent").await;
         assert!(matches!(result, Err(StorageError::NotFound)));
-        
+
         // Test secondary indices
         let root_key = RootKey::new("pk-err-test".to_string(), "near".to_string());
         storage.set_root_key("err-test", &root_key).await.unwrap();
-        
-        let result = storage.find_root_key_by_public_key("nonexistent-pk").await.unwrap();
+
+        let result = storage
+            .find_root_key_by_public_key("nonexistent-pk")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 }
