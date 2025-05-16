@@ -41,7 +41,7 @@ fn main() {
         .build()
         .expect("Failed to create cache");
 
-    let options = Options::default().extract();
+    let options = Options::default().force().extract();
 
     let extracted_dir = cache
         .cached_path_with_options(src, &options)
@@ -85,8 +85,4 @@ fn main() {
         "cargo:rustc-env=CALIMERO_WEB_UI_PATH={}",
         extracted_build_path.display()
     );
-
-    if Path::new(src).exists() {
-        println!("cargo:rerun-if-changed={}", src);
-    }
 }
