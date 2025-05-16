@@ -174,7 +174,7 @@ impl InitCommand {
             } else if !self.force {
                 warn!("Node is already initialized in {:?}", path);
                 return Ok(());
-            }            
+            }
         }
 
         let identity = Keypair::generate_ed25519();
