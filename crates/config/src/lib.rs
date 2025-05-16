@@ -2,7 +2,7 @@ use core::time::Duration;
 use std::fs::{read_to_string, write};
 
 use calimero_context::config::ContextConfig;
-use calimero_network::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
+use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;

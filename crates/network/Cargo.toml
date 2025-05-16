@@ -8,7 +8,6 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
-bytes.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 libp2p = { workspace = true, features = [
@@ -31,18 +30,13 @@ libp2p = { workspace = true, features = [
 libp2p-stream.workspace = true
 multiaddr.workspace = true
 owo-colors.workspace = true
-serde = { workspace = true, features = ["derive"] }
-thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros"] }
-tokio-util = { workspace = true, features = ["codec", "compat"] }
 tokio-stream = { workspace = true, features = ["time"] }
 tracing.workspace = true
 
-calimero-primitives.workspace = true
+calimero-network-primitives.workspace = true
 calimero-utils-actix.workspace = true
 
-[dev-dependencies]
-tokio-test.workspace = true
 
 [lints]
 workspace = true

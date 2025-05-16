@@ -8,16 +8,14 @@ use axum::middleware::from_fn;
 use axum::{Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
-use calimero_context::ContextManager;
-use calimero_node_primitives::ServerSender;
-use calimero_primitives::events::NodeEvent;
+use calimero_context_primitives::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use multiaddr::Protocol;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
@@ -45,16 +43,23 @@ pub mod ws;
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
-    pub ctx_manager: ContextManager,
+    pub ctx_client: ContextClient,
+    pub node_client: NodeClient,
 }
 
 impl AdminState {
     #[must_use]
-    pub const fn new(store: Store, keypair: Keypair, ctx_manager: ContextManager) -> Self {
+    pub const fn new(
+        store: Store,
+        keypair: Keypair,
+        ctx_client: ContextClient,
+        node_client: NodeClient,
+    ) -> Self {
         Self {
             store,
             keypair,
-            ctx_manager,
+            ctx_client,
+            node_client,
         }
     }
 }
@@ -64,9 +69,8 @@ impl AdminState {
 #[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
     config: ServerConfig,
-    server_sender: ServerSender,
-    ctx_manager: ContextManager,
-    node_events: broadcast::Sender<NodeEvent>,
+    ctx_client: ContextClient,
+    node_client: NodeClient,
     store: Store,
 ) -> EyreResult<()> {
     let mut config = config;
@@ -117,12 +121,13 @@ pub async fn start(
     let shared_state = Arc::new(AdminState::new(
         store.clone(),
         config.identity.clone(),
-        ctx_manager,
+        ctx_client.clone(),
+        node_client.clone(),
     ));
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
+        if let Some((path, handler)) = jsonrpc::service(&config, ctx_client) {
             app = app
                 .route(path, handler.clone())
                 .route_layer(JwtLayer::new(store.clone()))
@@ -140,7 +145,7 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = ws::service(&config, node_events.clone()) {
+        if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
             app = app.route(path, handler);
 
             serviced = true;

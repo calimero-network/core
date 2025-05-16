@@ -2,7 +2,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    ExecuteRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
+    ExecutionRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
 };
 use clap::Parser;
 use color_eyre::owo_colors::OwoColorize;
@@ -94,7 +94,7 @@ impl CallCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
-        let payload = RequestPayload::Execute(ExecuteRequest::new(
+        let payload = RequestPayload::Execute(ExecutionRequest::new(
             context_id,
             self.method,
             self.args.unwrap_or(json!({})),

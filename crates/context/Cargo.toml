@@ -7,22 +7,24 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-camino = { workspace = true, features = ["serde1"] }
+actix.workspace = true
+borsh.workspace = true
+either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+ouroboros.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
-tokio-util.workspace = true
 tracing.workspace = true
 
 calimero-context-config = { workspace = true, features = ["client"] }
-calimero-blobstore.workspace = true
+calimero-context-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
-calimero-network.workspace = true
+calimero-runtime.workspace = true
 calimero-node-primitives.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true

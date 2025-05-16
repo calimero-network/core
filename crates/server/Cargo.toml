@@ -34,7 +34,6 @@ serde_json.workspace = true
 sha2.workspace = true
 starknet.workspace = true
 starknet-crypto.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }
@@ -43,8 +42,8 @@ tracing.workspace = true
 web3.workspace = true
 x509-parser.workspace = true
 
-calimero-context.workspace = true
 calimero-context-config.workspace = true
+calimero-context-primitives.workspace = true
 calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true

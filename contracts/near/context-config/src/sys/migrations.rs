@@ -23,7 +23,7 @@ migrations! {
 // ---
 
 macro_rules! _migrations {
-    ($($migration:literal => $path:literal,)+) => {
+    ($($migration:literal => $path:literal),+ $(,)?) => {
         $(
             #[cfg(feature = $migration)]
             #[path = $path]
