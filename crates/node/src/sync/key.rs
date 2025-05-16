@@ -167,13 +167,15 @@ impl SyncManager {
 
         sqx_in.test(sequence_id)?;
 
+        their_identity.sender_key = Some(sender_key);
+
         self.context_client
-            .update_sender_key(&context.id, &their_identity, &sender_key)?;
+            .update_identity(&context.id, &their_identity)?;
 
         debug!(
             context_id=%context.id,
             our_identity=%our_identity,
-            their_identity=%their_identity,
+            their_identity=%their_identity.public_key,
             "Key share completed",
         );
 

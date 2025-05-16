@@ -1,4 +1,5 @@
 use actix::{Handler, Message, ResponseFuture};
+use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::join_context::{
     JoinContextRequest, JoinContextResponse,
@@ -93,7 +94,14 @@ async fn join_context(
 
     let sender_key = PrivateKey::random(&mut rng);
 
-    context_client.update_sender_key(&context_id, &invitee_id, &sender_key)?;
+    context_client.update_identity(
+        &context_id,
+        &ContextIdentity {
+            public_key: invitee_id,
+            private_key: Some(identity_secret),
+            sender_key: Some(sender_key),
+        },
+    )?;
 
     node_client.subscribe(&context_id).await?;
 

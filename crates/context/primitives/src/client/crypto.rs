@@ -53,21 +53,25 @@ impl ContextClient {
         Ok(Some(identity))
     }
 
-    pub fn update_sender_key(
+    pub fn update_identity(
         &self,
         context_id: &ContextId,
-        public_key: &PublicKey,
-        sender_key: &PrivateKey,
+        new_identity: &ContextIdentity,
     ) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
 
-        let key = key::ContextIdentity::new(*context_id, *public_key);
+        let key = key::ContextIdentity::new(*context_id, new_identity.public_key);
 
         let Some(mut identity) = handle.get(&key)? else {
-            return Ok(());
+            bail!(
+                "the identity '{}' is not managed on this node for context '{}'",
+                new_identity.public_key,
+                context_id
+            );
         };
 
-        identity.sender_key = Some(**sender_key);
+        identity.sender_key = new_identity.sender_key.as_deref().copied();
+        identity.private_key = new_identity.private_key.as_deref().copied();
 
         handle.put(&key, &identity)?;
 
