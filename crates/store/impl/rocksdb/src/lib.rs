@@ -1,5 +1,4 @@
 #[cfg(test)]
-#[path = "../tests/rocksdb.rs"]
 mod tests;
 
 use calimero_store::config::StoreConfig;
