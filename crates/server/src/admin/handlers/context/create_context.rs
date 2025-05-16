@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_server_primitives::admin::CreateContextRequest;
+use calimero_server_primitives::admin::{
+    CreateContextRequest, CreateContextResponse, CreateContextResponseData,
+};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -24,7 +26,15 @@ pub async fn handler(
         .map_err(parse_api_error);
 
     match result {
-        Ok(response) => ApiResponse { payload: response }.into_response(),
+        Ok(context) => ApiResponse {
+            payload: CreateContextResponse {
+                data: CreateContextResponseData {
+                    context_id: context.context_id,
+                    member_public_key: context.identity,
+                },
+            },
+        }
+        .into_response(),
         Err(err) => err.into_response(),
     }
 }
