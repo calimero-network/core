@@ -1,12 +1,9 @@
 use core::net::{IpAddr, SocketAddr};
-use std::io::Error as IoError;
 use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
 use axum::Router;
-use axum_server::tls_rustls::RustlsConfig;
-use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context::ContextManager;
 use calimero_node_primitives::ServerSender;
 use calimero_primitives::events::NodeEvent;
@@ -22,9 +19,6 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
 
 use crate::admin::service::{setup, site};
-use crate::certificates::get_certificate;
-
-pub mod certificates;
 
 #[cfg(feature = "admin")]
 pub mod admin;
@@ -167,34 +161,12 @@ pub async fn start(
             ])
             .allow_private_network(true),
     );
-    // Check if the certificate exists and if they contain the current local IP address
-    let (cert_pem, key_pem) = get_certificate(&store)?;
-
-    // Configure certificate and private key used by https
-    let rustls_config = match RustlsConfig::from_pem(cert_pem, key_pem).await {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Failed to load TLS configuration: {e:?}");
-            return Err(e.into());
-        }
-    };
 
     let mut set = JoinSet::new();
 
     for listener in listeners {
-        let rustls_config = rustls_config.clone();
         let app = app.clone();
-        let addr = listener.local_addr().unwrap();
-        drop(set.spawn(async move {
-            if let Err(e) = bind_dual_protocol(addr, rustls_config)
-                .serve(app.into_make_service())
-                .await
-            {
-                eprintln!("Server error: {e:?}");
-                return Err(e);
-            }
-            Ok::<(), IoError>(())
-        }));
+        drop(set.spawn(async move { axum::serve(listener, app).await }));
     }
 
     while let Some(result) = set.join_next().await {
