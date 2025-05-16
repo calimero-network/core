@@ -41,7 +41,6 @@ fn setup() -> EyreResult<()> {
 // RootCommand to handle configuration commands and others
 #[derive(Parser)]
 #[command(name = "Merod CLI")]
-#[command(author = "Kiran Rao <your-email>")]
 #[command(version = "1.0")]
 #[command(about = "Merod CLI Tool")]
 pub struct RootCommand {
