@@ -9,48 +9,45 @@ impl ContextClient {
     pub async fn sync_context_config(
         &self,
         context_id: ContextId,
-        config: Option<&mut ContextConfigParams<'_>>,
+        config: Option<ContextConfigParams<'_>>,
     ) -> eyre::Result<Context> {
         let mut handle = self.datastore.handle();
 
         let context = handle.get(&key::ContextMeta::new(context_id))?;
 
-        let mut alt_config = config.as_ref().map_or_else(
+        let (mut config, mut should_save_config) = config.map_or_else(
             || {
                 let Some(config) = handle.get(&key::ContextConfig::new(context_id))? else {
                     eyre::bail!("context config not found")
                 };
 
-                Ok(Some(ContextConfigParams {
+                let config = ContextConfigParams {
                     protocol: config.protocol.into_string().into(),
                     network_id: config.network.into_string().into(),
                     contract_id: config.contract.into_string().into(),
                     proxy_contract: config.proxy_contract.into_string().into(),
                     application_revision: config.application_revision,
                     members_revision: config.members_revision,
-                }))
+                };
+
+                Ok((config, false))
             },
-            |_| Ok(None),
+            |config| Ok((config, true)),
         )?;
 
-        let mut config = config;
-        let context_exists = alt_config.is_some();
-        let Some(config) = config.as_deref_mut().or(alt_config.as_mut()) else {
-            eyre::bail!("context config not found")
-        };
-
         let members_revision = {
-            let external_client = self.external_client(&context_id, config)?;
+            let external_client = self.external_client(&context_id, &config)?;
 
             let config_client = external_client.config();
 
             config_client.members_revision().await?
         };
 
-        if !context_exists || members_revision != config.members_revision {
+        if context.is_none() || members_revision != config.members_revision {
+            should_save_config = true;
             config.members_revision = members_revision;
 
-            let external_client = self.external_client(&context_id, config)?;
+            let external_client = self.external_client(&context_id, &config)?;
 
             let config_client = external_client.config();
 
@@ -78,7 +75,7 @@ impl ContextClient {
         }
 
         let application_revision = {
-            let external_client = self.external_client(&context_id, config)?;
+            let external_client = self.external_client(&context_id, &config)?;
 
             let config_client = external_client.config();
 
@@ -87,10 +84,11 @@ impl ContextClient {
 
         let mut application_id = None;
 
-        if !context_exists || application_revision != config.application_revision {
+        if context.is_none() || application_revision != config.application_revision {
+            should_save_config = true;
             config.application_revision = application_revision;
 
-            let external_client = self.external_client(&context_id, config)?;
+            let external_client = self.external_client(&context_id, &config)?;
 
             let config_client = external_client.config();
 
@@ -122,7 +120,11 @@ impl ContextClient {
             }
         }
 
-        if let Some(config) = alt_config {
+        if should_save_config {
+            // todo! we shouldn't be reallocating here
+            // todo! but store requires ContextConfig: 'static
+            let config = config.clone();
+
             handle.put(
                 &key::ContextConfig::new(context_id),
                 &types::ContextConfig::new(
@@ -136,25 +138,32 @@ impl ContextClient {
             )?;
         }
 
-        context.map_or_else(
+        let (should_save, application_id, root_hash) = context.map_or_else(
             || {
-                Ok(Context::new(
-                    context_id,
-                    application_id.expect("must've been defined"),
+                (
+                    true,
+                    application_id.expect("must've been defined if context doesn't exist"),
                     Hash::default(),
-                ))
+                )
             },
             |meta| {
-                handle.put(&key::ContextMeta::new(context_id), &meta)?;
-
-                let context = Context::new(
-                    context_id,
+                (
+                    application_id.is_some(),
                     application_id.unwrap_or_else(|| meta.application.application_id()),
                     meta.root_hash.into(),
-                );
-
-                Ok(context)
+                )
             },
-        )
+        );
+
+        if should_save {
+            handle.put(
+                &key::ContextMeta::new(context_id),
+                &types::ContextMeta::new(key::ApplicationMeta::new(application_id), *root_hash),
+            )?;
+        }
+
+        let context = Context::new(context_id, application_id, root_hash);
+
+        Ok(context)
     }
 }

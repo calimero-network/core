@@ -210,7 +210,7 @@ impl Context {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ContextConfigParams<'a> {
     pub protocol: Cow<'a, str>,
     pub network_id: Cow<'a, str>,

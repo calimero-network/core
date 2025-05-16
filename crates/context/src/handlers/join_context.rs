@@ -55,35 +55,39 @@ async fn join_context(
         eyre::bail!("identity mismatch")
     }
 
-    if context_client.has_member(&context_id, &invitee_id)? {
+    if context_client
+        .get_identity(&context_id, &invitee_id)?
+        .and_then(|i| i.private_key)
+        .is_some()
+    {
         return Ok((context_id, invitee_id));
     }
-
-    let Some(external_config) = context_client.context_config(&context_id)? else {
-        eyre::bail!("context not found");
-    };
-
-    let external_client = context_client.external_client(&context_id, &external_config)?;
 
     let mut config = None;
 
     if !context_client.has_context(&context_id)? {
+        let mut external_config = ContextConfigParams {
+            protocol: protocol.into(),
+            network_id: network_id.into(),
+            contract_id: contract_id.into(),
+            proxy_contract: "".into(),
+            application_revision: 0,
+            members_revision: 0,
+        };
+
+        let external_client = context_client.external_client(&context_id, &external_config)?;
+
         let config_client = external_client.config();
 
         let proxy_contract = config_client.get_proxy_contract().await?;
 
-        config = Some(ContextConfigParams {
-            protocol: protocol.into(),
-            network_id: network_id.into(),
-            contract_id: contract_id.into(),
-            proxy_contract: proxy_contract.into(),
-            application_revision: 0,
-            members_revision: 0,
-        });
+        external_config.proxy_contract = proxy_contract.into();
+
+        config = Some(external_config);
     };
 
     let _ignored = context_client
-        .sync_context_config(context_id, config.as_mut())
+        .sync_context_config(context_id, config)
         .await?;
 
     if !context_client.has_member(&context_id, &invitee_id)? {
