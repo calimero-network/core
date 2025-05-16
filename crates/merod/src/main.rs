@@ -4,7 +4,6 @@ use clap::Parser;
 use eyre::Result as EyreResult;
 use rand::Rng;
 use reqwest::Client;
-use tokio::spawn;
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{registry, EnvFilter};
@@ -24,10 +23,10 @@ async fn main() -> EyreResult<()> {
 
     let client = Client::new();
     let mut rng = rand::thread_rng();
-    let n: u8 = rng.gen();
-    if n != 11 {
-        spawn(async move {
-            if let Err(err) = check_for_update(&client.clone()).await {
+    let mut n: u8 = rng.gen();
+    if (n % 20) == 11 {
+        tokio::spawn(async move {
+            if let Err(err) = check_for_update(&client).await {
                 eprintln!("Version check failed: {}", err);
             }
         });

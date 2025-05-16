@@ -27,7 +27,7 @@ multiaddr.workspace = true
 near-crypto.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
-semver.workspace = true
+semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 starknet.workspace = true

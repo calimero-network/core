@@ -1,9 +1,17 @@
+use std::sync::LazyLock;
+
 use eyre::Result as EyreResult;
 use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
 
-const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub static CURRENT_VERSION: LazyLock<Version> =
+    LazyLock::new(|| Version::parse(env!("CARGO_PKG_VERSION")).expect("Invalid cargo version"));
+
+#[derive(Deserialize)]
+struct Release {
+    tag_name: Version,
+}
 
 pub async fn check_for_update(client: &Client) -> EyreResult<()> {
     let url = "https://api.github.com/repos/calimero-network/core/releases/latest";
@@ -13,16 +21,13 @@ pub async fn check_for_update(client: &Client) -> EyreResult<()> {
         .header("User-Agent", "meroctl-version-check")
         .send()
         .await?;
-    #[derive(Deserialize)]
-    struct Release {
-        tag_name: String,
-    }
 
     let release: Release = response.json().await?;
-    let latest = Version::parse(&release.tag_name)?;
-    let current = Version::parse(CURRENT_VERSION)?;
-    if latest > current {
-        println!("\n🔔 New version of meroctl available: v{latest} (current: v{current})");
+    if *&release.tag_name > *CURRENT_VERSION {
+        println!(
+            "\n🔔 New version of meroctl available: v{} (current: v{})",
+            *&release.tag_name, *CURRENT_VERSION
+        );
     }
     Ok(())
 }
