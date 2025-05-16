@@ -1,13 +1,11 @@
-use std::any::Any;
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
-use base64::Engine;
 use serde_json::Value;
 
 use crate::api::handlers::auth::TokenRequest;
+use crate::auth::token::TokenManager;
 use crate::providers::core::provider_data_registry;
-use crate::providers::impls::near_wallet::NearWalletProvider;
 use crate::{AuthError, AuthProvider, AuthResponse};
 
 /// Authentication service
@@ -17,6 +15,7 @@ use crate::{AuthError, AuthProvider, AuthResponse};
 #[derive(Clone)]
 pub struct AuthService {
     providers: Arc<Vec<Box<dyn AuthProvider>>>,
+    token_manager: TokenManager,
 }
 
 impl AuthService {
@@ -25,9 +24,11 @@ impl AuthService {
     /// # Arguments
     ///
     /// * `providers` - The authentication providers to use
-    pub fn new(providers: Vec<Box<dyn AuthProvider>>) -> Self {
+    /// * `token_manager` - The JWT token manager
+    pub fn new(providers: Vec<Box<dyn AuthProvider>>, token_manager: TokenManager) -> Self {
         Self {
             providers: Arc::new(providers),
+            token_manager,
         }
     }
 
@@ -46,21 +47,8 @@ impl AuthService {
         &self,
         headers: &HeaderMap,
     ) -> Result<AuthResponse, AuthError> {
-        // Find a provider that has a token manager
-        for provider in self.providers.iter() {
-            if let Some(near_provider) = provider.as_any().downcast_ref::<NearWalletProvider>() {
-                // Use the token manager to verify the token
-                return near_provider
-                    .get_token_manager()
-                    .verify_token_from_headers(headers)
-                    .await;
-            }
-        }
-
-        // If no provider with a token manager is found
-        Err(AuthError::InvalidRequest(
-            "No JWT token provider available".to_string(),
-        ))
+        // Use the token manager directly
+        self.token_manager.verify_token_from_headers(headers).await
     }
 
     /// Authenticate a token request

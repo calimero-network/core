@@ -1,9 +1,8 @@
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Mutex, Once};
 
 use lazy_static::lazy_static;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::AuthError;

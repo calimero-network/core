@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
 use eyre::Result;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api::handlers::auth::TokenRequest;

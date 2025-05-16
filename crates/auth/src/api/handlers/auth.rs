@@ -2,14 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Extension, Query};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
-use crate::providers::impls::near_wallet::NearWalletAuthData;
 use crate::server::AppState;
 use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;

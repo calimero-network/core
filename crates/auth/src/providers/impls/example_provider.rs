@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::http::Request;
 use eyre::Result;
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;

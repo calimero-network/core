@@ -89,7 +89,13 @@ async fn main() -> Result<()> {
         info!("  - {} ({})", provider.name(), provider.description());
     }
 
-    let auth_service = AuthService::new(providers);
+    // Create JWT token manager
+    let token_manager = calimero_auth::auth::token::TokenManager::new(
+        config.jwt.clone(), 
+        storage.clone()
+    );
+
+    let auth_service = AuthService::new(providers, token_manager);
 
     // Start the server
     info!("Starting auth server on {}", config.listen_addr);
