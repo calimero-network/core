@@ -38,11 +38,7 @@ fn setup() -> EyreResult<()> {
     Ok(())
 }
 
-// RootCommand to handle configuration commands and others
-#[derive(Parser)]
-#[command(name = "Merod CLI")]
-#[command(version = "1.0")]
-#[command(about = "Merod CLI Tool")]
+
 pub struct RootCommand {
     #[command(subcommand)]
     pub config: Option<ConfigCommand>, // Subcommand for handling config-related commands
