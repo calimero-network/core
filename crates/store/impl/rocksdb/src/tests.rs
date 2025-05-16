@@ -3,7 +3,7 @@ use core::mem;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::{Column, Database};
 use calimero_store::slice::Slice;
-use calimero_store_rocksdb::RocksDB;
+use crate::RocksDB;
 use eyre::Ok as EyreOk;
 use tempdir::TempDir;
 
