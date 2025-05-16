@@ -1856,9 +1856,9 @@ dependencies = [
 
 [[package]]
 name = "cached-path"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa547071d682c054b998bbd527565da1704728e7c45e0243e6643f36d0cbe551"
+checksum = "8369b5b3f30578fe6080a3adf8437a88ea47d028719b887a1237c5339fced03f"
 dependencies = [
  "flate2",
  "fs2",
