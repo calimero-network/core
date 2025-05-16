@@ -119,6 +119,8 @@ pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
 
+    pub advertise_address: bool,
+
     pub rendezvous: RendezvousConfig,
 
     pub relay: RelayConfig,
@@ -130,12 +132,14 @@ impl DiscoveryConfig {
     #[must_use]
     pub const fn new(
         mdns: bool,
+        advertise_address: bool,
         rendezvous: RendezvousConfig,
         relay: RelayConfig,
         autonat: AutonatConfig,
     ) -> Self {
         Self {
             mdns,
+            advertise_address,
             rendezvous,
             relay,
             autonat,
@@ -147,6 +151,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             mdns: true,
+            advertise_address: false,
             rendezvous: RendezvousConfig::default(),
             relay: RelayConfig::default(),
             autonat: AutonatConfig::default(),
