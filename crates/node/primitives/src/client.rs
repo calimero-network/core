@@ -1,3 +1,5 @@
+#![allow(clippy::multiple_inherent_impl, reason = "better readability")]
+
 use async_stream::stream;
 use calimero_blobstore::BlobManager;
 use calimero_crypto::SharedKey;

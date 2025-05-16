@@ -290,7 +290,7 @@ tests_outside_test_module = "deny"
 #unimplemented = "forbid" TODO: Enable as soon as possible, once first release is stable
 unwrap_in_result = "deny" # TODO: Change to "forbid" once all unwraps have been removed
 ## Deny
-clone_on_ref_ptr = "deny"
+# clone_on_ref_ptr = "deny"
 empty_enum_variants_with_brackets = "deny"
 empty_structs_with_brackets = "deny"
 error_impl_error = "deny"

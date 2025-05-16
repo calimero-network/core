@@ -199,7 +199,7 @@ impl ContextCommand {
 
                 match ctx_client
                     .create_context(
-                        protocol.as_str().to_string(),
+                        protocol.as_str().to_owned(),
                         &application_id,
                         None,
                         params

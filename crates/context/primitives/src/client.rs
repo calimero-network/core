@@ -1,3 +1,5 @@
+#![allow(clippy::multiple_inherent_impl, reason = "better readability")]
+
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_node_primitives::client::NodeClient;

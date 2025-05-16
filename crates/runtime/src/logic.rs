@@ -94,7 +94,7 @@ impl Default for VMLimits {
     }
 }
 
-#[allow(missing_debug_implementations)]
+#[expect(missing_debug_implementations, reason = "storage can't impl Debug")]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,

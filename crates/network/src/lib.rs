@@ -2,7 +2,7 @@
     clippy::allow_attributes,
     reason = "Needed for lints that don't follow expect"
 )]
-#[expect(
+#![expect(
     clippy::multiple_inherent_impl,
     reason = "Currently necessary due to code structure"
 )]

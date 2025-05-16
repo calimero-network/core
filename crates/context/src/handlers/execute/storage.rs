@@ -1,3 +1,5 @@
+#![allow(clippy::mem_forget, reason = "ouroboros uses it")]
+
 use core::cell::RefCell;
 use core::mem;
 use std::sync::Arc;

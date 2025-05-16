@@ -100,7 +100,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let network_client = NetworkClient::new(network_recipient.clone());
 
     let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
-        assert!(network_recipient.init(ctx));
+        assert!(network_recipient.init(ctx), "failed to initialize");
         network_manager
     });
 
@@ -131,7 +131,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     );
 
     let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
-        assert!(context_recipient.init(ctx));
+        assert!(context_recipient.init(ctx), "failed to initialize");
         context_manager
     });
 
@@ -150,8 +150,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     );
 
     let _ignored = Actor::start_in_arbiter(&new_arbiter().await?, move |ctx| {
-        assert!(node_recipient.init(ctx));
-        assert!(network_event_recipient.init(ctx));
+        assert!(node_recipient.init(ctx), "failed to initialize");
+        assert!(network_event_recipient.init(ctx), "failed to initialize");
         node_manager
     });
 
