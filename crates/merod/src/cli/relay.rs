@@ -43,7 +43,7 @@ impl RelayCommand {
             bail!("Node is not initialized in {:?}", path);
         }
 
-        let config = ConfigFile::load(&path).await?;
+        let config = ConfigFile::load(&path)?;
 
         let (tx, mut rx) = mpsc::channel::<RequestPayload>(32);
 
