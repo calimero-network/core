@@ -1815,7 +1815,6 @@ dependencies = [
  "async-stream",
  "calimero-primitives",
  "calimero-store",
- "calimero-store-rocksdb",
  "camino",
  "eyre",
  "futures-util",

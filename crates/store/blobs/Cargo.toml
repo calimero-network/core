@@ -21,7 +21,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 
 calimero-primitives.workspace = true
-calimero-store-rocksdb.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 
 [dev-dependencies]
