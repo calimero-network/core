@@ -173,7 +173,7 @@ impl ProviderRegistration for ExampleProviderRegistration {
         config
             .providers
             .get("example")
-            .and_then(|v| v.as_bool())
+            .copied() // Get the bool value directly
             .unwrap_or(false)
     }
 }

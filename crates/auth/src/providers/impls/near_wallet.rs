@@ -831,7 +831,7 @@ impl ProviderRegistration for NearWalletRegistration {
         config
             .providers
             .get("near_wallet")
-            .and_then(|v| v.as_bool())
+            .copied() // Get the bool value directly
             .unwrap_or(false)
     }
 }

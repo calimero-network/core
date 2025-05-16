@@ -1,12 +1,17 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rocksdb::{IteratorMode, DB};
 
-use super::models::prefixes;
-use super::{
+use crate::storage::models::prefixes;
+use crate::storage::{
     deserialize, serialize, ClientKey, KeyStorage, Permission, RootKey, Storage, StorageError,
 };
+
+use crate::config::StorageConfig;
+use crate::storage::registry::StorageProvider;
+use crate::register_storage_provider;
 
 /// RocksDB storage implementation
 pub struct RocksDBStorage {
@@ -629,6 +634,32 @@ impl KeyStorage for RocksDBStorage {
         Ok(result)
     }
 }
+
+/// Provider implementation for RocksDB storage
+pub struct RocksDBProvider;
+
+impl StorageProvider for RocksDBProvider {
+    fn name(&self) -> &str {
+        "rocksdb"
+    }
+    
+    fn supports_config(&self, config: &StorageConfig) -> bool {
+        matches!(config, StorageConfig::RocksDB { .. })
+    }
+    
+    fn create_storage(&self, config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError> {
+        if let StorageConfig::RocksDB { path } = config {
+            let storage = RocksDBStorage::new(path)
+                .map_err(|e| StorageError::StorageError(e.to_string()))?;
+            Ok(Arc::new(storage))
+        } else {
+            Err(StorageError::StorageError("Invalid configuration for RocksDB".to_string()))
+        }
+    }
+}
+
+// Register the RocksDB provider
+register_storage_provider!(RocksDBProvider);
 
 #[cfg(test)]
 mod tests {

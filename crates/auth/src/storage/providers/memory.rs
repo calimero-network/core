@@ -1,12 +1,18 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
-use super::models::prefixes;
-use super::{
+use crate::storage::models::prefixes;
+use crate::storage::{
     deserialize, serialize, ClientKey, KeyStorage, Permission, RootKey, Storage, StorageError,
 };
+
+// Import the registry
+use crate::config::StorageConfig;
+use crate::storage::registry::StorageProvider;
+use crate::register_storage_provider;
 
 /// In-memory storage implementation
 ///
@@ -296,6 +302,31 @@ impl KeyStorage for MemoryStorage {
         Ok(result)
     }
 }
+
+/// Provider implementation for in-memory storage
+pub struct MemoryStorageProvider;
+
+impl StorageProvider for MemoryStorageProvider {
+    fn name(&self) -> &str {
+        "memory"
+    }
+    
+    fn supports_config(&self, config: &StorageConfig) -> bool {
+        matches!(config, StorageConfig::Memory)
+    }
+    
+    fn create_storage(&self, config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError> {
+        if matches!(config, StorageConfig::Memory) {
+            let storage = MemoryStorage::new();
+            Ok(Arc::new(storage))
+        } else {
+            Err(StorageError::StorageError("Invalid configuration for Memory storage".to_string()))
+        }
+    }
+}
+
+// Register the Memory storage provider
+register_storage_provider!(MemoryStorageProvider);
 
 #[cfg(test)]
 mod tests {

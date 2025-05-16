@@ -4,7 +4,7 @@
 listen_addr = "127.0.0.1:3001"
 node_url = "http://localhost:2428"
 
-# JWT token settings - used for all auth providers
+# JWT token settings
 [jwt]
 secret = "your-secure-random-secret-key-here"
 issuer = "calimero-auth"

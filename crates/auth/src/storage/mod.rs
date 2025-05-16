@@ -7,11 +7,12 @@ use thiserror::Error;
 
 use crate::config::StorageConfig;
 
-pub mod memory;
 pub mod models;
-pub mod rocksdb;
+pub mod providers;
+pub mod registry;
 
-pub use memory::MemoryStorage;
+// Re-export storage implementations for backward compatibility
+pub use providers::memory::MemoryStorage;
 pub use models::{prefixes, ClientKey, Permission, RootKey};
 
 /// Storage error
@@ -314,21 +315,20 @@ pub trait KeyStorage: Storage {
 ///
 /// * `Result<Arc<dyn KeyStorage>, StorageError>` - The storage instance
 pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError> {
-    match config {
-        StorageConfig::RocksDB { path } => {
-            let storage = rocksdb::RocksDBStorage::new(path)
-                .map_err(|e| StorageError::StorageError(e.to_string()))?;
-            Ok(Arc::new(storage))
+    // Get all registered providers
+    let providers = registry::get_all_providers();
+    
+    // Find a provider that supports this configuration
+    for provider in providers {
+        if provider.supports_config(config) {
+            return provider.create_storage(config);
         }
-        StorageConfig::Memory => {
-            let storage = MemoryStorage::new();
-            Ok(Arc::new(storage))
-        }
-        #[allow(unreachable_patterns)]
-        _ => Err(StorageError::StorageError(
-            "Unsupported storage type".to_string(),
-        )),
     }
+    
+    // If no registered provider is found, return an error
+    Err(StorageError::StorageError(
+        format!("No registered storage provider found for configuration: {:?}", config)
+    ))
 }
 
 /// Helper function to serialize an object to JSON

@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use calimero_auth::config::{default_config, load_config};
+use calimero_auth::config::{load_config, AuthConfig, JwtConfig, NearWalletConfig, StorageConfig};
 use calimero_auth::server::{shutdown_signal, start_server};
 use calimero_auth::storage::create_storage;
 use calimero_auth::{providers, AuthService};
@@ -31,6 +32,27 @@ struct Cli {
     verbose: u8,
 }
 
+/// Create a default configuration for when no config file is provided
+fn create_default_config() -> AuthConfig {
+    let mut providers = HashMap::new();
+    providers.insert("near_wallet".to_string(), true);
+    
+    AuthConfig {
+        listen_addr: "127.0.0.1:3001".parse().unwrap(),
+        node_url: "http://localhost:2428".to_string(),
+        jwt: JwtConfig {
+            secret: "insecure-dev-key-change-in-production".to_string(),
+            issuer: "calimero-auth".to_string(),
+            access_token_expiry: 3600,
+            refresh_token_expiry: 2592000,
+        },
+        storage: StorageConfig::Memory,
+        cors: Default::default(),
+        providers,
+        near: NearWalletConfig::default(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command line arguments
@@ -57,12 +79,12 @@ async fn main() -> Result<()> {
             Err(err) => {
                 warn!("Failed to load configuration: {}", err);
                 warn!("Using default configuration instead");
-                default_config()
+                create_default_config()
             }
         }
     } else {
         info!("Using default configuration");
-        default_config()
+        create_default_config()
     };
 
     // Override configuration with command line arguments
