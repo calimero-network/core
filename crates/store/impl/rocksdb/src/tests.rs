@@ -3,9 +3,10 @@ use core::mem;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::{Column, Database};
 use calimero_store::slice::Slice;
-use crate::RocksDB;
 use eyre::Ok as EyreOk;
 use tempdir::TempDir;
+
+use crate::RocksDB;
 
 #[test]
 fn test_rocksdb() {
