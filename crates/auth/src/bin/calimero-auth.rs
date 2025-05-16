@@ -90,10 +90,8 @@ async fn main() -> Result<()> {
     }
 
     // Create JWT token manager
-    let token_manager = calimero_auth::auth::token::TokenManager::new(
-        config.jwt.clone(), 
-        storage.clone()
-    );
+    let token_manager =
+        calimero_auth::auth::token::TokenManager::new(config.jwt.clone(), storage.clone());
 
     let auth_service = AuthService::new(providers, token_manager);
 
