@@ -124,7 +124,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 }
             }
             NetworkEvent::StreamOpened { peer_id, stream } => {
-                debug!(%peer_id, "Stream opened!");
+                debug!(%peer_id, "Handling opened stream");
 
                 let sync_manager = self.sync_manager.clone();
 
@@ -132,7 +132,7 @@ impl Handler<NetworkEvent> for NodeManager {
                     async move {
                         sync_manager.handle_opened_stream(stream).await;
 
-                        debug!(%peer_id, "Stream closed!");
+                        debug!(%peer_id, "Handled opened stream");
                     }
                     .into_actor(self),
                 );

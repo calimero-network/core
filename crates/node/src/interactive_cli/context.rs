@@ -171,7 +171,7 @@ impl ContextCommand {
                     .await?;
 
                 println!(
-                    "{ind} Joined context {} as {}, waiting for catchup to complete...",
+                    "{ind} Joined context '{}' as '{}', waiting for catchup to complete...",
                     response.context_id, response.member_public_key
                 );
             }

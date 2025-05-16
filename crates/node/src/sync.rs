@@ -222,10 +222,6 @@ impl SyncManager {
             .mesh_peers(TopicHash::from_raw(context_id))
             .await;
 
-        if context_id.as_str() == "E13pvE8dqgmZcPgFN21HNgiMRjFYczej8tuqayKTPaD1" {
-            time::sleep(Duration::from_secs(21)).await;
-        }
-
         if peers.is_empty() {
             debug!(%context_id, "No peers to sync with");
         }
