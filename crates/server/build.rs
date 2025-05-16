@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::{env, fs};
 
 use cached_path::{Cache, Options};
@@ -16,31 +16,34 @@ const CALIMERO_WEB_UI_SRC: &str =
     "https://github.com/calimero-network/admin-dashboard/archive/refs/tags/";
 
 fn main() {
-    let src = if let Some(env_src) = option_env!("CALIMERO_WEB_UI_SRC") {
-        env_src
-    } else {
-        let client = Client::new();
-        let release: Release = client
-            .get(CALIMERO_WEB_UI_RELEASE)
-            .header("User-Agent", "rust-client")
-            .send()
-            .unwrap_or_else(|e| {
-                eprintln!("Failed to send request: {e}");
-                std::process::exit(1);
-            })
-            .json()
-            .unwrap_or_else(|e| {
-                eprintln!("Failed to parse JSON: {e}");
-                std::process::exit(1);
-            });
+    let client = Client::new();
+    let mut release: Release = client
+        .get(CALIMERO_WEB_UI_RELEASE)
+        .header("User-Agent", "rust-client")
+        .send()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to send request: {e}");
+            std::process::exit(1);
+        })
+        .json()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to parse JSON: {e}");
+            std::process::exit(1);
+        });
 
-        Box::leak(format!("{}{}.zip", CALIMERO_WEB_UI_SRC, release.tag_name).into_boxed_str())
-    };
+    if let Ok(version) = env::var("CALIMERO_WEB_UI_VERSION") {
+        release.tag_name = version;
+    }
+
+    let latest_release_src = format!("{}{}.zip", CALIMERO_WEB_UI_SRC, release.tag_name);
+    let src = option_env!("CALIMERO_WEB_UI_SRC").unwrap_or(&latest_release_src);
 
     let cache = Cache::builder()
-        .dir(PathBuf::from(
-            env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into()),
-        ))
+        .dir(
+            PathBuf::from(
+                env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into())
+            ).join("calimero-web-ui-cache")
+        )
         .build()
         .expect("Failed to create cache");
 
@@ -57,32 +60,7 @@ fn main() {
         .expect("No extracted directory found")
         .path();
 
-    let renamed_path = extracted_dir.join("admin-dashboard");
-
-    if extracted_folder != renamed_path {
-        if renamed_path.exists() {
-            fs::remove_dir_all(&renamed_path)
-                .unwrap_or_else(|e| panic!("Failed to remove directory {:?}: {}", renamed_path, e));
-        }
-
-        if extracted_folder.exists() {
-            fs::rename(&extracted_folder, &renamed_path).unwrap_or_else(|e| {
-                panic!(
-                    "Failed to rename {:?} to {:?}: {}",
-                    extracted_folder, renamed_path, e
-                )
-            });
-        } else {
-            panic!(
-                "Expected extracted folder {:?} does not exist. Archive structure may have changed.",
-                extracted_folder
-            );
-        }
-    } else {
-        println!("Extracted folder already named 'admin-dashboard', skipping rename.");
-    }
-
-    let extracted_build_path = renamed_path.join("build");
+    let extracted_build_path = extracted_folder.join("build");
 
     println!(
         "cargo:rustc-env=CALIMERO_WEB_UI_PATH={}",
