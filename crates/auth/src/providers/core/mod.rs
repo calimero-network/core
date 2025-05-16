@@ -13,5 +13,7 @@ pub mod macros;
 
 // Re-export key traits and types
 pub use provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
-pub use provider_registry::{ProviderRegistration, register_provider, get_all_provider_registrations};
-pub use provider_data_registry::{AuthDataType, register_auth_data_type}; 
+pub use provider_data_registry::{register_auth_data_type, AuthDataType};
+pub use provider_registry::{
+    get_all_provider_registrations, register_provider, ProviderRegistration,
+};

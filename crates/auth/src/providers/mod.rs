@@ -28,10 +28,10 @@ impl ProviderFactory {
             .into_iter()
             .map(|reg| (reg.provider_id().to_string(), reg))
             .collect();
-            
+
         Self { registrations }
     }
-    
+
     /// Create all enabled providers from configuration
     pub fn create_providers(
         &self,
@@ -39,14 +39,14 @@ impl ProviderFactory {
         config: &AuthConfig,
     ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
         let mut providers = Vec::new();
-        
+
         for registration in self.registrations.values() {
             if registration.is_enabled(config) {
                 let provider = registration.create_provider(storage.clone(), config)?;
                 providers.push(provider);
             }
         }
-        
+
         Ok(providers)
     }
 

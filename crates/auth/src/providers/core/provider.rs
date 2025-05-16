@@ -7,8 +7,8 @@ use eyre::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{AuthError, AuthResponse};
 use crate::api::handlers::auth::TokenRequest;
+use crate::{AuthError, AuthResponse};
 
 /// Authentication provider trait
 ///
@@ -32,12 +32,12 @@ pub trait AuthProvider: Send + Sync {
 
     /// Get provider-specific configuration options
     fn get_config_options(&self) -> serde_json::Value;
-    
+
     /// Convert a TokenRequest to provider-specific auth data JSON
     ///
     /// This method allows providers to extract and format data according to their needs
     fn prepare_auth_data(&self, token_request: &TokenRequest) -> Result<Value, AuthError>;
-    
+
     /// Create a verifier from parsed auth data
     ///
     /// This method creates a verifier that can authenticate the user based on the auth data.
@@ -51,8 +51,12 @@ pub trait AuthProvider: Send + Sync {
     /// # Returns
     ///
     /// * `Result<AuthRequestVerifier, AuthError>` - A verifier that can authenticate the user
-    fn create_verifier(&self, method: &str, auth_data: Box<dyn Any + Send + Sync>) -> Result<AuthRequestVerifier, AuthError>;
-    
+    fn create_verifier(
+        &self,
+        method: &str,
+        auth_data: Box<dyn Any + Send + Sync>,
+    ) -> Result<AuthRequestVerifier, AuthError>;
+
     /// Verify a request and check permissions
     ///
     /// This method extracts data from the request, then performs async verification.

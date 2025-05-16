@@ -11,10 +11,10 @@ use tracing::{debug, warn};
 use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
-use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
+use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::storage::KeyStorage;
-use crate::{AuthError, AuthResponse, RequestValidator, register_auth_provider};
+use crate::{register_auth_provider, AuthError, AuthResponse, RequestValidator};
 
 /// Example provider for demonstration purposes
 pub struct ExampleProvider {
@@ -37,7 +37,9 @@ impl<B: Send + Sync> RequestValidator<B> for ExampleProvider {
     async fn validate_request(&self, _request: &Request<B>) -> Result<AuthResponse, AuthError> {
         // In a real provider, this would validate authentication credentials
         // For this example, we just return a dummy error
-        Err(AuthError::AuthenticationFailed("Example provider is not yet implemented".to_string()))
+        Err(AuthError::AuthenticationFailed(
+            "Example provider is not yet implemented".to_string(),
+        ))
     }
 }
 
@@ -83,16 +85,16 @@ impl AuthProvider for ExampleProvider {
         // Just check that we have a public key and signature
         if token_request.public_key.is_empty() {
             return Err(AuthError::InvalidRequest(
-                "Public key is required for example authentication".to_string()
+                "Public key is required for example authentication".to_string(),
             ));
         }
-        
+
         if token_request.signature.is_empty() {
             return Err(AuthError::InvalidRequest(
-                "Signature is required for example authentication".to_string()
+                "Signature is required for example authentication".to_string(),
             ));
         }
-        
+
         // Create a simple JSON structure with just what this provider needs
         Ok(serde_json::json!({
             "public_key": token_request.public_key,
@@ -101,15 +103,21 @@ impl AuthProvider for ExampleProvider {
             "client_name": token_request.client_name
         }))
     }
-    
-    fn create_verifier(&self, method: &str, _auth_data: Box<dyn Any + Send + Sync>) -> Result<AuthRequestVerifier, AuthError> {
+
+    fn create_verifier(
+        &self,
+        method: &str,
+        _auth_data: Box<dyn Any + Send + Sync>,
+    ) -> Result<AuthRequestVerifier, AuthError> {
         // Only handle supported methods
         if !self.supports_method(method) {
             return Err(AuthError::InvalidRequest(format!(
-                "Provider {} does not support method {}", self.name(), method
+                "Provider {} does not support method {}",
+                self.name(),
+                method
             )));
         }
-        
+
         // For the example provider, we don't need to process the auth data
         // We simply create a verifier that returns a dummy response
         Ok(AuthRequestVerifier::new(ExampleVerifier))
@@ -119,7 +127,7 @@ impl AuthProvider for ExampleProvider {
         // In a real provider, this would parse the request and verify credentials
         // For this example, we return a dummy verifier
         warn!("Example provider received verification request but is not yet implemented");
-        
+
         Ok(AuthRequestVerifier::new(ExampleVerifier))
     }
 
@@ -135,7 +143,9 @@ struct ExampleVerifier;
 impl AuthVerifierFn for ExampleVerifier {
     async fn verify(&self) -> Result<AuthResponse, AuthError> {
         // In a real provider, this would actually verify credentials
-        Err(AuthError::AuthenticationFailed("Example provider is not yet implemented".to_string()))
+        Err(AuthError::AuthenticationFailed(
+            "Example provider is not yet implemented".to_string(),
+        ))
     }
 }
 
@@ -147,7 +157,7 @@ impl ProviderRegistration for ExampleProviderRegistration {
     fn provider_id(&self) -> &str {
         "example"
     }
-    
+
     fn create_provider(
         &self,
         storage: Arc<dyn KeyStorage>,
@@ -157,14 +167,16 @@ impl ProviderRegistration for ExampleProviderRegistration {
         let provider = ExampleProvider::new(storage, token_manager);
         Ok(Box::new(provider))
     }
-    
+
     fn is_enabled(&self, config: &AuthConfig) -> bool {
         // Check if this provider is enabled in the config
-        config.providers.get("example")
+        config
+            .providers
+            .get("example")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
     }
 }
 
 // Self-register the provider
-register_auth_provider!(ExampleProviderRegistration); 
+register_auth_provider!(ExampleProviderRegistration);

@@ -1,15 +1,14 @@
-use std::sync::Arc;
 use std::any::Any;
-use serde_json::Value;
-use base64::Engine;
+use std::sync::Arc;
 
+use axum::http::HeaderMap;
+use base64::Engine;
+use serde_json::Value;
+
+use crate::api::handlers::auth::TokenRequest;
 use crate::providers::core::provider_data_registry;
 use crate::providers::impls::near_wallet::NearWalletProvider;
 use crate::{AuthError, AuthProvider, AuthResponse};
-
-use axum::http::HeaderMap;
-
-use crate::api::handlers::auth::TokenRequest;
 
 /// Authentication service
 ///
@@ -49,10 +48,7 @@ impl AuthService {
     ) -> Result<AuthResponse, AuthError> {
         // Find a provider that has a token manager
         for provider in self.providers.iter() {
-            if let Some(near_provider) = provider
-                .as_any()
-                .downcast_ref::<NearWalletProvider>(
-            ) {
+            if let Some(near_provider) = provider.as_any().downcast_ref::<NearWalletProvider>() {
                 // Use the token manager to verify the token
                 return near_provider
                     .get_token_manager()
@@ -83,20 +79,26 @@ impl AuthService {
         token_request: &TokenRequest,
     ) -> Result<AuthResponse, AuthError> {
         let auth_method = &token_request.auth_method;
-        
+
         // Find a provider that supports this auth method
-        let provider = self.providers.iter()
+        let provider = self
+            .providers
+            .iter()
             .find(|p| p.supports_method(auth_method))
-            .ok_or_else(|| AuthError::InvalidRequest(
-                format!("Unsupported authentication method: {}", auth_method)
-            ))?;
-        
+            .ok_or_else(|| {
+                AuthError::InvalidRequest(format!(
+                    "Unsupported authentication method: {}",
+                    auth_method
+                ))
+            })?;
+
         // The provider prepares the auth data based on the token request
         // Each provider implements its own logic for this, so we don't need special cases here
         let auth_data_json = provider.prepare_auth_data(token_request)?;
-        
+
         // Use the auth data registry to parse auth data to the correct type
-        self.authenticate_with_data(auth_method, auth_data_json).await
+        self.authenticate_with_data(auth_method, auth_data_json)
+            .await
     }
 
     /// Authenticate using parsed auth data
@@ -117,18 +119,23 @@ impl AuthService {
         auth_data_json: Value,
     ) -> Result<AuthResponse, AuthError> {
         // Find a provider that supports this auth method
-        let provider = self.providers.iter()
+        let provider = self
+            .providers
+            .iter()
             .find(|p| p.supports_method(auth_method))
-            .ok_or_else(|| AuthError::InvalidRequest(
-                format!("Unsupported authentication method: {}", auth_method)
-            ))?;
+            .ok_or_else(|| {
+                AuthError::InvalidRequest(format!(
+                    "Unsupported authentication method: {}",
+                    auth_method
+                ))
+            })?;
 
         // Parse the auth data using our registry
         let auth_data = provider_data_registry::parse_auth_data(auth_method, auth_data_json)?;
 
         // Create a verifier from the provider and let it handle the authentication
         let verifier = provider.create_verifier(auth_method, auth_data)?;
-        
+
         // Execute the verification process
         verifier.verify().await
     }

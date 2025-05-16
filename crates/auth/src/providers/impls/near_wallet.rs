@@ -1,6 +1,6 @@
+use std::any::Any;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::any::Any;
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -21,11 +21,13 @@ use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;
 use crate::config::{AuthConfig, NearWalletConfig};
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
-use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::core::provider_data_registry::AuthDataType;
+use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::storage::models::{prefixes, RootKey};
 use crate::storage::{deserialize, serialize, KeyStorage};
-use crate::{AuthError, AuthResponse, RequestValidator, register_auth_provider, register_auth_data_type};
+use crate::{
+    register_auth_data_type, register_auth_provider, AuthError, AuthResponse, RequestValidator,
+};
 
 /// NEAR wallet authentication data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,17 +49,21 @@ impl AuthDataType for NearWalletAuthDataType {
     fn method_name(&self) -> &str {
         "near_wallet"
     }
-    
-    fn parse_from_value(&self, value: Value) -> Result<Box<dyn std::any::Any + Send + Sync>, AuthError> {
+
+    fn parse_from_value(
+        &self,
+        value: Value,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, AuthError> {
         // Try to deserialize as NearWalletAuthData
         match serde_json::from_value::<NearWalletAuthData>(value) {
             Ok(data) => Ok(Box::new(data)),
             Err(err) => Err(AuthError::InvalidRequest(format!(
-                "Invalid NEAR wallet auth data: {}", err
+                "Invalid NEAR wallet auth data: {}",
+                err
             ))),
         }
     }
-    
+
     fn get_sample_structure(&self) -> Value {
         serde_json::json!({
             "account_id": "example.near",
@@ -568,8 +574,6 @@ impl NearWalletProvider {
         })
     }
 
-
-
     /// Get the token manager
     ///
     /// # Returns
@@ -694,31 +698,38 @@ impl AuthProvider for NearWalletProvider {
             "signature": token_request.signature
         }))
     }
-    
-    fn create_verifier(&self, method: &str, auth_data: Box<dyn Any + Send + Sync>) -> Result<AuthRequestVerifier, AuthError> {
+
+    fn create_verifier(
+        &self,
+        method: &str,
+        auth_data: Box<dyn Any + Send + Sync>,
+    ) -> Result<AuthRequestVerifier, AuthError> {
         // Only handle supported methods
         if !self.supports_method(method) {
             return Err(AuthError::InvalidRequest(format!(
-                "Provider {} does not support method {}", self.name(), method
+                "Provider {} does not support method {}",
+                self.name(),
+                method
             )));
         }
-        
+
         // Downcast to NearWalletAuthData
-        let near_auth_data = auth_data.downcast_ref::<NearWalletAuthData>()
-            .ok_or_else(|| AuthError::InvalidRequest(
-                "Failed to parse NEAR wallet auth data".to_string()
-            ))?;
-        
+        let near_auth_data = auth_data
+            .downcast_ref::<NearWalletAuthData>()
+            .ok_or_else(|| {
+                AuthError::InvalidRequest("Failed to parse NEAR wallet auth data".to_string())
+            })?;
+
         // Create a clone of the auth data and provider for the verifier
         let auth_data_clone = near_auth_data.clone();
         let provider = Arc::new(self.clone());
-        
+
         // Create and return the verifier
         let verifier = NearWalletVerifier {
             provider,
             auth_data: auth_data_clone,
         };
-        
+
         Ok(AuthRequestVerifier::new(verifier))
     }
 
@@ -803,7 +814,7 @@ impl ProviderRegistration for NearWalletRegistration {
     fn provider_id(&self) -> &str {
         "near_wallet"
     }
-    
+
     fn create_provider(
         &self,
         storage: Arc<dyn KeyStorage>,
@@ -814,10 +825,12 @@ impl ProviderRegistration for NearWalletRegistration {
         let provider = NearWalletProvider::new(near_config, storage, token_manager);
         Ok(Box::new(provider))
     }
-    
+
     fn is_enabled(&self, config: &AuthConfig) -> bool {
         // Check if this provider is enabled in the config
-        config.providers.get("near_wallet")
+        config
+            .providers
+            .get("near_wallet")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
     }

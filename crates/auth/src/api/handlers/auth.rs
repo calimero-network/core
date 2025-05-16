@@ -211,7 +211,12 @@ pub async fn token_handler(
     }
 
     // Authenticate directly using the token request
-    let auth_response = match state.0.auth_service.authenticate_token_request(&token_request).await {
+    let auth_response = match state
+        .0
+        .auth_service
+        .authenticate_token_request(&token_request)
+        .await
+    {
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);
