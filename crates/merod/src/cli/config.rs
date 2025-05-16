@@ -1,13 +1,13 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
 use std::env::temp_dir;
+use std::fs::{read_to_string, write};
 use std::str::FromStr;
 
 use calimero_config::{ConfigFile, CONFIG_FILE};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::{bail, eyre, Result as EyreResult};
-use tokio::fs::{read_to_string, write};
 use toml_edit::{Item, Value};
 use tracing::info;
 
@@ -41,8 +41,9 @@ impl FromStr for KeyValuePair {
     }
 }
 
+#[warn(unused_results)]
 impl ConfigCommand {
-    pub async fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
+    pub fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
 
         if !ConfigFile::exists(&path) {
@@ -52,10 +53,8 @@ impl ConfigCommand {
         let path = path.join(CONFIG_FILE);
 
         // Load the existing TOML file
-        let toml_str = read_to_string(&path)
-            .await
-            .map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
-
+        let toml_str =
+            read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
         let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
         // Update the TOML document
@@ -71,25 +70,25 @@ impl ConfigCommand {
             current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
         }
 
-        self.validate_toml(&doc).await?;
+        self.validate_toml(&doc)?;
 
         // Save the updated TOML back to the file
-        write(&path, doc.to_string()).await?;
+        write(&path, doc.to_string())?;
 
         info!("Node configuration has been updated");
 
         Ok(())
     }
 
-    pub async fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
+    pub fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
         let tmp_dir = temp_dir();
         let tmp_path = tmp_dir.join(CONFIG_FILE);
 
-        write(&tmp_path, doc.to_string()).await?;
+        write(&tmp_path, doc.to_string())?;
 
         let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
 
-        drop(ConfigFile::load(&tmp_path_utf8).await?);
+        drop(ConfigFile::load(&tmp_path_utf8)?);
 
         Ok(())
     }
