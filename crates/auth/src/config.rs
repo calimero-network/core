@@ -34,6 +34,11 @@ pub struct AuthConfig {
     /// Enabled authentication providers
     #[serde(default = "default_enabled_providers")]
     pub enabled_providers: Vec<String>,
+
+    /// Provider configuration
+    /// Maps provider IDs to enabled/disabled state
+    #[serde(default)]
+    pub providers: HashMap<String, toml::Value>,
 }
 
 /// Default enabled providers
@@ -418,5 +423,6 @@ pub fn default_config() -> AuthConfig {
             helper_url: None,
         },
         enabled_providers: default_enabled_providers(),
+        providers: HashMap::new(),
     }
 }

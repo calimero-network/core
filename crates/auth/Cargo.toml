@@ -43,6 +43,7 @@ starknet = { workspace = true }
 ic-agent = { workspace = true, optional = true }
 
 # Utilities
+ctor = "0.1"
 eyre.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -59,6 +60,8 @@ parking_lot = { workspace = true }
 # Calimero dependencies
 calimero-primitives = { path = "../primitives" }
 calimero-store = { path = "../store" }
+
+toml = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"

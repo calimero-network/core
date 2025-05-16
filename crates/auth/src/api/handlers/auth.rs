@@ -9,7 +9,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
-use crate::providers::provider::AuthData;
+use crate::providers::impls::near_wallet::NearWalletAuthData;
 use crate::server::AppState;
 use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;
@@ -46,35 +46,6 @@ fn success_response<T: Serialize>(data: T) -> ApiResponse {
 // Trait for request validation
 trait Validate {
     fn validate(&self) -> Result<(), String>;
-}
-
-// Helper for building headers
-struct HeaderBuilder(HeaderMap);
-
-impl HeaderBuilder {
-    fn new() -> Self {
-        Self(HeaderMap::new())
-    }
-
-    fn add_if_some<T: ToString>(mut self, key: &'static str, value: &Option<T>) -> Self {
-        if let Some(v) = value {
-            if let Ok(header_value) = v.to_string().parse::<HeaderValue>() {
-                self.0.insert(key, header_value);
-            }
-        }
-        self
-    }
-
-    fn add<T: ToString>(mut self, key: &'static str, value: T) -> Self {
-        if let Ok(header_value) = value.to_string().parse::<HeaderValue>() {
-            self.0.insert(key, header_value);
-        }
-        self
-    }
-
-    fn build(self) -> HeaderMap {
-        self.0
-    }
 }
 
 /// Login request handler
@@ -239,42 +210,8 @@ pub async fn token_handler(
         return bad_request_response("Authentication method is required");
     }
 
-    // Convert the token request to type-safe auth data
-    let auth_data = match token_request.auth_method.as_str() {
-        "near_wallet" => {
-            // For NEAR wallet, create appropriate auth data
-            let message = match token_request.message {
-                Some(msg) => msg.as_bytes().to_vec(),
-                None => {
-                    return bad_request_response("Missing message for NEAR wallet authentication");
-                }
-            };
-
-            let account_id = match token_request.wallet_address {
-                Some(addr) => addr,
-                None => {
-                    return bad_request_response(
-                        "Missing wallet address for NEAR wallet authentication",
-                    );
-                }
-            };
-
-            AuthData::NearWallet {
-                account_id,
-                public_key: token_request.public_key.clone(),
-                message,
-                signature: token_request.signature.clone(),
-            }
-        }
-        // No other auth methods supported yet
-        method => {
-            return bad_request_response(&format!("Unsupported authentication method: {}", method));
-        }
-    };
-
-    // Authenticate using the type-safe auth data
-    // This will return an error if authentication fails
-    let auth_response = match state.0.auth_service.authenticate_with_data(auth_data).await {
+    // Authenticate directly using the token request
+    let auth_response = match state.0.auth_service.authenticate_token_request(&token_request).await {
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);

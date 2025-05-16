@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate lazy_static;
+
 use async_trait::async_trait;
 use axum::http::Request;
 use eyre::Result;
@@ -12,7 +15,7 @@ pub mod storage;
 pub mod utils;
 
 pub use auth::{forward_auth_middleware, AuthService};
-pub use providers::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
+pub use providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 
 /// Response from an authentication validation attempt
 #[derive(Debug, Clone)]

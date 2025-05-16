@@ -4,63 +4,34 @@ use std::sync::Arc;
 use eyre::Result;
 use serde_json::Value;
 
-use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::storage::KeyStorage;
 
-pub mod near_wallet;
-pub mod provider;
+// Export modules
+pub mod core;
+pub mod impls;
 
-// Re-export AuthProvider and related types from the provider module
-pub use provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
+// Re-export core components
+pub use core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
+pub use core::provider_registry::ProviderRegistration;
 
 /// Provider factory for creating and registering authentication providers
 pub struct ProviderFactory {
-    providers: HashMap<
-        String,
-        Box<
-            dyn Fn(Arc<dyn KeyStorage>, &AuthConfig) -> Result<Box<dyn AuthProvider>, eyre::Error>
-                + Send
-                + Sync,
-        >,
-    >,
+    registrations: HashMap<String, Arc<dyn ProviderRegistration>>,
 }
 
 impl ProviderFactory {
-    /// Create a new provider factory with default providers
+    /// Create a new provider factory with all registered providers
     pub fn new() -> Self {
-        let mut factory = Self {
-            providers: HashMap::new(),
-        };
-
-        // Register the default providers
-        factory.register_near_wallet();
-
-        factory
+        // Get all providers from the registry
+        let registrations = core::provider_registry::get_all_provider_registrations()
+            .into_iter()
+            .map(|reg| (reg.provider_id().to_string(), reg))
+            .collect();
+            
+        Self { registrations }
     }
-
-    /// Register the NEAR wallet provider
-    pub fn register_near_wallet(&mut self) {
-        self.register("near_wallet", |storage, config| {
-            let near_config = config.near.clone();
-            let token_manager = TokenManager::new(config.jwt.clone(), storage.clone());
-            let provider =
-                near_wallet::NearWalletProvider::new(near_config, storage, token_manager);
-            Ok(Box::new(provider))
-        });
-    }
-
-    /// Register a provider factory function
-    pub fn register<F>(&mut self, name: &str, factory: F)
-    where
-        F: Fn(Arc<dyn KeyStorage>, &AuthConfig) -> Result<Box<dyn AuthProvider>, eyre::Error>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.providers.insert(name.to_string(), Box::new(factory));
-    }
-
+    
     /// Create all enabled providers from configuration
     pub fn create_providers(
         &self,
@@ -68,16 +39,14 @@ impl ProviderFactory {
         config: &AuthConfig,
     ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
         let mut providers = Vec::new();
-
-        for provider_name in &config.enabled_providers {
-            if let Some(factory) = self.providers.get(provider_name) {
-                let provider = factory(storage.clone(), config)?;
+        
+        for registration in self.registrations.values() {
+            if registration.is_enabled(config) {
+                let provider = registration.create_provider(storage.clone(), config)?;
                 providers.push(provider);
-            } else {
-                return Err(eyre::eyre!("Unknown provider: {}", provider_name));
             }
         }
-
+        
         Ok(providers)
     }
 
@@ -88,21 +57,22 @@ impl ProviderFactory {
         storage: Arc<dyn KeyStorage>,
         config: &AuthConfig,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
-        if let Some(factory) = self.providers.get(name) {
-            factory(storage, config)
+        if let Some(registration) = self.registrations.get(name) {
+            registration.create_provider(storage, config)
         } else {
             Err(eyre::eyre!("Unknown provider: {}", name))
         }
     }
 
     /// Get information about available providers
-    pub fn get_available_providers(&self) -> Vec<Value> {
-        self.providers
-            .keys()
-            .map(|name| {
+    pub fn get_available_providers(&self, config: &AuthConfig) -> Vec<Value> {
+        self.registrations
+            .values()
+            .map(|reg| {
                 serde_json::json!({
-                    "name": name,
+                    "name": reg.provider_id(),
                     "available": true,
+                    "enabled": reg.is_enabled(config),
                 })
             })
             .collect()

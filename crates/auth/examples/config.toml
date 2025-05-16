@@ -27,17 +27,8 @@ allowed_headers = ["Authorization", "Content-Type", "Accept"]
 # Enable NEAR wallet authentication
 near_wallet = true
 
-# Enable Ethereum wallet authentication
-eth_wallet = false
-
-# Enable Starknet wallet authentication 
-starknet_wallet = false
-
-# Enable Internet Computer authentication
-icp = false
-
-# Enable OAuth authentication
-oauth = false
+# Enable example provider (TEST only)
+example = false
 
 # NEAR wallet configuration
 [near]

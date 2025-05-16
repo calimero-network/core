@@ -1,10 +1,15 @@
 use std::sync::Arc;
+use std::any::Any;
+use serde_json::Value;
+use base64::Engine;
+
+use crate::providers::core::provider_data_registry;
+use crate::providers::impls::near_wallet::NearWalletProvider;
+use crate::{AuthError, AuthProvider, AuthResponse};
 
 use axum::http::HeaderMap;
 
 use crate::api::handlers::auth::TokenRequest;
-use crate::providers::provider::AuthData;
-use crate::{AuthError, AuthProvider, AuthResponse};
 
 /// Authentication service
 ///
@@ -46,7 +51,7 @@ impl AuthService {
         for provider in self.providers.iter() {
             if let Some(near_provider) = provider
                 .as_any()
-                .downcast_ref::<crate::providers::near_wallet::NearWalletProvider>(
+                .downcast_ref::<NearWalletProvider>(
             ) {
                 // Use the token manager to verify the token
                 return near_provider
@@ -77,97 +82,55 @@ impl AuthService {
         &self,
         token_request: &TokenRequest,
     ) -> Result<AuthResponse, AuthError> {
-        // Convert the token request to AuthData and use the more direct approach
-        let auth_data = match token_request.auth_method.as_str() {
-            "near_wallet" => {
-                // For NEAR wallet, create appropriate auth data
-                let message = match &token_request.message {
-                    Some(msg) => msg.as_bytes().to_vec(),
-                    None => {
-                        return Err(AuthError::InvalidRequest(
-                            "Missing message for NEAR wallet authentication".to_string(),
-                        ));
-                    }
-                };
-
-                let account_id = match &token_request.wallet_address {
-                    Some(addr) => addr.clone(),
-                    None => {
-                        return Err(AuthError::InvalidRequest(
-                            "Missing wallet address for NEAR wallet authentication".to_string(),
-                        ));
-                    }
-                };
-
-                AuthData::NearWallet {
-                    account_id,
-                    public_key: token_request.public_key.clone(),
-                    message,
-                    signature: token_request.signature.clone(),
-                }
-            }
-            // No other auth methods supported yet
-            method => {
-                return Err(AuthError::InvalidRequest(format!(
-                    "Unsupported authentication method: {}",
-                    method
-                )));
-            }
-        };
-
-        // Use the authenticate_with_data method which now uses the direct approach
-        self.authenticate_with_data(auth_data).await
+        let auth_method = &token_request.auth_method;
+        
+        // Find a provider that supports this auth method
+        let provider = self.providers.iter()
+            .find(|p| p.supports_method(auth_method))
+            .ok_or_else(|| AuthError::InvalidRequest(
+                format!("Unsupported authentication method: {}", auth_method)
+            ))?;
+        
+        // The provider prepares the auth data based on the token request
+        // Each provider implements its own logic for this, so we don't need special cases here
+        let auth_data_json = provider.prepare_auth_data(token_request)?;
+        
+        // Use the auth data registry to parse auth data to the correct type
+        self.authenticate_with_data(auth_method, auth_data_json).await
     }
 
-    /// Authenticate using direct authentication data
+    /// Authenticate using parsed auth data
     ///
-    /// This method authenticates the user directly using the provided AuthData
+    /// This method authenticates the user using the auth method's registered handler
     ///
     /// # Arguments
     ///
-    /// * `auth_data` - The authentication data
+    /// * `auth_method` - The authentication method
+    /// * `auth_data_json` - The auth data as JSON value
     ///
     /// # Returns
     ///
     /// * `Result<AuthResponse, AuthError>` - The result of the authentication
     pub async fn authenticate_with_data(
         &self,
-        auth_data: AuthData,
+        auth_method: &str,
+        auth_data_json: Value,
     ) -> Result<AuthResponse, AuthError> {
-        // Select provider based on auth data type
-        let provider = match &auth_data {
-            AuthData::NearWallet { .. } => {
-                self.providers.iter().find(|p| p.name() == "near_wallet")
-            }
-        };
+        // Find a provider that supports this auth method
+        let provider = self.providers.iter()
+            .find(|p| p.supports_method(auth_method))
+            .ok_or_else(|| AuthError::InvalidRequest(
+                format!("Unsupported authentication method: {}", auth_method)
+            ))?;
 
-        // Try to authenticate with the selected provider
-        if let Some(provider) = provider {
-            // Extract data from the AuthData enum
-            match &auth_data {
-                AuthData::NearWallet {
-                    account_id,
-                    public_key,
-                    message,
-                    signature,
-                } => {
-                    // Get a reference to the specific provider (we already know it's a NearWalletProvider)
-                    if let Some(near_provider) = provider
-                        .as_any()
-                        .downcast_ref::<crate::providers::near_wallet::NearWalletProvider>(
-                    ) {
-                        // Call the direct authentication method on the provider
-                        return near_provider
-                            .authenticate_near_wallet(account_id, public_key, message, signature)
-                            .await;
-                    }
-                }
-            }
-        }
+        // Parse the auth data using our registry
+        let auth_data = provider_data_registry::parse_auth_data(auth_method, auth_data_json)?;
 
-        Err(AuthError::AuthenticationFailed(
-            "No valid authentication provider found for the provided data".to_string(),
-        ))
+        // Create a verifier from the provider and let it handle the authentication
+        let verifier = provider.create_verifier(auth_method, auth_data)?;
+        
+        // Execute the verification process
+        verifier.verify().await
     }
 
     /// Get the available providers

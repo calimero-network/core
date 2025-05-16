@@ -5,29 +5,10 @@ use axum::body::Body;
 use axum::http::Request;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::api::handlers::auth::TokenRequest;
 use crate::{AuthError, AuthResponse};
-
-/// Authentication data enum
-///
-/// This enum represents different types of authentication data
-/// that can be passed to providers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AuthData {
-    /// NEAR wallet authentication data
-    NearWallet {
-        /// Account ID of the NEAR wallet
-        account_id: String,
-        /// Public key of the NEAR wallet
-        public_key: String,
-        /// Message to sign
-        message: Vec<u8>,
-        /// Signature of the message
-        signature: String,
-    },
-    // Add other authentication methods as needed
-}
+use crate::api::handlers::auth::TokenRequest;
 
 /// Authentication provider trait
 ///
@@ -51,7 +32,27 @@ pub trait AuthProvider: Send + Sync {
 
     /// Get provider-specific configuration options
     fn get_config_options(&self) -> serde_json::Value;
-
+    
+    /// Convert a TokenRequest to provider-specific auth data JSON
+    ///
+    /// This method allows providers to extract and format data according to their needs
+    fn prepare_auth_data(&self, token_request: &TokenRequest) -> Result<Value, AuthError>;
+    
+    /// Create a verifier from parsed auth data
+    ///
+    /// This method creates a verifier that can authenticate the user based on the auth data.
+    /// Each provider implements this differently based on their authentication requirements.
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - The auth method to use
+    /// * `auth_data` - The parsed auth data from the registry
+    ///
+    /// # Returns
+    ///
+    /// * `Result<AuthRequestVerifier, AuthError>` - A verifier that can authenticate the user
+    fn create_verifier(&self, method: &str, auth_data: Box<dyn Any + Send + Sync>) -> Result<AuthRequestVerifier, AuthError>;
+    
     /// Verify a request and check permissions
     ///
     /// This method extracts data from the request, then performs async verification.
