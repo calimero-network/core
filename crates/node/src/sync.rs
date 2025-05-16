@@ -17,7 +17,7 @@ use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use tokio::time::{self, timeout, timeout_at, Instant, MissedTickBehavior};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 mod blobs;
 mod key;

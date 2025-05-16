@@ -205,7 +205,6 @@ async fn handle_node_events(
                 NodeEvent::Context(event)
             }
             NodeEvent::Context(_) => continue,
-            _ => unreachable!("Unexpected event type"),
         };
 
         let body = match to_json_value(event) {
