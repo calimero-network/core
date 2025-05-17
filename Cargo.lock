@@ -1944,6 +1944,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "eyre",
@@ -2143,13 +2144,23 @@ dependencies = [
  "camino",
  "eyre",
  "generic-array 1.1.1",
- "rocksdb",
  "serde",
  "serde_json",
  "strum 0.26.3",
  "tempdir",
  "thiserror 1.0.69",
  "thunderdome",
+]
+
+[[package]]
+name = "calimero-store-rocksdb"
+version = "0.1.0"
+dependencies = [
+ "calimero-store",
+ "eyre",
+ "rocksdb",
+ "strum 0.26.3",
+ "tempdir",
 ]
 
 [[package]]
@@ -5970,6 +5981,7 @@ dependencies = [
  "calimero-node",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "color-eyre",
