@@ -1,4 +1,3 @@
-
 use crate::version_str;
 
 #[test]
