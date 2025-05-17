@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
+use crate::cli::run::RunCommand;
 use crate::defaults;
 
 mod config;

@@ -2,7 +2,14 @@ use std::process::Command;
 
 fn main() {
     let git_describe = Command::new("git")
-        .args(["describe", "--always", "--dirty=-modified", "--tags", "--match", "[0-9]*"])
+        .args([
+            "describe",
+            "--always",
+            "--dirty=-modified",
+            "--tags",
+            "--match",
+            "[0-9]*",
+        ])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
