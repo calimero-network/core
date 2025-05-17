@@ -12,7 +12,6 @@ license.workspace = true
 alloy.workspace = true
 axum.workspace = true
 camino = { workspace = true, features = ["serde1"] }
-chrono.workspace = true
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 const_format.workspace = true
