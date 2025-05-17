@@ -32,6 +32,7 @@ calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-runtime.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-store-rocksdb.workspace = true
 
 [lints]
 workspace = true
