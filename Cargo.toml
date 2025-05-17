@@ -29,6 +29,7 @@ members = [
     "./crates/store",
     "./crates/store/blobs",
     "./crates/utils/actix",
+    "./crates/version",
 
     "./apps/kv-store",
     "./apps/gen-ext",
@@ -165,6 +166,7 @@ calimero-store = { path = "./crates/store" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
+calimero-version = { path = "./crates/version" }
 
 kv-store = { path = "./apps/kv-store" }
 gen-ext = { path = "./apps/gen-ext" }
