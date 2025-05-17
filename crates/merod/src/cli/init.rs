@@ -1,7 +1,6 @@
 use core::net::IpAddr;
 use core::time::Duration;
 use std::collections::BTreeMap;
-use std::fs::{create_dir, create_dir_all};
 
 use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
@@ -39,6 +38,7 @@ use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
 use soroban_client::keypair::{Keypair as StellarKeypair, KeypairBehavior};
 use starknet::signers::SigningKey;
+use tokio::fs::{create_dir, create_dir_all};
 use tracing::{info, warn};
 use url::Url;
 
@@ -152,22 +152,22 @@ impl InitCommand {
         clippy::too_many_lines,
         reason = "TODO: Will be refactored"
     )]
-    pub fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
+    pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.home.join(root_args.node_name);
 
         if !path.exists() {
             if root_args.home == defaults::default_node_dir() {
-                create_dir_all(&path)
+                create_dir_all(&path).await
             } else {
-                create_dir(&path)
+                create_dir(&path).await
             }
             .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
         if ConfigFile::exists(&path) {
-            if let Err(err) = ConfigFile::load(&path) {
+            if let Err(err) = ConfigFile::load(&path).await {
                 if self.force {
                     warn!(
                         "Failed to load existing configuration, overwriting: {}",
@@ -176,8 +176,7 @@ impl InitCommand {
                 } else {
                     bail!("Failed to load existing configuration: {}", err);
                 }
-            }
-            if !self.force {
+            } else if !self.force {
                 warn!("Node is already initialized in {:?}", path);
                 return Ok(());
             }
@@ -426,7 +425,7 @@ impl InitCommand {
             },
         );
 
-        config.save(&path)?;
+        config.save(&path).await?;
 
         drop(Store::open::<RocksDB>(&StoreConfig::new(
             path.join(config.datastore.path),

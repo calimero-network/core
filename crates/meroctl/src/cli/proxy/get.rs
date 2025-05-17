@@ -114,7 +114,7 @@ impl Report for GetProposalResponse {
 
 impl GetCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 

@@ -71,8 +71,8 @@ pub struct RootArgs {
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
         match self.action {
-            SubCommands::Config(config) => config.run(&self.args),
-            SubCommands::Init(init) => init.run(self.args),
+            SubCommands::Config(config) => config.run(&self.args).await,
+            SubCommands::Init(init) => init.run(self.args).await,
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Relay(relay) => relay.run(self.args).await,
         }

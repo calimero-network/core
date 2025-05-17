@@ -50,7 +50,7 @@ impl Report for ListApplicationsResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
 
         let response: ListApplicationsResponse = do_request(
             &Client::new(),

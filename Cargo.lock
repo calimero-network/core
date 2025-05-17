@@ -1838,6 +1838,7 @@ dependencies = [
  "libp2p-identity",
  "multiaddr",
  "serde",
+ "tokio",
  "toml",
 ]
 

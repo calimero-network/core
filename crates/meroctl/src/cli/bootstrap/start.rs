@@ -286,7 +286,7 @@ impl StartBootstrapCommand {
         environment: &Environment,
         protocol: String,
     ) -> EyreResult<(ContextId, PublicKey, ApplicationId)> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 

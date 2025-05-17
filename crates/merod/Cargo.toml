@@ -27,7 +27,7 @@ near-crypto.workspace = true
 rand.workspace = true
 starknet.workspace = true
 soroban-client.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros"] }
+tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
 toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
