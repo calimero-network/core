@@ -13,8 +13,9 @@ struct Release {
     tag_name: Version,
 }
 
-pub async fn check_for_update(client: &Client) -> EyreResult<()> {
+pub async fn check_for_update() -> EyreResult<()> {
     let url = "https://api.github.com/repos/calimero-network/core/releases/latest";
+    let client = Client::new();
 
     let response = client
         .get(url)
@@ -24,10 +25,10 @@ pub async fn check_for_update(client: &Client) -> EyreResult<()> {
 
     let release: Release = response.json().await?;
 
-    if *&release.tag_name > *CURRENT_VERSION {
+    if release.tag_name > *CURRENT_VERSION {
         println!(
             "\n🔔 New version of merod available: v{} (current: v{})",
-            *&release.tag_name, *CURRENT_VERSION
+            release.tag_name, *CURRENT_VERSION
         );
     }
 

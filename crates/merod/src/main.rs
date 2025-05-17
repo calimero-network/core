@@ -21,12 +21,9 @@ async fn main() -> EyreResult<()> {
 
     let command = RootCommand::parse();
 
-    let client = Client::new();
-    let mut rng = rand::thread_rng();
-    let mut n: u8 = rng.gen();
-    if (n % 20) == 11 {
+    if rand::random::<u8>() % 10 == 0 {
         tokio::spawn(async move {
-            if let Err(err) = check_for_update(&client).await {
+            if let Err(err) = check_for_update().await {
                 eprintln!("Version check failed: {}", err);
             }
         });
