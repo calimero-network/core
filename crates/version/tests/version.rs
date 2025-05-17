@@ -1,8 +1,8 @@
-use calimero_version::version_info;
+use calimero_version::version_str;
 
 #[test]
 fn version_info_contains_crate_version() {
-    let info = version_info();
+    let info = version_str();
     assert!(
         info.contains(env!("CARGO_PKG_VERSION")),
         "version_info does not contain crate version"
@@ -11,7 +11,7 @@ fn version_info_contains_crate_version() {
 
 #[test]
 fn version_info_contains_commit_hash() {
-    let info = version_info();
+    let info = version_str();
     assert!(
         info.contains(env!("GIT_COMMIT_HASH")),
         "version_info does not contain GIT_COMMIT_HASH"
@@ -20,7 +20,7 @@ fn version_info_contains_commit_hash() {
 
 #[test]
 fn version_info_contains_rustc_version() {
-    let info = version_info();
+    let info = version_str();
     assert!(
         info.contains(env!("RUSTC_VERSION")),
         "version_info does not contain RUSTC_VERSION"
@@ -29,7 +29,7 @@ fn version_info_contains_rustc_version() {
 
 #[test]
 fn version_info_contains_protocol_version() {
-    let info = version_info();
+    let info = version_str();
     assert!(
         info.contains(&format!("(protocol {})", env!("CARGO_PKG_VERSION_MAJOR"))),
         "version_info does not contain protocol version"
@@ -38,7 +38,7 @@ fn version_info_contains_protocol_version() {
 
 #[test]
 fn version_info_has_no_unknown_values() {
-    let info = version_info();
+    let info = version_str();
     assert!(
         !info.contains("unknown"),
         "version_info contains 'unknown': {}",

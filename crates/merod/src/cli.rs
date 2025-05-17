@@ -9,9 +9,8 @@ mod config;
 mod init;
 mod relay;
 mod run;
-mod version;
 
-use calimero_version::version_info;
+use calimero_version::version_str;
 use config::ConfigCommand;
 use init::InitCommand;
 use relay::RelayCommand;
@@ -32,7 +31,7 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(author, version = version_info().as_str(), about, long_about = None)]
+#[command(author, version = version_str(), about, long_about = None)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",
