@@ -13,6 +13,7 @@ base64.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 candid = { workspace = true, optional = true }
+clap.workspace = true
 ed25519-consensus = { workspace = true, optional = true }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }

@@ -1872,6 +1872,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "candid",
+ "clap",
  "ed25519-consensus",
  "ed25519-dalek",
  "either",
@@ -5944,6 +5945,7 @@ version = "0.6.0"
 dependencies = [
  "bs58 0.5.1",
  "calimero-config",
+ "calimero-context-config",
  "calimero-primitives",
  "calimero-server-primitives",
  "camino",

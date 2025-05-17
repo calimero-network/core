@@ -1,3 +1,4 @@
+use calimero_context_config::types::Capability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
@@ -46,6 +47,28 @@ enum ContextIdentitySubcommands {
             help = "Force overwrite if default alias already points elsewhere"
         )]
         force: bool,
+    },
+    #[command(about = "Grant permissions to a member")]
+    Grant {
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+        #[arg(long = "as", default_value = "default")]
+        granter: Alias<PublicKey>,
+        #[arg(help = "The member to grant permissions to")]
+        grantee: PublicKey,
+        #[arg(help = "The capability to grant")]
+        capability: Capability,
+    },
+    #[command(about = "Revoke permissions from a member")]
+    Revoke {
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+        #[arg(long = "as", default_value = "default")]
+        revoker: Alias<PublicKey>,
+        #[arg(help = "The member to revoke permissions from")]
+        revokee: PublicKey,
+        #[arg(help = "The capability to revoke")]
+        capability: Capability,
     },
 }
 
@@ -162,6 +185,53 @@ impl ContextIdentityCommand {
                     identity.cyan(),
                     context_id.cyan()
                 );
+            }
+
+            ContextIdentitySubcommands::Grant {
+                context,
+                granter,
+                grantee,
+                capability,
+            } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                let granter_id = node
+                    .ctx_manager
+                    .resolve_alias(granter, Some(context_id))?
+                    .ok_or_eyre("unable to resolve granter identity")?;
+
+                drop(
+                    node.ctx_manager
+                        .grant_permission(context_id, granter_id, grantee, capability),
+                );
+
+                println!("{ind} Permission granted successfully");
+            }
+            ContextIdentitySubcommands::Revoke {
+                context,
+                revoker,
+                revokee,
+                capability,
+            } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                let revoker_id = node
+                    .ctx_manager
+                    .resolve_alias(revoker, Some(context_id))?
+                    .ok_or_eyre("unable to resolve revoker identity")?;
+
+                drop(
+                    node.ctx_manager
+                        .revoke_permission(context_id, revoker_id, revokee, capability),
+                );
+
+                println!("{ind} Permission revoked successfully");
             }
         }
 
