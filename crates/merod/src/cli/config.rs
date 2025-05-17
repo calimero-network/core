@@ -1,94 +1,160 @@
-#![allow(unused_results, reason = "Occurs in macro")]
+use clap::{Parser, ValueEnum};
+use colored::*;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-use std::env::temp_dir;
-use std::fs::{read_to_string, write};
-use std::str::FromStr;
+use config::config_file::{ConfigFile, Diff};
+use config::format::{print_config, PrintFormat};
+use config::schema::{get_schema_hint, HintFormat};
 
-use calimero_config::{ConfigFile, CONFIG_FILE};
-use camino::Utf8PathBuf;
-use clap::Parser;
-use eyre::{bail, eyre, Result as EyreResult};
-use toml_edit::{Item, Value};
-use tracing::info;
-
-use crate::cli;
-
-/// Configure the node
-#[derive(Debug, Parser)]
-pub struct ConfigCommand {
-    /// Key-value pairs to be added or updated in the TOML file
-    #[clap(value_name = "ARGS")]
-    args: Vec<KeyValuePair>,
+#[derive(Debug, Clone, ValueEnum)]
+enum OutputFormat {
+    #[clap(alias = "default")]
+    Default,
+    Toml,
+    Json,
 }
 
-#[derive(Clone, Debug)]
-struct KeyValuePair {
-    key: String,
-    value: Value,
+#[derive(Parser, Debug)]
+#[command(
+    name = "config",
+    about = "Inspect or modify the merod configuration file",
+    long_about = "Inspect, edit, or save merod configuration values.\n\n\
+    - To view the current configuration: `merod config`\n\
+    - To view a specific section: `merod config sync`\n\
+    - To print in JSON: `merod config --print json`\n\
+    - To edit values: `merod config key=value`\n\
+    - To view schema hints: `merod config key?`\n\n\
+    Edits are only saved if you use the --save flag. Schema hints \
+    show what keys and value types are allowed.",
+    after_help = "EXAMPLES:\n\
+    \n\
+    View full config (in TOML):\n\
+      merod config\n\
+    \n\
+    View full config in JSON:\n\
+      merod config --print json\n\
+    \n\
+    View part of the config:\n\
+      merod config sync server.admin\n\
+    \n\
+    Edit values in memory:\n\
+      merod config discovery.mdns=false sync.interval_ms=50000\n\
+    \n\
+    Save edits to file:\n\
+      merod config discovery.mdns=false -s\n\
+    \n\
+    Show diff before saving:\n\
+      merod config discovery.mdns=false --print default\n\
+    \n\
+    Show config schema hint:\n\
+      merod config discovery?\n\
+      merod config discovery.relay? --print json"
+)]
+pub struct ConfigCmd {
+    #[arg(value_name = "ARGS")]
+    args: Vec<String>,
+
+    /// Print the config (full or partial) in given format
+    #[arg(long = "print", value_enum, default_value = "default")]
+    print: OutputFormat,
+
+    /// Save modifications to the config file
+    #[arg(short, long)]
+    save: bool,
 }
 
-impl FromStr for KeyValuePair {
-    type Err = String;
+impl ConfigCmd {
+    pub fn run(&self, config_path: PathBuf) -> anyhow::Result<()> {
+        let mut config = ConfigFile::load_or_default(&config_path)?;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.splitn(2, '=');
-        let key = parts.next().ok_or("Missing key")?.to_owned();
+        // Separate CLI arguments into edits, hints, and plain keys
+        let mut edits: BTreeMap<String, String> = BTreeMap::new();
+        let mut hints: Vec<String> = Vec::new();
+        let mut keys_to_print: Vec<String> = Vec::new();
 
-        let value = parts.next().ok_or("Missing value")?;
-        let value = Value::from_str(value).map_err(|e| e.to_string())?;
-
-        Ok(Self { key, value })
-    }
-}
-
-#[warn(unused_results)]
-impl ConfigCommand {
-    pub fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-
-        if !ConfigFile::exists(&path) {
-            bail!("Node is not initialized in {:?}", path);
-        }
-
-        let path = path.join(CONFIG_FILE);
-
-        // Load the existing TOML file
-        let toml_str =
-            read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
-        let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
-
-        // Update the TOML document
-        for kv in self.args.iter() {
-            let key_parts: Vec<&str> = kv.key.split('.').collect();
-
-            let mut current = doc.as_item_mut();
-
-            for key in &key_parts[..key_parts.len() - 1] {
-                current = &mut current[key];
+        for arg in &self.args {
+            if arg.contains('=') {
+                // key=value  → edit
+                let parts: Vec<_> = arg.splitn(2, '=').collect();
+                edits.insert(parts[0].to_string(), parts[1].to_string());
+            } else if arg.ends_with('?') {
+                // key? → schema hint
+                hints.push(arg.trim_end_matches('?').to_string());
+            } else {
+                // plain key → partial print
+                keys_to_print.push(arg.to_string());
             }
-
-            current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
         }
 
-        self.validate_toml(&doc)?;
+        /* ------------------------------------------------------------------ */
+        /* 1. Hints                                                           */
+        /* ------------------------------------------------------------------ */
+        if !hints.is_empty() {
+            for key in &hints {
+                let format = match self.print {
+                    OutputFormat::Default => HintFormat::Human,
+                    OutputFormat::Toml => HintFormat::Toml,
+                    OutputFormat::Json => HintFormat::Json,
+                };
+                let rendered = get_schema_hint(key, format)?;
+                println!("{rendered}");
+            }
+            return Ok(());
+        }
 
-        // Save the updated TOML back to the file
-        write(&path, doc.to_string())?;
+        /* ------------------------------------------------------------------ */
+        /* 2. Edits (in-memory, optional save)                                */
+        /* ------------------------------------------------------------------ */
+        if !edits.is_empty() {
+            let (diff, updated) = config.apply_edits(&edits)?;
+            if diff.is_empty() {
+                eprintln!("{}", "no changes made; skipping save.".yellow());
+            } else {
+                match self.print {
+                    OutputFormat::Default => {
+                        // Human-readable diff
+                        println!("{}", Diff(&diff));
+                        eprintln!(
+                            "{}",
+                            "note: if this looks right, use -s, --save to persist these modifications"
+                                .italic()
+                                .yellow()
+                        );
+                    }
+                    OutputFormat::Toml => print_config(&updated, PrintFormat::Toml)?,
+                    OutputFormat::Json => print_config(&updated, PrintFormat::Json)?,
+                }
 
-        info!("Node configuration has been updated");
+                if self.save {
+                    config.save(&updated)?;
+                }
+            }
+            return Ok(());
+        }
 
-        Ok(())
-    }
-
-    pub fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
-        let tmp_dir = temp_dir();
-        let tmp_path = tmp_dir.join(CONFIG_FILE);
-
-        write(&tmp_path, doc.to_string())?;
-
-        let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
-
-        drop(ConfigFile::load(&tmp_path_utf8)?);
+        /* ------------------------------------------------------------------ */
+        /* 3. Pure printing (no edits)                                        */
+        /* ------------------------------------------------------------------ */
+        if !keys_to_print.is_empty() {
+            // Print only the requested sub-sections
+            let view = config.view_keys(&keys_to_print)?;
+            match self.print {
+                OutputFormat::Default | OutputFormat::Toml => {
+                    print_config(&view, PrintFormat::Toml)?
+                }
+                OutputFormat::Json => print_config(&view, PrintFormat::Json)?,
+            }
+        } else {
+            // Print the whole config
+            let full = config.as_map();
+            match self.print {
+                OutputFormat::Default | OutputFormat::Toml => {
+                    print_config(&full, PrintFormat::Toml)?
+                }
+                OutputFormat::Json => print_config(&full, PrintFormat::Json)?,
+            }
+        }
 
         Ok(())
     }
