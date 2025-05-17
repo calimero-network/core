@@ -294,7 +294,8 @@ impl Driver {
                         &server_host,
                         swarm_port.port(),
                         server_port.port(),
-                        config_args.map(String::as_str),
+                        config_args.map(|s| s.as_str()).collect::<Vec<&str>>(),
+
                     )
                     .await?;
 

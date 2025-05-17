@@ -1834,10 +1834,12 @@ dependencies = [
  "calimero-network",
  "calimero-server",
  "camino",
+ "clap",
  "eyre",
  "libp2p-identity",
  "multiaddr",
  "serde",
+ "serde_json",
  "toml",
 ]
 

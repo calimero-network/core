@@ -1,95 +1,112 @@
-#![allow(unused_results, reason = "Occurs in macro")]
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::fs::File;
+use std::io::{self, Write};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-use std::env::temp_dir;
-use std::fs::{read_to_string, write};
-use std::str::FromStr;
-
-use calimero_config::{ConfigFile, CONFIG_FILE};
-use camino::Utf8PathBuf;
-use clap::Parser;
-use eyre::{bail, eyre, Result as EyreResult};
-use toml_edit::{Item, Value};
-use tracing::info;
-
-use crate::cli;
-
-/// Configure the node
-#[derive(Debug, Parser)]
-pub struct ConfigCommand {
-    /// Key-value pairs to be added or updated in the TOML file
-    #[clap(value_name = "ARGS")]
-    args: Vec<KeyValuePair>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Item {
+    Value(String),
+    Map(HashMap<String, Item>),
 }
 
-#[derive(Clone, Debug)]
-struct KeyValuePair {
-    key: String,
-    value: Value,
-}
+// Function to navigate and set a value in the nested HashMap
+fn set_value_in_config(current: &mut HashMap<String, Item>, key_parts: &[&str], value: String) -> Result<(), String> {
+    let mut current_map = current;
 
-impl FromStr for KeyValuePair {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.splitn(2, '=');
-        let key = parts.next().ok_or("Missing key")?.to_owned();
-
-        let value = parts.next().ok_or("Missing value")?;
-        let value = Value::from_str(value).map_err(|e| e.to_string())?;
-
-        Ok(Self { key, value })
-    }
-}
-
-#[warn(unused_results)]
-impl ConfigCommand {
-    pub fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-
-        if !ConfigFile::exists(&path) {
-            bail!("Node is not initialized in {:?}", path);
-        }
-
-        let path = path.join(CONFIG_FILE);
-
-        // Load the existing TOML file
-        let toml_str =
-            read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
-        let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
-
-        // Update the TOML document
-        for kv in self.args.iter() {
-            let key_parts: Vec<&str> = kv.key.split('.').collect();
-
-            let mut current = doc.as_item_mut();
-
-            for key in &key_parts[..key_parts.len() - 1] {
-                current = &mut current[key];
+    // Iterate through key parts to navigate the nested structure
+    for &key in &key_parts[..key_parts.len() - 1] {
+        match current_map.get_mut(key) {
+            Some(Item::Map(map)) => {
+                current_map = map; // Navigate deeper if it's a Map
             }
-
-            current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+            Some(_) => {
+                // If we find a value but not a map, return an error
+                return Err(format!("Expected a map at key '{}', but found a value", key));
+            }
+            None => {
+                // If the key does not exist, insert a new Map at that level
+                let new_map = HashMap::new();
+                current_map.insert(key.to_string(), Item::Map(new_map));
+                if let Item::Map(ref mut map) = current_map[key] {
+                    current_map = map; // Navigate into the new map
+                }
+            }
         }
-
-        self.validate_toml(&doc)?;
-
-        // Save the updated TOML back to the file
-        write(&path, doc.to_string())?;
-
-        info!("Node configuration has been updated");
-
-        Ok(())
     }
 
-    pub fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
-        let tmp_dir = temp_dir();
-        let tmp_path = tmp_dir.join(CONFIG_FILE);
+    // Set the value for the final key part
+    let last_key = key_parts[key_parts.len() - 1];
+    current_map.insert(last_key.to_string(), Item::Value(value));
 
-        write(&tmp_path, doc.to_string())?;
+    Ok(())
+}
 
-        let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
-
-        drop(ConfigFile::load(&tmp_path_utf8)?);
-
-        Ok(())
+// Function to print the configuration based on the format
+fn print_config(config: &HashMap<String, Item>, print_format: &str) {
+    match print_format {
+        "json" => {
+            let json = serde_json::to_string(config).unwrap();
+            println!("{}", json);
+        },
+        "toml" => {
+            // Use your own TOML serialization here
+            let toml = toml::to_string(config).unwrap();
+            println!("{}", toml);
+        },
+        "default" => {
+            for (key, value) in config.iter() {
+                match value {
+                    Item::Value(val) => println!("{} = {}", key, val),
+                    Item::Map(map) => {
+                        println!("{} = {{", key);
+                        print_config(map, "default");
+                        println!("}}");
+                    }
+                }
+            }
+        },
+        _ => {
+            eprintln!("Unsupported print format: {}", print_format);
+        }
     }
+}
+
+// Main function to parse and run commands
+fn main() {
+    // Example configuration structure
+    let mut config: HashMap<String, Item> = HashMap::new();
+
+    // Simulate setting a value in a nested configuration
+    let key_parts = ["a", "b", "c"];
+    let value = "new_value".to_string();
+    if let Err(e) = set_value_in_config(&mut config, &key_parts, value) {
+        eprintln!("Error: {}", e);
+    } else {
+        println!("Config updated successfully!");
+    }
+
+    // Example: Print the config in JSON format
+    println!("Printing configuration in JSON format:");
+    print_config(&config, "json");
+
+    // Example: Save the updated config to a file if needed
+    if let Err(e) = save_config_to_file(&config, "config.toml") {
+        eprintln!("Error saving config to file: {}", e);
+    }
+}
+
+// Function to save the config to a file
+fn save_config_to_file(config: &HashMap<String, Item>, path: &str) -> io::Result<()> {
+    let file = File::create(path)?;
+    let mut writer = io::BufWriter::new(file);
+
+    // Serialize to TOML or JSON and write to the file
+    let toml = toml::to_string(config).unwrap();  // Ensure proper error handling here
+    writer.write_all(toml.as_bytes())?;
+    writer.flush()?;
+
+    println!("Configuration saved to {}", path);
+    Ok(())
 }

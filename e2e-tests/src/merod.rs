@@ -8,6 +8,7 @@ use tokio::io::copy;
 use tokio::process::{Child, Command};
 
 use crate::output::OutputWriter;
+use crate::config::configHints::CONFIG_HINTS;  // Importing from configHints.rs
 
 pub struct Merod {
     pub name: String,
@@ -42,7 +43,7 @@ impl Merod {
         server_host: &str,
         swarm_port: u16,
         server_port: u16,
-        args: impl IntoIterator<Item = &'a str>,
+        args: Vec<&'a str>, // accept owned Vec to allow multiple iterations
     ) -> EyreResult<()> {
         create_dir_all(&self.log_dir).await?;
 
@@ -55,24 +56,74 @@ impl Merod {
                     "--server-host",
                     server_host,
                     "--swarm-port",
-                    swarm_port.to_string().as_str(),
+                    &swarm_port.to_string(),
                     "--server-port",
-                    server_port.to_string().as_str(),
+                    &server_port.to_string(),
                 ],
                 "init",
             )
             .await?;
+
         let result = child.wait().await?;
         if !result.success() {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        let config_args = ["config"].into_iter().chain(args);
+        // Clone for safe reuse
+        let config_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
-        let mut child = self.run_cmd(config_args, "config").await?;
-        let result = child.wait().await?;
-        if !result.success() {
-            bail!("Failed to configure node '{}'", self.name);
+        let config_changed = !config_args.is_empty();
+
+        if config_changed {
+            // Reuse original args for chaining
+            let mut child = self
+                .run_cmd(["config", "set"].into_iter().chain(args.iter().copied()), "config")
+                .await?;
+
+            let result = child.wait().await?;
+            if !result.success() {
+                bail!("Failed to configure node '{}'", self.name);
+            }
+        } else {
+            // Check for output format
+            let output_format = args
+                .iter()
+                .find(|arg| arg.starts_with("--output-format"))
+                .and_then(|arg| arg.split('=').nth(1));
+
+            let print_format = match output_format {
+                Some("json") => "--format json",
+                _ => "",
+            };
+
+            let mut child = self
+                .run_cmd(
+                    ["config", "print"]
+                        .into_iter()
+                        .chain(if print_format.is_empty() {
+                            None
+                        } else {
+                            Some(print_format)
+                        }),
+                    "config-print",
+                )
+                .await?;
+
+            let result = child.wait().await?;
+            if !result.success() {
+                bail!("Failed to print node '{}' configuration", self.name);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn hints(&self) -> EyreResult<()> {
+        self.output_writer.write_str("Hints:");
+
+        for hint in CONFIG_HINTS {
+            let line = format!("  - {}: {}", hint.key, hint.description);
+            self.output_writer.write_str(&line);
         }
 
         Ok(())
@@ -80,9 +131,7 @@ impl Merod {
 
     pub async fn run(&self) -> EyreResult<()> {
         let child = self.run_cmd(["run"], "run").await?;
-
         *self.process.borrow_mut() = Some(child);
-
         Ok(())
     }
 
@@ -108,17 +157,14 @@ impl Merod {
     ) -> EyreResult<Child> {
         let mut command = Command::new(&self.binary);
 
+        let root_args = ["--home", self.home_dir.as_str(), "--node-name", &self.name];
         let mut command_line = format!("Command: '{}", &self.binary);
 
-        let root_args = ["--home", self.home_dir.as_str(), "--node-name", &self.name];
-
         for arg in root_args.into_iter().chain(args) {
-            let _ignored = command.arg(arg);
-            command_line.reserve(arg.len() + 1);
+            command.arg(arg);
             command_line.push(' ');
             command_line.push_str(arg);
         }
-
         command_line.push('\'');
 
         self.output_writer.write_str(&command_line);

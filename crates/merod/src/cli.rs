@@ -4,16 +4,10 @@ use const_format::concatcp;
 use eyre::Result as EyreResult;
 
 use crate::defaults;
-
-mod config;
-mod init;
-mod relay;
-mod run;
-
-use config::ConfigCommand;
-use init::InitCommand;
-use relay::RelayCommand;
-use run::RunCommand;
+use crate::config::ConfigCommand;  // Import ConfigCommand from config.rs
+use crate::init::InitCommand;
+use crate::relay::RelayCommand;
+use crate::run::RunCommand;
 
 pub const EXAMPLES: &str = r"
   # Initialize node
@@ -48,7 +42,7 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    Config(ConfigCommand),
+    Config(ConfigCommand), // Link ConfigCommand here
     Init(InitCommand),
     #[command(alias = "up")]
     Run(RunCommand),
@@ -71,7 +65,7 @@ pub struct RootArgs {
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
         match self.action {
-            SubCommands::Config(config) => config.run(&self.args),
+            SubCommands::Config(config) => config.run(&self.args), // Call ConfigCommand's run
             SubCommands::Init(init) => init.run(self.args),
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Relay(relay) => relay.run(self.args).await,
