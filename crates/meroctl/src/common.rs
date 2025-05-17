@@ -13,7 +13,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8Path;
 use chrono::Utc;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, eyre, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
