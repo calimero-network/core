@@ -21,7 +21,6 @@ ic-canister-sig-creation.workspace = true
 ic-signature-verification.workspace = true
 jsonwebtoken.workspace = true
 libp2p.workspace = true
-mime_guess.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
 reqwest.workspace = true
@@ -46,7 +45,6 @@ calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-store = { workspace = true, features = ["serde"] }
 
-
 [dev-dependencies]
 color-eyre.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -60,8 +58,3 @@ admin = ["dep:tower-sessions"]
 
 [lints]
 workspace = true
-
-[build-dependencies]
-cached-path = { workspace = true }
-reqwest = { workspace = true, features = ["json", "blocking"] }
-serde = { workspace = true, features = ["derive"] }

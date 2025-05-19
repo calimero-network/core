@@ -21,6 +21,3 @@ dist/
 lib/
 node_modules/
 output/*
-
-# build log
-build-deps-changed.txt
