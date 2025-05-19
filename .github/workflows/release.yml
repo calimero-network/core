@@ -55,11 +55,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
-          
+
           version_candidate=""
           for binary in $(echo '${{ steps.setup_matrix.outputs.binary_matrix }}' | jq -r '.[]'); do
             binary_version=$(cargo metadata --format-version 1 --no-deps | jq -r --arg binary "$binary" '.packages[] | select(.name == $binary) | .version')
-            
+
             if [ -z "$version_candidate" ]; then
               version_candidate="$binary_version"
             elif [ "$version_candidate" != "$binary_version" ]; then
@@ -69,7 +69,7 @@ jobs:
               exit 1
             fi
           done
-          
+
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
             version="$version_candidate"
             if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
@@ -101,7 +101,7 @@ jobs:
             echo "release_required=false" >> $GITHUB_OUTPUT
             echo "build_docker=false" >> $GITHUB_OUTPUT
           fi
-          
+
           echo "version=$version" >> $GITHUB_OUTPUT
 
   build-binaries:
@@ -120,6 +120,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
+
+    env:
+      CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -293,31 +296,31 @@ jobs:
         run: |
           # Create architecture-specific directories
           mkdir -p ./bin/amd64 ./bin/arm64
-          
+
           # Extract binaries directly to the proper directories
           tar -xzf binaries/${{ matrix.image.name }}_x86_64-unknown-linux-gnu.tar.gz -C ./bin/amd64 --no-same-owner
           tar -xzf binaries/${{ matrix.image.name }}_aarch64-unknown-linux-gnu.tar.gz -C ./bin/arm64 --no-same-owner
-          
+
           # Ensure binaries have correct permissions
           chmod +x ./bin/amd64/${{ matrix.image.name }} ./bin/arm64/${{ matrix.image.name }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-      
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: |
             image=moby/buildkit:latest
             network=host
-      
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          
+
       - name: Prepare Docker cache parameters
         id: prep_cache
         run: |
@@ -343,7 +346,7 @@ jobs:
           tags: |
             type=raw,value=${{ needs.prepare.outputs.version }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
-      
+
       - name: Build and push ${{ matrix.image.name }} image
         uses: docker/build-push-action@v5
         with:
