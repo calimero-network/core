@@ -24,7 +24,7 @@ libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
 reqwest.workspace = true
-rust-embed = { workspace = true, features = ["mime-guess"] }
+rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -49,6 +49,16 @@ calimero-store = { workspace = true, features = ["serde"] }
 color-eyre.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[build-dependencies]
+bytes.workspace = true
+cached-path.workspace = true
+eyre.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+# cached-path compat
+reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 [features]
 jsonrpc = []
