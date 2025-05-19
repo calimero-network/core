@@ -55,29 +55,3 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses sources
-
-  nodejs:
-    name: NodeJS
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v2
-        with:
-          node-version: '20'
-
-      - name: Install pnpm
-        run: npm install -g pnpm
-
-      - name: Install node-ui dependencies with pnpm
-        run: pnpm install --prefix ./node-ui
-
-      - name: Build node-ui
-        run: pnpm --filter ./node-ui run build
-
-      - name: Prettier check
-        run: |
-          cd node-ui
-          pnpm prettier:check .
