@@ -27,6 +27,7 @@ members = [
     "./crates/storage",
     "./crates/storage-macros",
     "./crates/store",
+    "./crates/store/impl/rocksdb",
     "./crates/store/blobs",
     "./crates/utils/actix",
 
@@ -50,8 +51,8 @@ borsh = "1.3.1"
 bs58 = "0.5.0"
 bytes = "1.6.0"
 cached-path = "0.7.0"
-candid = "0.10.10"
 camino = "1.1.6"
+candid = "0.10.10"
 cfg-if = "1.0.0"
 chrono = "0.4.37"
 claims = "0.7.1"
@@ -163,6 +164,7 @@ calimero-server-primitives = { path = "./crates/server-primitives" }
 calimero-storage = { path = "./crates/storage" }
 calimero-storage-macros = { path = "./crates/storage-macros" }
 calimero-store = { path = "./crates/store" }
+calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
 calimero-utils-actix = { path = "./crates/utils/actix" }

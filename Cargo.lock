@@ -1809,6 +1809,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "cached-path"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8369b5b3f30578fe6080a3adf8437a88ea47d028719b887a1237c5339fced03f"
+dependencies = [
+ "flate2",
+ "fs2",
+ "glob",
+ "indicatif",
+ "log",
+ "rand 0.8.5",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "tar",
+ "tempfile",
+ "thiserror 1.0.69",
+ "zip",
+]
+
+[[package]]
 name = "calimero-blobstore"
 version = "0.1.0"
 dependencies = [
@@ -1944,6 +1966,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "eyre",
@@ -2052,6 +2075,8 @@ dependencies = [
  "base64 0.22.1",
  "borsh",
  "bs58 0.5.1",
+ "bytes",
+ "cached-path",
  "calimero-context",
  "calimero-context-config",
  "calimero-node-primitives",
@@ -2071,6 +2096,7 @@ dependencies = [
  "libp2p",
  "multiaddr",
  "rand 0.8.5",
+ "reqwest 0.11.27",
  "reqwest 0.12.9",
  "rust-embed",
  "serde",
@@ -2143,13 +2169,23 @@ dependencies = [
  "camino",
  "eyre",
  "generic-array 1.1.1",
- "rocksdb",
  "serde",
  "serde_json",
  "strum 0.26.3",
  "tempdir",
  "thiserror 1.0.69",
  "thunderdome",
+]
+
+[[package]]
+name = "calimero-store-rocksdb"
+version = "0.1.0"
+dependencies = [
+ "calimero-store",
+ "eyre",
+ "rocksdb",
+ "strum 0.26.3",
+ "tempdir",
 ]
 
 [[package]]
@@ -2417,6 +2453,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "console"
+version = "0.15.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "once_cell",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3222,6 +3270,12 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
@@ -4820,6 +4874,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 
 [[package]]
+name = "indicatif"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d207dc617c7a380ab07ff572a6e52fa202a2a8f355860ac9c38e23f8196be1b"
+dependencies = [
+ "console",
+ "lazy_static",
+ "number_prefix",
+ "regex",
+]
+
+[[package]]
 name = "inotify"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5970,6 +6036,7 @@ dependencies = [
  "calimero-node",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "color-eyre",
@@ -6774,6 +6841,12 @@ dependencies = [
  "quote",
  "syn 2.0.100",
 ]
+
+[[package]]
+name = "number_prefix"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "nybbles"
@@ -8055,6 +8128,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rust-embed-utils",
+ "shellexpand",
  "syn 2.0.100",
  "walkdir",
 ]
@@ -8687,6 +8761,15 @@ checksum = "f6c99835bad52957e7aa241d3975ed17c1e5f8c92026377d117a606f36b84b16"
 dependencies = [
  "bytes",
  "memmap2",
+]
+
+[[package]]
+name = "shellexpand"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
+dependencies = [
+ "dirs",
 ]
 
 [[package]]
