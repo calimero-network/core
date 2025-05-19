@@ -25,8 +25,8 @@ use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
 use calimero_store::config::StoreConfig;
-use calimero_store::db::RocksDB;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, ValueEnum};
 use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
@@ -107,6 +107,11 @@ pub struct InitCommand {
     )]
     #[clap(overrides_with("mdns"))]
     pub no_mdns: bool,
+
+    /// Advertise observed address
+    #[clap(long, default_value_t = false)]
+    #[clap(overrides_with("no_mdns"))]
+    pub advertise_address: bool,
 
     #[clap(
         long,
@@ -395,6 +400,7 @@ impl InitCommand {
                 BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
                 DiscoveryConfig::new(
                     mdns,
+                    self.advertise_address,
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
                     RelayConfig::new(self.relay_registrations_limit),
                     AutonatConfig::new(self.autonat_confidence_threshold),

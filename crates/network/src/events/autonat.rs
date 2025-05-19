@@ -1,7 +1,6 @@
 use libp2p::autonat::{Event, OutboundProbeEvent};
-use libp2p::PeerId;
 use owo_colors::OwoColorize;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use super::{EventHandler, EventLoop};
 
@@ -15,51 +14,52 @@ impl EventHandler<Event> for EventLoop {
                     debug!(%peer, "Sent probe request");
                 }
                 OutboundProbeEvent::Response { peer, address, .. } => {
-                    debug!(%peer, %address, "Peer determined our external address");
+                    info!(%peer, %address, "Peer determined our external address");
 
-                    let rendezvous_peers: Vec<PeerId> =
-                        self.discovery.state.get_rendezvous_peer_ids().collect();
-                    let relay_peers: Vec<PeerId> =
-                        self.discovery.state.get_relay_peer_ids().collect();
+                    // TODO: Revisit AutoNAT protocol integration
+                    // let rendezvous_peers: Vec<PeerId> =
+                    //     self.discovery.state.get_rendezvous_peer_ids().collect();
+                    // let relay_peers: Vec<PeerId> =
+                    //     self.discovery.state.get_relay_peer_ids().collect();
 
-                    if self.swarm.behaviour().autonat.confidence()
-                        >= self.discovery.autonat_config.confidence_threshold
-                    {
-                        return;
-                    }
+                    // if self.swarm.behaviour().autonat.confidence()
+                    //     >= self.discovery.autonat_config.confidence_threshold
+                    // {
+                    //     return;
+                    // }
 
-                    if self.discovery.state.is_autonat_status_public() {
-                        for peer_id in &rendezvous_peers {
-                            if let Err(err) = self.rendezvous_discover(peer_id) {
-                                error!(%err, "Failed to perform rendezvous discovery");
-                            }
-                            if let Err(err) = self.rendezvous_register(peer_id) {
-                                error!(%err, "Failed to register with rendezvous");
-                            }
-                        }
-                    }
+                    // if self.discovery.state.is_autonat_status_public() {
+                    //     for peer_id in &rendezvous_peers {
+                    //         if let Err(err) = self.rendezvous_discover(peer_id) {
+                    //             error!(%err, "Failed to perform rendezvous discovery");
+                    //         }
+                    //         if let Err(err) = self.rendezvous_register(peer_id) {
+                    //             error!(%err, "Failed to register with rendezvous");
+                    //         }
+                    //     }
+                    // }
 
-                    if self.discovery.state.is_autonat_status_private() {
-                        if self.discovery.state.autonat_became_private() {
-                            for peer_id in &rendezvous_peers {
-                                drop(self.rendezvous_unregister(peer_id));
-                            }
-                        }
-                        for peer_id in relay_peers {
-                            if let Err(err) = self.create_relay_reservation(&peer_id) {
-                                error!(%err, "Failed to handle relay reservation");
-                            }
-                        }
+                    // if self.discovery.state.is_autonat_status_private() {
+                    //     if self.discovery.state.autonat_became_private() {
+                    //         for peer_id in &rendezvous_peers {
+                    //             drop(self.rendezvous_unregister(peer_id));
+                    //         }
+                    //     }
+                    //     for peer_id in relay_peers {
+                    //         if let Err(err) = self.create_relay_reservation(&peer_id) {
+                    //             error!(%err, "Failed to handle relay reservation");
+                    //         }
+                    //     }
 
-                        for peer_id in &rendezvous_peers {
-                            if let Err(err) = self.rendezvous_discover(peer_id) {
-                                error!(%err, "Failed to perform rendezvous discovery");
-                            }
-                            if let Err(err) = self.rendezvous_register(peer_id) {
-                                error!(%err, "Failed to register with rendezvous");
-                            }
-                        }
-                    }
+                    //     for peer_id in &rendezvous_peers {
+                    //         if let Err(err) = self.rendezvous_discover(peer_id) {
+                    //             error!(%err, "Failed to perform rendezvous discovery");
+                    //         }
+                    //         if let Err(err) = self.rendezvous_register(peer_id) {
+                    //             error!(%err, "Failed to register with rendezvous");
+                    //         }
+                    //     }
+                    // }
                 }
                 OutboundProbeEvent::Error { .. } => {
                     error!("Outbound probe failed")
