@@ -1944,6 +1944,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "eyre",
@@ -2143,13 +2144,23 @@ dependencies = [
  "camino",
  "eyre",
  "generic-array 1.1.1",
- "rocksdb",
  "serde",
  "serde_json",
  "strum 0.26.3",
  "tempdir",
  "thiserror 1.0.69",
  "thunderdome",
+]
+
+[[package]]
+name = "calimero-store-rocksdb"
+version = "0.1.0"
+dependencies = [
+ "calimero-store",
+ "eyre",
+ "rocksdb",
+ "strum 0.26.3",
+ "tempdir",
 ]
 
 [[package]]
@@ -5971,6 +5982,7 @@ dependencies = [
  "calimero-node",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "color-eyre",
@@ -6846,14 +6858,6 @@ name = "once_cell"
 version = "1.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1261fe7e33c73b354eab43b1273a57c8f967d0391e80353e51f764ac02cf6775"
-
-[[package]]
-name = "only-peers"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
-]
 
 [[package]]
 name = "opaque-debug"

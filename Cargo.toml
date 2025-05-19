@@ -27,11 +27,11 @@ members = [
     "./crates/storage",
     "./crates/storage-macros",
     "./crates/store",
+    "./crates/store/impl/rocksdb",
     "./crates/store/blobs",
     "./crates/utils/actix",
 
     "./apps/kv-store",
-    "./apps/only-peers",
     "./apps/gen-ext",
     "./apps/visited",
 
@@ -163,12 +163,12 @@ calimero-server-primitives = { path = "./crates/server-primitives" }
 calimero-storage = { path = "./crates/storage" }
 calimero-storage-macros = { path = "./crates/storage-macros" }
 calimero-store = { path = "./crates/store" }
+calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 
 kv-store = { path = "./apps/kv-store" }
-only-peers = { path = "./apps/only-peers" }
 gen-ext = { path = "./apps/gen-ext" }
 visited = { path = "./apps/visited" }
 
