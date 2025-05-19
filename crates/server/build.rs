@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use bytes::Bytes;
@@ -29,8 +29,14 @@ fn main() {
 fn try_main() -> eyre::Result<()> {
     let token = option_env!("CALIMERO_WEBUI_FETCH_TOKEN");
 
+    let mut is_local_dir = false;
+
     let src = match option_env!("CALIMERO_WEBUI_SRC") {
-        Some(url) => Cow::from(url),
+        Some(src) => {
+            is_local_dir = fs::metadata(src)?.is_dir();
+
+            Cow::from(src)
+        }
         None => {
             let repo = option_env!("CALIMERO_WEBUI_REPO").unwrap_or(CALIMERO_WEBUI_REPO);
             let version = option_env!("CALIMERO_WEBUI_VERSION").unwrap_or(CALIMERO_WEBUI_VERSION);
@@ -79,32 +85,35 @@ fn try_main() -> eyre::Result<()> {
         builder = builder.default_headers(headers.collect());
     }
 
-    let cache = Cache::builder()
-        .client_builder(builder)
-        .freshness_lifetime(FRESHNESS_LIFETIME)
-        .dir(target_dir()?.join("cache"))
-        .build()?;
+    let webui_dir = if is_local_dir {
+        Cow::from(Path::new(&*src))
+    } else {
+        let cache = Cache::builder()
+            .client_builder(builder)
+            .freshness_lifetime(FRESHNESS_LIFETIME)
+            .dir(target_dir()?.join("cache"))
+            .build()?;
 
-    let mut options = Options::default().subdir("webui").extract();
+        let mut options = Options::default().subdir("webui").extract();
 
-    let force =
-        option_env!("CALIMERO_WEBUI_FETCH").map_or(false, |c| matches!(c, "1" | "true" | "yes"));
+        let force = option_env!("CALIMERO_WEBUI_FETCH")
+            .map_or(false, |c| matches!(c, "1" | "true" | "yes"));
 
-    if force {
-        options = options.force();
-    }
+        if force {
+            options = options.force();
+        }
 
-    let workdir = cache.cached_path_with_options(&*src, &options)?;
+        let workdir = cache.cached_path_with_options(&*src, &options)?;
 
-    println!("cargo:rerun-if-changed={}", workdir.display());
+        let repo = fs::read_dir(workdir)?
+            .filter_map(Result::ok)
+            .find(|entry| entry.path().is_dir())
+            .ok_or_eyre("no extracted directory found")?;
 
-    let webui_dir = fs::read_dir(workdir)?
-        .filter_map(Result::ok)
-        .find(|entry| entry.path().is_dir())
-        .ok_or_eyre("no extracted directory found")?
-        .path()
-        .join("build");
+        repo.path().join("build").into()
+    };
 
+    println!("cargo:rerun-if-changed={}", webui_dir.display());
     println!(
         "cargo:rustc-env=CALIMERO_WEBUI_PATH={}",
         webui_dir.display()
