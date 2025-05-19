@@ -19,6 +19,7 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::handlers::alias;
+use super::handlers::context::{grant_capabilities, revoke_capabilities};
 use super::handlers::did::delete_did_handler;
 use super::handlers::proposals::{
     get_context_storage_entries_handler, get_context_value_handler,
@@ -134,6 +135,14 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/identities-owned",
             get(get_context_identities::handler),
+        )
+        .route(
+            "/contexts/:context_id/capabilities/grant",
+            post(grant_capabilities::handler),
+        )
+        .route(
+            "/contexts/:context_id/capabilities/revoke",
+            post(revoke_capabilities::handler),
         )
         .route("/contexts/invite", post(invite_to_context::handler))
         .route("/contexts/join", post(join_context::handler))

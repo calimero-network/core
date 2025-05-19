@@ -21,6 +21,7 @@ use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
 use calimero_node_primitives::{CallError, ExecutionRequest};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
@@ -32,13 +33,14 @@ use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
-use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
+use memchr::memmem;
 use rand::{thread_rng, Rng};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
@@ -442,6 +444,7 @@ impl Node {
                 &request.method,
                 request.payload,
                 request.executor_public_key,
+                request.substitutes,
             )
             .await;
 
@@ -454,8 +457,9 @@ impl Node {
         &mut self,
         context_id: ContextId,
         method: &str,
-        payload: Vec<u8>,
+        mut payload: Vec<u8>,
         executor_public_key: PublicKey,
+        aliases: Vec<Alias<PublicKey>>,
     ) -> Result<Outcome, CallError> {
         let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
             return Err(CallError::ContextNotFound);
@@ -474,6 +478,12 @@ impl Node {
                 context_id,
                 public_key: executor_public_key,
             });
+        }
+
+        if !aliases.is_empty() {
+            payload = self
+                .substitute_aliases_in_payload(context_id, payload, &aliases)
+                .await?
         }
 
         let outcome_option = self
@@ -538,6 +548,43 @@ impl Node {
         }
 
         Ok(outcome)
+    }
+
+    async fn substitute_aliases_in_payload(
+        &self,
+        context_id: ContextId,
+        payload: Vec<u8>,
+        aliases: &[Alias<PublicKey>],
+    ) -> Result<Vec<u8>, CallError> {
+        if aliases.is_empty() {
+            return Ok(payload);
+        }
+
+        let mut result = Vec::with_capacity(payload.len());
+        let mut remaining = &payload[..];
+
+        for alias in aliases {
+            let needle_str = format!("{{{alias}}}");
+            let needle = needle_str.into_bytes();
+
+            while let Some(pos) = memmem::find(remaining, &needle) {
+                result.extend_from_slice(&remaining[..pos]);
+
+                let public_key = self
+                    .ctx_manager
+                    .resolve_alias(*alias, Some(context_id))
+                    .map_err(|_| CallError::InternalError)?
+                    .ok_or_else(|| CallError::AliasResolutionFailed { alias: *alias })?;
+
+                result.extend_from_slice(public_key.as_str().as_bytes());
+
+                remaining = &remaining[pos + needle.len()..];
+            }
+        }
+
+        result.extend_from_slice(remaining);
+
+        Ok(result)
     }
 
     async fn execute(

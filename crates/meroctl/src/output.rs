@@ -6,7 +6,7 @@ use serde::Serialize;
 pub enum Format {
     Json,
     #[default]
-    PlainText,
+    Human,
 }
 
 #[derive(Debug, Default)]
@@ -31,7 +31,7 @@ impl Output {
                 Ok(json) => println!("{json}"),
                 Err(err) => eprintln!("Failed to serialize to JSON: {err}"),
             },
-            Format::PlainText => value.report(),
+            Format::Human => value.report(),
         }
     }
 }
@@ -51,5 +51,14 @@ pub struct ErrorLine<'a>(pub &'a str);
 impl Report for ErrorLine<'_> {
     fn report(&self) {
         println!("{} {}", "[ERROR]".red(), self.0);
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WarnLine<'a>(pub &'a str);
+
+impl Report for WarnLine<'_> {
+    fn report(&self) {
+        println!("{} {}", "[WARN]".yellow(), self.0);
     }
 }
