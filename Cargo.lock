@@ -3789,15 +3789,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gen-ext"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-sdk-near",
- "calimero-storage",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10402,14 +10393,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "visited"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
-]
 
 [[package]]
 name = "void"
