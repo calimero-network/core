@@ -3,7 +3,7 @@ use colored::*;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use config::config_file::{ConfigFile, Diff};
+use config::config_file::{ConfigFile};
 use config::format::{print_config, PrintFormat};
 use config::schema::{get_schema_hint, HintFormat};
 
@@ -19,37 +19,38 @@ enum OutputFormat {
 #[command(
     name = "config",
     about = "Inspect or modify the merod configuration file",
-    long_about = "Inspect, edit, or save merod configuration values.\n\n\
-    - To view the current configuration: `merod config`\n\
-    - To view a specific section: `merod config sync`\n\
-    - To print in JSON: `merod config --print json`\n\
-    - To edit values: `merod config key=value`\n\
-    - To view schema hints: `merod config key?`\n\n\
-    Edits are only saved if you use the --save flag. Schema hints \
+    long_about = "Inspect, edit, or save merod configuration values.\n\n
+
+    To view the current configuration: merod config\n
+    To view a specific section: merod config sync\n
+    To print in JSON: merod config --print json\n
+    To edit values: merod config key=value\n
+    To view schema hints: merod config key?\n\n
+    Edits are only saved if you use the --save flag. Schema hints
     show what keys and value types are allowed.",
-    after_help = "EXAMPLES:\n\
-    \n\
-    View full config (in TOML):\n\
-      merod config\n\
-    \n\
-    View full config in JSON:\n\
-      merod config --print json\n\
-    \n\
-    View part of the config:\n\
-      merod config sync server.admin\n\
-    \n\
-    Edit values in memory:\n\
-      merod config discovery.mdns=false sync.interval_ms=50000\n\
-    \n\
-    Save edits to file:\n\
-      merod config discovery.mdns=false -s\n\
-    \n\
-    Show diff before saving:\n\
-      merod config discovery.mdns=false --print default\n\
-    \n\
-    Show config schema hint:\n\
-      merod config discovery?\n\
-      merod config discovery.relay? --print json"
+    after_help = "EXAMPLES:\n
+    \n
+    View full config (in TOML):\n
+    merod config\n
+    \n
+    View full config in JSON:\n
+    merod config --print json\n
+    \n
+    View part of the config:\n
+    merod config sync server.admin\n
+    \n
+    Edit values in memory:\n
+    merod config discovery.mdns=false sync.interval_ms=50000\n
+    \n
+    Save edits to file:\n
+    merod config discovery.mdns=false -s\n
+    \n
+    Show diff before saving:\n
+    merod config discovery.mdns=false --print default\n
+    \n
+    Show config schema hint:\n
+    merod config discovery?\n
+    merod config discovery.relay? --print json"
 )]
 pub struct ConfigCmd {
     #[arg(value_name = "ARGS")]
@@ -97,6 +98,7 @@ impl ConfigCmd {
                     OutputFormat::Toml => HintFormat::Toml,
                     OutputFormat::Json => HintFormat::Json,
                 };
+
                 let rendered = get_schema_hint(key, format)?;
                 println!("{rendered}");
             }
@@ -108,6 +110,7 @@ impl ConfigCmd {
         /* ------------------------------------------------------------------ */
         if !edits.is_empty() {
             let (diff, updated) = config.apply_edits(&edits)?;
+
             if diff.is_empty() {
                 eprintln!("{}", "no changes made; skipping save.".yellow());
             } else {
@@ -130,6 +133,7 @@ impl ConfigCmd {
                     config.save(&updated)?;
                 }
             }
+
             return Ok(());
         }
 
@@ -156,6 +160,54 @@ impl ConfigCmd {
             }
         }
 
+        Ok(())
+    }
+}
+
+/// Wrapper for displaying config diffs in human-readable form
+pub struct Diff<'a>(pub &'a BTreeMap<String, (Option<String>, Option<String>)>);
+
+impl<'a> std::fmt::Display for Diff<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            writeln!(f, "No changes detected.")?;
+            return Ok(());
+        }
+        for (key, (old_val, new_val)) in self.0 {
+            match (old_val, new_val) {
+                (Some(old), Some(new)) if old != new => {
+                    writeln!(
+                        f,
+                        "{} {} {}",
+                        key.green().bold(),
+                        "changed from".yellow(),
+                        old.red()
+                    )?;
+                    writeln!(f, "{} {}", "to".yellow(), new.green())?;
+                }
+                (None, Some(new)) => {
+                    writeln!(
+                        f,
+                        "{} {} {}",
+                        key.green().bold(),
+                        "set to".yellow(),
+                        new.green()
+                    )?;
+                }
+                (Some(old), None) => {
+                    writeln!(
+                        f,
+                        "{} {} {}",
+                        key.green().bold(),
+                        "removed (was)".yellow(),
+                        old.red()
+                    )?;
+                }
+                _ => {
+                    // No change or unknown case - skip printing
+                }
+            }
+        }
         Ok(())
     }
 }
