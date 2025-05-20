@@ -33,7 +33,9 @@ impl Report for GetPeersCountResponse {
 
 impl PeersCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment.connection.as_ref()
+        let connection = environment
+            .connection
+            .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
         let mut url = connection.api_url.clone();
@@ -45,8 +47,14 @@ impl PeersCommand {
             .and_then(|k| bs58::decode(k).into_vec().ok())
             .and_then(|bytes| libp2p::identity::Keypair::from_protobuf_encoding(&bytes).ok());
 
-        let response: GetPeersCountResponse =
-            do_request(&Client::new(), url, None::<()>, keypair.as_ref(), RequestType::Get).await?;
+        let response: GetPeersCountResponse = do_request(
+            &Client::new(),
+            url,
+            None::<()>,
+            keypair.as_ref(),
+            RequestType::Get,
+        )
+        .await?;
 
         environment.output.write(&response);
 

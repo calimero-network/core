@@ -160,7 +160,10 @@ impl RootCommand {
                             let url = multiaddr_to_url(&multiaddr, "")?;
                             ConnectionInfo {
                                 api_url: url,
-                                auth_key: Some(bs58::encode(config.identity.to_protobuf_encoding().unwrap()).into_string()),
+                                auth_key: Some(
+                                    bs58::encode(config.identity.to_protobuf_encoding().unwrap())
+                                        .into_string(),
+                                ),
                             }
                         }
                         NodeConnection::Remote { url, auth } => ConnectionInfo {
@@ -175,7 +178,10 @@ impl RootCommand {
                     let url = multiaddr_to_url(&multiaddr, "")?;
                     ConnectionInfo {
                         api_url: url,
-                        auth_key: Some(bs58::encode(config.identity.to_protobuf_encoding().unwrap()).into_string()),
+                        auth_key: Some(
+                            bs58::encode(config.identity.to_protobuf_encoding().unwrap())
+                                .into_string(),
+                        ),
                     }
                 }
             }

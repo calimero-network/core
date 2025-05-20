@@ -59,7 +59,9 @@ impl InstallCommand {
     }
 
     pub async fn install_app(&self, environment: &Environment) -> EyreResult<ApplicationId> {
-        let connection = environment.connection.as_ref()
+        let connection = environment
+            .connection
+            .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
         let mut url = connection.api_url.clone();

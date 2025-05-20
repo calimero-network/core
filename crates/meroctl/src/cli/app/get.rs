@@ -46,8 +46,14 @@ impl GetCommand {
             .and_then(|k| bs58::decode(k).into_vec().ok())
             .and_then(|bytes| Keypair::from_protobuf_encoding(&bytes).ok());
 
-        let response: GetApplicationResponse =
-            do_request(&Client::new(), url, None::<()>, keypair.as_ref(), RequestType::Get).await?;
+        let response: GetApplicationResponse = do_request(
+            &Client::new(),
+            url,
+            None::<()>,
+            keypair.as_ref(),
+            RequestType::Get,
+        )
+        .await?;
 
         environment.output.write(&response);
         Ok(())
