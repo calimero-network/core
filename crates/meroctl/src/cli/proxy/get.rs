@@ -268,7 +268,13 @@ impl GetCommand {
             &format!("admin-api/dev/contexts/{}/proposals", context_id),
         )?;
 
-        let params = self.args.clone().ok_or_eyre("arguments are required")?;
+        let params = self.args.clone().unwrap_or_else(|| {
+            // Default to offset 0 and use default limit
+            serde_json::json!({
+                "offset": 0,
+                "limit": 1
+            })
+        });
 
         make_request::<_, GetProposalsResponse>(
             environment,

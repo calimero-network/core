@@ -1325,14 +1325,14 @@ impl ContextManager {
         &self,
         context_id: ContextId,
         offset: usize,
-        limit: usize,
+        limit: Option<usize>,
     ) -> EyreResult<Vec<Proposal>> {
         let handle = self.store.handle();
-
+    
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             bail!("Context not found");
         };
-
+    
         let response = self
             .config_client
             .query::<ContextProxy>(
@@ -1340,9 +1340,9 @@ impl ContextManager {
                 context_config.network.as_ref().into(),
                 context_config.proxy_contract.as_ref().into(),
             )
-            .proposals(offset, limit)
+            .proposals(offset, limit.unwrap_or(1))
             .await;
-
+    
         match response {
             Ok(proposals) => Ok(proposals),
             Err(err) => Err(eyre::eyre!("Failed to fetch proposals: {}", err)),

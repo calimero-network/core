@@ -34,9 +34,12 @@ pub async fn get_proposals_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<GetProposalsRequest>,
 ) -> impl IntoResponse {
+    // Use default limit if not specified (1)
+    let limit = if req.limit == 0 { 1 } else { req.limit };
+
     match state
         .ctx_manager
-        .get_proposals(context_id, req.offset, req.limit)
+        .get_proposals(context_id, req.offset, Some(limit))
         .await
     {
         Ok(context_proposals) => ApiResponse {

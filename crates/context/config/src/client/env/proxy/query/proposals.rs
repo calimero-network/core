@@ -23,7 +23,12 @@ use crate::Proposal;
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct ProposalsRequest {
     pub(super) offset: usize,
+    #[serde(default = "default_limit")]
     pub(super) length: usize,
+}
+
+fn default_limit() -> usize {
+    1
 }
 
 impl Method<Near> for ProposalsRequest {
