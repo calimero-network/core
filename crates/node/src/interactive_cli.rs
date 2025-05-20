@@ -4,18 +4,23 @@
     reason = "TODO: Check if this is necessary"
 )]
 
-mod applications;
-pub mod call;
-pub mod context;
-pub mod identity;
-pub mod peers;
-pub mod state;
-pub mod store;
+use std::sync::Arc;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use clap::{Parser, Subcommand};
+
+mod applications;
+pub mod call;
+pub mod common;
+pub mod context;
+pub mod peers;
+pub mod state;
+pub mod store;
+pub mod webui;
+
+use crate::NodeConfig;
 
 #[derive(Debug, Parser)]
 #[command(multicall = true)]
@@ -32,16 +37,18 @@ pub enum SubCommand {
     Application(applications::ApplicationCommand),
     Call(call::CallCommand),
     Context(context::ContextCommand),
-    Identity(identity::IdentityCommand),
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
+    #[command(name = "webui")]
+    WebUI(webui::WebUICommand),
 }
 
 pub async fn handle_line(
     ctx_client: ContextClient,
     node_client: NodeClient,
     datastore: Store,
+    config: Arc<NodeConfig>,
     line: String,
 ) -> eyre::Result<()> {
     // todo! use shell parsing
@@ -65,9 +72,9 @@ pub async fn handle_line(
         SubCommand::Application(application) => application.run(&node_client).await?,
         SubCommand::Call(call) => call.run(&node_client, &ctx_client).await?,
         SubCommand::Context(context) => context.run(&node_client, &ctx_client).await?,
-        SubCommand::Identity(identity) => identity.run(&node_client, &ctx_client).await?,
         SubCommand::Peers(peers) => peers.run(&node_client).await?,
         SubCommand::State(state) => state.run(&node_client, datastore)?,
+        SubCommand::WebUI(webui) => webui.run(&config)?,
         // SubCommand::Store(store) => store.run(node)?,
     }
 

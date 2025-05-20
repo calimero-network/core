@@ -1,13 +1,9 @@
 use core::net::{IpAddr, SocketAddr};
-use std::io::Error as IoError;
 use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
-use axum::middleware::from_fn;
-use axum::{Extension, Router};
-use axum_server::tls_rustls::RustlsConfig;
-use axum_server_dual_protocol::bind_dual_protocol;
+use axum::Router;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
@@ -21,11 +17,6 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
 
 use crate::admin::service::{setup, site};
-use crate::certificates::get_certificate;
-use crate::middleware::dev_auth::dev_mode_auth;
-use crate::middleware::jwt::JwtLayer;
-
-pub mod certificates;
 
 #[cfg(feature = "admin")]
 pub mod admin;
@@ -71,14 +62,14 @@ pub async fn start(
     config: ServerConfig,
     ctx_client: ContextClient,
     node_client: NodeClient,
-    store: Store,
+    datastore: Store,
 ) -> EyreResult<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
 
-    if let Err(e) = get_or_create_jwt_secret(&store) {
+    if let Err(e) = get_or_create_jwt_secret(&datastore) {
         eprintln!("Failed to get JWT key: {e:?}");
         return Err(e);
     }
@@ -119,7 +110,7 @@ pub async fn start(
     let mut serviced = false;
 
     let shared_state = Arc::new(AdminState::new(
-        store.clone(),
+        datastore.clone(),
         config.identity.clone(),
         ctx_client.clone(),
         node_client.clone(),
@@ -127,18 +118,8 @@ pub async fn start(
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, handler)) = jsonrpc::service(&config, ctx_client) {
-            app = app
-                .route(path, handler.clone())
-                .route_layer(JwtLayer::new(store.clone()))
-                .nest(
-                    "/jsonrpc/dev",
-                    Router::new()
-                        .route("/", handler)
-                        .route_layer(from_fn(dev_mode_auth))
-                        .layer(Extension(Arc::clone(&shared_state))),
-                );
-
+        if let Some((path, router)) = jsonrpc::service(&config, ctx_client, datastore.clone()) {
+            app = app.nest(path, router);
             serviced = true;
         }
     }
@@ -154,7 +135,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = setup(&config, store.clone(), shared_state) {
+        if let Some((api_path, router)) = setup(&config, datastore.clone(), shared_state) {
             if let Some((site_path, serve_dir)) = site(&config) {
                 app = app.nest_service(site_path, serve_dir);
             }
@@ -183,34 +164,12 @@ pub async fn start(
             ])
             .allow_private_network(true),
     );
-    // Check if the certificate exists and if they contain the current local IP address
-    let (cert_pem, key_pem) = get_certificate(&store)?;
-
-    // Configure certificate and private key used by https
-    let rustls_config = match RustlsConfig::from_pem(cert_pem, key_pem).await {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Failed to load TLS configuration: {e:?}");
-            return Err(e.into());
-        }
-    };
 
     let mut set = JoinSet::new();
 
     for listener in listeners {
-        let rustls_config = rustls_config.clone();
         let app = app.clone();
-        let addr = listener.local_addr().unwrap();
-        drop(set.spawn(async move {
-            if let Err(e) = bind_dual_protocol(addr, rustls_config)
-                .serve(app.into_make_service())
-                .await
-            {
-                eprintln!("Server error: {e:?}");
-                return Err(e);
-            }
-            Ok::<(), IoError>(())
-        }));
+        drop(set.spawn(async move { axum::serve(listener, app).await }));
     }
 
     while let Some(result) = set.join_next().await {

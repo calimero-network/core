@@ -1,9 +1,13 @@
-use calimero_network_primitives::config::{RelayConfig, RendezvousConfig};
+use std::collections::HashSet;
+use std::net::Ipv4Addr;
+use std::time::Duration;
+
+use calimero_network_primitives::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use eyre::{bail, ContextCompat, Result as EyreResult};
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
-use multiaddr::Protocol;
-use tracing::{debug, error};
+use multiaddr::{Multiaddr, Protocol};
+use tracing::{debug, error, info};
 
 use super::NetworkManager;
 use crate::discovery::state::{
@@ -17,15 +21,67 @@ pub struct Discovery {
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: RendezvousConfig,
     pub(crate) relay_config: RelayConfig,
+    pub(crate) advertise: Option<AdvertiseState>,
+    pub(crate) _autonat_config: AutonatConfig,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdvertiseState {
+    pub(crate) ip: Ipv4Addr,
+    pub(crate) ports: HashSet<u16>,
 }
 
 impl Discovery {
-    pub(crate) fn new(rendezvous_config: &RendezvousConfig, relay_config: &RelayConfig) -> Self {
-        Self {
+    pub(crate) async fn new(
+        rendezvous_config: &RendezvousConfig,
+        relay_config: &RelayConfig,
+        autonat_config: &AutonatConfig,
+        listening_on: &[Multiaddr],
+    ) -> EyreResult<Self> {
+        let advertise = if listening_on.is_empty() {
+            None
+        } else {
+            let ports = listening_on
+                .iter()
+                .filter_map(|addr| {
+                    addr.iter().find_map(|p| match p {
+                        Protocol::Tcp(port) | Protocol::Udp(port) => Some(port),
+                        _ => None,
+                    })
+                })
+                .collect();
+
+            Some(AdvertiseState {
+                ip: Self::get_public_ip().await?,
+                ports,
+            })
+        };
+
+        let this = Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
             relay_config: relay_config.clone(),
-        }
+            advertise,
+            _autonat_config: autonat_config.clone(),
+        };
+
+        Ok(this)
+    }
+
+    async fn get_public_ip() -> EyreResult<Ipv4Addr> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()?;
+
+        let ip_addr = client
+            .get("https://api.ipify.org")
+            .send()
+            .await?
+            .text()
+            .await?
+            .parse()?;
+
+        Ok(ip_addr)
     }
 }
 
@@ -121,6 +177,7 @@ impl NetworkManager {
         ) {
             match err {
                 RegisterError::NoExternalAddresses => {
+                    info!("No external addresses to register at rendezvous");
                     return Ok(());
                 }
                 err @ RegisterError::FailedToMakeRecord(_) => {
@@ -143,6 +200,30 @@ impl NetworkManager {
 
         Ok(())
     }
+
+    // We unregister from a rendezvous peer if we were previously registered.
+    // This function expectes that the rendezvous peer is already connected.
+    // pub(crate) fn rendezvous_unregister(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
+    //     let peer_info = self
+    //         .discovery
+    //         .state
+    //         .get_peer_info(rendezvous_peer)
+    //         .wrap_err("Failed to get peer info")?
+    //         .rendezvous()
+    //         .wrap_err("Peer isn't rendezvous")?;
+
+    //     if matches!(
+    //         peer_info.registration_status(),
+    //         RendezvousRegistrationStatus::Registered
+    //     ) {
+    //         self.swarm.behaviour_mut().rendezvous.unregister(
+    //             self.discovery.rendezvous_config.namespace.clone(),
+    //             *rendezvous_peer,
+    //         );
+    //     }
+
+    //     Ok(())
+    // }
 
     // Finds a new rendezvous peer for registration.
     // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
@@ -218,4 +299,29 @@ impl NetworkManager {
 
         Ok(())
     }
+
+    // TODO: Revisit AutoNAT protocol integration
+    // // Add a peer to the list of servers that may be used for determining our NAT status.
+    // // These peers are used for dial-request even if they are currently not connected,
+    // // in which case a connection will be established before sending the dial-request.
+    // pub(crate) fn add_autonat_server(&mut self, autonat_peer: &PeerId) -> EyreResult<()> {
+    //     let peer_info = self
+    //         .discovery
+    //         .state
+    //         .get_peer_info(autonat_peer)
+    //         .wrap_err("Failed to get peer info")?;
+
+    //     debug!(
+    //         %autonat_peer,
+    //         ?peer_info,
+    //         "Adding peer to the list of autonat servers"
+    //     );
+
+    //     self.swarm
+    //         .behaviour_mut()
+    //         .autonat
+    //         .add_server(*autonat_peer, None);
+
+    //     Ok(())
+    // }
 }

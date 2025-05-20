@@ -12,7 +12,10 @@ use crate::cli::RootArgs;
 
 /// Run a node
 #[derive(Debug, Parser)]
-pub struct RunCommand;
+pub struct RunCommand {
+    #[arg(long, default_value_t)]
+    pub auth: bool,
+}
 
 impl RunCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
@@ -23,6 +26,22 @@ impl RunCommand {
         }
 
         let config = ConfigFile::load(&path)?;
+
+        let mut server_config = ServerConfig::new(
+            config.network.server.listen,
+            config.identity.clone(),
+            config.network.server.admin,
+            config.network.server.jsonrpc,
+            config.network.server.websocket,
+        );
+
+        if let Some(admin) = &mut server_config.admin {
+            admin.auth_enabled = self.auth;
+        }
+
+        if let Some(jsonrpc) = &mut server_config.jsonrpc {
+            jsonrpc.auth_enabled = self.auth;
+        }
 
         start(NodeConfig {
             home: path.clone(),
@@ -40,13 +59,7 @@ impl RunCommand {
             datastore: StoreConfig::new(path.join(config.datastore.path)),
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
-            server: ServerConfig::new(
-                config.network.server.listen,
-                config.identity.clone(),
-                config.network.server.admin,
-                config.network.server.jsonrpc,
-                config.network.server.websocket,
-            ),
+            server: server_config,
         })
         .await
     }

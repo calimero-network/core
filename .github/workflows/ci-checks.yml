@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: ['master']
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-checks
+
+      - name: Build
+        run: |
+          ./scripts/build-all-apps.sh
+          cargo build --all-targets --tests
+
+      - name: Cargo format
+        run: |
+          rustup toolchain install nightly
+          rustup component add rustfmt --toolchain nightly
+
+          cargo +nightly fmt -- --check
+
+      - name: Cargo clippy
+        run: |
+          cargo clippy -- -A warnings
+
+      - name: Cargo test
+        run: |
+          FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
+
+          export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
+          echo $TEST_HOSTS
+
+          cargo test -- --nocapture
+
+      - name: Cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources
+
+  nodejs:
+    name: NodeJS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install node-ui dependencies with pnpm
+        run: pnpm install --prefix ./node-ui
+
+      - name: Build node-ui
+        run: pnpm --filter ./node-ui run build
+
+      - name: Prettier check
+        run: |
+          cd node-ui
+          pnpm prettier:check .

@@ -90,6 +90,7 @@ impl<'a> StellarTransport<'a> {
             let network = match network_config.network.as_str() {
                 "mainnet" => Networks::public(),
                 "testnet" => Networks::testnet(),
+                "local" => Networks::standalone(),
                 _ => Networks::standalone(),
             };
 

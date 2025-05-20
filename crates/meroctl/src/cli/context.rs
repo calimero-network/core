@@ -1,9 +1,11 @@
 use alias::ContextAliasCommand;
 use calimero_primitives::context::Context;
 use clap::{Parser, Subcommand};
+use comfy_table::{Cell, Table};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
+use crate::cli::context::alias::UseCommand;
 use crate::cli::context::create::CreateCommand;
 use crate::cli::context::delete::DeleteCommand;
 use crate::cli::context::get::GetCommand;
@@ -64,13 +66,24 @@ pub enum ContextSubCommands {
     Update(UpdateCommand),
     Identity(ContextIdentityCommand),
     Alias(ContextAliasCommand),
+    Use(UseCommand),
 }
 
 impl Report for Context {
     fn report(&self) {
-        println!("id: {}", self.id);
-        println!("application_id: {}", self.application_id);
-        println!("root_hash: {}", self.root_hash);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Context Details").fg(comfy_table::Color::Blue)
+        ]);
+        let _ = table.add_row(vec![
+            Cell::new(format!("ID: {}", self.id)).fg(comfy_table::Color::Yellow)
+        ]);
+        let _ = table.add_row(vec![Cell::new(format!(
+            "Application ID: {}",
+            self.application_id
+        ))]);
+        let _ = table.add_row(vec![Cell::new(format!("Root Hash: {}", self.root_hash))]);
+        println!("{table}");
     }
 }
 
@@ -87,6 +100,7 @@ impl ContextCommand {
             ContextSubCommands::Update(update) => update.run(environment).await,
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
+            ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
         }
     }
 }

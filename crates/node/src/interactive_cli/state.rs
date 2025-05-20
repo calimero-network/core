@@ -5,7 +5,7 @@ use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::Store;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{bail, Result as EyreResult};
 use owo_colors::OwoColorize;
 
 /// View the raw state of contexts
@@ -19,11 +19,15 @@ impl StateCommand {
     pub fn run(self, node_client: &NodeClient, datastore: Store) -> EyreResult<()> {
         let ind = ">>".blue();
 
-        let context_id = self
-            .context
-            .map(|context| node_client.resolve_alias(context, None))
-            .transpose()?
-            .ok_or_eyre("unable to resolve")?;
+        let mut context_id = None;
+
+        if let Some(context) = self.context {
+            let Some(id) = node_client.resolve_alias(context, None)? else {
+                bail!("unable to resolve context");
+            };
+
+            context_id = Some(id);
+        }
 
         let handle = datastore.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;

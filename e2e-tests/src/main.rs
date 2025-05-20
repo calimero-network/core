@@ -1,10 +1,9 @@
+#![expect(unused_results, reason = "clap has a dangling returned type")]
+
 use camino::Utf8PathBuf;
-use clap::Parser;
-use config::Config;
+use clap::{Args, Parser, Subcommand};
 use const_format::concatcp;
-use driver::Driver;
 use eyre::Result as EyreResult;
-use output::{OutputFormat, OutputWriter};
 use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
 
@@ -16,12 +15,16 @@ mod output;
 mod protocol;
 mod steps;
 
+use config::Config;
+use driver::{Driver, TestRunReport};
+use output::{OutputFormat, OutputWriter};
+
 pub const EXAMPLES: &str = r"
   # Run from the repository root with debug binaries
   $ e2e-tests --input-dir ./e2e-tests/config
     --output-dir ./e2e-tests/corpus
     --merod-binary ./target/debug/merod
-    --meroctl-binary ./target/debug/meroctl
+    --meroctl-binary ./target/debug/meroctl 
 ";
 
 #[derive(Debug, Parser)]
@@ -30,7 +33,36 @@ pub const EXAMPLES: &str = r"
     "Examples:",
     EXAMPLES
 ))]
-pub struct Args {
+#[clap(args_conflicts_with_subcommands = true)]
+pub struct Command {
+    #[command(subcommand)]
+    commands: Option<Commands>,
+
+    #[command(flatten)]
+    args: Option<RootArgs>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    Combine {
+        /// The directories that contains the test data to be combined.
+        #[arg(value_name = "PATH", num_args=1.., required = true)]
+        dirs: Vec<Utf8PathBuf>,
+
+        /// Directory to write the combined test results.
+        #[arg(long, value_name = "PATH")]
+        #[arg(env = "E2E_OUTPUT_DIR", hide_env_values = true)]
+        output_dir: Utf8PathBuf,
+    },
+}
+
+#[derive(Debug, Args)]
+#[command(author, version, about, long_about = None)]
+#[command(after_help = concatcp!(
+    "Examples:",
+    EXAMPLES
+))]
+pub struct RootArgs {
     /// Directory containing the test configuration and test scenarios.
     /// In root directory, there should be a `config.json` file. This file
     /// contains the configuration for the test run. Refer to the `Config`
@@ -60,9 +92,28 @@ pub struct Args {
     #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
     pub output_format: OutputFormat,
 
-    /// Filter tests by protocols (e.g., "stellar near icp")
-    #[arg(long, value_name = "PROTOCOLS", num_args = 0..)]
-    pub protocols: Vec<String>,
+    /// Scenarios to run
+    #[arg(long, value_name = "SCENARIO", value_enum, num_args = 1.., value_delimiter = ',')]
+    pub scenarios: Vec<Scenario>,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum, Copy)]
+pub enum Scenario {
+    Ethereum,
+    Near,
+    Stellar,
+    Icp,
+}
+
+impl std::fmt::Display for Scenario {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Scenario::Ethereum => write!(f, "ethereum"),
+            Scenario::Near => write!(f, "near"),
+            Scenario::Stellar => write!(f, "stellar"),
+            Scenario::Icp => write!(f, "icp"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -76,11 +127,11 @@ pub struct TestEnvironment {
     pub logs_dir: Utf8PathBuf,
     pub icp_dir: Utf8PathBuf,
     pub output_writer: OutputWriter,
-    pub protocols: Vec<String>,
+    pub scenarios: Vec<Scenario>,
 }
 
-impl From<Args> for TestEnvironment {
-    fn from(val: Args) -> Self {
+impl From<RootArgs> for TestEnvironment {
+    fn from(val: RootArgs) -> Self {
         let mut rng = rand::thread_rng();
 
         Self {
@@ -93,7 +144,7 @@ impl From<Args> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            protocols: val.protocols,
+            scenarios: val.scenarios,
         }
     }
 }
@@ -118,13 +169,35 @@ impl TestEnvironment {
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
-    let args = Args::parse();
+    let args = Command::parse();
 
-    let config_path = args.input_dir.join("config.json");
-    let config_content = read_to_string(config_path).await?;
-    let config: Config = serde_json::from_str(&config_content)?;
+    if let Some(args) = args.args {
+        let config_path = args.input_dir.join("config.json");
+        let config_content = read_to_string(config_path).await?;
+        let config: Config = serde_json::from_str(&config_content)?;
 
-    let driver = Driver::new(args.into(), config);
+        let driver = Driver::new(args.into(), config);
 
-    driver.run().await
+        driver.run().await?;
+    }
+
+    if let Some(Commands::Combine { dirs, output_dir }) = args.commands {
+        let mut dirs = dirs.into_iter();
+
+        let first = dirs.next().expect("first dir should be present");
+
+        let mut report = TestRunReport::from_dir(&first).await?;
+
+        for dir in dirs {
+            let other = TestRunReport::from_dir(&dir).await?;
+
+            report.merge(other).await;
+        }
+
+        let writer = OutputWriter::new(OutputFormat::PlainText);
+
+        report.store_to_file(&output_dir, &writer).await?;
+    }
+
+    Ok(())
 }

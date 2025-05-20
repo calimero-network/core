@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::process::Stdio;
 
 use camino::Utf8PathBuf;
@@ -76,6 +78,30 @@ impl Meroctl {
         Ok((context_id, member_public_key))
     }
 
+    pub async fn context_create_alias(
+        &self,
+        node_name: &str,
+        context_id: &str,
+        alias: &str,
+    ) -> EyreResult<()> {
+        drop(
+            self.run_cmd(node_name, ["context", "alias", "add", alias, context_id])
+                .await?,
+        );
+        Ok(())
+    }
+
+    pub async fn context_get_alias(&self, node_name: &str, alias: &str) -> EyreResult<String> {
+        let json = self
+            .run_cmd(node_name, ["context", "alias", "get", alias])
+            .await?;
+
+        let data = self.remove_value_from_object(json, "data")?;
+        let context_id = self.get_string_from_object(&data, "value")?;
+
+        Ok(context_id)
+    }
+
     pub async fn context_invite(
         &self,
         node_name: &str,
@@ -89,6 +115,7 @@ impl Meroctl {
                 [
                     "context",
                     "invite",
+                    "--context",
                     context_id,
                     invitee_public_key,
                     "--as",
@@ -124,7 +151,9 @@ impl Meroctl {
     }
 
     pub async fn identity_generate(&self, node_name: &str) -> EyreResult<(String, String)> {
-        let json = self.run_cmd(node_name, ["identity", "generate"]).await?;
+        let json = self
+            .run_cmd(node_name, ["context", "identity", "generate"])
+            .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
         let public_key = self.get_string_from_object(&data, "publicKey")?;
@@ -133,42 +162,75 @@ impl Meroctl {
         Ok((public_key, private_key))
     }
 
-    pub async fn json_rpc_execute(
+    pub async fn get_proposals(
         &self,
         node_name: &str,
         context_id: &str,
-        method_name: &str,
         args: &serde_json::Value,
-        public_key: &str,
     ) -> EyreResult<serde_json::Value> {
         let args_json = serde_json::to_string(args)?;
         let json = self
             .run_cmd(
                 node_name,
                 [
-                    "call",
+                    "proxy",
+                    "get",
+                    "proposals",
+                    "--context",
                     context_id,
-                    method_name,
                     "--args",
                     &args_json,
-                    "--as",
-                    public_key,
                 ],
             )
             .await?;
 
-        if let Some(error) = json.get("error") {
-            bail!("JSON RPC response error: {:?}", error)
-        }
-
         Ok(json)
     }
 
-    async fn run_cmd<'a>(
+    pub fn json_rpc_execute(
+        &self,
+        node_name: &str,
+        context_id: &str,
+        method_name: &str,
+        args: &serde_json::Value,
+        public_key: &str,
+    ) -> Pin<Box<dyn Future<Output = EyreResult<serde_json::Value>> + Send>> {
+        let args_json = serde_json::to_string(args).unwrap();
+
+        let task = self.run_cmd(
+            node_name,
+            [
+                "call",
+                "--context",
+                context_id,
+                method_name,
+                "--args",
+                &args_json,
+                "--as",
+                public_key,
+            ],
+        );
+
+        let task = async move {
+            let json = task.await?;
+
+            if let Some(error) = json.get("error") {
+                bail!("JSON RPC response error: {:?}", error)
+            }
+
+            Ok(json)
+        };
+
+        // https://github.com/rust-lang/rust/issues/42940
+        // apparently anon trait returns capture all param lifetimes, whoops
+        Box::pin(task)
+    }
+
+    fn run_cmd<'a>(
         &'a self,
         node_name: &'a str,
         args: impl IntoIterator<Item = &'a str>,
-    ) -> EyreResult<serde_json::Value> {
+    ) -> impl Future<Output = EyreResult<serde_json::Value>> + 'static {
         let mut command = Command::new(&self.binary);
 
         let mut command_line = format!("Command: '{}", &self.binary);
@@ -193,13 +255,15 @@ impl Meroctl {
 
         self.output_writer.write_str(&command_line);
 
-        let output = command
-            .stdout(Stdio::piped())
-            .spawn()?
-            .wait_with_output()
-            .await?;
+        async move {
+            let output = command
+                .stdout(Stdio::piped())
+                .spawn()?
+                .wait_with_output()
+                .await?;
 
-        Ok(serde_json::from_slice(&output.stdout)?)
+            Ok(serde_json::from_slice(&output.stdout)?)
+        }
     }
 
     fn remove_value_from_object(

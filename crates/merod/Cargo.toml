@@ -1,6 +1,6 @@
 [package]
 name = "merod"
-version = "0.4.0"
+version = "0.6.0"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -9,6 +9,7 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+alloy.workspace = true
 axum.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
@@ -40,6 +41,7 @@ calimero-node.workspace = true
 calimero-network-primitives.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store.workspace = true
+calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true
 
 [lints]

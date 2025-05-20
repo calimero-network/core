@@ -5,12 +5,13 @@ use libp2p::core::ConnectedPoint;
 use libp2p::swarm::SwarmEvent;
 use libp2p::PeerId;
 use multiaddr::{Multiaddr, Protocol};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::behaviour::BehaviourEvent;
 use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
 use crate::NetworkManager;
 
+mod autonat;
 mod dcutr;
 mod gossipsub;
 mod identify;
@@ -43,6 +44,7 @@ impl StreamHandler<FromSwarm> for NetworkManager {
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match event {
             SwarmEvent::Behaviour(event) => match event {
+                BehaviourEvent::Autonat(event) => EventHandler::handle(self, event),
                 BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event),
                 BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event),
                 BehaviourEvent::Identify(event) => EventHandler::handle(self, event),
@@ -147,26 +149,24 @@ impl StreamHandler<FromSwarm> for NetworkManager {
                 trace!("New external address candidate: {}", address);
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
-                debug!("External address confirmed: {}", address);
+                info!("External address confirmed: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         &relayed_addr.relay_peer,
                         RelayReservationStatus::Accepted,
                     );
-
-                    self.broadcast_rendezvous_registrations();
                 }
+                self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::ExternalAddrExpired { address } => {
-                debug!("External address expired: {}", address);
+                info!("External address expired: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         relayed_addr.relay_peer_id(),
                         RelayReservationStatus::Expired,
                     );
-
-                    self.broadcast_rendezvous_registrations();
                 }
+                self.broadcast_rendezvous_registrations();
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
                 debug!("New external address of peer: {} {}", peer_id, address);

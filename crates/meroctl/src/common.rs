@@ -12,6 +12,7 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8Path;
 use chrono::Utc;
+use comfy_table::{Cell, Color, Table};
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
@@ -183,7 +184,7 @@ pub(crate) trait UrlFragment: ScopedAlias + AliasKind {
 
     fn create(self) -> Self::Value;
 
-    fn scoped(scope: &Self::Scope) -> Option<&str>;
+    fn scoped(scope: Option<&Self::Scope>) -> Option<&str>;
 }
 
 impl UrlFragment for ContextId {
@@ -193,7 +194,7 @@ impl UrlFragment for ContextId {
         CreateContextIdAlias { context_id: self }
     }
 
-    fn scoped(_: &Self::Scope) -> Option<&str> {
+    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
         None
     }
 }
@@ -205,8 +206,14 @@ impl UrlFragment for PublicKey {
         CreateContextIdentityAlias { identity: self }
     }
 
-    fn scoped(context: &Self::Scope) -> Option<&str> {
-        Some(context.as_str())
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "this is meroctl, and this is a fatal error"
+    )]
+    fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
+        let s = context.expect("PublicKey MUST have a scope");
+
+        Some(s.as_str())
     }
 }
 
@@ -219,14 +226,17 @@ impl UrlFragment for ApplicationId {
         }
     }
 
-    fn scoped(_: &Self::Scope) -> Option<&str> {
+    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
         None
     }
 }
 
 impl Report for CreateAliasResponse {
     fn report(&self) {
-        println!("alias created");
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Created").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully created alias"]);
+        println!("{table}");
     }
 }
 
@@ -245,10 +255,8 @@ where
 
     let kind = T::KIND;
 
-    let scope = scope
-        .as_ref()
-        .and_then(T::scoped)
-        .map_or_else(Default::default, |scope| format!("/{}", scope));
+    let scope =
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
     let body = CreateAliasRequest {
         alias,
@@ -269,7 +277,10 @@ where
 
 impl Report for DeleteAliasResponse {
     fn report(&self) {
-        println!("alias deleted");
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Deleted").fg(Color::Green)]);
+        let _ = table.add_row(vec!["Successfully deleted alias"]);
+        println!("{table}");
     }
 }
 
@@ -286,10 +297,8 @@ where
 
     let kind = T::KIND;
 
-    let scope = scope
-        .as_ref()
-        .and_then(T::scoped)
-        .map_or_else(Default::default, |scope| format!("{}/", scope));
+    let scope =
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
     let response: DeleteAliasResponse = do_request(
         &Client::new(),
@@ -316,10 +325,8 @@ where
 
     let kind = T::KIND;
 
-    let scope = scope
-        .as_ref()
-        .and_then(T::scoped)
-        .map_or_else(Default::default, |scope| format!("{}/", scope));
+    let scope =
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
     let response = do_request(
         &Client::new(),
@@ -335,10 +342,19 @@ where
 
 impl<T: fmt::Display> Report for LookupAliasResponse<T> {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Lookup").fg(Color::Blue)]);
+
         match &self.data.value {
-            Some(value) => println!("aliased to {}", value),
-            None => println!("alias not found"),
-        }
+            Some(value) => {
+                let _ = table.add_row(vec!["Status", "Found"]);
+                let _ = table.add_row(vec!["Value", &value.to_string()]);
+            }
+            None => {
+                let _ = table.add_row(vec!["Status", "Not Found"]);
+            }
+        };
+        println!("{table}");
     }
 }
 
@@ -366,12 +382,24 @@ impl<T> ResolveResponse<T> {
 
 impl<T: fmt::Display> Report for ResolveResponse<T> {
     fn report(&self) {
-        println!("{}", self.alias);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Alias Resolution").fg(Color::Blue)]);
+        let _ = table.add_row(vec!["Alias", self.alias.as_str()]);
+
         match &self.value {
-            Some(ResolveResponseValue::Lookup(value)) => value.report(),
-            Some(ResolveResponseValue::Parsed(value)) => println!("parses to {}", value),
-            None => println!("could not be reolved"),
-        }
+            Some(ResolveResponseValue::Lookup(value)) => {
+                let _ = table.add_row(vec!["Type", "Lookup"]);
+                value.report();
+            }
+            Some(ResolveResponseValue::Parsed(value)) => {
+                let _ = table.add_row(vec!["Type", "Direct"]);
+                let _ = table.add_row(vec!["Value", &value.to_string()]);
+            }
+            None => {
+                let _ = table.add_row(vec!["Status", "Not Resolved"]);
+            }
+        };
+        println!("{table}");
     }
 }
 

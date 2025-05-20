@@ -7,11 +7,16 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
 use futures_util::TryStreamExt;
 use owo_colors::OwoColorize;
 use serde_json::Value;
+
+use crate::interactive_cli::common::pretty_alias;
+
+mod identity;
 
 /// Manage contexts
 #[derive(Debug, Parser)]
@@ -26,6 +31,7 @@ enum Protocol {
     Starknet,
     Icp,
     Stellar,
+    Ethereum,
 }
 
 impl Protocol {
@@ -35,6 +41,7 @@ impl Protocol {
             Protocol::Starknet => "starknet",
             Protocol::Icp => "icp",
             Protocol::Stellar => "stellar",
+            Protocol::Ethereum => "ethereum",
         }
     }
 }
@@ -48,22 +55,32 @@ enum Commands {
     Create {
         /// The application to create the context with
         application: Alias<ApplicationId>,
+        /// Name alias for the new context
+        #[clap(long = "name")]
+        context: Option<Alias<ContextId>>,
+        /// Identity alias for the creator
+        #[clap(long = "as")]
+        author: Option<Alias<PublicKey>>,
         /// The initialization parameters for the context
         params: Option<Value>,
         /// The seed for the context (to derive a deterministic context ID)
         #[clap(long = "seed")]
         context_seed: Option<Hash>,
-        /// The protocol to use for the context - possible values: near|starknet|icp|stellar
+        /// The protocol to use for the context
         #[clap(long, value_enum)]
         protocol: Protocol,
     },
     /// Invite a user to a context
     Invite {
         /// The context to invite the user to
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         /// The identity inviting the other
         #[clap(long = "as")]
         inviter: Alias<PublicKey>,
+        /// The name for the invitee
+        #[clap(long)]
+        name: Option<Alias<PublicKey>>,
         /// The identity being invited
         invitee_id: PublicKey,
     },
@@ -73,23 +90,53 @@ enum Commands {
         private_key: PrivateKey,
         /// The invitation payload from the inviter
         invitation_payload: ContextInvitationPayload,
+        /// Alias for the newly joined context
+        #[clap(long = "name")]
+        context: Option<Alias<ContextId>>,
+        /// Alias for the newly joined identity
+        #[clap(long = "as")]
+        identity: Option<Alias<PublicKey>>,
     },
     /// Leave a context
     Leave {
         /// The context to leave
+        #[clap(long, short)]
         context: Alias<ContextId>,
     },
     /// Delete a context
     Delete {
         /// The context to delete
+        #[clap(long, short)]
         context: Alias<ContextId>,
     },
     /// Update the proxy for a context
     UpdateProxy {
         /// The context to update the proxy for
+        #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         #[clap(long = "as")]
         /// The identity requesting the update
+        identity: Alias<PublicKey>,
+    },
+    Update {
+        /// The context to update
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+
+        /// The application ID to update in the context
+        #[clap(long, short = 'a', conflicts_with = "path")]
+        application_id: Option<ApplicationId>,
+
+        /// Path to the application file to install locally
+        #[clap(long, conflicts_with = "application_id")]
+        path: Option<Utf8PathBuf>,
+
+        /// Metadata needed for the application installation
+        #[clap(long, conflicts_with = "application_id")]
+        metadata: Option<String>,
+
+        /// The identity requesting the update
+        #[clap(long = "as", default_value = "default")]
         identity: Alias<PublicKey>,
     },
     /// Manage context aliases
@@ -97,6 +144,21 @@ enum Commands {
         #[command(subcommand)]
         command: AliasCommands,
     },
+    /// Set a context as the default context
+    Use {
+        /// The context to set as default
+        context: Alias<ContextId>,
+
+        /// Force overwrite if default alias already exists
+        #[clap(
+            long,
+            short,
+            help = "Force overwrite if default alias already points elsewhere"
+        )]
+        force: bool,
+    },
+    /// Manage context identities
+    Identity(identity::ContextIdentityCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -107,6 +169,9 @@ enum AliasCommands {
         alias: Alias<ContextId>,
         /// The context to create an alias for
         context_id: ContextId,
+        /// Force overwrite
+        #[clap(long, short)]
+        force: bool,
     },
     #[command(about = "Remove a context alias", aliases = ["rm", "del", "delete"])]
     Remove {
@@ -165,33 +230,89 @@ impl ContextCommand {
             Commands::Join {
                 private_key,
                 invitation_payload,
+                context,
+                identity,
             } => {
                 let response = ctx_client
                     .join_context(private_key, invitation_payload)
                     .await?;
 
+                if let Some(context) = context {
+                    if let Err(e) = node_client.create_alias(context, None, response.context_id) {
+                        eprintln!(
+                            "{} Failed to create alias '{}' for '{}': {e}",
+                            ind,
+                            context.cyan(),
+                            response.context_id.cyan(),
+                        );
+                    } else {
+                        println!(
+                            "{} Created context alias '{}' for '{}'",
+                            ind,
+                            context.cyan(),
+                            response.context_id.cyan(),
+                        );
+                    }
+                }
+
+                if let Some(identity) = identity {
+                    if let Err(e) = node_client.create_alias(
+                        identity,
+                        Some(response.context_id),
+                        response.member_public_key,
+                    ) {
+                        eprintln!(
+                            "{} Failed to create alias '{}' for '{}' in '{}': {e}",
+                            ind,
+                            identity.cyan(),
+                            response.member_public_key.cyan(),
+                            pretty_alias(context, &response.context_id),
+                        );
+                    } else {
+                        println!(
+                            "{} Created identity alias '{}' for '{}' in context '{}'",
+                            ind,
+                            identity.cyan(),
+                            response.member_public_key.cyan(),
+                            pretty_alias(context, &response.context_id)
+                        );
+                    }
+                }
+
                 println!(
-                    "{ind} Joined context '{}' as '{}', waiting for catchup to complete...",
+                    "{ind} Joined context '{}' as '{}', syncing state...",
                     response.context_id, response.member_public_key
                 );
             }
+
             Commands::Leave { context } => {
                 let context_id = node_client
                     .resolve_alias(context, None)?
-                    .ok_or_eyre("unable to resolve")?;
+                    .ok_or_eyre("unable to resolve context")?;
                 let is_deleted = ctx_client.delete_context(&context_id).await?;
                 if is_deleted.deleted {
-                    println!("{ind} Successfully deleted context {context_id}");
+                    println!(
+                        "{ind} Successfully deleted context '{}'",
+                        pretty_alias(Some(context), &context_id)
+                    );
                 } else {
-                    println!("{ind} Failed to delete context {context_id}");
+                    println!(
+                        "{ind} Failed to delete context '{}'",
+                        pretty_alias(Some(context), &context_id)
+                    );
                 }
-                println!("{ind} Left context {context_id}");
+                println!(
+                    "{ind} Left context '{}'",
+                    pretty_alias(Some(context), &context_id)
+                );
             }
             Commands::Create {
                 application,
                 params,
                 context_seed,
                 protocol,
+                context,
+                author,
             } => {
                 let application_id = node_client
                     .resolve_alias(application, None)?
@@ -212,6 +333,24 @@ impl ContextCommand {
                     .await
                 {
                     Ok(response) => {
+                        if let Some(name_alias) = context {
+                            if let Err(e) =
+                                node_client.create_alias(name_alias, None, response.context_id)
+                            {
+                                eprintln!("{} Failed to create context alias: {e}", ind);
+                            }
+                        }
+
+                        if let Some(identity_alias) = author {
+                            if let Err(e) = node_client.create_alias(
+                                identity_alias,
+                                Some(response.context_id),
+                                response.identity,
+                            ) {
+                                eprintln!("{} Failed to create identity alias: {e}", ind);
+                            }
+                        }
+
                         println!(
                             "{ind} Created context {} with identity {}",
                             response.context_id, response.identity
@@ -225,6 +364,7 @@ impl ContextCommand {
             Commands::Invite {
                 context,
                 inviter,
+                name,
                 invitee_id,
             } => {
                 let context_id = node_client
@@ -238,12 +378,20 @@ impl ContextCommand {
                     .invite_member(&context_id, &inviter_id, &invitee_id)
                     .await?
                 {
-                    println!("{ind} Invited {} to context {}", invitee_id, context_id);
+                    if let Some(alias) = name {
+                        node_client.create_alias(alias, Some(context_id), invitee_id)?;
+                    }
+                    println!(
+                        "{ind} Invited '{}' to '{}'",
+                        pretty_alias(name, &invitee_id),
+                        pretty_alias(Some(context), &context_id)
+                    );
                     println!("{ind} Invitation Payload: {invitation_payload}");
                 } else {
                     println!(
-                        "{ind} Unable to invite {} to context {}",
-                        invitee_id, context_id
+                        "{ind} Unable to invite '{}' to context '{}'",
+                        invitee_id,
+                        pretty_alias(Some(context), &context_id)
                     );
                 }
             }
@@ -255,11 +403,17 @@ impl ContextCommand {
                 let result = ctx_client.delete_context(&context_id).await?;
 
                 if !result.deleted {
-                    println!("{ind} Unable to delete context {context_id}");
+                    println!(
+                        "{ind} Unable to delete context {}",
+                        pretty_alias(Some(context), &context_id)
+                    );
                     return Ok(());
                 }
 
-                println!("{ind} Deleted context {context_id}");
+                println!(
+                    "{ind} Deleted context {}",
+                    pretty_alias(Some(context), &context_id)
+                );
             }
             Commands::UpdateProxy { context, identity } => {
                 let context_id = node_client
@@ -280,11 +434,116 @@ impl ContextCommand {
                     .config()
                     .update_proxy_contract(&public_key)
                     .await?;
-                println!("{ind} Updated proxy for context {context_id}");
+                println!(
+                    "{ind} Updated proxy for context '{}'",
+                    pretty_alias(Some(context), &context_id)
+                );
+            }
+            Commands::Update {
+                context,
+                application_id,
+                path,
+                metadata,
+                identity,
+            } => {
+                let context_id = node_client
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+                let public_key = node_client
+                    .resolve_alias(identity, Some(context_id))?
+                    .ok_or_eyre("unable to resolve identity")?;
+
+                match (application_id, path) {
+                    // Update with application ID
+                    (Some(app_id), None) => {
+                        ctx_client
+                            .update_application(&context_id, &app_id, &public_key)
+                            .await?;
+                        println!(
+                            "{ind} Updated application for context '{}'",
+                            pretty_alias(Some(context), &context_id)
+                        );
+                    }
+
+                    // Install application from path
+                    (None, Some(app_path)) => {
+                        let metadata_bytes = metadata.map(String::into_bytes).unwrap_or_default();
+
+                        let application_id = node_client
+                            .install_application_from_path(app_path, metadata_bytes)
+                            .await?;
+
+                        println!("{ind} Installed application: {}", application_id);
+
+                        ctx_client
+                            .update_application(&context_id, &application_id, &public_key)
+                            .await?;
+
+                        println!(
+                            "{ind} Installed and updated application for context '{}'",
+                            pretty_alias(Some(context), &context_id)
+                        );
+                    }
+
+                    _ => {
+                        return Err(eyre::eyre!(
+                            "Either application_id or path must be provided"
+                        ));
+                    }
+                }
             }
             Commands::Alias { command } => {
-                handle_alias_command(&node_client, command, &ind.to_string())?
+                handle_alias_command(&node_client, &ctx_client, command, &ind.to_string())?
             }
+            Commands::Use { context, force } => {
+                let default_alias: Alias<ContextId> =
+                    "default".parse().expect("'default' is a valid alias name");
+
+                let context_id = node_client
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                if let Some(existing_context) = node_client.lookup_alias(default_alias, None)? {
+                    if existing_context == context_id {
+                        println!(
+                            "{} Default alias already points to '{}'. Doing nothing.",
+                            ind,
+                            context_id.cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    if !force {
+                        println!(
+                            "{} Error: Default alias already points to '{}'. Use --force to overwrite.",
+                            ind,
+                            existing_context.cyan()
+                        );
+                        return Ok(());
+                    }
+
+                    println!(
+                        "{} Warning: Overwriting default alias from '{}' to '{}'",
+                        ind,
+                        existing_context.cyan(),
+                        context_id.cyan()
+                    );
+
+                    node_client.delete_alias(default_alias, None)?;
+                }
+
+                node_client.create_alias(default_alias, None, context_id)?;
+
+                if context.as_str() != context_id.as_str() {
+                    println!(
+                        "{} Default context set to: {} (from alias '{}')",
+                        ind, context_id, context
+                    );
+                } else {
+                    println!("{} Default context set to: {}", ind, context_id);
+                }
+            }
+            Commands::Identity(identity) => identity.run(node_client, ctx_client).await?,
         }
         Ok(())
     }
@@ -292,11 +551,53 @@ impl ContextCommand {
 
 fn handle_alias_command(
     node_client: &NodeClient,
+    context_client: &ContextClient,
     command: AliasCommands,
     ind: &str,
 ) -> EyreResult<()> {
     match command {
-        AliasCommands::Add { alias, context_id } => {
+        AliasCommands::Add {
+            alias,
+            context_id,
+            force,
+        } => {
+            if !context_client.has_context(&context_id)? {
+                println!(
+                    "{ind} Error: Context with ID '{}' does not exist.",
+                    context_id.cyan()
+                );
+                return Ok(());
+            }
+
+            if let Some(existing_context) = node_client.lookup_alias(alias, None)? {
+                if existing_context == context_id {
+                    println!(
+                        "{ind} Alias '{}' already points to '{}'. Doing nothing.",
+                        alias.cyan(),
+                        context_id.cyan()
+                    );
+                    return Ok(());
+                }
+
+                if !force {
+                    println!(
+                        "{ind} Error: Alias '{}' already exists and points to '{}'. Use --force to overwrite.",
+                        alias.cyan(),
+                        existing_context.to_string().cyan()
+                    );
+                    return Ok(());
+                }
+
+                println!(
+                    "{ind} Warning: Overwriting existing alias '{}' from '{}' to '{}'",
+                    alias.cyan(),
+                    existing_context.to_string().cyan(),
+                    context_id.cyan()
+                );
+
+                node_client.delete_alias(alias, None)?;
+            }
+
             node_client.create_alias(alias, None, context_id)?;
             println!("{ind} Successfully created alias '{}'", alias.cyan());
         }
@@ -312,7 +613,7 @@ fn handle_alias_command(
             };
 
             println!(
-                "{ind} Alias '{}' resolves to: {}",
+                "{ind} Alias '{}' resolves to: '{}'",
                 alias.cyan(),
                 context.to_string().cyan()
             );

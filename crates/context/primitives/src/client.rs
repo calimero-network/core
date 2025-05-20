@@ -3,6 +3,7 @@
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -215,6 +216,7 @@ impl ContextClient {
         method: String,
         payload: Vec<u8>,
         executor: &PublicKey,
+        aliases: Vec<Alias<PublicKey>>,
     ) -> Result<ExecuteResponse, ExecuteError> {
         let (sender, receiver) = oneshot::channel();
 
@@ -225,6 +227,7 @@ impl ContextClient {
                     method,
                     payload,
                     executor: *executor,
+                    aliases,
                 },
                 outcome: sender,
             })

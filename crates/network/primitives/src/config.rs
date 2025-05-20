@@ -119,18 +119,30 @@ pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
 
+    pub advertise_address: bool,
+
     pub rendezvous: RendezvousConfig,
 
     pub relay: RelayConfig,
+
+    pub autonat: AutonatConfig,
 }
 
 impl DiscoveryConfig {
     #[must_use]
-    pub const fn new(mdns: bool, rendezvous: RendezvousConfig, relay: RelayConfig) -> Self {
+    pub const fn new(
+        mdns: bool,
+        advertise_address: bool,
+        rendezvous: RendezvousConfig,
+        relay: RelayConfig,
+        autonat: AutonatConfig,
+    ) -> Self {
         Self {
             mdns,
+            advertise_address,
             rendezvous,
             relay,
+            autonat,
         }
     }
 }
@@ -139,8 +151,10 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             mdns: true,
+            advertise_address: false,
             rendezvous: RendezvousConfig::default(),
             relay: RelayConfig::default(),
+            autonat: AutonatConfig::default(),
         }
     }
 }
@@ -164,6 +178,28 @@ impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             registrations_limit: 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct AutonatConfig {
+    pub confidence_threshold: usize,
+}
+
+impl AutonatConfig {
+    pub fn new(confidence_threshold: usize) -> Self {
+        AutonatConfig {
+            confidence_threshold,
+        }
+    }
+}
+
+impl Default for AutonatConfig {
+    fn default() -> Self {
+        Self {
+            confidence_threshold: 2,
         }
     }
 }

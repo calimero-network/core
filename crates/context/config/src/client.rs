@@ -1,29 +1,48 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::ops::Deref;
+use std::str::FromStr;
 
-use env::Method;
+use alloy::signers::local::PrivateKeySigner;
+use eyre::Context;
 use thiserror::Error;
 
 pub mod config;
 pub mod env;
+mod macros;
 pub mod protocol;
 pub mod relayer;
 pub mod transport;
 pub mod utils;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
-use protocol::{icp, near, starknet, stellar, Protocol};
+use env::Method;
+use macros::transport;
+use protocol::{ethereum, icp, near, starknet, stellar, Protocol};
 use transport::{Both, Transport, TransportArguments, TransportRequest, UnsupportedProtocol};
 
 type MaybeNear = Option<near::NearTransport<'static>>;
 type MaybeStarknet = Option<starknet::StarknetTransport<'static>>;
 type MaybeIcp = Option<icp::IcpTransport<'static>>;
 type MaybeStellar = Option<stellar::StellarTransport<'static>>;
+type MaybeEthereum = Option<ethereum::EthereumTransport<'static>>;
 
-pub type LocalTransports = Both<MaybeNear, Both<MaybeStarknet, Both<MaybeIcp, MaybeStellar>>>;
+transport! {
+    pub type LocalTransports = (
+        MaybeNear,
+        MaybeStarknet,
+        MaybeIcp,
+        MaybeStellar,
+        MaybeEthereum
+    );
+}
 
-pub type AnyTransport = Both<LocalTransports, relayer::RelayerTransport>;
+transport! {
+    pub type AnyTransport = (
+        LocalTransports,
+        relayer::RelayerTransport
+    );
+}
 
 #[derive(Clone, Debug)]
 pub struct Client<T> {
@@ -45,10 +64,7 @@ impl Client<AnyTransport> {
 
         let local = Self::from_local_config(&config).expect("validation error");
 
-        let transport = Both {
-            left: local.transport,
-            right: relayer,
-        };
+        let transport = transport!(local.transport, relayer);
 
         Self::new(transport)
     }
@@ -179,7 +195,7 @@ impl Client<AnyTransport> {
                 };
 
                 for (network, signer) in &stellar_config.signers {
-                    let Credentials::Stellar(credentials) = &signer.credentials else {
+                    let Credentials::Raw(credentials) = &signer.credentials else {
                         eyre::bail!(
                             "expected Stellar credentials but got {:?}",
                             signer.credentials
@@ -201,16 +217,54 @@ impl Client<AnyTransport> {
             }
         }
 
-        let all_transports = Both {
-            left: near_transport,
-            right: Both {
-                left: starknet_transport,
-                right: Both {
-                    left: icp_transport,
-                    right: stellar_transport,
-                },
-            },
-        };
+        let mut ethereum_transport = None;
+
+        'skipped: {
+            if let Some(ethereum_config) = config.signer.local.protocols.get("ethereum") {
+                let Some(e) = config.params.get("ethereum") else {
+                    eyre::bail!("missing config specification for `{}` signer", "ethereum");
+                };
+
+                if !matches!(e.signer, ClientSelectedSigner::Local) {
+                    break 'skipped;
+                }
+
+                let mut config = ethereum::EthereumConfig {
+                    networks: Default::default(),
+                };
+                for (network, signer) in &ethereum_config.signers {
+                    let Credentials::Ethereum(credentials) = &signer.credentials else {
+                        eyre::bail!(
+                            "expected Ethereum credentials but got {:?}",
+                            signer.credentials
+                        )
+                    };
+
+                    let access_key: PrivateKeySigner =
+                        PrivateKeySigner::from_str(&credentials.secret_key)
+                            .wrap_err("failed to convert secret key to PrivateKeySigner")?;
+
+                    let _ignored = config.networks.insert(
+                        network.clone().into(),
+                        ethereum::NetworkConfig {
+                            rpc_url: signer.rpc_url.clone(),
+                            account_id: credentials.account_id.clone(),
+                            access_key,
+                        },
+                    );
+                }
+
+                ethereum_transport = Some(ethereum::EthereumTransport::new(&config));
+            }
+        }
+
+        let all_transports = transport!(
+            near_transport,
+            starknet_transport,
+            icp_transport,
+            stellar_transport,
+            ethereum_transport
+        );
 
         Ok(Client::new(all_transports))
     }

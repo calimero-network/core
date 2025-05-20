@@ -6,10 +6,12 @@ use calimero_server_primitives::admin::{
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
 use clap::{Parser, ValueEnum};
+use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
+use serde_json::Value;
 
 use crate::cli::Environment;
 use crate::common::{
@@ -23,11 +25,23 @@ pub struct GetCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
 
-    #[arg(value_name = "CONTEXT", help = "Context for which to query")]
+    #[arg(long, short)]
+    #[arg(
+        value_name = "CONTEXT",
+        help = "Context for which to query",
+        default_value = "default"
+    )]
     pub context: Alias<ContextId>,
 
     #[arg(value_name = "PROPOSAL_ID", help = "proposal_id of the proposal")]
-    pub proposal_id: Hash,
+    pub proposal_id: Option<Hash>,
+
+    #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method (e.g., {\"offset\": 0, \"limit\": 10})")]
+    pub args: Option<Value>,
+}
+
+fn serde_value(s: &str) -> serde_json::Result<Value> {
+    serde_json::from_str(s)
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -41,35 +55,60 @@ pub enum GetRequest {
 
 impl Report for GetNumberOfActiveProposalsResponse {
     fn report(&self) {
-        println!("{:?}", self.data);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Active Proposals Count").fg(Color::Blue)]);
+        let _ = table.add_row(vec![self.data.to_string()]);
+        println!("{table}");
     }
 }
 
 impl Report for GetNumberOfProposalApprovalsResponse {
     fn report(&self) {
-        println!("{:?}", self.data);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Proposal Approvals").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("Approvals: {:?}", self.data)]);
+        println!("{table}");
     }
 }
 
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Proposal Approvers").fg(Color::Blue),
+            Cell::new("Type").fg(Color::Blue),
+        ]);
+
         for user in &self.data {
-            println!("{}", user);
+            let _ = table.add_row(vec![user.to_string(), "ContextIdentity".to_owned()]);
         }
+        println!("{table}");
     }
 }
 
 impl Report for GetProposalsResponse {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Proposals").fg(Color::Blue),
+            Cell::new("ID").fg(Color::Blue),
+            Cell::new("Status").fg(Color::Blue),
+        ]);
+
         for proposal in &self.data {
-            println!("{:#?}", proposal);
+            let _ = table.add_row(vec![proposal.id.to_string(), format!("{:?}", proposal)]);
         }
+        println!("{table}");
     }
 }
 
 impl Report for GetProposalResponse {
     fn report(&self) {
-        println!("{:#?}", self.data);
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Proposal Details").fg(Color::Blue)]);
+        let _ = table.add_row(vec![format!("ID: {}", self.data.id)]);
+        let _ = table.add_row(vec![format!("Status: {:?}", self.data)]);
+        println!("{table}");
     }
 }
 
@@ -147,11 +186,12 @@ impl GetCommand {
         keypair: &Keypair,
         context_id: ContextId,
     ) -> EyreResult<()> {
+        let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
-                context_id, self.proposal_id
+                context_id, proposal_id
             ),
         )?;
         make_request::<_, GetNumberOfProposalApprovalsResponse>(
@@ -196,11 +236,12 @@ impl GetCommand {
         keypair: &Keypair,
         context_id: ContextId,
     ) -> EyreResult<()> {
+        let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
-                context_id, self.proposal_id
+                context_id, proposal_id
             ),
         )?;
         make_request::<_, GetProposalApproversResponse>(
@@ -226,13 +267,16 @@ impl GetCommand {
             multiaddr,
             &format!("admin-api/dev/contexts/{}/proposals", context_id),
         )?;
+
+        let params = self.args.clone().ok_or_eyre("arguments are required")?;
+
         make_request::<_, GetProposalsResponse>(
             environment,
             client,
             url,
-            None::<()>,
+            Some(params),
             keypair,
-            RequestType::Get,
+            RequestType::Post,
         )
         .await
     }
@@ -245,11 +289,12 @@ impl GetCommand {
         keypair: &Keypair,
         context_id: ContextId,
     ) -> EyreResult<()> {
+        let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
                 "admin-api/dev/contexts/{}/proposals/{}",
-                context_id, self.proposal_id
+                context_id, proposal_id
             ),
         )?;
         make_request::<_, GetProposalResponse>(

@@ -1,4 +1,5 @@
 use actix::Message;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -12,6 +13,7 @@ pub struct ExecuteRequest {
     pub method: String,
     pub payload: Vec<u8>,
     pub executor: PublicKey,
+    pub aliases: Vec<Alias<PublicKey>>,
 }
 
 #[derive(Debug)]
@@ -56,4 +58,6 @@ pub enum ExecuteError {
     ApplicationNotInstalled { application_id: ApplicationId },
     #[error("internal error")]
     InternalError,
+    #[error("error resolving identity alias '{alias}'")]
+    AliasResolutionFailed { alias: Alias<PublicKey> },
 }

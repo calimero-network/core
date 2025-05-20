@@ -46,16 +46,28 @@ pub struct NetworkManager {
 }
 
 impl NetworkManager {
-    pub fn new(
+    pub async fn new(
         config: &NetworkConfig,
         event_recipient: LazyRecipient<NetworkEvent>,
     ) -> eyre::Result<Self> {
         let swarm = Behaviour::build_swarm(config)?;
 
+        let discovery = Discovery::new(
+            &config.discovery.rendezvous,
+            &config.discovery.relay,
+            &config.discovery.autonat,
+            config
+                .discovery
+                .advertise_address
+                .then_some(&*config.swarm.listen)
+                .unwrap_or(&[]),
+        )
+        .await?;
+
         let this = Self {
             swarm: Box::new(swarm),
             event_recipient,
-            discovery: Discovery::new(&config.discovery.rendezvous, &config.discovery.relay),
+            discovery,
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
         };

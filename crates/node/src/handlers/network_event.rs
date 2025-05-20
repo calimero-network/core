@@ -190,6 +190,7 @@ async fn handle_state_delta(
             "__calimero_sync_next".to_owned(),
             artifact,
             &author_id,
+            vec![],
         )
         .await?;
 

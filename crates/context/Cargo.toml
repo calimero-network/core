@@ -12,6 +12,7 @@ borsh.workspace = true
 either.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+memchr.workspace = true
 ouroboros.workspace = true
 rand.workspace = true
 serde.workspace = true

@@ -1,0 +1,263 @@
+name: e2e-tests
+# ^~~ if changed, update comment.yml as well
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'crates/**'
+      - 'e2e-tests/**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - master
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - 'crates/**'
+      - 'e2e-tests/**'
+
+env:
+  # Or you can use 'prerelease-{PR-NUMBER}'
+  CALIMERO_CONTRACTS_VERSION: 'latest'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Build Apps & Binaries
+        run: |
+          ./apps/kv-store/build.sh
+          cargo build -p meroctl -p merod -p e2e-tests
+
+      - name: Upload Build Artifacts (Binaries)
+        uses: actions/upload-artifact@v4
+        with:
+          name: resources
+          path: |
+            target/debug/meroctl
+            target/debug/merod
+            target/debug/e2e-tests
+            apps/kv-store/res/kv_store.wasm
+          retention-days: 2
+
+  test:
+    name: ${{ matrix.protocol }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        protocol: [near, icp, stellar, ethereum]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: resources
+          path: .
+
+      - name: Set Permissions
+        run: |
+          chmod +x target/debug/e2e-tests target/debug/merod target/debug/meroctl
+
+      - name: Download Contracts
+        run: |
+          echo "Downloading contracts, target version: $CALIMERO_CONTRACTS_VERSION"
+          ./scripts/download-contracts.sh
+
+      - name: Install dfx
+        if: matrix.protocol == 'icp'
+        uses: dfinity/setup-dfx@main
+      - name: Verify dfx installation
+        if: matrix.protocol == 'icp'
+        run: dfx --version
+
+      - name: Deploy ICP Devnet
+        if: matrix.protocol == 'icp'
+        env:
+          ICP_PORT: 4943
+        run: |
+          echo "ICP_PORT=$ICP_PORT"
+          ./scripts/icp/deploy-devnet.sh
+
+          jq --arg icpPort "$ICP_PORT" \
+            '.protocolSandboxes[1].config.rpcUrl = "http://127.0.0.1:\($icpPort)"' \
+            e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
+
+      - name: Deploy Stellar Devnet
+        if: matrix.protocol == 'stellar'
+        env:
+          ICP_PORT: 4943
+        run: |
+          echo "Installing stellar CLI..."
+
+          # Detect OS and architecture
+          OS=$(uname -s)
+          ARCH=$(uname -m)
+
+          # Map OS and architecture to release file names
+          case "$OS-$ARCH" in
+              "Linux-x86_64")
+                  BINARY_NAME="stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz"
+                  ;;
+              "Linux-aarch64"|"Linux-arm64")
+                  BINARY_NAME="stellar-cli-22.2.0-aarch64-unknown-linux-gnu.tar.gz"
+                  ;;
+              *)
+                  echo "Unsupported platform: $OS-$ARCH"
+                  exit 1
+                  ;;
+          esac
+
+          TMPDIR=$(mktemp -d)
+          wget -P "$TMPDIR" "https://github.com/stellar/stellar-cli/releases/download/v22.2.0/${BINARY_NAME}"
+          tar xzf "${TMPDIR}/${BINARY_NAME}" -C "$TMPDIR"
+
+          mkdir -p "$HOME/.local/bin"
+          chmod +x "$TMPDIR/stellar"
+          mv "$TMPDIR/stellar" "$HOME/.local/bin/"
+          rm -rf "$TMPDIR"
+
+          ./scripts/stellar/deploy-devnet.sh > env_output.txt
+
+          CONTRACT_ID=$(grep "Contract ID:" env_output.txt | awk '{print $3}')
+          ACCOUNT_ADDRESS=$(grep "Account address:" env_output.txt | awk '{print $3}')
+          SECRET_KEY=$(grep "Secret key:" env_output.txt | awk '{print $3}')
+
+          jq --arg contractId "$CONTRACT_ID" \
+             --arg publicKey "$ACCOUNT_ADDRESS" \
+             --arg secretKey "$SECRET_KEY" \
+            '.protocolSandboxes[2].config.contextConfigContractId = $contractId |
+             .protocolSandboxes[2].config.publicKey = $publicKey |
+             .protocolSandboxes[2].config.secretKey = $secretKey' \
+            e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
+
+      - name: Install Foundry
+        if: matrix.protocol == 'ethereum'
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - name: Verify Foundry installation
+        if: matrix.protocol == 'ethereum'
+        run: forge --version
+
+      - name: Deploy Ethereum Devnet
+        if: matrix.protocol == 'ethereum'
+        run: |
+          ./scripts/ethereum/deploy-devnet.sh
+
+      - name: Run e2e Tests
+        id: e2e-tests
+        env:
+          NO_COLOR: '1'
+        run: |
+          echo "Running e2e tests for ${{ matrix.protocol }}"
+
+          jq '.network.serverHost = "0.0.0.0"' \
+            e2e-tests/config/config.json > tmp.json && mv tmp.json e2e-tests/config/config.json
+
+          ./target/debug/e2e-tests \
+            --input-dir ./e2e-tests/config \
+            --output-dir ./e2e-tests/corpus \
+            --merod-binary ./target/debug/merod \
+            --meroctl-binary ./target/debug/meroctl \
+            --scenarios ${{ matrix.protocol }}
+
+      - name: Upload Test Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tests-${{ matrix.protocol }}
+          path: e2e-tests/corpus/
+          retention-days: 2
+
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-report-${{ matrix.protocol }}
+          path: e2e-tests/corpus/report.json
+          retention-days: 1
+
+  comment:
+    name: Submit Report
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Download all reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: e2e-test-report-*
+          merge-multiple: false
+          path: reports/
+
+      - name: Download Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: resources
+          path: .
+
+      - name: Set Permissions
+        run: |
+          chmod +x target/debug/e2e-tests
+
+      - name: Combine reports
+        run: |
+          mkdir -p reports
+
+          # List all found reports for debugging
+          echo "Found report files:"
+          find reports/ -type f -name "report.json" -ls
+
+          # Create a single array of all protocol directories
+          mapfile -t protocols < <(find reports/ -type f -name "report.json" | sort | xargs dirname)
+
+          if [ ${#protocols[@]} -eq 0 ]; then
+            echo "No report files found!"
+            exit 1
+          fi
+
+          echo "Found protocols: ${protocols[*]}"
+
+          # Combine all reports into a single markdown file
+          ./target/debug/e2e-tests combine "${protocols[@]}" --output-dir reports
+
+          echo "Combined report content:"
+          cat reports/report.md
+
+      - name: Prepare Comment
+        run: >-
+          jq -n
+          --arg pr '${{ github.event.number }}'
+          --arg tag e2e-tests-report
+          --arg mode recreate
+          --rawfile message reports/report.md
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload
+          path: payload.json

@@ -40,6 +40,7 @@ async fn handle(
             request.method,
             args,
             &request.executor_public_key,
+            request.substitute,
         )
         .await
         .map_err(ExecutionError::ExecuteError)?;

@@ -39,8 +39,9 @@ impl Merod {
     pub async fn init<'a>(
         &'a self,
         swarm_host: &str,
-        swarm_port: u32,
-        server_port: u32,
+        server_host: &str,
+        swarm_port: u16,
+        server_port: u16,
         args: impl IntoIterator<Item = &'a str>,
     ) -> EyreResult<()> {
         create_dir_all(&self.log_dir).await?;
@@ -51,6 +52,8 @@ impl Merod {
                     "init",
                     "--swarm-host",
                     swarm_host,
+                    "--server-host",
+                    server_host,
                     "--swarm-port",
                     swarm_port.to_string().as_str(),
                     "--server-port",
@@ -134,5 +137,13 @@ impl Merod {
         }
 
         Ok(child)
+    }
+
+    pub async fn try_wait(&self) -> EyreResult<Option<i32>> {
+        if let Some(child) = self.process.borrow_mut().as_mut() {
+            Ok(child.try_wait()?.map(|status| status.code().unwrap_or(-1)))
+        } else {
+            Ok(None)
+        }
     }
 }

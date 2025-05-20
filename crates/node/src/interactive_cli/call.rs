@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 #[derive(Debug, Parser)]
 pub struct CallCommand {
     /// The context to call the method on
+    #[clap(long, short, default_value = "default")]
     context: Alias<ContextId>,
     /// The method to call
     method: String,
@@ -19,8 +20,16 @@ pub struct CallCommand {
     #[clap(long, value_parser = serde_value)]
     args: Option<Value>,
     /// The identity of the executor
-    #[clap(long = "as")]
+    #[clap(long = "as", default_value = "default")]
     executor: Alias<PublicKey>,
+    /// A list of aliases that should be substituted in the method payload.
+    #[clap(
+        long = "substitute",
+        help = "Comma-separated list of aliases to substitute in the payload (use {alias} in payload)",
+        value_name = "ALIAS",
+        value_delimiter = ','
+    )]
+    substitutes: Vec<Alias<PublicKey>>,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -53,6 +62,7 @@ impl CallCommand {
                 self.method,
                 serde_json::to_vec(&self.args.unwrap_or(json!({})))?,
                 &executor,
+                self.substitutes,
             )
             .await;
 

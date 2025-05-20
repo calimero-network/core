@@ -3,6 +3,7 @@ use core::time::Duration;
 use std::collections::BTreeMap;
 use std::fs::{create_dir, create_dir_all};
 
+use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
     SyncConfig,
@@ -10,21 +11,22 @@ use calimero_config::{
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ClientConfig, ClientConfigParams, ClientLocalConfig, ClientLocalSigner, ClientRelayerSigner,
-    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig,
+    ClientSelectedSigner, ClientSigner, Credentials, LocalConfig, RawCredentials,
 };
 use calimero_context_config::client::protocol::{
-    icp as icp_protocol, near as near_protocol, starknet as starknet_protocol,
-    stellar as stellar_protocol,
+    ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,
+    starknet as starknet_protocol,
 };
 use calimero_network_primitives::config::{
-    BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
+    AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
+    SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
 use calimero_store::config::StoreConfig;
-use calimero_store::db::RocksDB;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, ValueEnum};
 use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
@@ -51,6 +53,7 @@ pub enum ConfigProtocol {
     Starknet,
     Icp,
     Stellar,
+    Ethereum,
 }
 
 /// Initialize node configuration
@@ -100,15 +103,39 @@ pub struct InitCommand {
     #[clap(overrides_with("no_mdns"))]
     pub mdns: bool,
 
-    #[clap(long, hide = true)]
+    #[clap(
+        long,
+        hide = true,
+        help = "Disable mDNS discovery (hidden as it's the inverse of --mdns)"
+    )]
     #[clap(overrides_with("mdns"))]
     pub no_mdns: bool,
 
-    #[clap(long, default_value = "3")]
+    /// Advertise observed address
+    #[clap(long, default_value_t = false)]
+    #[clap(overrides_with("no_mdns"))]
+    pub advertise_address: bool,
+
+    #[clap(
+        long,
+        default_value = "3",
+        help = "Maximum number of rendezvous registrations allowed"
+    )]
     pub rendezvous_registrations_limit: usize,
 
-    #[clap(long, default_value = "3")]
+    #[clap(
+        long,
+        default_value = "3",
+        help = "Maximum number of relay registrations allowed"
+    )]
     pub relay_registrations_limit: usize,
+
+    #[clap(
+        long,
+        default_value = "2",
+        help = "Minimum number of successful autonat probes required to be confident about NAT status"
+    )]
+    pub autonat_confidence_threshold: usize,
 
     /// Force initialization even if the directory already exists
     #[clap(long)]
@@ -198,7 +225,6 @@ impl InitCommand {
                 "near".to_owned(),
                 ClientConfigParams {
                     network: "testnet".into(),
-                    protocol: "near".into(),
                     contract_id: "calimero-context-config.testnet".parse()?,
                     signer: ClientSelectedSigner::Relayer,
                 },
@@ -234,7 +260,6 @@ impl InitCommand {
                 "starknet".to_owned(),
                 ClientConfigParams {
                     network: "sepolia".into(),
-                    protocol: "starknet".into(),
                     contract_id:
                         "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
                             .parse()?,
@@ -272,7 +297,6 @@ impl InitCommand {
                 "icp".to_owned(),
                 ClientConfigParams {
                     network: "local".into(),
-                    protocol: "icp".into(),
                     contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
                     signer: ClientSelectedSigner::Local,
                 },
@@ -302,7 +326,6 @@ impl InitCommand {
                 "stellar".to_owned(),
                 ClientConfigParams {
                     network: "testnet".into(),
-                    protocol: "stellar".into(),
                     contract_id: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY"
                         .parse()?,
                     signer: ClientSelectedSigner::Relayer,
@@ -334,6 +357,33 @@ impl InitCommand {
                 .insert("stellar".to_owned(), local_config);
         }
 
+        {
+            let _ignored = client_params.insert(
+                "ethereum".to_owned(),
+                ClientConfigParams {
+                    network: "sepolia".into(),
+                    contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".parse()?,
+                    signer: ClientSelectedSigner::Relayer,
+                },
+            );
+
+            let mut local_config = ClientLocalConfig {
+                signers: Default::default(),
+            };
+
+            let _ignored = local_config.signers.insert(
+                "sepolia".to_owned(),
+                generate_local_signer(
+                    "https://sepolia.drpc.org".parse()?,
+                    ConfigProtocol::Ethereum,
+                )?,
+            );
+
+            let _ignored = local_signers
+                .protocols
+                .insert("ethereum".to_owned(), local_config);
+        }
+
         let relayer = self
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
@@ -353,8 +403,10 @@ impl InitCommand {
                 BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
                 DiscoveryConfig::new(
                     mdns,
+                    self.advertise_address,
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
                     RelayConfig::new(self.relay_registrations_limit),
+                    AutonatConfig::new(self.autonat_confidence_threshold),
                 ),
                 ServerConfig::new(
                     self.server_host
@@ -448,9 +500,25 @@ fn generate_local_signer(
 
             Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Stellar(stellar_protocol::Credentials {
+                credentials: Credentials::Raw(RawCredentials {
+                    account_id: None,
                     public_key,
                     secret_key,
+                }),
+            })
+        }
+
+        ConfigProtocol::Ethereum => {
+            let secp = PrivateKeySigner::random();
+            let address = secp.address();
+            let secret_key = secp.to_bytes();
+            let secret_key_hex = encode(secret_key);
+
+            Ok(ClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Ethereum(ethereum_protocol::Credentials {
+                    account_id: address.to_string(),
+                    secret_key: secret_key_hex,
                 }),
             })
         }

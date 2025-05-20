@@ -2,7 +2,7 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 use libp2p::gossipsub::TopicHash;
 use owo_colors::OwoColorize;
 
@@ -17,11 +17,15 @@ impl PeersCommand {
     pub async fn run(self, node_client: &NodeClient) -> EyreResult<()> {
         let ind = ">>".blue();
 
-        let context_id = self
-            .context
-            .map(|context| node_client.resolve_alias(context, None))
-            .transpose()?
-            .flatten();
+        let mut context_id = None;
+
+        if let Some(context) = self.context {
+            let Some(id) = node_client.resolve_alias(context, None)? else {
+                bail!("unable to resolve context");
+            };
+
+            context_id = Some(id);
+        }
 
         println!(
             "{ind} Peers (General): {:#?}",

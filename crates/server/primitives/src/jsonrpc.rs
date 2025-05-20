@@ -1,4 +1,5 @@
 use calimero_context_primitives::messages::execute::ExecuteError;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
@@ -141,6 +142,8 @@ pub struct ExecutionRequest {
     pub method: String,
     pub args_json: serde_json::Value,
     pub executor_public_key: PublicKey,
+    #[serde(default)]
+    pub substitute: Vec<Alias<PublicKey>>,
 }
 
 impl ExecutionRequest {
@@ -150,12 +153,14 @@ impl ExecutionRequest {
         method: String,
         args_json: serde_json::Value,
         executor_public_key: PublicKey,
+        substitute: Vec<Alias<PublicKey>>,
     ) -> Self {
         Self {
             context_id,
             method,
             args_json,
             executor_public_key,
+            substitute,
         }
     }
 }

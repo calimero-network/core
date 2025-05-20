@@ -1,0 +1,65 @@
+name: PR Description
+# ^~~ if changed, update comment.yml as well
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write
+  contents: read
+
+env:
+  REQUIRED_SECTIONS: |
+    ## Description
+    ## Test Plan
+    ## Documentation Update
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: Validate Description
+        id: validate_description
+        run: |
+          readarray -t required_sections <<< "$REQUIRED_SECTIONS"
+          pr_body_base64=$(echo -n "${{ github.event.pull_request.body }}" | base64 -w0)
+          missing_sections=()
+
+          for section in "${required_sections[@]}"; do
+            if ! echo "$pr_body_base64" | base64 --decode | grep -q -i "$section"; then
+              missing_sections+=("$section")
+            fi
+          done
+
+          if [[ ${#missing_sections[@]} -gt 0 ]]; then
+            EOF=$(openssl rand -hex 8)
+            echo "comment_content<<$EOF" >> "$GITHUB_OUTPUT"
+            echo -e "**❌ The PR description is missing these required sections:**\n" >> "$GITHUB_OUTPUT"
+            for section in "${missing_sections[@]}"; do
+              echo "- \`$section\`" >> "$GITHUB_OUTPUT"
+            done
+            echo -e "\n**This PR is blocked until this is fixed.**" >> "$GITHUB_OUTPUT"
+            echo "$EOF" >> $GITHUB_OUTPUT
+
+            echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
+          else
+            echo "comment_action=delete" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare Comment
+        if: ${{ !cancelled() }}
+        run: >-
+          jq -n
+          --arg pr '${{ github.event.number }}'
+          --arg tag pr-description-check
+          --arg mode '${{ steps.validate_description.outputs.comment_action }}'
+          --arg message '${{ steps.validate_description.outputs.comment_content }}'
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+
+      - name: Upload Comment
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload
+          path: payload.json

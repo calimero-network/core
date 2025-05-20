@@ -7,6 +7,7 @@ use calimero_context_primitives::messages::execute::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
 };
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
@@ -19,6 +20,7 @@ use calimero_utils_actix::global_runtime;
 use either::Either;
 use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
+use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
 use tracing::error;
 
@@ -38,6 +40,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             method,
             payload,
             executor,
+            aliases,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -90,6 +93,16 @@ impl Handler<ExecuteRequest> for ContextManager {
                 return ActorResponse::reply(Err(ExecuteError::InternalError));
             }
         };
+
+        let payload =
+            match substitute_aliases_in_payload(&self.node_client, context_id, payload, &aliases) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    error!(%err, "failed to execute request");
+
+                    return ActorResponse::reply(Err(err));
+                }
+            };
 
         let guard_fut = async {
             match guard {
@@ -276,4 +289,43 @@ pub async fn execute(
         })
         .await
         .wrap_err("failed to receive execution response")?
+}
+
+fn substitute_aliases_in_payload(
+    node_client: &NodeClient,
+    context_id: ContextId,
+    payload: Vec<u8>,
+    aliases: &[Alias<PublicKey>],
+) -> Result<Vec<u8>, ExecuteError> {
+    if aliases.is_empty() {
+        return Ok(payload);
+    }
+
+    // todo! evaluate a byte-version of calimero_server{-build}::replace
+    // todo! ref: https://github.com/calimero-network/core/blob/6deb2db81a65e0b5c86af9fe2950cf9019ab61af/crates/server/build.rs#L139-L175
+
+    let mut result = Vec::with_capacity(payload.len());
+    let mut remaining = &payload[..];
+
+    for alias in aliases {
+        let needle_str = format!("{{{alias}}}");
+        let needle = needle_str.into_bytes();
+
+        while let Some(pos) = memmem::find(remaining, &needle) {
+            result.extend_from_slice(&remaining[..pos]);
+
+            let public_key = node_client
+                .resolve_alias(*alias, Some(context_id))
+                .map_err(|_| ExecuteError::InternalError)?
+                .ok_or_else(|| ExecuteError::AliasResolutionFailed { alias: *alias })?;
+
+            result.extend_from_slice(public_key.as_str().as_bytes());
+
+            remaining = &remaining[pos + needle.len()..];
+        }
+    }
+
+    result.extend_from_slice(remaining);
+
+    Ok(result)
 }

@@ -1,4 +1,5 @@
 use std::pin::{pin, Pin};
+use std::sync::Arc;
 
 use actix::{Actor, Arbiter, System};
 use calimero_blobstore::config::BlobStoreConfig;
@@ -13,8 +14,8 @@ use calimero_network_primitives::config::NetworkConfig;
 use calimero_node_primitives::client::NodeClient;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
-use calimero_store::db::RocksDB;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use calimero_utils_actix::LazyRecipient;
 use camino::Utf8PathBuf;
 use eyre::{OptionExt, WrapErr};
@@ -95,7 +96,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         }
     };
 
-    let network_manager = NetworkManager::new(&config.network, network_event_recipient.clone())?;
+    let network_manager =
+        NetworkManager::new(&config.network, network_event_recipient.clone()).await?;
 
     let network_client = NetworkClient::new(network_recipient.clone());
 
@@ -156,11 +158,13 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     });
 
     let server = calimero_server::start(
-        config.server,
+        config.server.clone(),
         context_client.clone(),
         node_client.clone(),
         datastore.clone(),
     );
+
+    let config = Arc::new(config);
 
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
@@ -181,6 +185,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                     context_client.clone(),
                     node_client.clone(),
                     datastore.clone(),
+                    config.clone(),
                     line,
                 );
 

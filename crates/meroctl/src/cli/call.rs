@@ -5,7 +5,7 @@ use calimero_server_primitives::jsonrpc::{
     ExecutionRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
 };
 use clap::Parser;
-use color_eyre::owo_colors::OwoColorize;
+use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{OptionExt, Result as EyreResult};
 use serde_json::{json, Value};
@@ -28,7 +28,12 @@ pub const EXAMPLES: &str = r"
     EXAMPLES
 ))]
 pub struct CallCommand {
-    #[arg(value_name = "CONTEXT", help = "The context to call the method on")]
+    #[arg(long, short)]
+    #[arg(
+        value_name = "CONTEXT",
+        help = "The context to call the method on",
+        default_value = "default"
+    )]
     pub context: Alias<ContextId>,
 
     #[arg(value_name = "METHOD", help = "The method to call")]
@@ -37,11 +42,22 @@ pub struct CallCommand {
     #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
     pub args: Option<Value>,
 
-    #[arg(long = "as", help = "The identity of the executor")]
+    #[arg(
+        long = "as",
+        help = "The identity of the executor",
+        default_value = "default"
+    )]
     pub executor: Alias<PublicKey>,
 
     #[arg(long, default_value = "dontcare", help = "Id of the JsonRpc call")]
     pub id: Option<String>,
+    #[arg(
+        long = "substitute",
+        help = "Comma-separated list of aliases to substitute in the payload (use {alias} in payload)",
+        value_name = "ALIAS",
+        value_delimiter = ','
+    )]
+    pub substitute: Vec<Alias<PublicKey>>,
 }
 
 fn serde_value(s: &str) -> serde_json::Result<Value> {
@@ -50,26 +66,18 @@ fn serde_value(s: &str) -> serde_json::Result<Value> {
 
 impl Report for Response {
     fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("RPC Response").fg(Color::Blue)]);
+
         match &self.body {
             ResponseBody::Result(result) => {
-                println!("return value:");
-                let result = format!(
-                    "(json): {}",
-                    format!("{:#}", result.0)
-                        .lines()
-                        .map(|line| line.cyan().to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
-
-                for line in result.lines() {
-                    println!("  > {line}");
-                }
+                let _ = table.add_row(vec![format!("Result: {:#}", result.0)]);
             }
             ResponseBody::Error(error) => {
-                println!("{error}");
+                let _ = table.add_row(vec![format!("Error: {}", error)]);
             }
         }
+        println!("{table}");
     }
 }
 
@@ -80,12 +88,12 @@ impl CallCommand {
 
         let multiaddr = fetch_multiaddr(&config)?;
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
-            .await?
+        let resolve_response =
+            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
+        let context_id = resolve_response
             .value()
             .cloned()
-            .ok_or_eyre("unable to resolve")?;
-
+            .ok_or_eyre("Failed to resolve context: no value found")?;
         let executor = resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
             .await?
             .value()
@@ -99,6 +107,7 @@ impl CallCommand {
             self.method,
             self.args.unwrap_or(json!({})),
             executor,
+            self.substitute,
         ));
 
         let request = Request::new(

@@ -3,6 +3,7 @@
 [GitPR]: https://github.com/susam/gitpr
 [Issues]: https://github.com/calimero-network/core/issues
 [README]: README.mdx
+[STYLE]: STYLE.md
 
 Thank you for dedicating your time to contribute to our project.
 
@@ -28,6 +29,9 @@ There are several ways you can contribute:
 
 Contributions are managed via Issues and Pull Requests (PRs). Here are some
 general guidelines:
+
+- Read our [Rust style guide][STYLE] to ensure compatibility with the rest of
+  our codebase!
 
 - Before creating a new Issue or PR, search for [existing ones][Issues].
 
@@ -73,7 +77,7 @@ would like to work on an issue, please follow these steps:
 By following this process, we can avoid duplication of efforts and ensure clear
 communication among all contributors.
 
-### Creating a New Issue
+## Creating a New Issue
 
 If no related issue exists, you can create a new one.
 
@@ -104,12 +108,52 @@ We use the ["fork-and-pull"][GitPR] Git workflow:
 
 7. Tag a maintainer to review your PR.
 
+8. Make sure your PR follows our PR template (has to consist of a `Description`,
+   `Test plan` and `Documentation update` sections)
+
+### Commit Message Style
+
+We follow a structured commit message format to ensure readability and enable
+automated changelog generation.
+
+#### Format
+
+```bash
+<type>(<scope>): <short summary>
+```
+
+- **Header**: Follows the `<type>(<scope>): <short summary>` pattern
+
+#### Type (Mandatory)
+
+Must be one of the following:
+
+| Type       | Description                                    |
+| ---------- | ---------------------------------------------- |
+| `build`    | Changes affecting build system or dependencies |
+| `ci`       | Changes to CI configuration files and scripts  |
+| `docs`     | Documentation only changes                     |
+| `feat`     | A new feature                                  |
+| `fix`      | A bug fix                                      |
+| `perf`     | Performance improvement                        |
+| `refactor` | Code change with no bug fix or new feature     |
+| `test`     | Adding or correcting tests                     |
+
+#### Scope (Optional)
+
+The scope should indicate the area of the codebase affected.
+
+#### Summary
+
+- Use imperative, present tense (e.g., "change" not "changed")
+- Don't capitalize first letter
+- No period at the end
+
 ### Tips for a Quality Pull Request
 
 - Title your PR to clearly describe the work done.
 
-- Structure the description for easy reading, using bullet points and
-  screenshots if necessary.
+- Structure your description based on our PR template
 
 - Link to the related issue, if applicable.
 

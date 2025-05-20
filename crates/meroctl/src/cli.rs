@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use bootstrap::BootstrapCommand;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::Report as EyreReport;
 use serde::{Serialize, Serializer};
@@ -15,23 +16,25 @@ mod app;
 mod bootstrap;
 mod call;
 mod context;
-mod identity;
 mod peers;
 mod proxy;
 
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
-use identity::IdentityCommand;
 use peers::PeersCommand;
 use proxy::ProxyCommand;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl -- --node-name node1 app ls
+  $ meroctl --node-name node1 app ls
+  # List all applications with custom destination config
+  $ meroctl  --home data --node-name node1 app ls
 
   # List all contexts
-  $ meroctl -- --home data --node-name node1 context ls
+  $ meroctl --node-name node1 context ls
+  # List all contexts with custom destination config
+  $ meroctl --home data --node-name node1 context ls
 ";
 
 #[derive(Debug, Parser)]
@@ -54,7 +57,6 @@ pub struct RootCommand {
 pub enum SubCommands {
     App(AppCommand),
     Context(ContextCommand),
-    Identity(IdentityCommand),
     Proxy(ProxyCommand),
     Call(CallCommand),
     Bootstrap(BootstrapCommand),
@@ -105,7 +107,6 @@ impl RootCommand {
         let result = match self.action {
             SubCommands::App(application) => application.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
-            SubCommands::Identity(identity) => identity.run(&environment).await,
             SubCommands::Proxy(proxy) => proxy.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Bootstrap(call) => call.run(&environment).await,
@@ -149,7 +150,13 @@ impl From<CliError> for ExitCode {
 
 impl Report for CliError {
     fn report(&self) {
-        println!("{self}");
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
+        let _ = table.add_row(vec![match self {
+            CliError::ApiError(e) => format!("API Error ({}): {}", e.status_code, e.message),
+            CliError::Other(e) => format!("Error: {}", e),
+        }]);
+        println!("{table}");
     }
 }
 

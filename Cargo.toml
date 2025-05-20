@@ -29,32 +29,19 @@ members = [
     "./crates/storage",
     "./crates/storage/macros",
     "./crates/store",
+    "./crates/store/impl/rocksdb",
     "./crates/store/blobs",
     "./crates/utils/actix",
 
     "./apps/kv-store",
-    "./apps/only-peers",
-    "./apps/gen-ext",
-    "./apps/visited",
-
-    "./contracts/near/registry",
-    "./contracts/near/context-config",
-    "./contracts/near/context-proxy",
-    "./contracts/near/test-counter",
-
-    "./contracts/icp/context-config",
-    "./contracts/icp/context-proxy",
-    "./contracts/icp/context-proxy/mock/external",
-
-    "./contracts/stellar/context-config",
-    "./contracts/stellar/context-proxy/mock_external",
-    "./contracts/stellar/context-proxy",
 
     "./e2e-tests",
 ]
 
 [workspace.dependencies]
 actix = "0.13.5"
+alloy = { version = "0.11.1", features = ["full"] }
+alloy-sol-types = "0.8.22"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
 axum = "0.7.4"
@@ -70,12 +57,14 @@ chrono = "0.4.37"
 claims = "0.7.1"
 clap = "4.4.18"
 color-eyre = "0.6.2"
+comfy-table = "7.0"
 const_format = "0.2.32"
 curve25519-dalek = "4.1.3"
 dirs = "5.0.1"
 ed25519-dalek = "2.1.1"
 ed25519-consensus = "2.1.0"
 either = "1.13.0"
+ethabi = "18.0.0"
 eyre = "0.6.12"
 fixedstr = "0.5.7"
 fragile = "2.0.0"
@@ -86,7 +75,6 @@ http = "1.1.0"
 http-serde = "2.1.1"
 ic-agent = "0.39.1"
 ic-canister-sig-creation = "1.1"
-ic-cdk = "0.16"
 ic-signature-verification = "0.2"
 indexmap = "2.6.0"
 itertools = "0.14.0"
@@ -94,6 +82,7 @@ jsonwebtoken = "9.3.0"
 libp2p = "0.53.2"
 libp2p-stream = "0.1.0-alpha.1"
 libp2p-identity = "0.2.9"
+memchr = "2"
 multiaddr = "0.18.1"
 near-account-id = "1.0.0"
 near-crypto = "0.27.0"
@@ -122,12 +111,10 @@ semver = "1.0.22"
 serde = "1.0.196"
 serde_json = "1.0.113"
 serde_with = "3.9.0"
-soroban-env-common = "22.1.3"
 soroban-sdk = { version = "22.0.5", features = ["alloc"] }
 starknet = "0.12.0"
 starknet-crypto = "0.7.1"
 starknet-types-core = "0.1.7"
-stellar-xdr = { version = "22.1.0", default-features = false }
 stellar-baselib = "0.4.6"
 strum = "0.26.2"
 soroban-client = "0.3.7"
@@ -154,12 +141,9 @@ url = "2.5.2"
 velcro = "0.5.4"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
+webbrowser = "1.0.4"
 web3 = "0.19.0"
-local-ip-address = "0.6.1"
-rcgen = "0.13.1"
 x509-parser = "0.16.0"
-axum-server = "0.6"
-axum-server-dual-protocol = "0.6.0"
 
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
@@ -182,14 +166,12 @@ calimero-server-primitives = { path = "./crates/server/primitives" }
 calimero-storage = { path = "./crates/storage" }
 calimero-storage-macros = { path = "./crates/storage/macros" }
 calimero-store = { path = "./crates/store" }
+calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 
 kv-store = { path = "./apps/kv-store" }
-only-peers = { path = "./apps/only-peers" }
-gen-ext = { path = "./apps/gen-ext" }
-visited = { path = "./apps/visited" }
 
 calimero-registry = { path = "./contracts/near/registry" }
 calimero-context-config-near = { path = "./contracts/near/context-config" }
@@ -308,7 +290,6 @@ multiple_inherent_impl = "deny"
 rc_mutex = "deny"
 try_err = "deny"
 #unwrap_used = "deny" TODO: Enable as soon as possible
-wildcard_enum_match_arm = "deny"
 ## Warn
 absolute_paths = "warn"
 allow_attributes = "warn"

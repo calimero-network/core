@@ -5,8 +5,8 @@ use eyre::WrapErr;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
 use libp2p::{
-    dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, tcp, tls, yamux,
-    StreamProtocol, SwarmBuilder,
+    autonat, dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, tcp, tls,
+    yamux, StreamProtocol, SwarmBuilder,
 };
 use multiaddr::Protocol;
 use tracing::warn;
@@ -16,6 +16,7 @@ const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/k
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
+    pub autonat: autonat::Behaviour,
     pub dcutr: dcutr::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub identify: identify::Behaviour,
@@ -56,6 +57,15 @@ impl Behaviour {
             .with_relay_client(noise::Config::new, yamux::Config::default)?
             .with_behaviour(|key, relay_behaviour| {
                 let behaviour = Behaviour {
+                    autonat: {
+                        autonat::Behaviour::new(
+                            peer_id,
+                            autonat::Config {
+                                boot_delay: Duration::from_secs(5),
+                                ..Default::default()
+                            },
+                        )
+                    },
                     dcutr: dcutr::Behaviour::new(peer_id),
                     identify: identify::Behaviour::new(
                         identify::Config::new(PROTOCOL_VERSION.to_owned(), key.public())

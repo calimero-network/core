@@ -43,7 +43,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             &self.context_client,
             &self.external_config,
             &mut self.contexts,
-            &protocol,
+            protocol,
             seed,
             &application_id,
             identity_secret,
@@ -116,12 +116,12 @@ impl Prepared<'_> {
         context_client: &ContextClient,
         external_config: &ExternalClientConfig,
         contexts: &mut BTreeMap<ContextId, ContextMeta>,
-        protocol: &str,
+        protocol: String,
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
         identity_secret: Option<PrivateKey>,
     ) -> eyre::Result<Self> {
-        let Some(external_config) = external_config.params.get(protocol) else {
+        let Some(external_config) = external_config.params.get(&protocol) else {
             bail!(
                 "unsupported protocol: {}, expected one of `{}`",
                 protocol,
@@ -130,7 +130,7 @@ impl Prepared<'_> {
         };
 
         let external_config = ContextConfigParams {
-            protocol: external_config.protocol.clone().into(),
+            protocol: protocol.into(),
             network_id: external_config.network.clone().into(),
             contract_id: external_config.contract_id.clone().into(),
             // vv not used for context creation --

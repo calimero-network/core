@@ -21,6 +21,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
 url.workspace = true
+webbrowser.workspace = true
 
 calimero-context.workspace = true
 calimero-context-config.workspace = true
@@ -33,6 +34,7 @@ calimero-node-primitives.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh"] }
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true
 
 [lints]
