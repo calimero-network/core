@@ -9,7 +9,7 @@ use eyre::{bail, Result as EyreResult};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
-use tokio::fs::{read, read_dir, write};
+use tokio::fs::{read, read_dir, write, DirEntry};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::time::{sleep, Duration};
 use tokio::try_join;
@@ -39,6 +39,14 @@ pub struct TestContext<'a> {
     pub output_writer: OutputWriter,
     pub context_alias: Option<String>,
     pub proposal_id: Option<String>,
+}
+
+#[derive(Debug, Hash, Clone, clap::ValueEnum, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    Ethereum,
+    Near,
+    Stellar,
+    Icp,
 }
 
 pub trait Test {
@@ -95,56 +103,54 @@ impl Driver {
         self.environment.init().await?;
 
         let mut report = TestRunReport::new();
-        let mut initialized_protocols: HashMap<String, ProtocolSandboxEnvironment> = HashMap::new();
+        let mut initialized_protocols: HashMap<Protocol, ProtocolSandboxEnvironment> =
+            HashMap::new();
 
         let protocols_dir = self.environment.input_dir.join("protocols");
 
-        for protocol_name in &self.environment.protocols {
-            let protocol_name = protocol_name.to_string().to_lowercase();
-
-            if initialized_protocols.contains_key(&protocol_name) {
+        for protocol in &self.environment.protocols {
+            if initialized_protocols.contains_key(protocol) {
                 continue;
             }
 
             for sandbox_cfg in &self.config.protocol_sandboxes {
-                let config_protocol_name = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(_) => "stellar",
-                    ProtocolSandboxConfig::Near(_) => "near",
-                    ProtocolSandboxConfig::Icp(_) => "icp",
-                    ProtocolSandboxConfig::Ethereum(_) => "ethereum",
+                let config_protocol = match sandbox_cfg {
+                    ProtocolSandboxConfig::Stellar(_) => Protocol::Stellar,
+                    ProtocolSandboxConfig::Near(_) => Protocol::Near,
+                    ProtocolSandboxConfig::Icp(_) => Protocol::Icp,
+                    ProtocolSandboxConfig::Ethereum(_) => Protocol::Ethereum,
                 };
 
-                if config_protocol_name == protocol_name {
-                    let sandbox_env = match sandbox_cfg {
-                        ProtocolSandboxConfig::Stellar(config) => {
-                            ProtocolSandboxEnvironment::Stellar(StellarSandboxEnvironment::init(
-                                config.clone(),
-                            )?)
-                        }
-                        ProtocolSandboxConfig::Near(config) => ProtocolSandboxEnvironment::Near(
-                            NearSandboxEnvironment::init(config.clone()).await?,
-                        ),
-                        ProtocolSandboxConfig::Icp(config) => ProtocolSandboxEnvironment::Icp(
-                            IcpSandboxEnvironment::init(config.clone())?,
-                        ),
-                        ProtocolSandboxConfig::Ethereum(config) => {
-                            ProtocolSandboxEnvironment::Ethereum(EthereumSandboxEnvironment::init(
-                                config.clone(),
-                            )?)
-                        }
-                    };
-
-                    initialized_protocols.insert(protocol_name.clone(), sandbox_env);
-                    break;
+                if &config_protocol != protocol {
+                    continue;
                 }
+
+                let sandbox_env = match sandbox_cfg {
+                    ProtocolSandboxConfig::Stellar(config) => ProtocolSandboxEnvironment::Stellar(
+                        StellarSandboxEnvironment::init(config.clone())?,
+                    ),
+                    ProtocolSandboxConfig::Near(config) => ProtocolSandboxEnvironment::Near(
+                        NearSandboxEnvironment::init(config.clone()).await?,
+                    ),
+                    ProtocolSandboxConfig::Icp(config) => ProtocolSandboxEnvironment::Icp(
+                        IcpSandboxEnvironment::init(config.clone())?,
+                    ),
+                    ProtocolSandboxConfig::Ethereum(config) => {
+                        ProtocolSandboxEnvironment::Ethereum(EthereumSandboxEnvironment::init(
+                            config.clone(),
+                        )?)
+                    }
+                };
+
+                initialized_protocols.insert(*protocol, sandbox_env);
+                break;
             }
         }
 
         for protocol_name in &self.environment.protocols {
-            let protocol_name = protocol_name.to_string().to_lowercase();
-            let protocol_path = protocols_dir.join(&protocol_name);
+            let protocol_path = protocols_dir.join(&protocol_name.to_string().to_lowercase());
 
-            if !protocol_path.exists() || !protocol_path.is_dir() {
+            if !protocol_path.is_dir() {
                 self.environment
                     .output_writer
                     .write_str(&format!("No directory for protocol: {}", protocol_name));
@@ -170,6 +176,10 @@ impl Driver {
 
             let mut applications = read_dir(&protocol_path).await?;
             while let Some(app) = applications.next_entry().await? {
+                let protocol_name = protocol_name.to_string().to_lowercase();
+                if app.file_type().await?.is_dir() {
+                    continue;
+                }
                 let mut ctx = TestContext::new(
                     inviter.clone(),
                     invitees.clone(),
@@ -180,10 +190,14 @@ impl Driver {
                     sandbox,
                 );
                 let test_file_path = app.path();
-                let app_name = test_file_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default();
+                // let app_name = test_file_path
+                //     .file_stem()
+                //     .and_then(|s| s.to_str())
+                //     .unwrap_or_default();
+
+                let Some(app_name) = test_file_path.file_stem().and_then(|s| s.to_str()) else {
+                    bail!("No application name found");
+                };
 
                 if test_file_path.exists() {
                     let test_content = read(&test_file_path).await?;
