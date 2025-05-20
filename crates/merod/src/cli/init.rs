@@ -1,6 +1,7 @@
 use core::net::IpAddr;
 use core::time::Duration;
 use std::collections::BTreeMap;
+use std::fs::{create_dir, create_dir_all};
 
 use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
@@ -24,8 +25,8 @@ use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
 use calimero_store::config::StoreConfig;
-use calimero_store::db::RocksDB;
 use calimero_store::Store;
+use calimero_store_rocksdb::RocksDB;
 use clap::{Parser, ValueEnum};
 use ed25519_consensus::SigningKey as IcpSigningKey;
 use eyre::{bail, Result as EyreResult, WrapErr};
@@ -38,7 +39,6 @@ use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
 use soroban_client::keypair::{Keypair as StellarKeypair, KeypairBehavior};
 use starknet::signers::SigningKey;
-use tokio::fs::{create_dir, create_dir_all};
 use tracing::{info, warn};
 use url::Url;
 
@@ -152,22 +152,22 @@ impl InitCommand {
         clippy::too_many_lines,
         reason = "TODO: Will be refactored"
     )]
-    pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
+    pub fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.home.join(root_args.node_name);
 
         if !path.exists() {
             if root_args.home == defaults::default_node_dir() {
-                create_dir_all(&path).await
+                create_dir_all(&path)
             } else {
-                create_dir(&path).await
+                create_dir(&path)
             }
             .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
         if ConfigFile::exists(&path) {
-            if let Err(err) = ConfigFile::load(&path).await {
+            if let Err(err) = ConfigFile::load(&path) {
                 if self.force {
                     warn!(
                         "Failed to load existing configuration, overwriting: {}",
@@ -176,7 +176,8 @@ impl InitCommand {
                 } else {
                     bail!("Failed to load existing configuration: {}", err);
                 }
-            } else if !self.force {
+            }
+            if !self.force {
                 warn!("Node is already initialized in {:?}", path);
                 return Ok(());
             }
@@ -425,7 +426,7 @@ impl InitCommand {
             },
         );
 
-        config.save(&path).await?;
+        config.save(&path)?;
 
         drop(Store::open::<RocksDB>(&StoreConfig::new(
             path.join(config.datastore.path),

@@ -27,7 +27,7 @@ near-crypto.workspace = true
 rand.workspace = true
 starknet.workspace = true
 soroban-client.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
+tokio = { workspace = true, features = ["io-std", "macros"] }
 toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -41,6 +41,7 @@ calimero-node.workspace = true
 calimero-network.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store.workspace = true
+calimero-store-rocksdb.workspace = true
 
 [lints]
 workspace = true

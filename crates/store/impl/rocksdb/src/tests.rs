@@ -1,20 +1,20 @@
 use core::mem;
 
+use calimero_store::config::StoreConfig;
+use calimero_store::db::{Column, Database};
+use calimero_store::slice::Slice;
 use eyre::Ok as EyreOk;
 use tempdir::TempDir;
 
-use super::RocksDB;
-use crate::config::StoreConfig;
-use crate::db::{Column, Database};
-use crate::slice::Slice;
+use crate::RocksDB;
 
 #[test]
 fn test_rocksdb() {
-    let dir = TempDir::new("_calimero_store_rocks").unwrap();
+    let dir = TempDir::new("_calimero_store_rocksdb").unwrap();
 
-    let config = StoreConfig {
-        path: dir.path().to_owned().try_into().unwrap(),
-    };
+    let dir_path = dir.path().to_owned().try_into().unwrap();
+
+    let config = StoreConfig::new(dir_path);
 
     let db = RocksDB::open(&config).unwrap();
 
@@ -68,9 +68,9 @@ fn test_rocksdb() {
 fn test_rocksdb_iter() {
     let dir = TempDir::new("_calimero_store_rocks").unwrap();
 
-    let config = StoreConfig {
-        path: dir.path().to_owned().try_into().unwrap(),
-    };
+    let dir_path = dir.path().to_owned().try_into().unwrap();
+
+    let config = StoreConfig::new(dir_path);
 
     let db = RocksDB::open(&config).unwrap();
 
