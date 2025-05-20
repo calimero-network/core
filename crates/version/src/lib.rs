@@ -4,6 +4,7 @@ use std::{borrow::Cow, fmt, sync::LazyLock};
 mod tests;
 
 
+
 static CURRENT: LazyLock<CalimeroVersion<'static>> = LazyLock::new(|| CalimeroVersion {
     release: Cow::Borrowed(env!("CARGO_PKG_VERSION")),
     build: Cow::Borrowed(env!("CALIMERO_BUILD")),
