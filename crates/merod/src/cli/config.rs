@@ -1,218 +1,313 @@
-use clap::{Parser, ValueEnum};
-use colored::*;
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
-use config::config_file::{ConfigFile};
-use config::format::{print_config, PrintFormat};
-use config::schema::{get_schema_hint, HintFormat};
+use anyhow::{anyhow, Context, Result};
+use clap::Args;
+use colored::*;
+use config::ConfigFile;
+use serde_json::{json, Value as JsonValue};
+use schemars::schema::Schema;
 
-#[derive(Debug, Clone, ValueEnum)]
-enum OutputFormat {
-    #[clap(alias = "default")]
-    Default,
-    Toml,
-    Json,
-}
-
-impl From<OutputFormat> for HintFormat {
-    fn from(fmt: OutputFormat) -> Self {
-        match fmt {
-            OutputFormat::Default => HintFormat::Human,
-            OutputFormat::Toml => HintFormat::Toml,
-            OutputFormat::Json => HintFormat::Json,
-        }
-    }
-}
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "config",
-    about = "Inspect or modify the merod configuration file",
-    long_about = "Inspect, edit, or save merod configuration values.\n\n
-
-    To view the current configuration: merod config\n
-    To view a specific section: merod config sync\n
-    To print in JSON: merod config --print json\n
-    To edit values: merod config key=value\n
-    To view schema hints: merod config key?\n\n
-    Edits are only saved if you use the --save flag. Schema hints
-    show what keys and value types are allowed.",
-    after_help = "EXAMPLES:\n
-    \n
-    View full config (in TOML):\n
-    merod config\n
-    \n
-    View full config in JSON:\n
-    merod config --print json\n
-    \n
-    View part of the config:\n
-    merod config sync server.admin\n
-    \n
-    Edit values in memory:\n
-    merod config discovery.mdns=false sync.interval_ms=50000\n
-    \n
-    Save edits to file:\n
-    merod config discovery.mdns=false -s\n
-    \n
-    Show diff before saving:\n
-    merod config discovery.mdns=false --print default\n
-    \n
-    Show config schema hint:\n
-    merod config discovery?\n
-    merod config discovery.relay? --print json"
-)]
-pub struct ConfigCmd {
-    #[arg(value_name = "ARGS")]
-    args: Vec<String>,
-
-    /// Print the config (full or partial) in given format
-    #[arg(long = "print", value_enum, default_value = "default")]
-    print: OutputFormat,
-
-    /// Save modifications to the config file
+/// Config subcommand options
+#[derive(Debug, Args)]
+pub struct ConfigOpts {
+    /// Save changes to config file
     #[arg(short, long)]
     save: bool,
+
+    /// Output format (default, toml, json)
+    #[arg(long, value_parser = ["default", "toml", "json"], default_value = "default")]
+    print: String,
+
+    /// Configuration edits or queries
+    pub args: Vec<String>,
 }
 
-impl ConfigCmd {
-    pub fn run(&self, config_path: PathBuf) -> anyhow::Result<()> {
-        let mut config = ConfigFile::load_or_default(&config_path)?;
+/// Entry point for `merod config` command
+pub fn run(opts: ConfigOpts) -> Result<()> {
+    let mut config = ConfigFile::load_or_default()?;
+    let original = config.to_value()?;
 
-        // Separate CLI arguments into edits, hints, and plain keys
-        let mut edits: BTreeMap<String, String> = BTreeMap::new();
-        let mut hints: Vec<String> = Vec::new();
-        let mut keys_to_print: Vec<String> = Vec::new();
+    let mut updated = config.clone();
+    let mut keys_edited = vec![];
 
-        for arg in &self.args {
-            if arg.contains('=') {
-                // key=value  → edit
-                let parts: Vec<_> = arg.splitn(2, '=').collect();
-                edits.insert(parts[0].to_string(), parts[1].to_string());
-            } else if arg.ends_with('?') {
-                // key? → schema hint
-                hints.push(arg.trim_end_matches('?').to_string());
-            } else {
-                // plain key → partial print
-                keys_to_print.push(arg.to_string());
-            }
-        }
+    for arg in &opts.args {
+        if let Some(eq_idx) = arg.find('=') {
+            let (key, value) = arg.split_at(eq_idx);
+            let value = &value[1..]; // skip '='
 
-        /* ------------------------------------------------------------------ */
-        /* 1. Hints                                                           */
-        /* ------------------------------------------------------------------ */
-        if !hints.is_empty() {
-            for key in &hints {
-                let format = self.print.into();
-                let rendered = get_schema_hint(key, format)?;
-                println!("{rendered}");
-            }
+            updated.set_from_str(key, value)?;
+            keys_edited.push(key.to_string());
+        } else if arg.ends_with('?') {
+            let key = &arg[..arg.len() - 1];
+            let fmt = match opts.print.as_str() {
+                "json" => HintFormat::Json,
+                "toml" => HintFormat::Toml,
+                _ => HintFormat::Human,
+            };
+            let hint = get_schema_hint(key, fmt)?;
+            println!("{hint}");
             return Ok(());
         }
+    }
 
-        /* ------------------------------------------------------------------ */
-        /* 2. Edits (in-memory, optional save)                                */
-        /* ------------------------------------------------------------------ */
-        if !edits.is_empty() {
-            let (diff, updated) = config.apply_edits(&edits)?;
+    let updated_val = updated.to_value()?;
+    let is_changed = original != updated_val;
 
-            if diff.is_empty() {
-                eprintln!("{}", "no changes made; skipping save.".yellow());
+    let output_fmt = opts.print.as_str();
+
+    if !keys_edited.is_empty() {
+        if is_changed {
+            if output_fmt == "default" {
+                print_diff(&original, &updated_val)?;
             } else {
-                match self.print {
-                    OutputFormat::Default => {
-                        // Human-readable diff
-                        println!("{}", Diff(&diff));
-                        eprintln!(
-                            "{}",
-                            "note: if this looks right, use -s, --save to persist these modifications"
-                                .italic()
-                                .yellow()
-                        );
-                    }
-                    OutputFormat::Toml => print_config(&updated, PrintFormat::Toml)?,
-                    OutputFormat::Json => print_config(&updated, PrintFormat::Json)?,
-                }
-
-                if self.save {
-                    config.save(&updated)?;
-                }
+                let printed = match output_fmt {
+                    "json" => serde_json::to_string_pretty(&updated_val)?,
+                    "toml" => toml::to_string_pretty(&updated)?,
+                    _ => unreachable!(),
+                };
+                println!("{printed}");
             }
 
-            return Ok(());
-        }
-
-        /* ------------------------------------------------------------------ */
-        /* 3. Pure printing (no edits)                                        */
-        /* ------------------------------------------------------------------ */
-        if !keys_to_print.is_empty() {
-            // Print only the requested sub-sections
-            let view = config.view_keys(&keys_to_print)?;
-            match self.print {
-                OutputFormat::Default | OutputFormat::Toml => {
-                    print_config(&view, PrintFormat::Toml)?
-                }
-                OutputFormat::Json => print_config(&view, PrintFormat::Json)?,
+            if opts.save {
+                updated.save()?;
+                eprintln!("{}", "Saved updated config.".green());
+            } else {
+                eprintln!("{}", "Not saved (use --save to persist changes).".yellow());
             }
         } else {
-            // Print the whole config
-            let full = config.as_map();
-            match self.print {
-                OutputFormat::Default | OutputFormat::Toml => {
-                    print_config(&full, PrintFormat::Toml)?
+            eprintln!("{}", "No changes detected.".yellow());
+        }
+    } else if opts.args.is_empty() {
+        // Print full config
+        match output_fmt {
+            "json" => println!("{}", serde_json::to_string_pretty(&original)?),
+            "toml" => println!("{}", toml::to_string_pretty(&config)?),
+            _ => {
+                for (k, v) in &config {
+                    println!("{} = {}", k, v);
                 }
-                OutputFormat::Json => print_config(&full, PrintFormat::Json)?,
+            }
+        }
+    } else {
+        // Print partial config
+        let mut partial = serde_json::Map::new();
+        for key in &opts.args {
+            let parts: Vec<&str> = key.split('.').collect();
+            if let Some(val) = get_value_by_path(&original, &parts) {
+                insert_into_map(&mut partial, &parts, val.clone());
+            } else {
+                return Err(anyhow!("Key '{}' not found", key));
             }
         }
 
-        Ok(())
+        match output_fmt {
+            "json" => println!("{}", serde_json::to_string_pretty(&JsonValue::Object(partial))?),
+            "toml" => {
+                let as_toml = json_to_toml(&JsonValue::Object(partial));
+                println!("{}", toml::to_string_pretty(&as_toml)?);
+            }
+            _ => {
+                for (k, v) in flatten_json(&JsonValue::Object(partial), None) {
+                    println!("{} = {}", k, v);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Show unified diff between old and new JSON values
+fn print_diff(old: &JsonValue, new: &JsonValue) -> Result<()> {
+    let diff = diffs::json::diff(old, new);
+
+    for d in diff {
+        match d {
+            diffs::json::Diff::Added(p, v) => {
+                println!("{} {}", "+".green(), format!("{} = {}", p, v).green());
+            }
+            diffs::json::Diff::Removed(p, v) => {
+                println!("{} {}", "-".red(), format!("{} = {}", p, v).red());
+            }
+            diffs::json::Diff::Modified(p, old_v, new_v) => {
+                println!("{} {}", "-".red(), format!("{} = {}", p, old_v).red());
+                println!("{} {}", "+".green(), format!("{} = {}", p, new_v).green());
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Flatten nested JSON object into flat map with dot keys
+fn flatten_json(val: &JsonValue, prefix: Option<String>) -> Vec<(String, JsonValue)> {
+    let mut result = vec![];
+    match val {
+        JsonValue::Object(map) => {
+            for (k, v) in map {
+                let full_key = match &prefix {
+                    Some(p) => format!("{p}.{k}"),
+                    None => k.clone(),
+                };
+                result.extend(flatten_json(v, Some(full_key)));
+            }
+        }
+        _ => {
+            if let Some(k) = prefix {
+                result.push((k, val.clone()));
+            }
+        }
+    }
+    result
+}
+
+/// Access value by dotted key path
+fn get_value_by_path(val: &JsonValue, path: &[&str]) -> Option<&JsonValue> {
+    let mut current = val;
+    for p in path {
+        match current {
+            JsonValue::Object(map) => {
+                current = map.get(*p)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+/// Insert a value into a nested JSON map
+fn insert_into_map(map: &mut serde_json::Map<String, JsonValue>, path: &[&str], val: JsonValue) {
+    if path.len() == 1 {
+        map.insert(path[0].to_string(), val);
+        return;
+    }
+
+    let entry = map.entry(path[0].to_string()).or_insert_with(|| json!({}));
+    if let JsonValue::Object(m) = entry {
+        insert_into_map(m, &path[1..], val);
     }
 }
 
-/// Wrapper for displaying config diffs in human-readable form
-pub struct Diff<'a>(pub &'a BTreeMap<String, (Option<String>, Option<String>)>);
+/// Enum for schema hint formats
+#[derive(Clone, Copy)]
+enum HintFormat {
+    Human,
+    Json,
+    Toml,
+}
 
-impl<'a> std::fmt::Display for Diff<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0.is_empty() {
-            writeln!(f, "No changes detected.")?;
-            return Ok(());
+/// Show schema hint for a key
+fn get_schema_hint(key: &str, format: HintFormat) -> Result<String> {
+    let schema = ConfigFile::schema();
+    let parts: Vec<&str> = key.split('.').collect();
+    let subschema = get_subschema_for_path(&schema.schema, &parts)
+        .ok_or_else(|| anyhow!("Unknown key '{}'", key))?;
+
+    match format {
+        HintFormat::Human => {
+            let typ = subschema.instance_type.as_ref()
+                .and_then(|t| t.first())
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let desc = subschema.metadata.as_ref()
+                .and_then(|m| m.description.clone())
+                .unwrap_or_default();
+
+            Ok(format!("{}: {} {}", key.bold(), typ, desc))
         }
-        for (key, (old_val, new_val)) in self.0 {
-            match (old_val, new_val) {
-                (Some(old), Some(new)) if old != new => {
-                    writeln!(
-                        f,
-                        "{} {} {}",
-                        key.green().bold(),
-                        "changed from".yellow(),
-                        old.red()
-                    )?;
-                    writeln!(f, "{} {}", "to".yellow(), new.green())?;
-                }
-                (None, Some(new)) => {
-                    writeln!(
-                        f,
-                        "{} {} {}",
-                        key.green().bold(),
-                        "set to".yellow(),
-                        new.green()
-                    )?;
-                }
-                (Some(old), None) => {
-                    writeln!(
-                        f,
-                        "{} {} {}",
-                        key.green().bold(),
-                        "removed (was)".yellow(),
-                        old.red()
-                    )?;
-                }
-                _ => {
-                    // No change or unknown case - skip printing
-                }
+        HintFormat::Toml => {
+            let example = subschema.default.clone().unwrap_or(json!(""));
+            let mut toml_map = toml::value::Table::new();
+            insert_toml_value(&mut toml_map, &parts, &example);
+            Ok(toml::to_string_pretty(&toml::Value::Table(toml_map))?)
+        }
+        HintFormat::Json => {
+            let mut json_map = serde_json::Map::new();
+            insert_json_value(&mut json_map, &parts, subschema);
+            Ok(serde_json::to_string_pretty(&JsonValue::Object(json_map))?)
+        }
+    }
+}
+
+/// Traverse schema to get subschema by path
+fn get_subschema_for_path<'a>(schema: &'a Schema, path: &[&str]) -> Option<&'a Schema> {
+    if path.is_empty() {
+        return Some(schema);
+    }
+
+    if let Some(props) = schema.object.as_ref().map(|o| &o.properties) {
+        if let Some(sub) = props.get(path[0]) {
+            get_subschema_for_path(sub, &path[1..])
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Insert TOML value into nested table
+fn insert_toml_value(map: &mut toml::value::Table, path: &[&str], val: &JsonValue) {
+    if path.len() == 1 {
+        map.insert(path[0].to_string(), json_to_toml(val));
+        return;
+    }
+
+    let entry = map.entry(path[0].to_string()).or_insert_with(|| toml::Value::Table(Default::default()));
+    if let toml::Value::Table(ref mut sub) = entry {
+        insert_toml_value(sub, &path[1..], val);
+    }
+}
+
+/// Insert JSON schema value at path
+fn insert_json_value(map: &mut serde_json::Map<String, JsonValue>, path: &[&str], schema: &Schema) {
+    if path.len() == 1 {
+        let mut obj = serde_json::Map::new();
+        if let Some(ty) = &schema.instance_type {
+            obj.insert("type".to_string(), json!(ty));
+        }
+        if let Some(desc) = &schema.metadata.as_ref().and_then(|m| m.description.clone()) {
+            obj.insert("description".to_string(), json!(desc));
+        }
+        if let Some(def) = &schema.default {
+            obj.insert("default".to_string(), def.clone());
+        }
+        map.insert(path[0].to_string(), JsonValue::Object(obj));
+        return;
+    }
+
+    let entry = map.entry(path[0].to_string()).or_insert_with(|| json!({}));
+    if let JsonValue::Object(inner) = entry {
+        insert_json_value(inner, &path[1..], schema);
+    }
+}
+
+/// Convert JSON to TOML best-effort
+fn json_to_toml(val: &JsonValue) -> toml::Value {
+    match val {
+        JsonValue::Null => toml::Value::String("null".to_string()),
+        JsonValue::Bool(b) => toml::Value::Boolean(*b),
+        JsonValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                toml::Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                toml::Value::Float(f)
+            } else {
+                toml::Value::String(n.to_string())
             }
         }
-        Ok(())
+        JsonValue::String(s) => toml::Value::String(s.clone()),
+        JsonValue::Array(arr) => toml::Value::Array(arr.iter().map(json_to_toml).collect()),
+        JsonValue::Object(map) => {
+            let mut tbl = toml::value::Table::new();
+            for (k, v) in map {
+                tbl.insert(k.clone(), json_to_toml(v));
+            }
+            toml::Value::Table(tbl)
+        }
     }
 }
