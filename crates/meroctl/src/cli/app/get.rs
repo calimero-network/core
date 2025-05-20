@@ -2,10 +2,11 @@ use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
 use eyre::{eyre, Result as EyreResult};
+use libp2p::identity::Keypair;
 use reqwest::Client;
 
-use crate::cli::{ConnectionInfo, Environment};
-use crate::common::{do_request, multiaddr_to_url, RequestType};
+use crate::cli::Environment;
+use crate::common::{do_request, RequestType};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -31,27 +32,24 @@ impl Report for GetApplicationResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let (url, keypair) = match &environment.connection {
-            Some(ConnectionInfo::Local { config, multiaddr }) => (
-                multiaddr_to_url(
-                    multiaddr,
-                    &format!("admin-api/dev/applications/{}", self.app_id),
-                )?,
-                Some(&config.identity),
-            ),
-            Some(ConnectionInfo::Remote { api }) => {
-                let mut url = api.clone();
-                url.set_path(&format!("admin-api/dev/applications/{}", self.app_id));
-                (url, None)
-            }
-            None => return Err(eyre!("No connection configured")),
-        };
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_else(|| eyre!("No connection configured"))?;
+
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!("admin-api/dev/applications/{}", self.app_id));
+
+        let keypair = connection
+            .auth_key
+            .as_ref()
+            .and_then(|k| bs58::decode(k).into_vec().ok())
+            .and_then(|bytes| Keypair::from_protobuf_encoding(&bytes).ok());
 
         let response: GetApplicationResponse =
-            do_request(&Client::new(), url, None::<()>, keypair, RequestType::Get).await?;
+            do_request(&Client::new(), url, None::<()>, keypair.as_ref(), RequestType::Get).await?;
 
         environment.output.write(&response);
-
         Ok(())
     }
 }

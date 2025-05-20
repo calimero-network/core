@@ -5,9 +5,8 @@ use const_format::concatcp;
 use eyre::{eyre, Result as EyreResult};
 use reqwest::Client;
 
-use super::ConnectionInfo;
 use crate::cli::Environment;
-use crate::common::{do_request, multiaddr_to_url, RequestType};
+use crate::common::{do_request, RequestType};
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
@@ -34,21 +33,20 @@ impl Report for GetPeersCountResponse {
 
 impl PeersCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let (url, keypair) = match &environment.connection {
-            Some(ConnectionInfo::Local { config, multiaddr }) => (
-                multiaddr_to_url(multiaddr, "admin-api/dev/peers")?,
-                Some(&config.identity),
-            ),
-            Some(ConnectionInfo::Remote { api }) => {
-                let mut url = api.clone();
-                url.set_path("admin-api/dev/peers");
-                (url, None)
-            }
-            None => return Err(eyre!("No connection configured")),
-        };
+        let connection = environment.connection.as_ref()
+            .ok_or_else(|| eyre!("No connection configured"))?;
+
+        let mut url = connection.api_url.clone();
+        url.set_path("admin-api/dev/peers");
+
+        let keypair = connection
+            .auth_key
+            .as_ref()
+            .and_then(|k| bs58::decode(k).into_vec().ok())
+            .and_then(|bytes| libp2p::identity::Keypair::from_protobuf_encoding(&bytes).ok());
 
         let response: GetPeersCountResponse =
-            do_request(&Client::new(), url, None::<()>, keypair, RequestType::Get).await?;
+            do_request(&Client::new(), url, None::<()>, keypair.as_ref(), RequestType::Get).await?;
 
         environment.output.write(&response);
 

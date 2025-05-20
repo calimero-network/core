@@ -1,18 +1,17 @@
 use std::process::ExitCode;
 
 use bootstrap::BootstrapCommand;
-use calimero_config::ConfigFile;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{eyre, Report as EyreReport};
-use libp2p::Multiaddr;
+use node::NodeCommand;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
-use crate::common::{fetch_multiaddr, load_config};
+use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::defaults;
 use crate::node_config::{NodeConfig, NodeConnection};
 use crate::output::{Format, Output, Report};
@@ -21,6 +20,7 @@ mod app;
 mod bootstrap;
 mod call;
 mod context;
+mod node;
 mod peers;
 mod proxy;
 
@@ -71,41 +71,6 @@ pub enum SubCommands {
 }
 
 #[derive(Debug, Parser)]
-pub struct AddNodeCommand {
-    /// Name of the node
-    pub name: String,
-
-    /// Path to local node
-    #[arg(long, conflicts_with = "url")]
-    pub path: Option<Utf8PathBuf>,
-
-    /// URL of remote node
-    #[arg(long, conflicts_with = "path")]
-    pub url: Option<Url>,
-}
-
-#[derive(Debug, Parser)]
-pub struct RemoveNodeCommand {
-    /// Name of the node to remove
-    pub name: String,
-}
-
-#[derive(Debug, Parser)]
-pub enum NodeCommand {
-    /// Add or connect to a node
-    #[command(name = "add")]
-    Add(AddNodeCommand),
-
-    /// Remove a node connection
-    #[command(name = "rm")]
-    Remove(RemoveNodeCommand),
-
-    /// List all configured nodes
-    #[command(name = "ls")]
-    List,
-}
-
-#[derive(Debug, Parser)]
 pub struct LocalNodeCommand {
     pub alias: String,
 
@@ -134,7 +99,7 @@ pub struct RootArgs {
 
     /// API endpoint URL
     #[arg(long, value_name = "URL", conflicts_with = "node_name")]
-    pub api: Option<String>,
+    pub api: Option<Url>,
 
     /// Use a pre-configured node alias
     #[arg(long, value_name = "ALIAS", conflicts_with_all = &["node_name", "api"])]
@@ -148,7 +113,7 @@ impl RootArgs {
     pub const fn new(
         home: Utf8PathBuf,
         node_name: Option<String>,
-        api: Option<String>,
+        api: Option<Url>,
         node: Option<String>,
         output_format: Format,
     ) -> Self {
@@ -181,36 +146,43 @@ impl Environment {
 impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
+
         // Determine connection info
-        let connection = match (&self.args.node_name, &self.args.api, &self.args.node) {
-            (Some(node_name), None, None) => {
-                // Local node connection
-                let config = load_config(&self.args.home, node_name)?;
-                let multiaddr = fetch_multiaddr(&config).unwrap().clone();
-                ConnectionInfo::Local { config, multiaddr }
-            }
-            (None, Some(api), None) => {
-                // Direct API connection
-                let api_url = api
-                    .parse()
-                    .map_err(|e| CliError::Other(eyre!("Invalid API URL: {}", e)))?;
-                ConnectionInfo::Remote { api: api_url }
-            }
-            (None, None, Some(node_alias)) => {
-                // Alias-based connection
-                let node_config = NodeConfig::load().unwrap();
-                match node_config.nodes.get(node_alias) {
-                    Some(NodeConnection::Local { path }) => {
-                        let config = load_config(path, node_alias)?;
-                        let multiaddr = fetch_multiaddr(&config).unwrap().clone();
-                        ConnectionInfo::Local { config, multiaddr }
+        let connection = match (&self.args.node, &self.args.api) {
+            (Some(node_name), None) => {
+                // Check if node exists in config
+                let node_config = NodeConfig::load()?;
+                if let Some(conn) = node_config.nodes.get(node_name) {
+                    match conn {
+                        NodeConnection::Local { path } => {
+                            let config = load_config(path, node_name)?;
+                            let multiaddr = fetch_multiaddr(&config)?;
+                            let url = multiaddr_to_url(&multiaddr, "")?;
+                            ConnectionInfo {
+                                api_url: url,
+                                auth_key: Some(bs58::encode(config.identity.to_protobuf_encoding().unwrap()).into_string()),
+                            }
+                        }
+                        NodeConnection::Remote { url, auth } => ConnectionInfo {
+                            api_url: url.clone(),
+                            auth_key: auth.clone(),
+                        },
                     }
-                    Some(NodeConnection::Remote { url }) => {
-                        ConnectionInfo::Remote { api: url.clone() }
+                } else {
+                    // Fall back to checking default home directory
+                    let config = load_config(&defaults::default_node_dir(), node_name)?;
+                    let multiaddr = fetch_multiaddr(&config)?;
+                    let url = multiaddr_to_url(&multiaddr, "")?;
+                    ConnectionInfo {
+                        api_url: url,
+                        auth_key: Some(bs58::encode(config.identity.to_protobuf_encoding().unwrap()).into_string()),
                     }
-                    None => return Err(CliError::Other(eyre!("Node alias not found"))),
                 }
             }
+            (None, Some(api_url)) => ConnectionInfo {
+                api_url: api_url.clone(),
+                auth_key: None,
+            },
             _ => return Err(CliError::Other(eyre!("Invalid connection parameters"))),
         };
 
@@ -287,52 +259,7 @@ where
     serializer.collect_str(&report)
 }
 
-pub enum ConnectionInfo {
-    Local {
-        config: ConfigFile,
-        multiaddr: Multiaddr,
-    },
-    Remote {
-        api: Url,
-    },
-}
-
-impl NodeCommand {
-    pub async fn run(self) -> eyre::Result<()> {
-        let mut config = NodeConfig::load()?;
-
-        match self {
-            NodeCommand::Add(cmd) => {
-                let connection = match (cmd.path, cmd.url) {
-                    (Some(path), None) => NodeConnection::Local { path },
-                    (None, Some(url)) => NodeConnection::Remote { url },
-                    _ => return Err(eyre!("Either --path or --url must be specified")),
-                };
-                drop(config.nodes.insert(cmd.name, connection));
-            }
-            NodeCommand::Remove(cmd) => {
-                drop(config.nodes.remove(&cmd.name));
-            }
-            NodeCommand::List => {
-                let mut table = Table::new();
-                let _ = table.set_header(vec!["Name", "Type", "Location"]);
-
-                for (name, conn) in &config.nodes {
-                    match conn {
-                        NodeConnection::Local { path } => {
-                            let _ = table.add_row(vec![name, "Local", path.as_str()]);
-                        }
-                        NodeConnection::Remote { url } => {
-                            let _ = table.add_row(vec![name, "Remote", url.as_str()]);
-                        }
-                    }
-                }
-                println!("{table}");
-                return Ok(());
-            }
-        }
-
-        config.save()?;
-        Ok(())
-    }
+pub struct ConnectionInfo {
+    pub api_url: Url,
+    pub auth_key: Option<String>,
 }

@@ -7,7 +7,6 @@ use url::Url;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeConfig {
-    #[serde(rename = "nodes")]
     pub nodes: BTreeMap<String, NodeConnection>,
 }
 
@@ -15,7 +14,7 @@ pub struct NodeConfig {
 #[serde(untagged)]
 pub enum NodeConnection {
     Local { path: Utf8PathBuf },
-    Remote { url: Url },
+    Remote { url: Url, auth: Option<String> },
 }
 
 impl NodeConfig {
