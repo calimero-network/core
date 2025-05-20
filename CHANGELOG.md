@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Add suport for public address advertisement.
+- Refine AutoNAT protocol integration.
+- Remove support for TLS server due to bug in (axum dual protocol).[https://github.com/daxpedda/axum-server-dual-protocol]
+
 ## [0.6.0] - 2025-05-5
 
 - Added alias substitution and use command for streamlined context interactions
