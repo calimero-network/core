@@ -1838,6 +1838,7 @@ dependencies = [
  "libp2p-identity",
  "multiaddr",
  "serde",
+ "tokio",
  "toml",
 ]
 
@@ -3786,15 +3787,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
  "byteorder",
-]
-
-[[package]]
-name = "gen-ext"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-sdk-near",
- "calimero-storage",
 ]
 
 [[package]]
@@ -10393,14 +10385,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "visited"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
-]
 
 [[package]]
 name = "void"
