@@ -28,9 +28,10 @@ pub struct ConfigOpts {
 pub fn run(opts: ConfigOpts) -> Result<()> {
     let mut config = ConfigFile::load_or_default()?;
     let original = config.to_value()?;
-
     let mut updated = config.clone();
+
     let mut keys_edited = vec![];
+    let mut schema_queries = vec![];
 
     for arg in &opts.args {
         if let Some(eq_idx) = arg.find('=') {
@@ -40,55 +41,60 @@ pub fn run(opts: ConfigOpts) -> Result<()> {
             updated.set_from_str(key, value)?;
             keys_edited.push(key.to_string());
         } else if arg.ends_with('?') {
-            let key = &arg[..arg.len() - 1];
-            let fmt = match opts.print.as_str() {
-                "json" => HintFormat::Json,
-                "toml" => HintFormat::Toml,
-                _ => HintFormat::Human,
-            };
-            let hint = get_schema_hint(key, fmt)?;
-            println!("{hint}");
-            return Ok(());
+            schema_queries.push(arg.trim_end_matches('?').to_string());
         }
+    }
+
+    // If only schema queries are requested
+    if !schema_queries.is_empty() && keys_edited.is_empty() && schema_queries.len() == opts.args.len() {
+        let fmt = match opts.print.as_str() {
+            "json" => HintFormat::Json,
+            "toml" => HintFormat::Toml,
+            _ => HintFormat::Human,
+        };
+        for key in schema_queries {
+            let hint = get_schema_hint(&key, fmt)?;
+            println!("{hint}");
+        }
+        return Ok(());
     }
 
     let updated_val = updated.to_value()?;
     let is_changed = original != updated_val;
-
-    let output_fmt = opts.print.as_str();
+    let output_fmt = match opts.print.as_str() {
+        "default" => "toml",
+        other => other,
+    };
 
     if !keys_edited.is_empty() {
         if is_changed {
-            if output_fmt == "default" {
-                print_diff(&original, &updated_val)?;
-            } else {
-                let printed = match output_fmt {
-                    "json" => serde_json::to_string_pretty(&updated_val)?,
-                    "toml" => toml::to_string_pretty(&updated)?,
-                    _ => unreachable!(),
-                };
-                println!("{printed}");
+            match output_fmt {
+                "json" => {
+                    let out = serde_json::to_string_pretty(&updated_val)?;
+                    println!("{out}");
+                }
+                "toml" => {
+                    let out = toml::to_string_pretty(&updated)?;
+                    println!("{out}");
+                }
+                _ => unreachable!(),
             }
 
             if opts.save {
                 updated.save()?;
                 eprintln!("{}", "Saved updated config.".green());
             } else {
-                eprintln!("{}", "Not saved (use --save to persist changes).".yellow());
+                eprintln!("{}", "Note: if this looks right, use `-s, --save` to persist these modifications".yellow());
             }
         } else {
             eprintln!("{}", "No changes detected.".yellow());
         }
     } else if opts.args.is_empty() {
-        // Print full config
+        // No keys = print full config
         match output_fmt {
             "json" => println!("{}", serde_json::to_string_pretty(&original)?),
             "toml" => println!("{}", toml::to_string_pretty(&config)?),
-            _ => {
-                for (k, v) in &config {
-                    println!("{} = {}", k, v);
-                }
-            }
+            _ => unreachable!(),
         }
     } else {
         // Print partial config
