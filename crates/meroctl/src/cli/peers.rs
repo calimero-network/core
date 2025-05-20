@@ -46,6 +46,7 @@ impl PeersCommand {
             .as_ref()
             .and_then(|k| bs58::decode(k).into_vec().ok())
             .and_then(|bytes| libp2p::identity::Keypair::from_protobuf_encoding(&bytes).ok());
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
 
         let response: GetPeersCountResponse = do_request(
             &Client::new(),

@@ -118,6 +118,7 @@ impl GetCommand {
             &environment.args.home,
             environment.args.node_name.as_deref().unwrap_or_default(),
         )?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 

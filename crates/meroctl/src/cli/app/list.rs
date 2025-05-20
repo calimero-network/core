@@ -50,9 +50,6 @@ impl Report for ListApplicationsResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
         let mut url = connection.api_url.clone();
