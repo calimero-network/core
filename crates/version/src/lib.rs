@@ -1,9 +1,9 @@
-use std::{borrow::Cow, fmt, sync::LazyLock};
+use std::borrow::Cow;
+use std::fmt;
+use std::sync::LazyLock;
 
 #[cfg(test)]
 mod tests;
-
-
 
 static CURRENT: LazyLock<CalimeroVersion<'static>> = LazyLock::new(|| CalimeroVersion {
     release: Cow::Borrowed(env!("CARGO_PKG_VERSION")),
@@ -47,5 +47,3 @@ impl fmt::Display for CalimeroVersion<'_> {
 pub fn current_str() -> &'static str {
     CalimeroVersion::current_str()
 }
-
-

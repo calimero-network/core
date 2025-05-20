@@ -1,4 +1,5 @@
 use std::process::Command;
+
 use eyre::{eyre, Result as EyreResult};
 use rustc_version::version;
 
@@ -10,9 +11,17 @@ fn main() {
 }
 
 fn try_main() -> EyreResult<()> {
-    let git_describe = run_command("git", &[
-        "describe", "--always", "--dirty=-modified", "--tags", "--match", "[0-9]*"
-    ])?;
+    let git_describe = run_command(
+        "git",
+        &[
+            "describe",
+            "--always",
+            "--dirty=-modified",
+            "--tags",
+            "--match",
+            "[0-9]*",
+        ],
+    )?;
 
     let git_commit = run_command("git", &["rev-parse", "--short", "HEAD"])?;
 
@@ -22,7 +31,10 @@ fn try_main() -> EyreResult<()> {
 
     println!("cargo:rustc-env=CALIMERO_BUILD={}", git_describe.trim());
     println!("cargo:rustc-env=CALIMERO_COMMIT={}", git_commit.trim());
-    println!("cargo:rustc-env=CALIMERO_RUSTC_VERSION={}", rustc_version.trim());
+    println!(
+        "cargo:rustc-env=CALIMERO_RUSTC_VERSION={}",
+        rustc_version.trim()
+    );
 
     Ok(())
 }
@@ -34,11 +46,7 @@ fn run_command(command: &str, args: &[&str]) -> EyreResult<String> {
         .map_err(|e| eyre!("failed to execute `{}`: {}", command, e))?;
 
     if !output.status.success() {
-        return Err(eyre!(
-            "`{}` failed with status: {}",
-            command,
-            output.status
-        ));
+        return Err(eyre!("`{}` failed with status: {}", command, output.status));
     }
 
     let stdout = String::from_utf8(output.stdout)
