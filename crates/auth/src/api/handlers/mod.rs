@@ -5,14 +5,12 @@ pub mod permissions;
 
 use std::sync::Arc;
 
-use axum::extract::Extension;
-use axum::http::StatusCode;
+use axum::extract::{Extension, Path};
+use axum::http::{header, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
-use serde_json::json;
-use axum::http::{header, Uri};
-use axum::extract::Path;
 use rust_embed::RustEmbed;
+use serde_json::json;
 
 use crate::server::AppState;
 
@@ -133,9 +131,7 @@ pub async fn asset_handler(Path(path): Path<String>) -> impl IntoResponse {
 /// Serves embedded static files or falls back to `index.html` for SPA routing.
 async fn serve_embedded_file(path: &str) -> impl IntoResponse {
     // Clean up the path, removing any leading slashes and /auth prefix
-    let clean_path = path
-        .trim_start_matches('/')
-        .trim_start_matches("auth/");
+    let clean_path = path.trim_start_matches('/').trim_start_matches("auth/");
 
     // For empty paths or root requests, serve index.html
     let path_to_serve = if clean_path.is_empty() {
@@ -176,8 +172,8 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
             "image/svg+xml"
         } else {
             "application/octet-stream"
-    };
-    
+        };
+
         // Set appropriate headers
         let headers = [
             (header::CONTENT_TYPE, content_type),
@@ -203,7 +199,7 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
         if let Some(index_file) = AuthUiStaticFiles::get("index.html") {
             // Convert the file content to a string
             let html_content = String::from_utf8_lossy(&index_file.data);
-            
+
             // Replace the asset paths to use the /auth prefix
             let modified_html = html_content
                 .replace("=\"/assets/", "=\"/auth/assets/")

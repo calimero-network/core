@@ -9,10 +9,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
+use crate::api::handlers::AuthUiStaticFiles;
 use crate::server::AppState;
 use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;
-use crate::api::handlers::AuthUiStaticFiles;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, Json<serde_json::Value>);
@@ -61,7 +61,7 @@ pub async fn login_handler(
     // If we have any providers available
     if !enabled_providers.is_empty() {
         info!("Loading authentication UI");
-        
+
         // Get the index.html file from embedded assets
         if let Some(file) = AuthUiStaticFiles::get("index.html") {
             // Convert the file content to a string

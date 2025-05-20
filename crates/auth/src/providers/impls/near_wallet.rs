@@ -8,7 +8,7 @@ use axum::http::Request;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::Utc;
-use ed25519_dalek::{Verifier, VerifyingKey, Signature};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::QueryRequest;
@@ -199,26 +199,31 @@ impl NearWalletProvider {
         let encoded_key = public_key_str.trim_start_matches("ed25519:");
 
         // Decode public key from base58
-        let decoded_key: [u8; 32] = decode_to_fixed_array(&Encoding::Base58, encoded_key)
-            .map_err(|e| AuthError::SignatureVerificationFailed(
-                format!("Failed to decode public key: {}", e)
-            ))?;
+        let decoded_key: [u8; 32] =
+            decode_to_fixed_array(&Encoding::Base58, encoded_key).map_err(|e| {
+                AuthError::SignatureVerificationFailed(format!(
+                    "Failed to decode public key: {}",
+                    e
+                ))
+            })?;
 
         println!("Decoded public key (hex): {}", hex::encode(&decoded_key));
 
         // Create verifying key
-        let vk = VerifyingKey::from_bytes(&decoded_key)
-            .map_err(|e| AuthError::SignatureVerificationFailed(
-                format!("Invalid public key: {}", e)
-            ))?;
+        let vk = VerifyingKey::from_bytes(&decoded_key).map_err(|e| {
+            AuthError::SignatureVerificationFailed(format!("Invalid public key: {}", e))
+        })?;
 
         // Decode signature from base64
         let decoded_signature: [u8; 64] = decode_to_fixed_array(&Encoding::Base64, signature_str)
-            .map_err(|e| AuthError::SignatureVerificationFailed(
-                format!("Failed to decode signature: {}", e)
-            ))?;
+            .map_err(|e| {
+            AuthError::SignatureVerificationFailed(format!("Failed to decode signature: {}", e))
+        })?;
 
-        println!("Decoded signature (hex): {}", hex::encode(&decoded_signature));
+        println!(
+            "Decoded signature (hex): {}",
+            hex::encode(&decoded_signature)
+        );
 
         // Create signature
         let signature = Signature::from_bytes(&decoded_signature);
@@ -230,9 +235,10 @@ impl NearWalletProvider {
             }
             Err(e) => {
                 println!("Signature verification failed: {:?}", e);
-                Err(AuthError::SignatureVerificationFailed(
-                    format!("Signature verification failed: {}", e)
-                ))
+                Err(AuthError::SignatureVerificationFailed(format!(
+                    "Signature verification failed: {}",
+                    e
+                )))
             }
         }
     }
@@ -813,7 +819,6 @@ impl AuthProvider for NearWalletProvider {
         self
     }
 }
-
 
 enum Encoding {
     Base64,

@@ -16,8 +16,9 @@ use crate::api::handlers::keys::{create_key_handler, delete_key_handler, list_ke
 use crate::api::handlers::permissions::{
     get_key_permissions_handler, list_permissions_handler, update_key_permissions_handler,
 };
-use crate::api::handlers::{health_handler, identity_handler, metrics_handler, providers_handler};
-use crate::api::handlers::asset_handler;
+use crate::api::handlers::{
+    asset_handler, health_handler, identity_handler, metrics_handler, providers_handler,
+};
 use crate::auth::middleware::forward_auth_middleware;
 use crate::config::AuthConfig;
 use crate::server::AppState;
