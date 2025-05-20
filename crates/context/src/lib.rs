@@ -346,24 +346,19 @@ impl ContextManager {
 
     pub async fn join_context(
         &self,
-        invitee_public_key_from_payload: PublicKey,
         invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
         let (context_id, invitee_id_from_payload, protocol, network_id, contract_id) =
             invitation_payload.parts()?;
 
-        if invitee_public_key_from_payload != invitee_id_from_payload {
-            bail!("Public key provided for join does not match invitee ID in payload");
-        }
-
         let placeholder_context_id = ContextId::from([0; 32]);
 
         let stored_identity = self
-            .get_identity_value(placeholder_context_id, invitee_public_key_from_payload)?
+            .get_identity_value(placeholder_context_id, invitee_id_from_payload)?
             .ok_or_else(|| {
                 eyre::eyre!(
                     "Pre-stored private key not found for public key: {}",
-                    invitee_public_key_from_payload
+                    invitee_id_from_payload
                 )
             })?;
 
@@ -371,10 +366,10 @@ impl ContextManager {
             .private_key
             .ok_or_else(|| eyre::eyre!("Stored identity value is missing private key"))?;
 
-        self.delete_identity_value(placeholder_context_id, invitee_public_key_from_payload)?;
+        self.delete_identity_value(placeholder_context_id, invitee_id_from_payload)?;
 
         let handle = self.store.handle();
-        let identity_key = ContextIdentityKey::new(context_id, invitee_public_key_from_payload);
+        let identity_key = ContextIdentityKey::new(context_id, invitee_id_from_payload);
         if handle.has(&identity_key)? {
             return Ok(None);
         }
@@ -417,7 +412,7 @@ impl ContextManager {
         let _ignored = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
-        Ok(Some((context_id, invitee_public_key_from_payload)))
+        Ok(Some((context_id, invitee_id_from_payload)))
     }
 
     #[expect(clippy::similar_names, reason = "Different enough")]
@@ -1671,6 +1666,7 @@ impl ContextManager {
 
         self.store_identity_value(placeholder_context_id, public_key, value)?;
         Ok(public_key)
+    }
 
     pub async fn grant_capabilities(
         &self,

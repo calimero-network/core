@@ -225,15 +225,12 @@ impl ContextCommand {
                 }
             }
             Commands::Join {
-                private_key,
+                private_key: _,
                 invitation_payload,
                 context,
                 identity,
             } => {
-                let response = node
-                    .ctx_manager
-                    .join_context(private_key.public_key(), invitation_payload)
-                    .await?;
+                let response = node.ctx_manager.join_context(invitation_payload).await?;
 
                 if let Some((context_id, public_key)) = response {
                     // Create context alias if --name is specified
