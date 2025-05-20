@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::server::AppState;
 use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;
+use crate::api::handlers::AuthUiStaticFiles;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, Json<serde_json::Value>);
@@ -57,28 +58,37 @@ pub async fn login_handler(
     // Get enabled providers
     let enabled_providers = state.0.auth_service.providers();
 
-    // Check if NEAR wallet provider is available
-    if let Some(near_wallet) = enabled_providers.iter().find(|p| p.name() == "near_wallet") {
-        if near_wallet.is_configured() {
-            info!("NEAR wallet provider is available");
-            // Read the HTML template and the JavaScript bundle
-            let mut html = include_str!("../../../frontend/index.html").to_string();
-            let js_bundle = include_str!("../../../frontend/dist/bundle.js");
+    // If we have any providers available
+    if !enabled_providers.is_empty() {
+        info!("Loading authentication UI");
+        
+        // Get the index.html file from embedded assets
+        if let Some(file) = AuthUiStaticFiles::get("index.html") {
+            // Convert the file content to a string
+            let html_content = String::from_utf8_lossy(&file.data);
 
-            // Replace the script placeholder with the actual script content
-            html = html.replace("<!-- SCRIPT_CONTENT -->", js_bundle);
+            // Replace the asset paths to use the /auth prefix
+            let modified_html = html_content
+                .replace("=\"/assets/", "=\"/auth/assets/")
+                .replace("=\"/favicon.ico", "=\"/auth/favicon.ico");
 
-            return (StatusCode::OK, [("Content-Type", "text/html")], html);
+            return (
+                StatusCode::OK,
+                [("Content-Type", "text/html")],
+                modified_html.into_bytes(),
+            );
         }
+
+        error!("Failed to load authentication UI - index.html not found");
     }
 
-    warn!("NEAR wallet provider is not available");
+    warn!("No authentication providers available");
     // Fall back to a simple error message if no provider is available
     let html = "<html><body><h1>No authentication provider is available</h1></body></html>";
     (
         StatusCode::OK,
         [("Content-Type", "text/html")],
-        html.to_string(),
+        html.as_bytes().to_vec(),
     )
 }
 

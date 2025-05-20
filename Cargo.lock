@@ -1895,6 +1895,7 @@ dependencies = [
  "rand 0.8.5",
  "reqwest 0.12.9",
  "rocksdb",
+ "rust-embed",
  "serde",
  "serde_json",
  "sha2 0.10.8",

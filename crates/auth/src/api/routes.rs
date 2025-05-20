@@ -17,6 +17,7 @@ use crate::api::handlers::permissions::{
     get_key_permissions_handler, list_permissions_handler, update_key_permissions_handler,
 };
 use crate::api::handlers::{health_handler, identity_handler, metrics_handler, providers_handler};
+use crate::api::handlers::asset_handler;
 use crate::auth::middleware::forward_auth_middleware;
 use crate::config::AuthConfig;
 use crate::server::AppState;
@@ -56,16 +57,24 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         layer
     };
 
-    // Create the main router
-    Router::new()
-        // Authentication endpoints
+    // Create public routes (no authentication required)
+    let public_routes = Router::new()
+        // Public authentication endpoints
         .route("/auth/login", get(login_handler))
+        .route("/auth/login/*path", get(asset_handler))
+        .route("/auth/challenge", get(challenge_handler))
         .route("/auth/token", post(token_handler))
+        // Health and provider information (public for UI access)
+        .route("/health", get(health_handler))
+        .route("/providers", get(providers_handler));
+
+    // Create authenticated routes
+    let authenticated_routes = Router::new()
+        // Protected auth endpoints
         .route("/auth/refresh", post(refresh_token_handler))
         .route("/auth/revoke", post(revoke_token_handler))
         .route("/auth/validate", post(validate_handler))
         .route("/auth/callback", get(callback_handler))
-        .route("/auth/challenge", get(challenge_handler))
         // Root key management
         .route("/auth/keys", get(list_keys_handler))
         .route("/auth/keys", post(create_key_handler))
@@ -89,15 +98,14 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         )
         // Identity endpoint for development detection
         .route("/identity", get(identity_handler))
-        // Health and metrics endpoints
-        .route("/health", get(health_handler))
+        // Metrics endpoint (should be protected)
         .route("/metrics", get(metrics_handler))
-        // Provider information
-        .route("/providers", get(providers_handler))
-        // Apply CORS layer
+        // Apply authentication middleware only to protected routes
+        .layer(from_fn(forward_auth_middleware));
+
+    // Merge both routers, apply CORS, and add state
+    public_routes
+        .merge(authenticated_routes)
         .layer(cors_layer)
-        // Forward auth middleware for reverse proxy
-        .layer(from_fn(forward_auth_middleware))
-        // Add the state as Extension - this needs to be at the end
         .layer(Extension(Arc::clone(&state)))
 }

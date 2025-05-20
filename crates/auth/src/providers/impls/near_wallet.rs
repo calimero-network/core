@@ -8,7 +8,7 @@ use axum::http::Request;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::Utc;
-use near_crypto::{KeyType, PublicKey, Signature};
+use ed25519_dalek::{Verifier, VerifyingKey, Signature};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::QueryRequest;
@@ -37,7 +37,7 @@ pub struct NearWalletAuthData {
     /// Public key of the NEAR wallet  
     pub public_key: String,
     /// Message to sign
-    pub message: Vec<u8>,
+    pub message: String,
     /// Signature of the message
     pub signature: String,
 }
@@ -191,38 +191,50 @@ impl NearWalletProvider {
             ));
         }
 
-        // Parse the public key
-        let public_key = PublicKey::from_str(public_key_str).map_err(|err| {
-            AuthError::SignatureVerificationFailed(format!(
-                "Invalid NEAR public key format: {}",
-                err
-            ))
-        })?;
+        println!("Verifying signature:");
+        println!("Public key: {}", public_key_str);
+        println!("Message (as string): {}", String::from_utf8_lossy(message));
+        println!("Signature (base64): {}", signature_str);
 
-        // Parse the signature
-        let signature_bytes = STANDARD.decode(signature_str).map_err(|err| {
-            AuthError::SignatureVerificationFailed(format!(
-                "Invalid NEAR signature encoding: {}",
-                err
-            ))
-        })?;
+        let encoded_key = public_key_str.trim_start_matches("ed25519:");
 
-        let signature =
-            Signature::from_parts(KeyType::ED25519, &signature_bytes).map_err(|err| {
-                AuthError::SignatureVerificationFailed(format!(
-                    "Invalid NEAR signature format: {}",
-                    err
+        // Decode public key from base58
+        let decoded_key: [u8; 32] = decode_to_fixed_array(&Encoding::Base58, encoded_key)
+            .map_err(|e| AuthError::SignatureVerificationFailed(
+                format!("Failed to decode public key: {}", e)
+            ))?;
+
+        println!("Decoded public key (hex): {}", hex::encode(&decoded_key));
+
+        // Create verifying key
+        let vk = VerifyingKey::from_bytes(&decoded_key)
+            .map_err(|e| AuthError::SignatureVerificationFailed(
+                format!("Invalid public key: {}", e)
+            ))?;
+
+        // Decode signature from base64
+        let decoded_signature: [u8; 64] = decode_to_fixed_array(&Encoding::Base64, signature_str)
+            .map_err(|e| AuthError::SignatureVerificationFailed(
+                format!("Failed to decode signature: {}", e)
+            ))?;
+
+        println!("Decoded signature (hex): {}", hex::encode(&decoded_signature));
+
+        // Create signature
+        let signature = Signature::from_bytes(&decoded_signature);
+        // Verify signature
+        match vk.verify(message, &signature) {
+            Ok(_) => {
+                println!("Signature verification succeeded!");
+                Ok(true)
+            }
+            Err(e) => {
+                println!("Signature verification failed: {:?}", e);
+                Err(AuthError::SignatureVerificationFailed(
+                    format!("Signature verification failed: {}", e)
                 ))
-            })?;
-
-        // Verify the signature
-        if !signature.verify(message, &public_key) {
-            return Err(AuthError::SignatureVerificationFailed(
-                "Signature verification failed".to_string(),
-            ));
+            }
         }
-
-        Ok(true)
     }
 
     /// Check if a public key belongs to a NEAR account
@@ -613,7 +625,7 @@ impl AuthVerifierFn for NearWalletVerifier {
             .authenticate_core(
                 &auth_data.account_id,
                 &auth_data.public_key,
-                &auth_data.message,
+                &auth_data.message.as_bytes(),
                 &auth_data.signature,
             )
             .await?;
@@ -679,7 +691,7 @@ impl AuthProvider for NearWalletProvider {
         };
 
         let message = match &token_request.message {
-            Some(msg) => msg.as_bytes().to_vec(),
+            Some(msg) => msg.clone(),
             None => {
                 return Err(AuthError::InvalidRequest(
                     "Missing message for NEAR wallet authentication".to_string(),
@@ -687,14 +699,11 @@ impl AuthProvider for NearWalletProvider {
             }
         };
 
-        // Encode binary message as base64 for NEAR's requirements
-        let encoded_message = base64::engine::general_purpose::STANDARD.encode(&message);
-
         // Create NEAR-specific auth data JSON
         Ok(serde_json::json!({
             "account_id": account_id,
             "public_key": token_request.public_key,
-            "message": encoded_message,
+            "message": message,
             "signature": token_request.signature
         }))
     }
@@ -763,8 +772,7 @@ impl AuthProvider for NearWalletProvider {
             .ok_or_else(|| eyre::eyre!("Missing NEAR message"))?
             .to_str()
             .map_err(|_| eyre::eyre!("Invalid NEAR message"))?
-            .as_bytes()
-            .to_vec();
+            .to_string();
 
         // Create auth data
         let auth_data = NearWalletAuthData {
@@ -804,6 +812,38 @@ impl AuthProvider for NearWalletProvider {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+
+enum Encoding {
+    Base64,
+    Base58,
+}
+
+/// Decodes a base58 or base64-encoded string into a fixed-size array.
+///
+/// # Arguments
+/// * `encoding` - The encoding used (Base58 or Base64).
+/// * `encoded` - The string to decode.
+///
+/// # Returns
+/// * `Ok([u8; N])` - The decoded array of bytes.
+/// * `Err(Report)` - If the decoding fails or the size is incorrect.
+fn decode_to_fixed_array<const N: usize>(
+    encoding: &Encoding,
+    encoded: &str,
+) -> Result<[u8; N], eyre::Error> {
+    let decoded_vec = match encoding {
+        Encoding::Base58 => bs58::decode(encoded)
+            .into_vec()
+            .map_err(|e| eyre::eyre!(e))?,
+        Encoding::Base64 => STANDARD.decode(encoded).map_err(|e| eyre::eyre!(e))?,
+    };
+
+    let fixed_array: [u8; N] = decoded_vec
+        .try_into()
+        .map_err(|_| eyre::eyre!("Incorrect length"))?;
+    Ok(fixed_array)
 }
 
 /// Registration for the NEAR wallet provider
