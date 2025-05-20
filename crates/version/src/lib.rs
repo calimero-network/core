@@ -1,58 +1,43 @@
-use std::fmt;
-use std::sync::LazyLock;
+use std::{borrow::Cow, fmt, sync::LazyLock};
 
 #[cfg(test)]
 mod tests;
 
-pub struct CalimeroVersion {
-    release: &'static str,
-    build: &'static str,
-    commit: &'static str,
-    rustc: &'static str,
-    protocol: &'static str,
+
+static CURRENT: LazyLock<CalimeroVersion<'static>> = LazyLock::new(|| CalimeroVersion {
+    release: Cow::Borrowed(env!("CARGO_PKG_VERSION")),
+    build: Cow::Borrowed(env!("CALIMERO_BUILD")),
+    commit: Cow::Borrowed(env!("CALIMERO_COMMIT")),
+    rustc: Cow::Borrowed(env!("CALIMERO_RUSTC_VERSION")),
+});
+
+static CURRENT_STRING: LazyLock<String> = LazyLock::new(|| VERSION.to_string());
+
+#[derive(Clone)]
+pub struct CalimeroVersion<'a> {
+    pub release: Cow<'a, str>,
+    pub build: Cow<'a, str>,
+    pub commit: Cow<'a, str>,
+    pub rustc: Cow<'a, str>,
 }
 
-impl CalimeroVersion {
-    fn new() -> Self {
-        let release = env!("CARGO_PKG_VERSION");
-        let describe = env!("GIT_DESCRIBE");
-        let commit = env!("GIT_COMMIT");
-        let rustc = env!("RUSTC_VERSION");
-        let protocol = env!("CARGO_PKG_VERSION_MAJOR");
+impl CalimeroVersion<'_> {
+    pub fn current() -> CalimeroVersion<'static> {
+        CURRENT.clone()
+    }
 
-        let build = if describe == "unknown" {
-            release
-        } else {
-            Box::leak(describe.to_string().into_boxed_str())
-        };
-
-        Self {
-            release,
-            build,
-            commit,
-            rustc,
-            protocol,
-        }
+    pub fn current_str() -> &'static str {
+        &*CURRENT_STRING
     }
 }
 
-impl fmt::Display for CalimeroVersion {
+impl fmt::Display for CalimeroVersion<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "(release {}) (build {}) (commit {}) (rustc {}) (protocol {})",
-            self.release, self.build, self.commit, self.rustc, self.protocol
+            "(release {}) (build {}) (commit {}) (rustc {})",
+            self.release, self.build, self.commit, self.rustc,
         )
     }
 }
 
-static VERSION: LazyLock<CalimeroVersion> = LazyLock::new(CalimeroVersion::new);
-static VERSION_STRING: LazyLock<String> = LazyLock::new(|| VERSION.to_string());
-
-pub fn version() -> &'static CalimeroVersion {
-    &*VERSION
-}
-
-pub fn version_str() -> &'static str {
-    &*VERSION_STRING
-}

@@ -20,7 +20,7 @@ mod peers;
 mod proxy;
 
 use app::AppCommand;
-use calimero_version::version_str;
+use calimero_version::CalimeroVersion::current_str;
 use call::CallCommand;
 use context::ContextCommand;
 use peers::PeersCommand;
@@ -39,7 +39,7 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(author, version = version_str(), about, long_about = None)]
+#[command(author, version = current_str(), about, long_about = None)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",

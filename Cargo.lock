@@ -1902,6 +1902,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-sdk"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "bs58 0.5.1",
+ "calimero-sdk-macros",
+ "cfg-if",
+ "serde",
+ "serde_json",
+ "trybuild",
+]
+
+[[package]]
+name = "calimero-sdk-macros"
+version = "0.1.0"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "calimero-server"
 version = "0.1.0"
 dependencies = [
@@ -1958,6 +1982,37 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "url",
+]
+
+[[package]]
+name = "calimero-storage"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-sdk",
+ "calimero-storage-macros",
+ "claims",
+ "eyre",
+ "fixedstr",
+ "hex",
+ "indexmap 2.6.0",
+ "rand 0.8.5",
+ "serde",
+ "sha2 0.10.8",
+ "thiserror 1.0.69",
+ "velcro",
+]
+
+[[package]]
+name = "calimero-storage-macros"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-sdk",
+ "calimero-storage",
+ "quote",
+ "syn 2.0.100",
+ "trybuild",
 ]
 
 [[package]]
@@ -2126,6 +2181,15 @@ dependencies = [
  "crypto-common",
  "inout",
  "zeroize",
+]
+
+[[package]]
+name = "claims"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6995bbe186456c36307f8ea36be3eefe42f49d106896414e18efc4fb2f846b5"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]
@@ -3268,6 +3332,15 @@ dependencies = [
  "rand 0.8.5",
  "rustc-hex",
  "static_assertions",
+]
+
+[[package]]
+name = "fixedstr"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60aba7afd9b1b9e1950c2b7e8bcac3cc44a273c62a02717dedca2d0a1aee694d"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -4776,6 +4849,15 @@ checksum = "ed9625ffda8729b85e45cf04090035ac368927b8cebc34898e7c120f52e4838b"
 dependencies = [
  "bitflags 1.3.2",
  "libc",
+]
+
+[[package]]
+name = "kv-store"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -8971,6 +9053,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
+name = "target-triple"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42a4d50cdb458045afc8131fd91b64904da29548bcb63c7236e0844936c13078"
+
+[[package]]
 name = "tempdir"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8991,6 +9079,15 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]
@@ -9495,6 +9592,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "trybuild"
+version = "1.0.101"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dcd332a5496c026f1e14b7f3d2b7bd98e509660c04239c58b0ba38a12daded4"
+dependencies = [
+ "glob",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "target-triple",
+ "termcolor",
+ "toml",
+]
+
+[[package]]
 name = "tungstenite"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9741,6 +9853,36 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "velcro"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31c6a51883ba1034757307e06dc4856cd5439ecf6804ce6c90d13d49496196fc"
+dependencies = [
+ "velcro_macros",
+]
+
+[[package]]
+name = "velcro_core"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "742cf45d07989b7614877e083602a8973890c75a81f47216b238d2f326ec916c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "velcro_macros"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b23c806d7b49977e6e12ee6d120ac01dcab702b51c652fdf1a6709ab5b8868c"
+dependencies = [
+ "syn 1.0.109",
+ "velcro_core",
+]
 
 [[package]]
 name = "version_check"
