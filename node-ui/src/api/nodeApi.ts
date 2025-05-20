@@ -20,6 +20,7 @@ import {
   CreateContextResponse,
   GetContextsResponse,
   Context,
+  CapabilitiesRequest,
 } from './dataSource/NodeDataSource';
 import { ApiResponse } from './response';
 
@@ -59,4 +60,12 @@ export interface NodeApi {
   uninstallApplication(
     applicationId: string,
   ): ApiResponse<UninstallApplicationResponse>;
+  grantCapabilities(
+    contextId: string,
+    request: CapabilitiesRequest,
+  ): ApiResponse<void>;
+  revokeCapabilities(
+    contextId: string,
+    request: CapabilitiesRequest,
+  ): ApiResponse<void>;
 }

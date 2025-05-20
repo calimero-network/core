@@ -1,16 +1,14 @@
 #[cfg(test)]
-#[path = "../tests/db/rocksdb.rs"]
 mod tests;
 
+use calimero_store::config::StoreConfig;
+use calimero_store::db::{Column, Database};
+use calimero_store::iter::{DBIter, Iter};
+use calimero_store::slice::Slice;
+use calimero_store::tx::{Operation, Transaction};
 use eyre::{bail, Result as EyreResult};
 use rocksdb::{ColumnFamily, DBRawIterator, Options, WriteBatch, DB};
 use strum::IntoEnumIterator;
-
-use crate::config::StoreConfig;
-use crate::db::{Column, Database};
-use crate::iter::{DBIter, Iter};
-use crate::slice::Slice;
-use crate::tx::{Operation, Transaction};
 
 #[derive(Debug)]
 pub struct RocksDB {
