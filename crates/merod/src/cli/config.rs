@@ -3,7 +3,7 @@ use colored::*;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use config::config_file::{ConfigFile};
+use config::config_file::ConfigFile;
 use config::format::{print_config, PrintFormat};
 use config::schema::{get_schema_hint, HintFormat};
 
@@ -77,6 +77,7 @@ pub struct ConfigCmd {
 
 impl ConfigCmd {
     pub fn run(&self, config_path: PathBuf) -> anyhow::Result<()> {
+        // Load or create default config from path
         let mut config = ConfigFile::load_or_default(&config_path)?;
 
         // Separate CLI arguments into edits, hints, and plain keys
@@ -86,7 +87,7 @@ impl ConfigCmd {
 
         for arg in &self.args {
             if arg.contains('=') {
-                // key=value  → edit
+                // key=value → edit
                 let parts: Vec<_> = arg.splitn(2, '=').collect();
                 edits.insert(parts[0].to_string(), parts[1].to_string());
             } else if arg.ends_with('?') {
@@ -98,31 +99,38 @@ impl ConfigCmd {
             }
         }
 
-        /* ------------------------------------------------------------------ */
-        /* 1. Hints                                                           */
-        /* ------------------------------------------------------------------ */
+        // 1. Handle hints first (exclusive mode)
         if !hints.is_empty() {
+            // Do not allow edits with hints per requirements
+            if !edits.is_empty() || !keys_to_print.is_empty() {
+                eprintln!("{}", "Warning: schema hints ignore edits and partial print keys.".yellow());
+            }
+
+            let hint_fmt: HintFormat = self.print.clone().into();
+
             for key in &hints {
-                let format = self.print.into();
-                let rendered = get_schema_hint(key, format)?;
-                println!("{rendered}");
+                // Safe retrieval of schema hints; should never panic
+                match get_schema_hint(key, hint_fmt) {
+                    Ok(rendered) => println!("{rendered}"),
+                    Err(e) => eprintln!("{} {}", "Error getting schema hint for".red(), key),
+                }
             }
             return Ok(());
         }
 
-        /* ------------------------------------------------------------------ */
-        /* 2. Edits (in-memory, optional save)                                */
-        /* ------------------------------------------------------------------ */
+        // 2. Handle edits (in-memory)
         if !edits.is_empty() {
+            // Apply edits with validation; returns diff and updated config map
             let (diff, updated) = config.apply_edits(&edits)?;
 
             if diff.is_empty() {
-                eprintln!("{}", "no changes made; skipping save.".yellow());
+                eprintln!("{}", "No changes made; skipping save.".yellow());
             } else {
                 match self.print {
                     OutputFormat::Default => {
-                        // Human-readable diff
+                        // Show diff in human-readable colored format
                         println!("{}", Diff(&diff));
+                        // Note about saving on stderr
                         eprintln!(
                             "{}",
                             "note: if this looks right, use -s, --save to persist these modifications"
@@ -138,29 +146,22 @@ impl ConfigCmd {
                     config.save(&updated)?;
                 }
             }
-
             return Ok(());
         }
 
-        /* ------------------------------------------------------------------ */
-        /* 3. Pure printing (no edits)                                        */
-        /* ------------------------------------------------------------------ */
+        // 3. Handle printing only (no edits)
         if !keys_to_print.is_empty() {
-            // Print only the requested sub-sections
+            // Print requested keys only, safely extracting subtrees
             let view = config.view_keys(&keys_to_print)?;
             match self.print {
-                OutputFormat::Default | OutputFormat::Toml => {
-                    print_config(&view, PrintFormat::Toml)?
-                }
+                OutputFormat::Default | OutputFormat::Toml => print_config(&view, PrintFormat::Toml)?,
                 OutputFormat::Json => print_config(&view, PrintFormat::Json)?,
             }
         } else {
-            // Print the whole config
+            // Print whole config
             let full = config.as_map();
             match self.print {
-                OutputFormat::Default | OutputFormat::Toml => {
-                    print_config(&full, PrintFormat::Toml)?
-                }
+                OutputFormat::Default | OutputFormat::Toml => print_config(&full, PrintFormat::Toml)?,
                 OutputFormat::Json => print_config(&full, PrintFormat::Json)?,
             }
         }
@@ -169,7 +170,7 @@ impl ConfigCmd {
     }
 }
 
-/// Wrapper for displaying config diffs in human-readable form
+/// Wrapper for displaying config diffs in human-readable form with colors
 pub struct Diff<'a>(pub &'a BTreeMap<String, (Option<String>, Option<String>)>);
 
 impl<'a> std::fmt::Display for Diff<'a> {
@@ -178,6 +179,7 @@ impl<'a> std::fmt::Display for Diff<'a> {
             writeln!(f, "No changes detected.")?;
             return Ok(());
         }
+
         for (key, (old_val, new_val)) in self.0 {
             match (old_val, new_val) {
                 (Some(old), Some(new)) if old != new => {
@@ -209,7 +211,7 @@ impl<'a> std::fmt::Display for Diff<'a> {
                     )?;
                 }
                 _ => {
-                    // No change or unknown case - skip printing
+                    // No change or unexpected case, skip printing
                 }
             }
         }
