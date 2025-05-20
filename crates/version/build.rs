@@ -1,5 +1,5 @@
 use std::process::Command;
-use eyre::{eyre, Result};
+use eyre::{eyre, Result as EyreResult};
 use rustc_version::version;
 
 fn main() {
@@ -9,7 +9,7 @@ fn main() {
     }
 }
 
-fn try_main() -> Result<()> {
+fn try_main() -> EyreResult<()> {
     let git_describe = run_command("git", &[
         "describe", "--always", "--dirty=-modified", "--tags", "--match", "[0-9]*"
     ])?;
@@ -27,7 +27,7 @@ fn try_main() -> Result<()> {
     Ok(())
 }
 
-fn run_command(command: &str, args: &[&str]) -> Result<String> {
+fn run_command(command: &str, args: &[&str]) -> EyreResult<String> {
     let output = Command::new(command)
         .args(args)
         .output()

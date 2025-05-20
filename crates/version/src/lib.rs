@@ -11,7 +11,7 @@ static CURRENT: LazyLock<CalimeroVersion<'static>> = LazyLock::new(|| CalimeroVe
     rustc: Cow::Borrowed(env!("CALIMERO_RUSTC_VERSION")),
 });
 
-static CURRENT_STRING: LazyLock<String> = LazyLock::new(|| VERSION.to_string());
+static CURRENT_STRING: LazyLock<String> = LazyLock::new(|| CURRENT.to_string());
 
 #[derive(Clone)]
 pub struct CalimeroVersion<'a> {
