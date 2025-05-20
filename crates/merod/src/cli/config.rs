@@ -15,6 +15,16 @@ enum OutputFormat {
     Json,
 }
 
+impl From<OutputFormat> for HintFormat {
+    fn from(fmt: OutputFormat) -> Self {
+        match fmt {
+            OutputFormat::Default => HintFormat::Human,
+            OutputFormat::Toml => HintFormat::Toml,
+            OutputFormat::Json => HintFormat::Json,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "config",
@@ -93,12 +103,7 @@ impl ConfigCmd {
         /* ------------------------------------------------------------------ */
         if !hints.is_empty() {
             for key in &hints {
-                let format = match self.print {
-                    OutputFormat::Default => HintFormat::Human,
-                    OutputFormat::Toml => HintFormat::Toml,
-                    OutputFormat::Json => HintFormat::Json,
-                };
-
+                let format = self.print.into();
                 let rendered = get_schema_hint(key, format)?;
                 println!("{rendered}");
             }
