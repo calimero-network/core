@@ -32,9 +32,7 @@ members = [
     # "./crates/utils/actix",
     "./crates/version",
 
-    # "./apps/kv-store",
-    # "./apps/gen-ext",
-    # "./apps/visited",
+    "./apps/kv-store",
 
     # "./e2e-tests",
 ]
@@ -171,8 +169,6 @@ calimero-utils-actix = { path = "./crates/utils/actix" }
 calimero-version = { path = "./crates/version" }
 
 kv-store = { path = "./apps/kv-store" }
-gen-ext = { path = "./apps/gen-ext" }
-visited = { path = "./apps/visited" }
 
 calimero-registry = { path = "./contracts/near/registry" }
 calimero-context-config-near = { path = "./contracts/near/context-config" }
