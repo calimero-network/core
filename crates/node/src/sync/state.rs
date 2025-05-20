@@ -246,7 +246,7 @@ impl SyncManager {
         let private_key = self
             .context_client
             .get_identity(&context.id, &our_identity)?
-            .and_then(|i| i.sender_key)
+            .and_then(|i| i.private_key)
             .ok_or_eyre("expected own identity to have private key")?;
 
         let shared_key = SharedKey::new(&private_key, &their_identity);
