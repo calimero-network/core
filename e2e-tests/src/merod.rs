@@ -67,7 +67,14 @@ impl Merod {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        let config_args = ["config"].into_iter().chain(args);
+        let config_args = [
+            "config",
+            "sync.timeout_ms=30000",
+            "sync.interval_ms=30000",
+            "bootstrap.nodes=[]",
+        ]
+        .into_iter()
+        .chain(args);
 
         let mut child = self.run_cmd(config_args, "config").await?;
         let result = child.wait().await?;
