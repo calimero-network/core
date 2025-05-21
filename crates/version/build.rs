@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use eyre::{eyre, Result as EyreResult};
-use rustc_version::version;
+use rustc_version;
 
 fn main() {
     if let Err(err) = try_main() {
@@ -25,7 +25,7 @@ fn try_main() -> EyreResult<()> {
 
     let git_commit = run_command("git", &["rev-parse", "--short", "HEAD"])?;
 
-    let rustc_version = version()
+    let rustc_version = rustc_version::version()
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 

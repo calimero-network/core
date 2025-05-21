@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fmt;
 use std::sync::LazyLock;
 
@@ -6,10 +5,10 @@ use std::sync::LazyLock;
 mod tests;
 
 static CURRENT: LazyLock<CalimeroVersion<'static>> = LazyLock::new(|| CalimeroVersion {
-    release: Cow::Borrowed(env!("CARGO_PKG_VERSION")),
-    build: Cow::Borrowed(env!("CALIMERO_BUILD")),
-    commit: Cow::Borrowed(env!("CALIMERO_COMMIT")),
-    rustc: Cow::Borrowed(env!("CALIMERO_RUSTC_VERSION")),
+    release: env!("CARGO_PKG_VERSION").into(),
+    build: env!("CALIMERO_BUILD").into(),
+    commit: env!("CALIMERO_COMMIT").into(),
+    rustc: env!("CALIMERO_RUSTC_VERSION").into(),
 });
 
 static CURRENT_STRING: LazyLock<String> = LazyLock::new(|| CURRENT.to_string());
