@@ -65,7 +65,7 @@ impl StartBootstrapCommand {
             RootArgs::new(
                 nodes_dir.clone(),
                 None,
-                Some(node1_name.to_string()),
+                Some(node1_name.to_owned()),
                 crate::output::Format::Json,
             ),
             Output::new(crate::output::Format::Json),
@@ -95,7 +95,7 @@ impl StartBootstrapCommand {
             RootArgs::new(
                 nodes_dir.clone(),
                 None,
-                Some(node2_name.to_string()),
+                Some(node2_name.to_owned()),
                 crate::output::Format::Json,
             ),
             Output::new(crate::output::Format::Json),
