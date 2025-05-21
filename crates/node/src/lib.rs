@@ -21,6 +21,7 @@ pub mod handlers;
 pub mod interactive_cli;
 mod run;
 pub mod sync;
+mod utils;
 
 pub use run::{start, NodeConfig};
 use sync::SyncManager;

@@ -15,9 +15,10 @@ use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
-use rand::Rng;
 use tokio::time::{self, timeout, timeout_at, Instant, MissedTickBehavior};
 use tracing::{debug, error};
+
+use crate::utils::choose_stream;
 
 mod blobs;
 mod key;
@@ -72,22 +73,6 @@ impl Sequencer {
         self.current += 1;
         current
     }
-}
-
-async fn choose_stream<T>(stream: impl StreamExt<Item = T>, rng: &mut impl Rng) -> Option<T> {
-    let mut stream = pin!(stream);
-
-    let mut item = stream.next().await;
-
-    let mut stream = stream.enumerate();
-
-    while let Some((idx, this)) = stream.next().await {
-        if rng.gen_range(0..idx + 1) == 0 {
-            item = Some(this);
-        }
-    }
-
-    item
 }
 
 impl SyncManager {
@@ -308,7 +293,7 @@ impl SyncManager {
             .await
             .transpose()?
         else {
-            bail!("no identities found for context: {}", context.id);
+            bail!("no owned identities found for context: {}", context.id);
         };
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
@@ -402,7 +387,7 @@ impl SyncManager {
             .await
             .transpose()?
         else {
-            bail!("no identities found for context: {}", context.id);
+            bail!("no owned identities found for context: {}", context.id);
         };
 
         match payload {

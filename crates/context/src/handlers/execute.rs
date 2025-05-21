@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use actix::{ActorFutureExt, ActorResponse, Handler, Message, WrapFuture};
+use actix::{ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::messages::execute::{

@@ -11,6 +11,7 @@ use libp2p::PeerId;
 use tracing::{debug, info, warn};
 
 use crate::sync::SyncManager;
+use crate::utils::choose_stream;
 use crate::NodeManager;
 
 impl Handler<NetworkEvent> for NodeManager {
