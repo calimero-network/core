@@ -82,19 +82,19 @@ impl Permission {
     /// Get a display name for the permission
     pub fn display_name(&self) -> String {
         let mut display = format!("{} ({})", self.name, self.resource_type);
-        
+
         if let Some(ids) = &self.resource_ids {
             display.push_str(&format!(" [{}]", ids.join(", ")));
         }
-        
+
         if let Some(method) = &self.method {
             display.push_str(&format!(" {{{}}}", method));
         }
-        
+
         if let Some(user) = &self.user_id {
             display.push_str(&format!(" <{}>", user));
         }
-        
+
         display
     }
 
@@ -102,7 +102,7 @@ impl Permission {
     pub fn matches(&self, required: &str) -> bool {
         // Split the required permission into parts
         let parts: Vec<&str> = required.split(&[':', '[', ']', '<', '>']).collect();
-        
+
         // Base permission must match
         if parts[0] != self.permission_id {
             return false;
@@ -112,7 +112,10 @@ impl Permission {
         if let Some(required_ids) = parts.get(1) {
             if let Some(ref allowed_ids) = self.resource_ids {
                 let req_ids: Vec<&str> = required_ids.split(',').map(|s| s.trim()).collect();
-                if !req_ids.iter().all(|id| allowed_ids.contains(&id.to_string())) {
+                if !req_ids
+                    .iter()
+                    .all(|id| allowed_ids.contains(&id.to_string()))
+                {
                     return false;
                 }
             } else {

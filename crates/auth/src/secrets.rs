@@ -1,4 +1,6 @@
-use std::{sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use eyre::{eyre, Result};
@@ -54,7 +56,7 @@ impl VersionedSecret {
         // Generate a secure random secret
         let mut secret = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut secret);
-        
+
         Self {
             value: URL_SAFE_NO_PAD.encode(secret),
             version: format!("v{}", now),
@@ -97,15 +99,21 @@ impl SecretManager {
             None => {
                 // Generate new secret
                 let new_secret = self.generate_secret();
-                
+
                 // Try to save to primary location
-                if let Err(e) = self.storage.set(JWT_SECRET_KEY, new_secret.as_bytes()).await {
+                if let Err(e) = self
+                    .storage
+                    .set(JWT_SECRET_KEY, new_secret.as_bytes())
+                    .await
+                {
                     eprintln!("Failed to save secret to primary storage: {}", e);
-                    
+
                     // Try backup location
-                    self.storage.set(BACKUP_SECRET_KEY, new_secret.as_bytes()).await?;
+                    self.storage
+                        .set(BACKUP_SECRET_KEY, new_secret.as_bytes())
+                        .await?;
                 }
-                
+
                 new_secret
             }
         };
@@ -128,7 +136,9 @@ impl SecretManager {
                         Some(data) => {
                             let secret = String::from_utf8(data)?;
                             // Restore to primary location
-                            if let Err(e) = self.storage.set(JWT_SECRET_KEY, secret.as_bytes()).await {
+                            if let Err(e) =
+                                self.storage.set(JWT_SECRET_KEY, secret.as_bytes()).await
+                            {
                                 eprintln!("Failed to restore secret to primary storage: {}", e);
                             }
                             Ok(secret)
@@ -146,4 +156,4 @@ impl SecretManager {
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut secret);
         URL_SAFE_NO_PAD.encode(secret)
     }
-} 
+}

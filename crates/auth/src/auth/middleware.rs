@@ -6,8 +6,8 @@ use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
-use crate::server::AppState;
 use crate::auth::permissions::PermissionValidator;
+use crate::server::AppState;
 
 /// Forward authentication middleware for reverse proxy
 ///
@@ -33,11 +33,12 @@ pub async fn forward_auth_middleware(
     let start_time = std::time::Instant::now();
 
     // Skip authentication for public endpoints
-    if path.starts_with("/auth/login") || 
-       path.starts_with("/auth/challenge") || 
-       path.starts_with("/auth/token") ||
-       path == "/health" ||
-       path == "/providers" {
+    if path.starts_with("/auth/login")
+        || path.starts_with("/auth/challenge")
+        || path.starts_with("/auth/token")
+        || path == "/health"
+        || path == "/providers"
+    {
         tracing::debug!("Skipping auth for {} {}", method, path);
         let response = next.run(request).await;
         let duration = start_time.elapsed();
@@ -69,7 +70,10 @@ pub async fn forward_auth_middleware(
 
             // For JSON-RPC requests, ensure execute permission
             if path.starts_with("/jsonrpc") {
-                if !required_permissions.iter().any(|p| p.starts_with("jsonrpc:")) {
+                if !required_permissions
+                    .iter()
+                    .any(|p| p.starts_with("jsonrpc:"))
+                {
                     required_permissions.push("jsonrpc:execute".to_string());
                 }
             }
@@ -82,10 +86,8 @@ pub async fn forward_auth_middleware(
             }
 
             // Validate user's permissions
-            let has_permission = validator.validate_permissions(
-                &auth_response.permissions,
-                &required_permissions,
-            );
+            let has_permission =
+                validator.validate_permissions(&auth_response.permissions, &required_permissions);
 
             if !has_permission {
                 tracing::warn!(
@@ -138,14 +140,14 @@ pub async fn forward_auth_middleware(
 fn determine_required_permissions(path: &str, method: &Method) -> Vec<String> {
     // This is a simplified example - you should implement your own permission mapping logic
     let mut required = Vec::new();
-    
+
     // Extract resource type and ID from path
     let parts: Vec<&str> = path.split('/').collect();
-    
+
     match parts.get(1) {
         Some(&"applications") => {
             required.push("application".to_string());
-            
+
             // Add specific permissions based on method
             match *method {
                 Method::GET => required.push("application:list".to_string()),
@@ -153,7 +155,7 @@ fn determine_required_permissions(path: &str, method: &Method) -> Vec<String> {
                 Method::DELETE => required.push("application:uninstall".to_string()),
                 _ => {}
             }
-            
+
             // If specific application ID is in path
             if let Some(app_id) = parts.get(2) {
                 required.push(format!("application[{}]", app_id));
@@ -161,34 +163,34 @@ fn determine_required_permissions(path: &str, method: &Method) -> Vec<String> {
         }
         Some(&"blobs") => {
             required.push("blob".to_string());
-            
+
             match *method {
                 Method::POST => required.push("blob:add".to_string()),
                 Method::DELETE => required.push("blob:remove".to_string()),
                 _ => {}
             }
-            
+
             if let Some(blob_id) = parts.get(2) {
                 required.push(format!("blob[{}]", blob_id));
             }
         }
         Some(&"contexts") => {
             required.push("context".to_string());
-            
+
             match *method {
                 Method::GET => required.push("context:list".to_string()),
                 Method::POST => required.push("context:create".to_string()),
                 Method::DELETE => required.push("context:delete".to_string()),
                 _ => {}
             }
-            
+
             if let Some(context_id) = parts.get(2) {
                 required.push(format!("context[{}]", context_id));
             }
         }
         _ => {}
     }
-    
+
     required
 }
 
@@ -202,7 +204,7 @@ fn validate_permissions(user_permissions: &[String], required_permissions: &[Str
             if user_perm == required {
                 return true;
             }
-            
+
             // Check if user has parent permission
             // e.g. if required is "application:list[app1]", check if user has "application:list" or "application"
             let parts: Vec<&str> = required.split(&[':', '[', ']']).collect();
@@ -211,13 +213,13 @@ fn validate_permissions(user_permissions: &[String], required_permissions: &[Str
                 if user_perm == &parent {
                     return true;
                 }
-                
+
                 let parent_with_action = format!("{}:{}", parts[0], parts[1]);
                 if user_perm == &parent_with_action {
                     return true;
                 }
             }
-            
+
             false
         })
     })

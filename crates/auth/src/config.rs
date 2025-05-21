@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-
 use serde::{Deserialize, Serialize};
 
 /// Authentication service configuration

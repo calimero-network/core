@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+
 use axum::http::Request;
-use serde::{Deserialize, Serialize};
 use lazy_static::lazy_static;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 /// Mapping between URL paths and required permissions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,7 +144,10 @@ impl PermissionValidator {
     }
 
     /// Determine required permissions for a given request
-    pub fn determine_required_permissions(&self, request: &Request<axum::body::Body>) -> Vec<String> {
+    pub fn determine_required_permissions(
+        &self,
+        request: &Request<axum::body::Body>,
+    ) -> Vec<String> {
         let path = request.uri().path();
         let method = request.method();
 
@@ -157,8 +161,14 @@ impl PermissionValidator {
                         for perm in method_perms {
                             // If there's a resource extractor, append the resource ID
                             if let Some(extractor) = &mapping.resource_extractor {
-                                if let Some(resource_id) = captures.get(extractor.parse::<usize>().unwrap_or(1)) {
-                                    required_permissions.push(format!("{}[{}]", perm, resource_id.as_str()));
+                                if let Some(resource_id) =
+                                    captures.get(extractor.parse::<usize>().unwrap_or(1))
+                                {
+                                    required_permissions.push(format!(
+                                        "{}[{}]",
+                                        perm,
+                                        resource_id.as_str()
+                                    ));
                                 } else {
                                     required_permissions.push(perm.clone());
                                 }
@@ -175,7 +185,11 @@ impl PermissionValidator {
     }
 
     /// Validate if user permissions satisfy required permissions
-    pub fn validate_permissions(&self, user_permissions: &[String], required_permissions: &[String]) -> bool {
+    pub fn validate_permissions(
+        &self,
+        user_permissions: &[String],
+        required_permissions: &[String],
+    ) -> bool {
         for required in required_permissions {
             let mut has_permission = false;
 
@@ -208,7 +222,8 @@ impl PermissionValidator {
 
                     // Check if user has action permission without resource ID
                     if user_parts.len() == 2 && required_parts.len() == 3 {
-                        if user_parts[0] == required_parts[0] && user_parts[1] == required_parts[1] {
+                        if user_parts[0] == required_parts[0] && user_parts[1] == required_parts[1]
+                        {
                             has_permission = true;
                             break;
                         }
@@ -227,13 +242,14 @@ impl PermissionValidator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum::http::Method;
+
+    use super::*;
 
     #[test]
     fn test_permission_validation() {
         let validator = PermissionValidator::new();
-        
+
         // Test exact match
         assert!(validator.validate_permissions(
             &["application:list".to_string()],
@@ -270,4 +286,4 @@ mod tests {
             &["application:list".to_string()]
         ));
     }
-} 
+}

@@ -4,9 +4,9 @@ use std::sync::Arc;
 use eyre::Result;
 use serde_json::Value;
 
+use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::storage::KeyStorage;
-use crate::auth::token::TokenManager;
 
 // Export modules
 pub mod core;
@@ -44,7 +44,8 @@ impl ProviderFactory {
 
         for registration in self.registrations.values() {
             if registration.is_enabled(config) {
-                let provider = registration.create_provider(storage.clone(), config, token_manager.clone())?;
+                let provider =
+                    registration.create_provider(storage.clone(), config, token_manager.clone())?;
                 providers.push(provider);
             }
         }

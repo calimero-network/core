@@ -1,10 +1,8 @@
-use axum::{
-    body::Body,
-    extract::{FromRequest, Json},
-    http::{Request, StatusCode},
-    response::{IntoResponse, Response},
-};
 use async_trait::async_trait;
+use axum::body::Body;
+use axum::extract::{FromRequest, Json};
+use axum::http::{Request, StatusCode};
+use axum::response::{IntoResponse, Response};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use validator::Validate;
@@ -91,18 +89,19 @@ pub fn escape_html(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde::Deserialize;
     use validator::Validate;
+
+    use super::*;
 
     #[derive(Debug, Deserialize, Validate)]
     struct TestInput {
         #[validate(length(min = 3, max = 50))]
         name: String,
-        
+
         #[validate(range(min = 0, max = 150))]
         age: u32,
-        
+
         #[validate(email)]
         email: String,
     }
@@ -125,6 +124,9 @@ mod tests {
     fn test_html_escape() {
         let input = "<script>alert('xss')</script>";
         let escaped = escape_html(input);
-        assert_eq!(escaped, "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;");
+        assert_eq!(
+            escaped,
+            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;"
+        );
     }
-} 
+}

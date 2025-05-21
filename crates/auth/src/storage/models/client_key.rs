@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 /// Client key storage model
-/// 
+///
 /// A Client Key is an application-specific key that is derived from a Root Key.
 /// While Root Keys represent user identities, Client Keys represent specific applications
 /// or services that are authorized to act on behalf of that user.
@@ -152,7 +152,7 @@ impl ClientKey {
             } else {
                 current = format!("{}:{}", current, part);
             }
-            
+
             // Check if we have permission at this level
             if self.permissions.contains(&format!("{}:*", current)) {
                 return true;
@@ -162,7 +162,11 @@ impl ClientKey {
         // Check resource-specific permissions (with IDs)
         if permission.contains('[') && permission.contains(']') {
             let base_permission = permission.split('[').next().unwrap_or("");
-            if self.permissions.iter().any(|p| p.starts_with(base_permission)) {
+            if self
+                .permissions
+                .iter()
+                .any(|p| p.starts_with(base_permission))
+            {
                 return true;
             }
         }

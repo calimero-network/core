@@ -13,10 +13,9 @@ use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 use crate::providers::core::provider_registry::ProviderRegistration;
-use crate::storage::KeyStorage;
-use crate::{register_auth_provider, AuthError, AuthResponse, RequestValidator};
 use crate::secrets::SecretManager;
-use crate::storage::MemoryStorage;
+use crate::storage::{KeyStorage, MemoryStorage};
+use crate::{register_auth_provider, AuthError, AuthResponse, RequestValidator};
 
 /// Example provider for demonstration purposes
 pub struct ExampleProvider {

@@ -2,16 +2,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use calimero_auth::auth::token::TokenManager;
 use calimero_auth::config::{
-    load_config, AuthConfig, JwtConfig, NearWalletConfig, StorageConfig, SecurityConfig,
+    load_config, AuthConfig, JwtConfig, NearWalletConfig, SecurityConfig, StorageConfig,
 };
 use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
-use calimero_auth::storage::create_storage;
+use calimero_auth::storage::{create_storage, Storage};
 use calimero_auth::{providers, AuthService};
-use calimero_auth::auth::token::TokenManager;
-use calimero_auth::storage::Storage;
-
 use clap::Parser;
 use eyre::Result;
 use tracing::{info, warn};
@@ -114,14 +112,13 @@ async fn main() -> Result<()> {
 
     // Create the secret manager with the storage trait
     let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
-    secret_manager.initialize().await.expect("Failed to initialize secret manager");
+    secret_manager
+        .initialize()
+        .await
+        .expect("Failed to initialize secret manager");
 
     // Create JWT token manager
-    let token_manager = TokenManager::new(
-        config.jwt.clone(),
-        storage.clone(),
-        secret_manager,
-    );
+    let token_manager = TokenManager::new(config.jwt.clone(), storage.clone(), secret_manager);
 
     // Create providers using the provider factory
     info!("Starting authentication service");

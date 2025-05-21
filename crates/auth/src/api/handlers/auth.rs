@@ -13,9 +13,9 @@ use validator::Validate;
 use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
+use crate::storage::ClientKey;
 use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;
-use crate::storage::ClientKey;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, Json<serde_json::Value>);
@@ -96,28 +96,28 @@ pub struct TokenRequest {
     /// Authentication method
     #[validate(length(min = 1, message = "Authentication method is required"))]
     pub auth_method: String,
-    
+
     /// Public key
     #[validate(length(min = 1, message = "Public key is required"))]
     pub public_key: String,
-    
+
     /// Wallet address (if applicable)
     pub wallet_address: Option<String>,
-    
+
     /// Client name
     #[validate(length(min = 1, message = "Client name is required"))]
     pub client_name: String,
-    
+
     /// Permissions requested
     pub permissions: Option<Vec<String>>,
-    
+
     /// Timestamp
     pub timestamp: u64,
-    
+
     /// Signature
     #[validate(length(min = 1, message = "Signature is required"))]
     pub signature: String,
-    
+
     /// Message that was signed (only for NEAR wallet)
     pub message: Option<String>,
 }

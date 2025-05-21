@@ -569,11 +569,7 @@ impl NearWalletProvider {
         );
 
         // Generate tokens for the client
-        match self
-            .token_manager
-            .generate_token_pair(&client_key)
-            .await
-        {
+        match self.token_manager.generate_token_pair(&client_key).await {
             Ok((access_token, refresh_token)) => {
                 // Store the token info in request extensions (as a HashMap) for later use
                 if let Some(extensions) = request

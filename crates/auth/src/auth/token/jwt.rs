@@ -7,9 +7,9 @@ use tracing::{debug, error};
 use uuid;
 
 use crate::config::JwtConfig;
+use crate::secrets::SecretManager;
 use crate::storage::models::{prefixes, ClientKey};
 use crate::storage::{deserialize, serialize, KeyStorage};
-use crate::secrets::SecretManager;
 use crate::{AuthError, AuthResponse};
 
 /// Token type enum
@@ -64,12 +64,12 @@ impl TokenManager {
     ///
     /// * `Self` - The token generator
     pub fn new(
-        config: JwtConfig, 
+        config: JwtConfig,
         storage: Arc<dyn KeyStorage>,
         secret_manager: Arc<SecretManager>,
     ) -> Self {
-        Self { 
-            config, 
+        Self {
+            config,
             storage,
             secret_manager,
         }
@@ -83,10 +83,11 @@ impl TokenManager {
         permissions: Option<Vec<String>>,
     ) -> Result<String, AuthError> {
         let now = Utc::now();
-        let exp = now + match token_type {
-            TokenType::Access => Duration::seconds(self.config.access_token_expiry as i64),
-            TokenType::Refresh => Duration::seconds(self.config.refresh_token_expiry as i64),
-        };
+        let exp = now
+            + match token_type {
+                TokenType::Access => Duration::seconds(self.config.access_token_expiry as i64),
+                TokenType::Refresh => Duration::seconds(self.config.refresh_token_expiry as i64),
+            };
 
         let jwt_id = match token_type {
             TokenType::Access => uuid::Uuid::new_v4().to_string(),
@@ -100,11 +101,9 @@ impl TokenManager {
             exp: exp.timestamp() as u64,
             iat: now.timestamp() as u64,
             jti: jwt_id,
-            permissions: permissions.unwrap_or_else(|| {
-                match token_type {
-                    TokenType::Access => client_key.permissions.clone(),
-                    TokenType::Refresh => vec![],
-                }
+            permissions: permissions.unwrap_or_else(|| match token_type {
+                TokenType::Access => client_key.permissions.clone(),
+                TokenType::Refresh => vec![],
             }),
             token_type: match token_type {
                 TokenType::Access => "access".to_string(),
@@ -112,7 +111,10 @@ impl TokenManager {
             },
         };
 
-        let secret = self.secret_manager.get_secret().await
+        let secret = self
+            .secret_manager
+            .get_secret()
+            .await
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let header = Header::new(Algorithm::HS256);
@@ -125,24 +127,27 @@ impl TokenManager {
     }
 
     /// Generate an access token
-    pub async fn generate_access_token(
-        &self,
-        client_key: &ClientKey,
-    ) -> Result<String, AuthError> {
-        self.generate_token_internal(client_key, TokenType::Access, None).await
+    pub async fn generate_access_token(&self, client_key: &ClientKey) -> Result<String, AuthError> {
+        self.generate_token_internal(client_key, TokenType::Access, None)
+            .await
     }
 
     /// Generate a refresh token
-    async fn generate_refresh_token(
-        &self,
-        client_key: &ClientKey,
-    ) -> Result<String, AuthError> {
-        self.generate_token_internal(client_key, TokenType::Refresh, None).await
+    async fn generate_refresh_token(&self, client_key: &ClientKey) -> Result<String, AuthError> {
+        self.generate_token_internal(client_key, TokenType::Refresh, None)
+            .await
     }
 
     /// Verify a JWT token and return the claims
-    pub async fn verify_token(&self, token: &str, expected_type: Option<TokenType>) -> Result<Claims, AuthError> {
-        let secret = self.secret_manager.get_secret().await
+    pub async fn verify_token(
+        &self,
+        token: &str,
+        expected_type: Option<TokenType>,
+    ) -> Result<Claims, AuthError> {
+        let secret = self
+            .secret_manager
+            .get_secret()
+            .await
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let mut validation = Validation::new(Algorithm::HS256);
@@ -171,7 +176,10 @@ impl TokenManager {
         }
 
         // Get the client key to verify it's still valid
-        let client_key = self.storage.get_client_key(&claims.sub).await
+        let client_key = self
+            .storage
+            .get_client_key(&claims.sub)
+            .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?
             .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
 
@@ -182,13 +190,17 @@ impl TokenManager {
 
         // Validate audience
         if claims.aud != client_key.client_id {
-            return Err(AuthError::InvalidToken("Invalid token audience".to_string()));
+            return Err(AuthError::InvalidToken(
+                "Invalid token audience".to_string(),
+            ));
         }
 
         // Update last used timestamp
         let mut client_key = client_key.clone();
         client_key.update_last_used();
-        self.storage.set_client_key(&client_key.client_id, &client_key).await
+        self.storage
+            .set_client_key(&client_key.client_id, &client_key)
+            .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?;
 
         Ok(claims)
@@ -208,7 +220,9 @@ impl TokenManager {
         client_key: &ClientKey,
     ) -> Result<(String, String), AuthError> {
         if !client_key.is_valid() {
-            return Err(AuthError::InvalidToken("Client key is not valid".to_string()));
+            return Err(AuthError::InvalidToken(
+                "Client key is not valid".to_string(),
+            ));
         }
 
         let access_token = self.generate_access_token(client_key).await?;
@@ -223,10 +237,15 @@ impl TokenManager {
         refresh_token: &str,
     ) -> Result<(String, String), AuthError> {
         // Verify the refresh token specifically
-        let claims = self.verify_token(refresh_token, Some(TokenType::Refresh)).await?;
+        let claims = self
+            .verify_token(refresh_token, Some(TokenType::Refresh))
+            .await?;
 
         // Get the client key
-        let client_key = self.storage.get_client_key(&claims.aud).await
+        let client_key = self
+            .storage
+            .get_client_key(&claims.aud)
+            .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?
             .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
 
@@ -252,7 +271,9 @@ impl TokenManager {
             .get("Authorization")
             .ok_or_else(|| AuthError::InvalidRequest("Missing Authorization header".to_string()))?
             .to_str()
-            .map_err(|e| AuthError::InvalidRequest(format!("Invalid Authorization header: {}", e)))?;
+            .map_err(|e| {
+                AuthError::InvalidRequest(format!("Invalid Authorization header: {}", e))
+            })?;
 
         // Check that it's a Bearer token
         if !auth_header.starts_with("Bearer ") {
@@ -264,7 +285,9 @@ impl TokenManager {
         // Extract the token
         let token = auth_header.trim_start_matches("Bearer ").trim();
         if token.is_empty() {
-            return Err(AuthError::InvalidRequest("Empty token provided".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Empty token provided".to_string(),
+            ));
         }
 
         // Verify the token and get claims (must be an access token)
@@ -287,7 +310,10 @@ impl TokenManager {
     ///
     /// * `Result<(), AuthError>` - Success or error
     pub async fn revoke_client_tokens(&self, client_id: &str) -> Result<(), AuthError> {
-        let client_key = self.storage.get_client_key(client_id).await
+        let client_key = self
+            .storage
+            .get_client_key(client_id)
+            .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?
             .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
 
@@ -296,7 +322,9 @@ impl TokenManager {
         client_key.revoke();
 
         // Save the updated client key
-        self.storage.set_client_key(client_id, &client_key).await
+        self.storage
+            .set_client_key(client_id, &client_key)
+            .await
             .map_err(|e| AuthError::StorageError(format!("Failed to update client key: {}", e)))?;
 
         Ok(())

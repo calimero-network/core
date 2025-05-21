@@ -4,8 +4,8 @@ use std::time::Duration;
 use axum::middleware::from_fn;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
-use tower::ServiceBuilder;
 use tower::layer::util::Identity;
+use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 
 use crate::api::handlers::auth::{
@@ -110,7 +110,6 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/metrics", get(metrics_handler))
         // Apply authentication middleware only to protected routes
         .layer(from_fn(forward_auth_middleware));
-
 
     //TODO: FINISH security headers and rate limit
     // Start with the base router

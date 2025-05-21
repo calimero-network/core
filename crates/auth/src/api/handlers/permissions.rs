@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use validator::Validate;
 
+use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
 use crate::storage::deserialize;
 use crate::storage::models::{prefixes, Permission};
-use crate::auth::validation::ValidatedJson;
 
 /// Permission creation request
 #[derive(Debug, Deserialize, Validate)]
@@ -45,7 +45,7 @@ pub struct CreatePermissionRequest {
 pub struct UpdateKeyPermissionsRequest {
     /// Permissions to add
     pub add: Option<Vec<String>>,
-    
+
     /// Permissions to remove
     pub remove: Option<Vec<String>>,
 }
@@ -94,23 +94,31 @@ pub async fn create_permission_handler(
     );
 
     // Store the permission
-    match state.0.storage.set(
-        &format!("{}{}", prefixes::PERMISSION, permission_id),
-        &serde_json::to_vec(&permission).unwrap(),
-    ).await {
+    match state
+        .0
+        .storage
+        .set(
+            &format!("{}{}", prefixes::PERMISSION, permission_id),
+            &serde_json::to_vec(&permission).unwrap(),
+        )
+        .await
+    {
         Ok(_) => {
             info!("Created permission: {}", permission_id);
             (
                 StatusCode::CREATED,
-                Json(serde_json::to_value(PermissionResponse {
-                    permission_id: permission.permission_id,
-                    name: permission.name,
-                    description: permission.description,
-                    resource_type: permission.resource_type,
-                    resource_ids: permission.resource_ids,
-                    method: permission.method,
-                    user_id: permission.user_id,
-                }).unwrap()),
+                Json(
+                    serde_json::to_value(PermissionResponse {
+                        permission_id: permission.permission_id,
+                        name: permission.name,
+                        description: permission.description,
+                        resource_type: permission.resource_type,
+                        resource_ids: permission.resource_ids,
+                        method: permission.method,
+                        user_id: permission.user_id,
+                    })
+                    .unwrap(),
+                ),
             )
         }
         Err(err) => {
@@ -159,7 +167,10 @@ pub async fn list_permissions_handler(state: Extension<Arc<AppState>>) -> impl I
                 }
             }
 
-            (StatusCode::OK, Json(serde_json::json!({ "permissions": permissions })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "permissions": permissions })),
+            )
         }
         Err(err) => {
             error!("Failed to list permissions: {}", err);
@@ -190,10 +201,18 @@ pub async fn get_key_permissions_handler(
     Path(key_id): Path<String>,
 ) -> impl IntoResponse {
     // Get the key's permissions
-    match state.0.storage.get(&format!("{}{}", prefixes::KEY_PERMISSIONS, key_id)).await {
+    match state
+        .0
+        .storage
+        .get(&format!("{}{}", prefixes::KEY_PERMISSIONS, key_id))
+        .await
+    {
         Ok(Some(data)) => {
             if let Ok(permissions) = deserialize::<Vec<String>>(&data) {
-                (StatusCode::OK, Json(serde_json::json!({ "permissions": permissions })))
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "permissions": permissions })),
+                )
             } else {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -240,7 +259,12 @@ pub async fn update_key_permissions_handler(
     ValidatedJson(request): ValidatedJson<UpdateKeyPermissionsRequest>,
 ) -> impl IntoResponse {
     // Get current permissions
-    let current_permissions = match state.0.storage.get(&format!("{}{}", prefixes::KEY_PERMISSIONS, key_id)).await {
+    let current_permissions = match state
+        .0
+        .storage
+        .get(&format!("{}{}", prefixes::KEY_PERMISSIONS, key_id))
+        .await
+    {
         Ok(Some(data)) => deserialize::<Vec<String>>(&data).unwrap_or_default(),
         _ => Vec::new(),
     };
@@ -263,10 +287,15 @@ pub async fn update_key_permissions_handler(
     }
 
     // Store updated permissions
-    match state.0.storage.set(
-        &format!("{}{}", prefixes::KEY_PERMISSIONS, key_id),
-        &serde_json::to_vec(&updated_permissions).unwrap(),
-    ).await {
+    match state
+        .0
+        .storage
+        .set(
+            &format!("{}{}", prefixes::KEY_PERMISSIONS, key_id),
+            &serde_json::to_vec(&updated_permissions).unwrap(),
+        )
+        .await
+    {
         Ok(_) => {
             info!("Updated permissions for key: {}", key_id);
             (
@@ -289,7 +318,9 @@ pub async fn update_key_permissions_handler(
 }
 
 /// Validate resource IDs
-fn validate_resource_ids(resource_ids: &Option<Vec<String>>) -> Result<(), validator::ValidationError> {
+fn validate_resource_ids(
+    resource_ids: &Option<Vec<String>>,
+) -> Result<(), validator::ValidationError> {
     if let Some(ids) = resource_ids {
         if ids.is_empty() {
             let mut err = validator::ValidationError::new("empty_resource_ids");
@@ -313,7 +344,9 @@ fn validate_resource_ids(resource_ids: &Option<Vec<String>>) -> Result<(), valid
 }
 
 /// Validate permissions
-fn validate_permissions(permissions: &Option<Vec<String>>) -> Result<(), validator::ValidationError> {
+fn validate_permissions(
+    permissions: &Option<Vec<String>>,
+) -> Result<(), validator::ValidationError> {
     if let Some(perms) = permissions {
         if perms.is_empty() {
             let mut err = validator::ValidationError::new("empty_permissions");
@@ -346,27 +379,27 @@ fn validate_permissions(permissions: &Option<Vec<String>>) -> Result<(), validat
 fn is_valid_permission_format(permission: &str) -> bool {
     // Basic format validation
     let parts: Vec<&str> = permission.split(&[':', '[', ']', '<', '>']).collect();
-    
+
     // Must have at least a resource type
     if parts.is_empty() {
         return false;
     }
-    
+
     // Resource type must not be empty
     if parts[0].is_empty() {
         return false;
     }
-    
+
     // If there's an action, it must not be empty
     if permission.contains(':') && parts.get(1).map_or(true, |p| p.is_empty()) {
         return false;
     }
-    
+
     // Check balanced brackets
     let open_square = permission.chars().filter(|&c| c == '[').count();
     let close_square = permission.chars().filter(|&c| c == ']').count();
     let open_angle = permission.chars().filter(|&c| c == '<').count();
     let close_angle = permission.chars().filter(|&c| c == '>').count();
-    
+
     open_square == close_square && open_angle == close_angle
 }
