@@ -129,6 +129,7 @@ impl NodeClient {
         let _ignored = self
             .event_sender
             .send(event)
+            // this should in-theory never happen, but just in case
             .wrap_err("failed to send event")?;
 
         Ok(())
@@ -142,6 +143,7 @@ impl NodeClient {
                 match receiver.recv().await {
                     Ok(event) => yield event,
                     Err(broadcast::error::RecvError::Closed) => break,
+                    // oh, we missed a message? let's.. just ignore it
                     Err(broadcast::error::RecvError::Lagged(_)) => {},
                 }
             }

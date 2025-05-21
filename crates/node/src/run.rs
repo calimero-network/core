@@ -23,7 +23,7 @@ use futures_util::{stream, StreamExt};
 use libp2p::identity::Keypair;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info};
+use tracing::{error, event_enabled, info, Level};
 
 use crate::interactive_cli::handle_line;
 use crate::sync::{SyncConfig, SyncManager};
@@ -191,7 +191,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
                 let _ignored = tokio::spawn(async {
                     if let Err(err) = it.await {
-                        error!(%err, "failed handling user command");
+                        if event_enabled!(Level::DEBUG) {
+                            error!(?err, "failed handling user command");
+                        } else {
+                            error!(%err, "failed handling user command");
+                        }
                     }
                 });
             }
