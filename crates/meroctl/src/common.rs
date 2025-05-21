@@ -13,7 +13,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8Path;
 use chrono::Utc;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, eyre, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
@@ -134,16 +134,16 @@ where
 //     return Ok(result);
 // }
 
-pub fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigFile> {
+pub async fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigFile> {
     let path = home.join(node_name);
 
     if !ConfigFile::exists(&path) {
-        bail!("Config file does not exist")
-    };
+        bail!("Config file does not exist");
+    }
 
-    let Ok(config) = ConfigFile::load(&path) else {
-        bail!("Failed to load config file")
-    };
+    let config = ConfigFile::load(&path)
+        .await
+        .wrap_err("Failed to load config file")?;
 
     Ok(config)
 }
