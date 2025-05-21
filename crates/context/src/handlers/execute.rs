@@ -54,9 +54,9 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
-        if !["init", "__calimero_sync_next"].contains(&&*method)
-            && *context.meta.root_hash == [0; 32]
-        {
+        let is_state_op = ["init", "__calimero_sync_next"].contains(&&*method);
+
+        if !is_state_op && *context.meta.root_hash == [0; 32] {
             return ActorResponse::reply(Err(ExecuteError::Uninitialized));
         }
 
@@ -134,6 +134,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     method.into(),
                     payload.into(),
                     executor,
+                    is_state_op,
                 )
                 .await?;
 
@@ -162,14 +163,16 @@ impl Handler<ExecuteRequest> for ContextManager {
                     proxy_client.approve(&executor, &proposal_id).await?;
                 }
 
-                node_client
-                    .broadcast(
-                        &context.meta,
-                        &executor,
-                        &sender_key,
-                        outcome.artifact.clone(),
-                    )
-                    .await?;
+                if !is_state_op {
+                    node_client
+                        .broadcast(
+                            &context.meta,
+                            &executor,
+                            &sender_key,
+                            outcome.artifact.clone(),
+                        )
+                        .await?;
+                }
 
                 Ok(outcome)
             }
@@ -207,6 +210,7 @@ async fn internal_execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     executor: PublicKey,
+    is_state_op: bool,
 ) -> eyre::Result<Outcome> {
     let blob = node_client.get_blob_bytes(&context.blob).await?;
 
@@ -220,13 +224,18 @@ async fn internal_execute(
 
     let module = engine.compile(&blob)?;
 
-    let is_sync_operation = method == "__calimero_sync_next";
-
     let (outcome, storage) = execute(guard, module, method, input, executor, storage).await?;
 
     if outcome.returns.is_ok() {
-        if outcome.root_hash.is_some() && outcome.artifact.is_empty() && !is_sync_operation {
-            eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+        'fine: {
+            if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
+                if is_state_op {
+                    // fixme! temp mitigation for a potential state inconsistency
+                    break 'fine;
+                }
+
+                eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+            }
         }
 
         if !storage.is_empty() {
