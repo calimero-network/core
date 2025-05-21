@@ -7,6 +7,7 @@
 use core::future::{pending, Future};
 use core::pin::Pin;
 use core::str;
+use std::sync::Arc;
 use std::time::Duration;
 
 use borsh::{from_slice, to_vec};
@@ -15,7 +16,8 @@ use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
 use calimero_context_config::repr::ReprTransmute;
-use calimero_context_config::ProposalAction;
+use calimero_context_config::types::{ContextIdentity, ProposalId};
+use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use calimero_crypto::{Nonce, SharedKey, NONCE_LEN};
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
@@ -102,6 +104,7 @@ pub struct Node {
     sync_config: SyncConfig,
     store: Store,
     ctx_manager: ContextManager,
+    proposal_manager: ProposalManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
     server_config: ServerConfig,
@@ -200,7 +203,8 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
 impl Node {
     #[must_use]
-    pub const fn new(
+    pub fn new(
+        // Remove 'const' here
         sync_config: SyncConfig,
         network_client: NetworkClient,
         node_events: broadcast::Sender<NodeEvent>,
@@ -208,10 +212,13 @@ impl Node {
         store: Store,
         server_config: ServerConfig,
     ) -> Self {
+        let proposal_manager = ProposalManager::new(ctx_manager.clone());
+
         Self {
             sync_config,
             store,
             ctx_manager,
+            proposal_manager,
             network_client,
             node_events,
             server_config,
@@ -651,6 +658,73 @@ impl Node {
         }
 
         Ok(Some(outcome))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProposalManager {
+    ctx_manager: Arc<ContextManager>,
+}
+
+impl ProposalManager {
+    pub fn new(ctx_manager: ContextManager) -> Self {
+        Self {
+            ctx_manager: Arc::new(ctx_manager),
+        }
+    }
+
+    pub async fn get_number_of_proposal_approvals(
+        &self,
+        context_id: &ContextId,
+        proposal_id: &ProposalId,
+    ) -> EyreResult<ProposalWithApprovals> {
+        self.ctx_manager
+            .get_number_of_proposal_approvals(*context_id, *proposal_id)
+            .await
+    }
+
+    pub async fn get_proposal_approvers(
+        &self,
+        context_id: &ContextId,
+        proposal_id: &ProposalId,
+    ) -> EyreResult<Vec<ContextIdentity>> {
+        self.ctx_manager
+            .get_proposal_approvers(*context_id, *proposal_id)
+            .await
+    }
+
+    pub async fn get_active_proposals_count(&self, context_id: &ContextId) -> EyreResult<u16> {
+        self.ctx_manager
+            .get_number_of_active_proposals(*context_id)
+            .await
+    }
+
+    pub async fn get_proposals(
+        &self,
+        context_id: &ContextId,
+        offset: usize,
+        limit: usize,
+    ) -> EyreResult<Vec<Proposal>> {
+        self.ctx_manager
+            .get_proposals(*context_id, offset, limit)
+            .await
+    }
+
+    pub async fn get_proposal(
+        &self,
+        context_id: &ContextId,
+        proposal_id: &ProposalId,
+    ) -> EyreResult<Option<Proposal>> {
+        let result = self
+            .ctx_manager
+            .get_proposal(*context_id, *proposal_id)
+            .await;
+
+        match result {
+            Ok(proposal) => Ok(Some(proposal)),
+            Err(err) if err.to_string().contains("no proposal found") => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 }
 
