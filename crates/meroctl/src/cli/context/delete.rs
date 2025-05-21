@@ -7,9 +7,7 @@ use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{
-    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
-};
+use crate::common::{do_request, resolve_alias, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -36,27 +34,30 @@ impl Report for DeleteContextResponse {
 
 impl DeleteCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            environment.args.node_name.as_deref().unwrap_or_default(),
-        )?;
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
 
-        let multiaddr = fetch_multiaddr(&config)?;
+        let auth_key = connection
+            .auth_key
+            .as_ref()
+            .ok_or_eyre("No authentication key configured")?;
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+        let context_id = resolve_alias(&connection.api_url, auth_key, self.context, None)
             .await?
             .value()
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let url = multiaddr_to_url(multiaddr, &format!("admin-api/dev/contexts/{}", context_id))?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!("admin-api/dev/contexts/{}", context_id));
 
         let response: DeleteContextResponse = do_request(
             &Client::new(),
             url,
             None::<()>,
-            Some(&config.identity),
+            Some(auth_key),
             RequestType::Delete,
         )
         .await?;

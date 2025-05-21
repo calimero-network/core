@@ -11,7 +11,7 @@ use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
   #
-  $ meroctl -- --node-name node1 peers
+  $ meroctl --node node1 peers
 ";
 
 #[derive(Debug, Parser)]
@@ -41,18 +41,11 @@ impl PeersCommand {
         let mut url = connection.api_url.clone();
         url.set_path("admin-api/dev/peers");
 
-        let keypair = connection
-            .auth_key
-            .as_ref()
-            .and_then(|k| bs58::decode(k).into_vec().ok())
-            .and_then(|bytes| libp2p::identity::Keypair::from_protobuf_encoding(&bytes).ok());
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-
         let response: GetPeersCountResponse = do_request(
             &Client::new(),
             url,
             None::<()>,
-            keypair.as_ref(),
+            connection.auth_key.as_ref(),
             RequestType::Get,
         )
         .await?;

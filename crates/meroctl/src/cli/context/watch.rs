@@ -3,14 +3,14 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::ws::{Request, RequestPayload, Response, SubscribeRequest};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{eyre, OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use tokio::process::Command;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
-use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias};
+use crate::common::resolve_alias;
 use crate::output::{ErrorLine, InfoLine, Report};
 
 pub const EXAMPLES: &str = r#"
@@ -60,24 +60,28 @@ impl Report for Response {
 
 impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            environment.args.node_name.as_deref().unwrap_or_default(),
-        )?;
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_else(|| eyre!("No connection configured"))?;
+
+        let auth_key = connection
+            .auth_key
+            .as_ref()
+            .ok_or_else(|| eyre!("No authentication key configured"))?;
 
         let resolve_response =
-            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
+            resolve_alias(&connection.api_url, auth_key, self.context, None).await?;
 
         let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let mut url = multiaddr_to_url(multiaddr, "ws")?;
+        let mut url = connection.api_url.clone();
         url.set_scheme("ws")
             .map_err(|()| eyre::eyre!("Failed to set URL scheme"))?;
+        url.set_path("ws");
 
         environment
             .output

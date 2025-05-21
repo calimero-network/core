@@ -243,7 +243,7 @@ impl Report for CreateAliasResponse {
 }
 
 pub(crate) async fn create_alias<T>(
-    multiaddr: &Multiaddr,
+    base_url: &Url,
     keypair: &Keypair,
     alias: Alias<T>,
     scope: Option<T::Scope>,
@@ -260,6 +260,9 @@ where
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
+    let mut url = base_url.clone();
+    url.set_path(&format!("{prefix}/{kind}/{scope}{alias}"));
+
     let body = CreateAliasRequest {
         alias,
         value: value.create(),
@@ -267,7 +270,7 @@ where
 
     let response: CreateAliasResponse = do_request(
         &Client::new(),
-        multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}{scope}"))?,
+        url,
         Some(body),
         Some(keypair),
         RequestType::Post,
@@ -287,7 +290,7 @@ impl Report for DeleteAliasResponse {
 }
 
 pub(crate) async fn delete_alias<T>(
-    multiaddr: &Multiaddr,
+    base_url: &Url,
     keypair: &Keypair,
     alias: Alias<T>,
     scope: Option<T::Scope>,
@@ -302,9 +305,12 @@ where
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
+    let mut url = base_url.clone();
+    url.set_path(&format!("{prefix}/{kind}/{scope}{alias}"));
+
     let response: DeleteAliasResponse = do_request(
         &Client::new(),
-        multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}/{scope}{alias}"))?,
+        url,
         None::<()>,
         Some(keypair),
         RequestType::Post,
@@ -315,7 +321,7 @@ where
 }
 
 pub(crate) async fn lookup_alias<T>(
-    multiaddr: &Multiaddr,
+    base_url: &Url,
     keypair: &Keypair,
     alias: Alias<T>,
     scope: Option<T::Scope>,
@@ -330,9 +336,12 @@ where
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
+    let mut url = base_url.clone();
+    url.set_path(&format!("{prefix}/{kind}/{scope}{alias}"));
+
     let response = do_request(
         &Client::new(),
-        multiaddr_to_url(multiaddr, &format!("{prefix}/{kind}/{scope}{alias}"))?,
+        url,
         None::<()>,
         Some(keypair),
         RequestType::Post,
@@ -406,7 +415,7 @@ impl<T: fmt::Display> Report for ResolveResponse<T> {
 }
 
 pub(crate) async fn resolve_alias<T>(
-    multiaddr: &Multiaddr,
+    base_url: &Url,
     keypair: &Keypair,
     alias: Alias<T>,
     scope: Option<T::Scope>,
@@ -414,7 +423,7 @@ pub(crate) async fn resolve_alias<T>(
 where
     T: ScopedAlias + UrlFragment + FromStr + DeserializeOwned,
 {
-    let value = lookup_alias(multiaddr, keypair, alias, scope).await?;
+    let value = lookup_alias(base_url, keypair, alias, scope).await?;
 
     if value.data.value.is_some() {
         return Ok(ResolveResponse {

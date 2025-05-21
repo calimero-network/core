@@ -6,14 +6,14 @@ use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{eyre, Report as EyreReport};
-use node::NodeCommand;
+use libp2p::identity::Keypair;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
+use crate::config::Config;
 use crate::defaults;
-use crate::node_config::{NodeConfig, NodeConnection};
 use crate::output::{Format, Output, Report};
 
 mod app;
@@ -27,6 +27,7 @@ mod proxy;
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
+use node::NodeCommand;
 use peers::PeersCommand;
 use proxy::ProxyCommand;
 
@@ -71,31 +72,11 @@ pub enum SubCommands {
 }
 
 #[derive(Debug, Parser)]
-pub struct LocalNodeCommand {
-    pub alias: String,
-
-    #[arg(long)]
-    pub path: Utf8PathBuf,
-}
-
-#[derive(Debug, Parser)]
-pub struct RemoteNodeCommand {
-    pub alias: String,
-
-    #[arg(long)]
-    pub api: Url,
-}
-
-#[derive(Debug, Parser)]
 pub struct RootArgs {
     /// Directory for config and data
     #[arg(long, value_name = "PATH", default_value_t = defaults::default_node_dir())]
     #[arg(env = "CALIMERO_HOME", hide_env_values = true)]
     pub home: Utf8PathBuf,
-
-    /// Name of node
-    #[arg(short, long, value_name = "NAME")]
-    pub node_name: Option<String>,
 
     /// API endpoint URL
     #[arg(long, value_name = "URL", conflicts_with = "node_name")]
@@ -112,14 +93,12 @@ pub struct RootArgs {
 impl RootArgs {
     pub const fn new(
         home: Utf8PathBuf,
-        node_name: Option<String>,
         api: Option<Url>,
         node: Option<String>,
         output_format: Format,
     ) -> Self {
         Self {
             home,
-            node_name,
             api,
             node,
             output_format,
@@ -151,43 +130,26 @@ impl RootCommand {
         let connection = match (&self.args.node, &self.args.api) {
             (Some(node_name), None) => {
                 // Check if node exists in config
-                let node_config = NodeConfig::load()?;
+                let node_config = Config::load()?;
                 if let Some(conn) = node_config.nodes.get(node_name) {
-                    match conn {
-                        NodeConnection::Local { path } => {
-                            let config = load_config(path, node_name)?;
-                            let multiaddr = fetch_multiaddr(&config)?;
-                            let url = multiaddr_to_url(&multiaddr, "")?;
-                            ConnectionInfo {
-                                api_url: url,
-                                auth_key: Some(
-                                    bs58::encode(config.identity.to_protobuf_encoding().unwrap())
-                                        .into_string(),
-                                ),
-                            }
-                        }
-                        NodeConnection::Remote { url, auth } => ConnectionInfo {
-                            api_url: url.clone(),
-                            auth_key: auth.clone(),
-                        },
-                    }
+                    conn.get_connection_info(Some(node_name)).await?
                 } else {
                     // Fall back to checking default home directory
-                    let config = load_config(&defaults::default_node_dir(), node_name)?;
+                    let config = load_config(&defaults::default_node_dir(), node_name).await?;
                     let multiaddr = fetch_multiaddr(&config)?;
                     let url = multiaddr_to_url(&multiaddr, "")?;
                     ConnectionInfo {
                         api_url: url,
-                        auth_key: Some(
-                            bs58::encode(config.identity.to_protobuf_encoding().unwrap())
-                                .into_string(),
-                        ),
+                        auth_key: Some(config.identity),
                     }
                 }
             }
             (None, Some(api_url)) => ConnectionInfo {
                 api_url: api_url.clone(),
-                auth_key: None,
+                auth_key: std::env::var("MEROCTL_NODE_KEY")
+                    .ok()
+                    .and_then(|k| bs58::decode(k).into_vec().ok())
+                    .and_then(|bytes| Keypair::from_protobuf_encoding(&bytes).ok()),
             },
             _ => return Err(CliError::Other(eyre!("Invalid connection parameters"))),
         };
@@ -267,5 +229,5 @@ where
 
 pub struct ConnectionInfo {
     pub api_url: Url,
-    pub auth_key: Option<String>,
+    pub auth_key: Option<Keypair>,
 }

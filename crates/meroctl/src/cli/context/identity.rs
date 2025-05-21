@@ -4,14 +4,11 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
-use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
 use reqwest::Client;
 
-use crate::cli::Environment;
+use crate::cli::{ConnectionInfo, Environment};
 use crate::common::{
-    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, make_request,
-    multiaddr_to_url, resolve_alias, RequestType,
+    create_alias, delete_alias, lookup_alias, make_request, resolve_alias, RequestType,
 };
 use crate::output::ErrorLine;
 
@@ -53,25 +50,19 @@ pub enum ContextIdentitySubcommand {
 
 impl ContextIdentityCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            environment.args.node_name.as_deref().unwrap_or_default(),
-        )?;
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
-        let client = Client::new();
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
+
+        let auth_key = connection
+            .auth_key
+            .as_ref()
+            .ok_or_eyre("No authentication key configured")?;
 
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {
-                list_identities(
-                    environment,
-                    &multiaddr,
-                    &client,
-                    &config.identity,
-                    Some(context),
-                    owned,
-                )
-                .await
+                list_identities(environment, connection, Some(context), owned).await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
@@ -82,7 +73,7 @@ impl ContextIdentityCommand {
                 force,
             } => {
                 let resolve_response =
-                    resolve_alias(multiaddr, &config.identity, context, None).await?;
+                    resolve_alias(&connection.api_url, auth_key, context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -91,9 +82,13 @@ impl ContextIdentityCommand {
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
 
-                let lookup_result =
-                    lookup_alias(multiaddr, &config.identity, default_alias, Some(context_id))
-                        .await?;
+                let lookup_result = lookup_alias(
+                    &connection.api_url,
+                    auth_key,
+                    default_alias,
+                    Some(context_id),
+                )
+                .await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -115,15 +110,19 @@ impl ContextIdentityCommand {
                         "Overwriting existing default alias from '{}' to '{}'",
                         existing_identity, identity
                     )));
-                    let _ =
-                        delete_alias(multiaddr, &config.identity, default_alias, Some(context_id))
-                            .await
-                            .wrap_err("Failed to delete existing default alias")?;
+                    let _ = delete_alias(
+                        &connection.api_url,
+                        auth_key,
+                        default_alias,
+                        Some(context_id),
+                    )
+                    .await
+                    .wrap_err("Failed to delete existing default alias")?;
                 }
 
                 let res = create_alias(
-                    multiaddr,
-                    &config.identity,
+                    &connection.api_url,
+                    auth_key,
                     default_alias,
                     Some(context_id),
                     identity,
@@ -144,15 +143,13 @@ impl ContextIdentityCommand {
 
 async fn list_identities(
     environment: &Environment,
-    multiaddr: &Multiaddr,
-    client: &Client,
-    keypair: &Keypair,
+    connection: &ConnectionInfo,
     context: Option<Alias<ContextId>>,
     owned: bool,
 ) -> EyreResult<()> {
     let resolve_response = resolve_alias(
-        multiaddr,
-        keypair,
+        &connection.api_url,
+        connection.auth_key.as_ref().unwrap(),
         context.unwrap_or_else(|| "default".parse().expect("valid alias")),
         None,
     )
@@ -175,13 +172,14 @@ async fn list_identities(
         format!("admin-api/dev/contexts/{}/identities", context_id)
     };
 
-    let url = multiaddr_to_url(multiaddr, &endpoint)?;
+    let mut url = connection.api_url.clone();
+    url.set_path(&endpoint);
     make_request::<_, GetContextIdentitiesResponse>(
         environment,
-        client,
+        &Client::new(),
         url,
         None::<()>,
-        keypair,
+        connection.auth_key.as_ref().unwrap(),
         RequestType::Get,
     )
     .await

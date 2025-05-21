@@ -4,7 +4,7 @@ use comfy_table::Table;
 use eyre::eyre;
 use url::Url;
 
-use crate::node_config::{NodeConfig, NodeConnection};
+use crate::config::{Config, NodeConnection};
 
 #[derive(Debug, Parser)]
 pub struct AddNodeCommand {
@@ -19,7 +19,7 @@ pub struct AddNodeCommand {
     #[arg(long, conflicts_with = "path")]
     pub url: Option<Url>,
 
-    /// Authentication key for the node (can also be set via MEROCTL_NODE_KEY env var)
+    /// Authentication key for the node
     #[arg(long, env = "MEROCTL_NODE_KEY")]
     pub auth: Option<String>,
 }
@@ -47,7 +47,7 @@ pub enum NodeCommand {
 
 impl NodeCommand {
     pub async fn run(self) -> eyre::Result<()> {
-        let mut config = NodeConfig::load()?;
+        let mut config = Config::load()?;
 
         match self {
             NodeCommand::Add(cmd) => {

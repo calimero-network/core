@@ -8,19 +8,17 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::{bail, OptionExt, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use reqwest::Client;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
+use url::Url;
 
 use crate::cli::Environment;
-use crate::common::{
-    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
-};
+use crate::common::{do_request, resolve_alias, RequestType};
 use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
@@ -73,26 +71,32 @@ pub struct UpdateCommand {
 
 impl UpdateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            environment.args.node_name.as_deref().unwrap_or_default(),
-        )?;
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
-        let client = Client::new();
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+        let auth_key = connection
+            .auth_key
+            .as_ref()
+            .ok_or_else(|| eyre!("No authentication key configured"))?;
+
+        let context_id = resolve_alias(&connection.api_url, auth_key, self.context, None)
             .await?
             .value()
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let executor_id =
-            resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
-                .await?
-                .value()
-                .cloned()
-                .ok_or_eyre("unable to resolve")?;
+        let executor_id = resolve_alias(
+            &connection.api_url,
+            auth_key,
+            self.executor,
+            Some(context_id),
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
         match self {
             Self {
@@ -104,11 +108,11 @@ impl UpdateCommand {
             } => {
                 update_context_application(
                     environment,
-                    &client,
-                    multiaddr,
+                    &Client::new(),
+                    &connection.api_url,
                     context_id,
                     application_id,
-                    &config.identity,
+                    auth_key,
                     executor_id,
                 )
                 .await?;
@@ -123,21 +127,21 @@ impl UpdateCommand {
 
                 let application_id = install_app(
                     environment,
-                    &client,
-                    multiaddr,
+                    &Client::new(),
+                    &connection.api_url,
                     path.clone(),
                     metadata.clone(),
-                    &config.identity,
+                    auth_key,
                 )
                 .await?;
 
                 update_context_application(
                     environment,
-                    &client,
-                    multiaddr,
+                    &Client::new(),
+                    &connection.api_url,
                     context_id,
                     application_id,
-                    &config.identity,
+                    auth_key,
                     executor_id,
                 )
                 .await?;
@@ -145,12 +149,12 @@ impl UpdateCommand {
                 if self.watch {
                     watch_app_and_update_context(
                         environment,
-                        &client,
-                        multiaddr,
+                        &Client::new(),
+                        &connection.api_url,
                         context_id,
                         path,
                         metadata,
-                        &config.identity,
+                        auth_key,
                         executor_id,
                     )
                     .await?;
@@ -167,12 +171,13 @@ impl UpdateCommand {
 async fn install_app(
     environment: &Environment,
     client: &Client,
-    base_multiaddr: &Multiaddr,
+    base_url: &Url,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
 ) -> EyreResult<ApplicationId> {
-    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
+    let mut url = base_url.clone();
+    url.set_path("admin-api/dev/install-dev-application");
 
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
@@ -187,16 +192,17 @@ async fn install_app(
 async fn update_context_application(
     environment: &Environment,
     client: &Client,
-    base_multiaddr: &Multiaddr,
+    base_url: &Url,
     context_id: ContextId,
     application_id: ApplicationId,
     keypair: &Keypair,
     member_public_key: PublicKey,
 ) -> EyreResult<()> {
-    let url = multiaddr_to_url(
-        base_multiaddr,
-        &format!("admin-api/dev/contexts/{context_id}/application"),
-    )?;
+    let mut url = base_url.clone();
+    url.set_path(&format!(
+        "admin-api/dev/contexts/{}/application",
+        context_id
+    ));
 
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
@@ -211,7 +217,7 @@ async fn update_context_application(
 async fn watch_app_and_update_context(
     environment: &Environment,
     client: &Client,
-    base_multiaddr: &Multiaddr,
+    base_url: &Url,
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
@@ -260,7 +266,7 @@ async fn watch_app_and_update_context(
         let application_id = install_app(
             environment,
             client,
-            base_multiaddr,
+            base_url,
             path.clone(),
             metadata.clone(),
             keypair,
@@ -270,7 +276,7 @@ async fn watch_app_and_update_context(
         update_context_application(
             environment,
             client,
-            base_multiaddr,
+            base_url,
             context_id,
             application_id,
             keypair,

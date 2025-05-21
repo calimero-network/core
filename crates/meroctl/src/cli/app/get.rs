@@ -2,7 +2,6 @@ use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
 use eyre::{eyre, Result as EyreResult};
-use libp2p::identity::Keypair;
 use reqwest::Client;
 
 use crate::cli::Environment;
@@ -40,17 +39,11 @@ impl GetCommand {
         let mut url = connection.api_url.clone();
         url.set_path(&format!("admin-api/dev/applications/{}", self.app_id));
 
-        let keypair = connection
-            .auth_key
-            .as_ref()
-            .and_then(|k| bs58::decode(k).into_vec().ok())
-            .and_then(|bytes| Keypair::from_protobuf_encoding(&bytes).ok());
-
         let response: GetApplicationResponse = do_request(
             &Client::new(),
             url,
             None::<()>,
-            keypair.as_ref(),
+            connection.auth_key.as_ref(),
             RequestType::Get,
         )
         .await?;

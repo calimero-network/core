@@ -4,13 +4,11 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{
-    create_alias, do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType,
-};
+use crate::common::{create_alias, do_request, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -52,21 +50,27 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            environment.args.node_name.as_deref().unwrap_or_default(),
-        )?;
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
+
+        let auth_key = connection
+            .auth_key
+            .as_ref()
+            .ok_or_eyre("No authentication key configured")?;
+
+        let mut url = connection.api_url.clone();
+        url.set_path("admin-api/dev/contexts/join");
 
         let response: JoinContextResponse = do_request(
             &Client::new(),
-            multiaddr_to_url(multiaddr, "admin-api/dev/contexts/join")?,
+            url,
             Some(JoinContextRequest::new(
                 self.private_key,
                 self.invitation_payload,
             )),
-            Some(&config.identity),
+            Some(auth_key),
             RequestType::Post,
         )
         .await?;
@@ -77,7 +81,7 @@ impl JoinCommand {
             if let Some(context) = self.context {
                 let context_id = payload.context_id;
                 let res =
-                    create_alias(multiaddr, &config.identity, context, None, context_id).await?;
+                    create_alias(&connection.api_url, auth_key, context, None, context_id).await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {
@@ -85,8 +89,8 @@ impl JoinCommand {
                 let public_key = payload.member_public_key;
 
                 let res = create_alias(
-                    multiaddr,
-                    &config.identity,
+                    &connection.api_url,
+                    auth_key,
                     identity,
                     Some(context_id),
                     public_key,
