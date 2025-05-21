@@ -181,11 +181,11 @@ impl ContextClient {
     pub fn context_members(
         &self,
         context_id: &ContextId,
-        only_owned: Option<bool>,
+        owned: Option<bool>,
     ) -> impl Stream<Item = eyre::Result<(PublicKey, bool)>> {
         let datastore = self.datastore.handle();
         let context_id = *context_id;
-        let only_owned = only_owned.unwrap_or(false);
+        let only_owned = owned.unwrap_or(false);
 
         try_stream! {
             let mut iter = datastore.iter::<key::ContextIdentity>()?;

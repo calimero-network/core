@@ -184,12 +184,21 @@ async fn handle_state_delta(
         return sync_manager.initiate_sync(context_id, source).await;
     };
 
+    let identities = context_client.context_members(&context_id, Some(true));
+
+    let Some((our_identity, _)) = choose_stream(identities, &mut rand::thread_rng())
+        .await
+        .transpose()?
+    else {
+        bail!("no owned identities found for context: {}", context.id);
+    };
+
     let outcome = context_client
         .execute(
             &context_id,
             "__calimero_sync_next".to_owned(),
             artifact,
-            &author_id,
+            &our_identity,
             vec![],
         )
         .await?;
