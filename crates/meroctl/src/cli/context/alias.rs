@@ -50,7 +50,7 @@ pub enum ContextAliasSubcommand {
 
 impl ContextAliasCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
         let multiaddr = fetch_multiaddr(&config)?;
 
         match self.command {
@@ -123,7 +123,7 @@ pub struct UseCommand {
 
 impl UseCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
         let multiaddr = fetch_multiaddr(&config)?;
 
         let default_alias: Alias<ContextId> = "default"
