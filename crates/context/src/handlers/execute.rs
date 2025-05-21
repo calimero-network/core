@@ -176,20 +176,6 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 Ok(outcome)
             }
-            .map_ok(|outcome| ExecuteResponse {
-                returns: outcome.returns.map_err(Into::into),
-                logs: outcome.logs,
-                events: outcome
-                    .events
-                    .into_iter()
-                    .map(|e| ExecuteEvent {
-                        kind: e.kind,
-                        data: e.data,
-                    })
-                    .collect(),
-                root_hash: outcome.root_hash.map(Into::into),
-                artifact: outcome.artifact,
-            })
             .map_err(|err| {
                 error!(?err, "failed to execute request");
 
@@ -197,6 +183,28 @@ impl Handler<ExecuteRequest> for ContextManager {
                     .unwrap_or_else(|_| ExecuteError::InternalError)
             })
             .into_actor(act)
+            .map_ok(move |outcome, act, _ctx| {
+                if let Some(root_hash) = outcome.root_hash {
+                    if let Some(context) = act.contexts.get_mut(&context_id) {
+                        context.meta.root_hash = root_hash.into();
+                    }
+                }
+
+                ExecuteResponse {
+                    returns: outcome.returns.map_err(Into::into),
+                    logs: outcome.logs,
+                    events: outcome
+                        .events
+                        .into_iter()
+                        .map(|e| ExecuteEvent {
+                            kind: e.kind,
+                            data: e.data,
+                        })
+                        .collect(),
+                    root_hash: outcome.root_hash.map(Into::into),
+                    artifact: outcome.artifact,
+                }
+            })
         }))
     }
 }
