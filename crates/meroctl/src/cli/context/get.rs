@@ -7,12 +7,10 @@ use calimero_server_primitives::admin::{
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use eyre::{eyre, OptionExt, Result as EyreResult};
-use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{make_request, multiaddr_to_url, resolve_alias, RequestType};
+use crate::common::{make_request, resolve_alias, RequestType};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -172,74 +170,5 @@ impl GetCommand {
                 .await
             }
         }
-    }
-
-    #[allow(dead_code)]
-    async fn get_context(
-        &self,
-        environment: &Environment,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-        context_id: &ContextId,
-    ) -> EyreResult<()> {
-        let url = multiaddr_to_url(multiaddr, &format!("admin-api/dev/contexts/{}", context_id))?;
-        make_request::<_, GetContextResponse>(
-            environment,
-            client,
-            url,
-            None::<()>,
-            keypair,
-            RequestType::Get,
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    async fn get_client_keys(
-        &self,
-        environment: &Environment,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-        context_id: &ContextId,
-    ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}/client-keys", context_id),
-        )?;
-        make_request::<_, GetContextClientKeysResponse>(
-            environment,
-            client,
-            url,
-            None::<()>,
-            keypair,
-            RequestType::Get,
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    async fn get_storage(
-        &self,
-        environment: &Environment,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-        context_id: &ContextId,
-    ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}/storage", context_id),
-        )?;
-        make_request::<_, GetContextStorageResponse>(
-            environment,
-            client,
-            url,
-            None::<()>,
-            keypair,
-            RequestType::Get,
-        )
-        .await
     }
 }
