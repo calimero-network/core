@@ -4,11 +4,20 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
+use uuid;
 
 use crate::config::JwtConfig;
 use crate::storage::models::{prefixes, ClientKey};
 use crate::storage::{deserialize, serialize, KeyStorage};
+use crate::secrets::SecretManager;
 use crate::{AuthError, AuthResponse};
+
+/// Token type enum
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenType {
+    Access,
+    Refresh,
+}
 
 /// JWT Claims structure
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,7 +26,7 @@ pub struct Claims {
     pub sub: String,
     /// Issuer
     pub iss: String,
-    /// Audience
+    /// Audience (client ID)
     pub aud: String,
     /// Expiration time (as Unix timestamp)
     pub exp: u64,
@@ -27,6 +36,9 @@ pub struct Claims {
     pub jti: String,
     /// Permissions
     pub permissions: Vec<String>,
+    /// Token type
+    #[serde(rename = "typ")]
+    pub token_type: String,
 }
 
 /// JWT Token Manager
@@ -36,6 +48,7 @@ pub struct Claims {
 pub struct TokenManager {
     config: JwtConfig,
     storage: Arc<dyn KeyStorage>,
+    secret_manager: Arc<SecretManager>,
 }
 
 impl TokenManager {
@@ -45,254 +58,183 @@ impl TokenManager {
     ///
     /// * `config` - JWT configuration
     /// * `storage` - Storage backend
+    /// * `secret_manager` - Secret manager
     ///
     /// # Returns
     ///
     /// * `Self` - The token generator
-    pub fn new(config: JwtConfig, storage: Arc<dyn KeyStorage>) -> Self {
-        Self { config, storage }
+    pub fn new(
+        config: JwtConfig, 
+        storage: Arc<dyn KeyStorage>,
+        secret_manager: Arc<SecretManager>,
+    ) -> Self {
+        Self { 
+            config, 
+            storage,
+            secret_manager,
+        }
     }
 
-    /// Generate a JWT access token
-    ///
-    /// # Arguments
-    ///
-    /// * `client_id` - Client ID
-    /// * `key_id` - The key ID (user ID)
-    /// * `permissions` - The permissions to include in the token
-    ///
-    /// # Returns
-    ///
-    /// * `Result<String, AuthError>` - The generated JWT token or error
-    async fn generate_access_token(
+    /// Generate a JWT token with specified type
+    async fn generate_token_internal(
         &self,
-        client_id: &str,
-        key_id: &str,
-        permissions: &[String],
+        client_key: &ClientKey,
+        token_type: TokenType,
+        permissions: Option<Vec<String>>,
     ) -> Result<String, AuthError> {
-        // Create the claims
-        let expiry = Utc::now()
-            .checked_add_signed(Duration::seconds(self.config.access_token_expiry as i64))
-            .expect("valid timestamp")
-            .timestamp() as u64;
-
-        let jwt_id = format!("{}_{}", client_id, Utc::now().timestamp());
-
-        let claims = Claims {
-            sub: key_id.to_string(),
-            iss: self.config.issuer.clone(),
-            aud: client_id.to_string(),
-            exp: expiry,
-            iat: Utc::now().timestamp() as u64,
-            jti: jwt_id,
-            permissions: permissions.to_vec(),
+        let now = Utc::now();
+        let exp = now + match token_type {
+            TokenType::Access => Duration::seconds(self.config.access_token_expiry as i64),
+            TokenType::Refresh => Duration::seconds(self.config.refresh_token_expiry as i64),
         };
 
-        // Encode the token
-        let encoding_key = EncodingKey::from_secret(self.config.secret.as_bytes());
-        let token = encode(&Header::default(), &claims, &encoding_key).map_err(|err| {
-            AuthError::AuthenticationFailed(format!("Failed to generate JWT token: {}", err))
-        })?;
+        let jwt_id = match token_type {
+            TokenType::Access => uuid::Uuid::new_v4().to_string(),
+            TokenType::Refresh => format!("refresh_{}_{}", client_key.client_id, now.timestamp()),
+        };
 
-        Ok(token)
+        let claims = Claims {
+            sub: client_key.client_id.clone(),
+            iss: self.config.issuer.clone(),
+            aud: client_key.client_id.clone(),
+            exp: exp.timestamp() as u64,
+            iat: now.timestamp() as u64,
+            jti: jwt_id,
+            permissions: permissions.unwrap_or_else(|| {
+                match token_type {
+                    TokenType::Access => client_key.permissions.clone(),
+                    TokenType::Refresh => vec![],
+                }
+            }),
+            token_type: match token_type {
+                TokenType::Access => "access".to_string(),
+                TokenType::Refresh => "refresh".to_string(),
+            },
+        };
+
+        let secret = self.secret_manager.get_secret().await
+            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+
+        let header = Header::new(Algorithm::HS256);
+        encode(
+            &header,
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
     }
 
-    /// Generate a JWT refresh token
-    ///
-    /// # Arguments
-    ///
-    /// * `client_id` - Client ID
-    /// * `key_id` - The key ID (user ID)
-    ///
-    /// # Returns
-    ///
-    /// * `Result<String, AuthError>` - The generated JWT token or error
+    /// Generate an access token
+    pub async fn generate_access_token(
+        &self,
+        client_key: &ClientKey,
+    ) -> Result<String, AuthError> {
+        self.generate_token_internal(client_key, TokenType::Access, None).await
+    }
+
+    /// Generate a refresh token
     async fn generate_refresh_token(
         &self,
-        client_id: &str,
-        key_id: &str,
+        client_key: &ClientKey,
     ) -> Result<String, AuthError> {
-        // Create the claims
-        let expiry = Utc::now()
-            .checked_add_signed(Duration::seconds(self.config.refresh_token_expiry as i64))
-            .expect("valid timestamp")
-            .timestamp() as u64;
+        self.generate_token_internal(client_key, TokenType::Refresh, None).await
+    }
 
-        let jwt_id = format!("refresh_{}_{}", client_id, Utc::now().timestamp());
+    /// Verify a JWT token and return the claims
+    pub async fn verify_token(&self, token: &str, expected_type: Option<TokenType>) -> Result<Claims, AuthError> {
+        let secret = self.secret_manager.get_secret().await
+            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
-        let claims = Claims {
-            sub: key_id.to_string(),
-            iss: self.config.issuer.clone(),
-            aud: client_id.to_string(),
-            exp: expiry,
-            iat: Utc::now().timestamp() as u64,
-            jti: jwt_id,
-            permissions: vec![],
-        };
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.validate_exp = true;
+        validation.set_issuer(&[&self.config.issuer]);
 
-        // Encode the token
-        let encoding_key = EncodingKey::from_secret(self.config.secret.as_bytes());
-        let token = encode(&Header::default(), &claims, &encoding_key).map_err(|err| {
-            AuthError::AuthenticationFailed(format!(
-                "Failed to generate JWT refresh token: {}",
-                err
-            ))
-        })?;
+        let token_data = decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(secret.as_bytes()),
+            &validation,
+        )
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
 
-        Ok(token)
+        let claims = token_data.claims;
+
+        // Validate token type if specified
+        if let Some(expected) = expected_type {
+            let token_type = match claims.token_type.as_str() {
+                "access" => TokenType::Access,
+                "refresh" => TokenType::Refresh,
+                _ => return Err(AuthError::InvalidToken("Invalid token type".to_string())),
+            };
+            if token_type != expected {
+                return Err(AuthError::InvalidToken("Incorrect token type".to_string()));
+            }
+        }
+
+        // Get the client key to verify it's still valid
+        let client_key = self.storage.get_client_key(&claims.sub).await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
+
+        // Check if the key is revoked
+        if client_key.is_revoked() {
+            return Err(AuthError::InvalidToken("Client key is revoked".to_string()));
+        }
+
+        // Validate audience
+        if claims.aud != client_key.client_id {
+            return Err(AuthError::InvalidToken("Invalid token audience".to_string()));
+        }
+
+        // Update last used timestamp
+        let mut client_key = client_key.clone();
+        client_key.update_last_used();
+        self.storage.set_client_key(&client_key.client_id, &client_key).await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+        Ok(claims)
     }
 
     /// Generate an access token and refresh token pair
     ///
     /// # Arguments
     ///
-    /// * `client_id` - Client ID
-    /// * `key_id` - The key ID (user ID)
-    /// * `permissions` - The permissions to include in the token
+    /// * `client_key` - The client key to generate tokens for
     ///
     /// # Returns
     ///
-    /// * `Result<(String, String), AuthError>` - The generated access and refresh tokens, or error
+    /// * `Result<(String, String), AuthError>` - The generated access and refresh tokens
     pub async fn generate_token_pair(
         &self,
-        client_id: &str,
-        key_id: &str,
-        permissions: &[String],
+        client_key: &ClientKey,
     ) -> Result<(String, String), AuthError> {
-        let access_token = self
-            .generate_access_token(client_id, key_id, permissions)
-            .await?;
-        let refresh_token = self.generate_refresh_token(client_id, key_id).await?;
+        if !client_key.is_valid() {
+            return Err(AuthError::InvalidToken("Client key is not valid".to_string()));
+        }
+
+        let access_token = self.generate_access_token(client_key).await?;
+        let refresh_token = self.generate_refresh_token(client_key).await?;
 
         Ok((access_token, refresh_token))
     }
 
     /// Refresh a token pair using a refresh token
-    ///
-    /// # Arguments
-    ///
-    /// * `refresh_token` - The refresh token
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(String, String), AuthError>` - The new access and refresh tokens, or error
     pub async fn refresh_token_pair(
         &self,
         refresh_token: &str,
     ) -> Result<(String, String), AuthError> {
-        // Decode the refresh token
-        let validation = Validation::new(Algorithm::HS256);
-        let decoding_key = DecodingKey::from_secret(self.config.secret.as_bytes());
+        // Verify the refresh token specifically
+        let claims = self.verify_token(refresh_token, Some(TokenType::Refresh)).await?;
 
-        let token_data =
-            decode::<Claims>(refresh_token, &decoding_key, &validation).map_err(|err| {
-                AuthError::AuthenticationFailed(format!("Invalid refresh token: {}", err))
-            })?;
+        // Get the client key
+        let client_key = self.storage.get_client_key(&claims.aud).await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
 
-        let claims = token_data.claims;
-
-        // Validate that the token is a refresh token
-        if !claims.jti.starts_with("refresh_") {
-            return Err(AuthError::AuthenticationFailed(
-                "Invalid refresh token type".to_string(),
-            ));
-        }
-
-        // Get the key ID and client ID from the token
-        let key_id = claims.sub;
-        let client_id = claims.aud;
-
-        // Get the client key to check for revocation
-        let client_key_path = format!("{}{}", prefixes::CLIENT_KEY, client_id);
-
-        match self.storage.get(&client_key_path).await {
-            Ok(Some(data)) => {
-                let client_key: ClientKey = deserialize(&data).map_err(|err| {
-                    AuthError::StorageError(format!("Failed to deserialize client key: {}", err))
-                })?;
-
-                // Check if the client key has been revoked
-                if client_key.revoked_at.is_some() {
-                    return Err(AuthError::AuthenticationFailed(
-                        "Client key has been revoked".to_string(),
-                    ));
-                }
-
-                // Check if the key has expired
-                if let Some(expires_at) = client_key.expires_at {
-                    if expires_at < Utc::now().timestamp() as u64 {
-                        return Err(AuthError::AuthenticationFailed(
-                            "Client key has expired".to_string(),
-                        ));
-                    }
-                }
-
-                // Generate new token pair
-                self.generate_token_pair(&client_id, &key_id, &client_key.permissions)
-                    .await
-            }
-            Ok(None) => Err(AuthError::AuthenticationFailed(
-                "Client key not found".to_string(),
-            )),
-            Err(err) => {
-                error!("Failed to get client key: {}", err);
-                Err(AuthError::StorageError(format!(
-                    "Failed to get client key: {}",
-                    err
-                )))
-            }
-        }
+        // Generate new token pair
+        self.generate_token_pair(&client_key).await
     }
 
-    /// Revoke a client's tokens
-    ///
-    /// # Arguments
-    ///
-    /// * `client_id` - The client ID to revoke
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), AuthError>` - Success or error
-    pub async fn revoke_client_tokens(&self, client_id: &str) -> Result<(), AuthError> {
-        let client_key_path = format!("{}{}", prefixes::CLIENT_KEY, client_id);
-
-        match self.storage.get(&client_key_path).await {
-            Ok(Some(data)) => {
-                let mut client_key: ClientKey = deserialize(&data).map_err(|err| {
-                    AuthError::StorageError(format!("Failed to deserialize client key: {}", err))
-                })?;
-
-                // Revoke the client key
-                client_key.revoke();
-
-                // Save the updated client key
-                let data = serialize(&client_key).map_err(|err| {
-                    AuthError::StorageError(format!("Failed to serialize client key: {}", err))
-                })?;
-
-                self.storage
-                    .set(&client_key_path, &data)
-                    .await
-                    .map_err(|err| {
-                        AuthError::StorageError(format!("Failed to update client key: {}", err))
-                    })?;
-
-                Ok(())
-            }
-            Ok(None) => Err(AuthError::AuthenticationFailed(
-                "Client key not found".to_string(),
-            )),
-            Err(err) => {
-                error!("Failed to get client key: {}", err);
-                Err(AuthError::StorageError(format!(
-                    "Failed to get client key: {}",
-                    err
-                )))
-            }
-        }
-    }
-
-    /// Verify a JWT token from a request with enhanced error handling
+    /// Verify a JWT token from request headers
     ///
     /// # Arguments
     ///
@@ -310,9 +252,7 @@ impl TokenManager {
             .get("Authorization")
             .ok_or_else(|| AuthError::InvalidRequest("Missing Authorization header".to_string()))?
             .to_str()
-            .map_err(|err| {
-                AuthError::InvalidRequest(format!("Invalid Authorization header: {}", err))
-            })?;
+            .map_err(|e| AuthError::InvalidRequest(format!("Invalid Authorization header: {}", e)))?;
 
         // Check that it's a Bearer token
         if !auth_header.starts_with("Bearer ") {
@@ -324,88 +264,41 @@ impl TokenManager {
         // Extract the token
         let token = auth_header.trim_start_matches("Bearer ").trim();
         if token.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Empty token provided".to_string(),
-            ));
+            return Err(AuthError::InvalidRequest("Empty token provided".to_string()));
         }
 
-        // Decode the token
-        let validation = Validation::new(Algorithm::HS256);
-        let decoding_key = DecodingKey::from_secret(self.config.secret.as_bytes());
+        // Verify the token and get claims (must be an access token)
+        let claims = self.verify_token(token, Some(TokenType::Access)).await?;
 
-        let token_data = decode::<Claims>(token, &decoding_key, &validation).map_err(|err| {
-            // Provide more specific error messages based on the failure type
-            match err.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
-                    AuthError::InvalidToken("Token has expired".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidSignature => {
-                    AuthError::InvalidToken("Invalid token signature".to_string())
-                }
-                jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
-                    AuthError::InvalidToken("Invalid token issuer".to_string())
-                }
-                _ => AuthError::InvalidToken(format!("Invalid token: {}", err)),
-            }
-        })?;
+        Ok(AuthResponse {
+            is_valid: true,
+            key_id: Some(claims.sub),
+            permissions: claims.permissions,
+        })
+    }
 
-        let claims = token_data.claims;
+    /// Revoke a client's tokens
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The client ID to revoke
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), AuthError>` - Success or error
+    pub async fn revoke_client_tokens(&self, client_id: &str) -> Result<(), AuthError> {
+        let client_key = self.storage.get_client_key(client_id).await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
 
-        // Check that the token is not a refresh token
-        if claims.jti.starts_with("refresh_") {
-            return Err(AuthError::InvalidRequest(
-                "Cannot use refresh token for authentication".to_string(),
-            ));
-        }
+        // Revoke the client key
+        let mut client_key = client_key.clone();
+        client_key.revoke();
 
-        // Get the client key to check for revocation
-        let client_id = claims.aud;
-        let client_key_path = format!("{}{}", prefixes::CLIENT_KEY, client_id);
+        // Save the updated client key
+        self.storage.set_client_key(client_id, &client_key).await
+            .map_err(|e| AuthError::StorageError(format!("Failed to update client key: {}", e)))?;
 
-        match self.storage.get(&client_key_path).await {
-            Ok(Some(data)) => {
-                let client_key: ClientKey = deserialize(&data).map_err(|err| {
-                    AuthError::StorageError(format!("Failed to deserialize client key: {}", err))
-                })?;
-
-                // Check if the client key has been revoked
-                if client_key.is_revoked() {
-                    return Err(AuthError::AuthenticationFailed(
-                        "Client key has been revoked".to_string(),
-                    ));
-                }
-
-                // Check if the key has expired
-                if client_key.is_expired() {
-                    return Err(AuthError::AuthenticationFailed(
-                        "Client key has expired".to_string(),
-                    ));
-                }
-
-                // Return the authentication response
-                Ok(AuthResponse {
-                    is_valid: true,
-                    key_id: Some(claims.sub),
-                    permissions: claims.permissions,
-                })
-            }
-            Ok(None) => {
-                debug!("Client key not found: {}", client_id);
-                // For backwards compatibility, we'll still validate the token
-                // but in a real production system, you would return an error here
-                Ok(AuthResponse {
-                    is_valid: true,
-                    key_id: Some(claims.sub),
-                    permissions: claims.permissions,
-                })
-            }
-            Err(err) => {
-                error!("Failed to get client key: {}", err);
-                Err(AuthError::StorageError(format!(
-                    "Failed to get client key: {}",
-                    err
-                )))
-            }
-        }
+        Ok(())
     }
 }

@@ -1,40 +1,48 @@
 use serde::{Deserialize, Serialize};
+use chrono::Utc;
 
 /// Client key storage model
+/// 
+/// A Client Key is an application-specific key that is derived from a Root Key.
+/// While Root Keys represent user identities, Client Keys represent specific applications
+/// or services that are authorized to act on behalf of that user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientKey {
-    /// The client ID
+    /// The client key ID (unique identifier for this application key)
     pub client_id: String,
 
-    /// The root key ID
+    /// The root key ID this client belongs to (user identity)
     pub root_key_id: String,
 
-    /// The name of the client
+    /// The application name
     pub name: String,
 
-    /// The permissions granted to the client
+    /// The application's permissions (subset of root key permissions)
     pub permissions: Vec<String>,
 
-    /// When the client key was created
+    /// When the key was created (Unix timestamp)
     pub created_at: u64,
 
-    /// When the client key expires
+    /// When the key expires (Unix timestamp)
     pub expires_at: Option<u64>,
 
-    /// When the client key was revoked (if it was)
+    /// When the key was last used (Unix timestamp)
+    pub last_used_at: Option<u64>,
+
+    /// When the key was revoked (Unix timestamp)
     pub revoked_at: Option<u64>,
 }
 
 impl ClientKey {
-    /// Create a new client key
+    /// Create a new client key for an application
     ///
     /// # Arguments
     ///
-    /// * `client_id` - The client ID
-    /// * `root_key_id` - The root key ID
-    /// * `name` - The name of the client
-    /// * `permissions` - The permissions granted to the client
-    /// * `expires_at` - When the client key expires (if ever)
+    /// * `client_id` - Unique identifier for this application key
+    /// * `root_key_id` - The root key (user) this client belongs to
+    /// * `name` - The application name
+    /// * `permissions` - The permissions granted to this application (must be a subset of root key permissions)
+    /// * `expires_at` - When the client key expires (if any)
     ///
     /// # Returns
     ///
@@ -51,8 +59,9 @@ impl ClientKey {
             root_key_id,
             name,
             permissions,
-            created_at: chrono::Utc::now().timestamp() as u64,
+            created_at: Utc::now().timestamp() as u64,
             expires_at,
+            last_used_at: None,
             revoked_at: None,
         }
     }
@@ -112,36 +121,105 @@ impl ClientKey {
         Self::new(client_id, root_key_id, name, permissions, expires_at)
     }
 
-    /// Revoke the client key
+    /// Check if the key has a specific permission
+    pub fn has_permission(&self, permission: &str) -> bool {
+        // Check if key is valid
+        if !self.is_valid() {
+            return false;
+        }
+
+        // Check exact match
+        if self.permissions.contains(&permission.to_string()) {
+            return true;
+        }
+
+        // Check wildcard permissions
+        if self.permissions.contains(&"*".to_string()) {
+            return true;
+        }
+
+        // Parse the permission into parts
+        let parts: Vec<&str> = permission.split(':').collect();
+        if parts.is_empty() {
+            return false;
+        }
+
+        // Check hierarchical permissions
+        let mut current = String::new();
+        for part in parts {
+            if current.is_empty() {
+                current = part.to_string();
+            } else {
+                current = format!("{}:{}", current, part);
+            }
+            
+            // Check if we have permission at this level
+            if self.permissions.contains(&format!("{}:*", current)) {
+                return true;
+            }
+        }
+
+        // Check resource-specific permissions (with IDs)
+        if permission.contains('[') && permission.contains(']') {
+            let base_permission = permission.split('[').next().unwrap_or("");
+            if self.permissions.iter().any(|p| p.starts_with(base_permission)) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if the key is revoked
+    pub fn is_revoked(&self) -> bool {
+        self.revoked_at.is_some()
+    }
+
+    /// Check if the key is expired
+    pub fn is_expired(&self) -> bool {
+        if let Some(expires_at) = self.expires_at {
+            expires_at < Utc::now().timestamp() as u64
+        } else {
+            false
+        }
+    }
+
+    /// Check if the key is valid (not revoked and not expired)
+    pub fn is_valid(&self) -> bool {
+        !self.is_revoked() && !self.is_expired()
+    }
+
+    /// Update the last used timestamp
+    pub fn update_last_used(&mut self) {
+        self.last_used_at = Some(Utc::now().timestamp() as u64);
+    }
+
+    /// Revoke the key
     pub fn revoke(&mut self) {
-        self.revoked_at = Some(chrono::Utc::now().timestamp() as u64);
+        self.revoked_at = Some(Utc::now().timestamp() as u64);
     }
 
     /// Update the permissions
     ///
     /// # Arguments
     ///
-    /// * `permissions` - The new permissions
+    /// * `permissions` - The new permissions (must be a subset of root key permissions)
     pub fn update_permissions(&mut self, permissions: Vec<String>) {
         self.permissions = permissions;
     }
 
-    /// Check if the client key is revoked
-    pub fn is_revoked(&self) -> bool {
-        self.revoked_at.is_some()
-    }
-
-    /// Check if the client key is expired
-    pub fn is_expired(&self) -> bool {
-        if let Some(expires_at) = self.expires_at {
-            expires_at < chrono::Utc::now().timestamp() as u64
+    /// Extend the key's expiry time
+    ///
+    /// # Arguments
+    ///
+    /// * `new_expiry` - The new expiry timestamp
+    pub fn extend_expiry(&mut self, new_expiry: u64) {
+        if let Some(current_expiry) = self.expires_at {
+            if new_expiry > current_expiry {
+                self.expires_at = Some(new_expiry);
+            }
         } else {
-            false
+            self.expires_at = Some(new_expiry);
         }
-    }
-
-    /// Check if the client key is valid (not revoked and not expired)
-    pub fn is_valid(&self) -> bool {
-        !self.is_revoked() && !self.is_expired()
     }
 }

@@ -8,11 +8,14 @@ use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
+use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
+use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
 use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;
+use crate::storage::ClientKey;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, Json<serde_json::Value>);
@@ -41,11 +44,6 @@ fn bad_request_response(message: &str) -> ApiResponse {
 
 fn success_response<T: Serialize>(data: T) -> ApiResponse {
     (StatusCode::OK, Json(serde_json::json!(data)))
-}
-
-// Trait for request validation
-trait Validate {
-    fn validate(&self) -> Result<(), String>;
 }
 
 /// Login request handler
@@ -93,40 +91,40 @@ pub async fn login_handler(
 }
 
 /// Token request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct TokenRequest {
     /// Authentication method
+    #[validate(length(min = 1, message = "Authentication method is required"))]
     pub auth_method: String,
+    
     /// Public key
+    #[validate(length(min = 1, message = "Public key is required"))]
     pub public_key: String,
+    
     /// Wallet address (if applicable)
     pub wallet_address: Option<String>,
+    
     /// Client name
+    #[validate(length(min = 1, message = "Client name is required"))]
     pub client_name: String,
+    
     /// Permissions requested
     pub permissions: Option<Vec<String>>,
+    
     /// Timestamp
     pub timestamp: u64,
+    
     /// Signature
+    #[validate(length(min = 1, message = "Signature is required"))]
     pub signature: String,
+    
     /// Message that was signed (only for NEAR wallet)
     pub message: Option<String>,
 }
 
-impl Validate for TokenRequest {
-    fn validate(&self) -> Result<(), String> {
-        if self.auth_method.is_empty() {
-            return Err("Authentication method is required".to_string());
-        }
-        if self.public_key.is_empty() {
-            return Err("Public key is required".to_string());
-        }
-        if self.client_name.is_empty() {
-            return Err("Client name is required".to_string());
-        }
-        if self.signature.is_empty() {
-            return Err("Signature is required".to_string());
-        }
+// Custom validation for NEAR wallet message requirement
+impl TokenRequest {
+    pub fn validate_near_wallet(&self) -> Result<(), String> {
         if self.auth_method == "near_wallet" && self.message.is_none() {
             return Err("Message is required for NEAR wallet authentication".to_string());
         }
@@ -207,16 +205,11 @@ fn generate_authentication_challenge() -> (String, u64) {
 /// * `impl IntoResponse` - The response
 pub async fn token_handler(
     state: Extension<Arc<AppState>>,
-    Json(token_request): Json<TokenRequest>,
+    ValidatedJson(token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
-    // Validate the token request structure (required fields)
-    if let Err(msg) = token_request.validate() {
+    // Additional validation for NEAR wallet
+    if let Err(msg) = token_request.validate_near_wallet() {
         return bad_request_response(&msg);
-    }
-
-    // Check if auth_method is provided
-    if token_request.auth_method.is_empty() {
-        return bad_request_response("Authentication method is required");
     }
 
     // Authenticate directly using the token request
@@ -239,21 +232,27 @@ pub async fn token_handler(
         None => return internal_error_response("No key ID available"),
     };
 
-    // Generate a client ID
-    let client_id = token_request.client_name.clone();
+    // Create a client key with the authenticated permissions
+    let client_key = ClientKey::new(
+        token_request.client_name.clone(),
+        key_id,
+        token_request.client_name,
+        auth_response.permissions,
+        None, // No expiry for now
+    );
 
     // Generate tokens
     match state
         .0
         .token_generator
-        .generate_token_pair(&client_id, &key_id, &auth_response.permissions)
+        .generate_token_pair(&client_key)
         .await
     {
         Ok((access_token, refresh_token)) => {
             let response = TokenResponse::new(
                 access_token,
                 refresh_token,
-                client_id,
+                client_key.client_id,
                 state.0.config.jwt.access_token_expiry,
             );
             success_response(response)
@@ -266,19 +265,11 @@ pub async fn token_handler(
 }
 
 /// Refresh token request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct RefreshTokenRequest {
     /// Refresh token
+    #[validate(length(min = 1, message = "Refresh token is required"))]
     refresh_token: String,
-}
-
-impl Validate for RefreshTokenRequest {
-    fn validate(&self) -> Result<(), String> {
-        if self.refresh_token.is_empty() {
-            return Err("Refresh token is required".to_string());
-        }
-        Ok(())
-    }
 }
 
 /// Refresh token handler
@@ -295,12 +286,8 @@ impl Validate for RefreshTokenRequest {
 /// * `impl IntoResponse` - The response
 pub async fn refresh_token_handler(
     state: Extension<Arc<AppState>>,
-    Json(request): Json<RefreshTokenRequest>,
+    ValidatedJson(request): ValidatedJson<RefreshTokenRequest>,
 ) -> impl IntoResponse {
-    if let Err(msg) = request.validate() {
-        return bad_request_response(&msg);
-    }
-
     match state
         .0
         .token_generator
@@ -453,19 +440,11 @@ pub async fn challenge_handler(
 }
 
 /// Revoke token request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct RevokeTokenRequest {
     /// Client ID to revoke
+    #[validate(length(min = 1, message = "Client ID cannot be empty"))]
     client_id: String,
-}
-
-impl Validate for RevokeTokenRequest {
-    fn validate(&self) -> Result<(), String> {
-        if self.client_id.is_empty() {
-            return Err("Client ID cannot be empty".to_string());
-        }
-        Ok(())
-    }
 }
 
 /// Revoke token handler
@@ -482,13 +461,8 @@ impl Validate for RevokeTokenRequest {
 /// * `impl IntoResponse` - The response
 pub async fn revoke_token_handler(
     state: Extension<Arc<AppState>>,
-    Json(request): Json<RevokeTokenRequest>,
+    ValidatedJson(request): ValidatedJson<RevokeTokenRequest>,
 ) -> impl IntoResponse {
-    // Validate the request
-    if let Err(msg) = request.validate() {
-        return bad_request_response(&msg);
-    }
-
     match state
         .0
         .token_generator

@@ -1,8 +1,11 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::middleware::from_fn;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
+use tower::ServiceBuilder;
+use tower::layer::util::Identity;
 use tower_http::cors::CorsLayer;
 
 use crate::api::handlers::auth::{
@@ -20,6 +23,10 @@ use crate::api::handlers::{
     asset_handler, health_handler, identity_handler, metrics_handler, providers_handler,
 };
 use crate::auth::middleware::forward_auth_middleware;
+// use crate::auth::security::{
+//     create_body_limit_layer, create_rate_limit_layer,
+//     create_security_headers,
+// };
 use crate::config::AuthConfig;
 use crate::server::AppState;
 
@@ -104,9 +111,24 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         // Apply authentication middleware only to protected routes
         .layer(from_fn(forward_auth_middleware));
 
-    // Merge both routers, apply CORS, and add state
-    public_routes
+
+    //TODO: FINISH security headers and rate limit
+    // Start with the base router
+    let router = Router::new()
+        .merge(public_routes)
         .merge(authenticated_routes)
+        // .layer(create_body_limit_layer())
         .layer(cors_layer)
-        .layer(Extension(Arc::clone(&state)))
+        .layer(Extension(Arc::clone(&state)));
+
+    // Add rate limit layer
+    // let rate_limit = create_rate_limit_layer();
+    // router = router.layer(rate_limit);
+
+    // Add security headers
+    // for header_layer in create_security_headers() {
+    //     router = router.layer(header_layer);
+    // }
+
+    router
 }

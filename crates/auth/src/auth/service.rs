@@ -32,6 +32,15 @@ impl AuthService {
         }
     }
 
+    /// Get the token manager
+    ///
+    /// # Returns
+    ///
+    /// * `&TokenManager` - Reference to the token manager
+    pub fn get_token_manager(&self) -> &TokenManager {
+        &self.token_manager
+    }
+
     /// Verify tokens from headers directly
     ///
     /// This method extracts and validates JWT tokens from the Authorization header.

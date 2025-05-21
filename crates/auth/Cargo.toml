@@ -9,8 +9,8 @@ description = "Forward Authentication Service for Calimero Network"
 [dependencies]
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
-tower = { workspace = true, features = ["util"] }
-tower-http = { workspace = true, features = ["cors", "trace", "catch-panic"] }
+tower = { workspace = true, features = ["util", "limit"] }
+tower-http = { workspace = true, features = ["cors", "trace", "catch-panic", "limit", "set-header"] }
 axum = { workspace = true, features = ["macros"] }
 # hyper = { version = "1.1", features = ["full"] }
 tower-sessions.workspace = true
@@ -36,6 +36,9 @@ sha2 = { workspace = true }
 rand = { workspace = true }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 hex = { workspace = true }
+aes-gcm = "0.10.3"
+validator = { version = "0.20.0", features = ["derive"] }
+axum-extra = { version = "0.10.1", features = ["cookie", "cookie-signed", "cookie-private"] }
 
 # Web3 & Wallet Authentication
 web3 = { workspace = true }
@@ -65,6 +68,9 @@ calimero-primitives = { path = "../primitives" }
 calimero-store = { path = "../store" }
 
 toml = "0.8"
+
+# New dependency
+regex = "1.10.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

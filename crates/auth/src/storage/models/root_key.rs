@@ -110,7 +110,17 @@ impl RootKey {
 
     /// Check if the key has a specific permission
     pub fn has_permission(&self, permission: &str) -> bool {
-        // Wildcard permission grants all
+        // Root keys have admin access by default
+        if permission.starts_with("admin:") {
+            return true;
+        }
+
+        // Root keys can manage their own client keys
+        if permission.starts_with("clients:") {
+            return true;
+        }
+
+        // Check explicit permissions
         if self.permissions.contains(&"*".to_string()) {
             return true;
         }

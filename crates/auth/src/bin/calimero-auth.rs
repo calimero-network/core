@@ -1,10 +1,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use calimero_auth::config::{load_config, AuthConfig, JwtConfig, NearWalletConfig, StorageConfig};
+use calimero_auth::config::{
+    load_config, AuthConfig, JwtConfig, NearWalletConfig, StorageConfig, SecurityConfig,
+};
+use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
 use calimero_auth::storage::create_storage;
 use calimero_auth::{providers, AuthService};
+use calimero_auth::auth::token::TokenManager;
+use calimero_auth::storage::Storage;
+
 use clap::Parser;
 use eyre::Result;
 use tracing::{info, warn};
@@ -41,13 +48,17 @@ fn create_default_config() -> AuthConfig {
         listen_addr: "127.0.0.1:3001".parse().unwrap(),
         node_url: "http://localhost:2428".to_string(),
         jwt: JwtConfig {
-            secret: "insecure-dev-key-change-in-production".to_string(),
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,
             refresh_token_expiry: 2592000,
         },
         storage: StorageConfig::Memory,
         cors: Default::default(),
+        security: SecurityConfig {
+            csrf_secret: "insecure-dev-csrf-key-change-in-production".to_string(),
+            rate_limit: 50,
+            max_body_size: 1024 * 1024, // 1MB
+        },
         providers,
         near: NearWalletConfig::default(),
     }
@@ -101,19 +112,26 @@ async fn main() -> Result<()> {
         .await
         .expect("Failed to create storage");
 
+    // Create the secret manager with the storage trait
+    let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
+    secret_manager.initialize().await.expect("Failed to initialize secret manager");
+
+    // Create JWT token manager
+    let token_manager = TokenManager::new(
+        config.jwt.clone(),
+        storage.clone(),
+        secret_manager,
+    );
+
     // Create providers using the provider factory
     info!("Starting authentication service");
-    let providers = providers::create_providers(storage.clone(), &config)
+    let providers = providers::create_providers(storage.clone(), &config, token_manager.clone())
         .expect("Failed to create authentication providers");
 
     info!("Initialized {} authentication providers", providers.len());
     for provider in &providers {
         info!("  - {} ({})", provider.name(), provider.description());
     }
-
-    // Create JWT token manager
-    let token_manager =
-        calimero_auth::auth::token::TokenManager::new(config.jwt.clone(), storage.clone());
 
     let auth_service = AuthService::new(providers, token_manager);
 

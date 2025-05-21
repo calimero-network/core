@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +26,10 @@ pub struct AuthConfig {
     #[serde(default)]
     pub cors: CorsConfig,
 
+    /// Security configuration
+    #[serde(default)]
+    pub security: SecurityConfig,
+
     /// Authentication providers configuration
     #[serde(default)]
     pub providers: HashMap<String, bool>,
@@ -40,17 +46,24 @@ fn default_listen_addr() -> SocketAddr {
 /// JWT configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtConfig {
-    /// Secret key for signing and verifying tokens
-    pub secret: String,
-
     /// Token issuer
     pub issuer: String,
 
     /// Access token expiry time in seconds (default: 1 hour)
+    #[serde(default = "default_access_token_expiry")]
     pub access_token_expiry: u64,
 
     /// Refresh token expiry time in seconds (default: 30 days)
+    #[serde(default = "default_refresh_token_expiry")]
     pub refresh_token_expiry: u64,
+}
+
+fn default_access_token_expiry() -> u64 {
+    3600 // 1 hour
+}
+
+fn default_refresh_token_expiry() -> u64 {
+    30 * 24 * 3600 // 30 days
 }
 
 /// Storage configuration
@@ -140,6 +153,46 @@ impl Default for CorsConfig {
             exposed_headers: Vec::new(),
         }
     }
+}
+
+/// Security configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// CSRF secret key (must be at least 32 bytes when decoded from base64)
+    #[serde(default = "default_csrf_secret")]
+    pub csrf_secret: String,
+
+    /// Rate limit configuration (requests per minute)
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit: u32,
+
+    /// Maximum request body size in bytes
+    #[serde(default = "default_max_body_size")]
+    pub max_body_size: usize,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            csrf_secret: default_csrf_secret(),
+            rate_limit: default_rate_limit(),
+            max_body_size: default_max_body_size(),
+        }
+    }
+}
+
+fn default_csrf_secret() -> String {
+    // Generate a random 32-byte key and encode as base64
+    let key = rand::random::<[u8; 32]>();
+    STANDARD.encode(key)
+}
+
+fn default_rate_limit() -> u32 {
+    50 // 50 requests per minute
+}
+
+fn default_max_body_size() -> usize {
+    1024 * 1024 // 1MB
 }
 
 /// Load the configuration from a file

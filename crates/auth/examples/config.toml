@@ -20,7 +20,16 @@ path = "./data/auth_db"
 [cors]
 allow_all_origins = true
 allowed_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-allowed_headers = ["Authorization", "Content-Type", "Accept"]
+allowed_headers = ["Authorization", "Content-Type", "Accept", "X-CSRF-Token"]
+
+# Security configuration
+[security]
+# Base64-encoded 32-byte key for CSRF protection
+csrf_secret = "your-base64-encoded-csrf-secret-key-here"
+# Rate limit (requests per minute)
+rate_limit = 50
+# Maximum request body size in bytes (1MB)
+max_body_size = 1048576
 
 # Authentication providers configuration
 [providers]

@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -24,7 +23,7 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::storage::models::{prefixes, RootKey};
-use crate::storage::{deserialize, serialize, KeyStorage};
+use crate::storage::{deserialize, serialize, ClientKey, KeyStorage};
 use crate::{
     register_auth_data_type, register_auth_provider, AuthError, AuthResponse, RequestValidator,
 };
@@ -560,10 +559,19 @@ impl NearWalletProvider {
         // Generate a client ID and client key
         let client_id = format!("client_{}", Utc::now().timestamp());
 
+        // Create client key for the authenticated user
+        let client_key = ClientKey::new(
+            client_id.clone(),
+            key_id.clone(),
+            "NEAR Wallet".to_string(),
+            permissions.clone(),
+            None, // No expiry for NEAR wallet keys
+        );
+
         // Generate tokens for the client
         match self
             .token_manager
-            .generate_token_pair(&client_id, &key_id, &permissions)
+            .generate_token_pair(&client_key)
             .await
         {
             Ok((access_token, refresh_token)) => {
@@ -580,7 +588,6 @@ impl NearWalletProvider {
             }
             Err(err) => {
                 error!("Failed to generate tokens: {}", err);
-                // Return error since token generation is now required
                 return Err(AuthError::TokenGenerationFailed(err.to_string()));
             }
         }
@@ -864,9 +871,9 @@ impl ProviderRegistration for NearWalletRegistration {
         &self,
         storage: Arc<dyn KeyStorage>,
         config: &AuthConfig,
+        token_manager: TokenManager,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
         let near_config = config.near.clone();
-        let token_manager = TokenManager::new(config.jwt.clone(), storage.clone());
         let provider = NearWalletProvider::new(near_config, storage, token_manager);
         Ok(Box::new(provider))
     }

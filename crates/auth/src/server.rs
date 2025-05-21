@@ -41,14 +41,13 @@ pub async fn start_server(
     storage: Arc<dyn KeyStorage>,
     config: AuthConfig,
 ) -> eyre::Result<()> {
-    let token_generator = TokenManager::new(config.jwt.clone(), storage.clone());
     let metrics = AuthMetrics::new();
 
     // Create the application state
     let state = Arc::new(AppState {
-        auth_service,
+        auth_service: auth_service.clone(),
         storage,
-        token_generator,
+        token_generator: auth_service.get_token_manager().clone(),
         config: config.clone(),
         metrics,
     });

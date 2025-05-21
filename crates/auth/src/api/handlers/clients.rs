@@ -122,15 +122,13 @@ pub async fn create_client_handler(
                 .map(|secs| Utc::now().timestamp() as u64 + secs);
 
             // Create the client key
-            let client_key = ClientKey {
-                client_id: client_id.clone(),
-                root_key_id: key_id.clone(),
-                name: request.name,
-                permissions: request.permissions,
-                created_at: Utc::now().timestamp() as u64,
+            let client_key = ClientKey::new(
+                client_id.clone(),
+                key_id.clone(),
+                request.name,
+                request.permissions,
                 expires_at,
-                revoked_at: None,
-            };
+            );
 
             // Store the client key
             let client_key_key = format!("{}{}", prefixes::CLIENT_KEY, client_id);

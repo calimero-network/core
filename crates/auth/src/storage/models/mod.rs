@@ -25,4 +25,7 @@ pub mod prefixes {
 
     /// Prefix for public key index
     pub const PUBLIC_KEY_INDEX: &str = "index:public_key:";
+
+    /// Prefix for key permissions
+    pub const KEY_PERMISSIONS: &str = "key_permissions:";
 }

@@ -15,6 +15,8 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::storage::KeyStorage;
 use crate::{register_auth_provider, AuthError, AuthResponse, RequestValidator};
+use crate::secrets::SecretManager;
+use crate::storage::MemoryStorage;
 
 /// Example provider for demonstration purposes
 pub struct ExampleProvider {
@@ -162,8 +164,8 @@ impl ProviderRegistration for ExampleProviderRegistration {
         &self,
         storage: Arc<dyn KeyStorage>,
         config: &AuthConfig,
+        token_manager: TokenManager,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
-        let token_manager = TokenManager::new(config.jwt.clone(), storage.clone());
         let provider = ExampleProvider::new(storage, token_manager);
         Ok(Box::new(provider))
     }

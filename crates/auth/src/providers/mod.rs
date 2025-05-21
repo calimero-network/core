@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::config::AuthConfig;
 use crate::storage::KeyStorage;
+use crate::auth::token::TokenManager;
 
 // Export modules
 pub mod core;
@@ -37,12 +38,13 @@ impl ProviderFactory {
         &self,
         storage: Arc<dyn KeyStorage>,
         config: &AuthConfig,
+        token_manager: TokenManager,
     ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
         let mut providers = Vec::new();
 
         for registration in self.registrations.values() {
             if registration.is_enabled(config) {
-                let provider = registration.create_provider(storage.clone(), config)?;
+                let provider = registration.create_provider(storage.clone(), config, token_manager.clone())?;
                 providers.push(provider);
             }
         }
@@ -56,9 +58,10 @@ impl ProviderFactory {
         name: &str,
         storage: Arc<dyn KeyStorage>,
         config: &AuthConfig,
+        token_manager: TokenManager,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
         if let Some(registration) = self.registrations.get(name) {
-            registration.create_provider(storage, config)
+            registration.create_provider(storage, config, token_manager)
         } else {
             Err(eyre::eyre!("Unknown provider: {}", name))
         }
@@ -83,7 +86,8 @@ impl ProviderFactory {
 pub fn create_providers(
     storage: Arc<dyn KeyStorage>,
     config: &AuthConfig,
+    token_manager: TokenManager,
 ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
     let factory = ProviderFactory::new();
-    factory.create_providers(storage, config)
+    factory.create_providers(storage, config, token_manager)
 }
