@@ -59,10 +59,10 @@ impl NodeCommand {
                     },
                     _ => return Err(eyre!("Either --path or --url must be specified")),
                 };
-                drop(config.nodes.insert(cmd.name, connection));
+                let _unused = config.nodes.insert(cmd.name, connection);
             }
             NodeCommand::Remove(cmd) => {
-                drop(config.nodes.remove(&cmd.name));
+                let _unused = config.nodes.remove(&cmd.name);
             }
             NodeCommand::List => {
                 let mut table = Table::new();
