@@ -74,7 +74,7 @@ impl InviteCommand {
     }
 
     pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
 
         let multiaddr = fetch_multiaddr(&config)?;
 
