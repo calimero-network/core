@@ -17,11 +17,6 @@ use crate::output::Report;
 #[command(about = "Join an application context")]
 pub struct JoinCommand {
     #[clap(
-        value_name = "PUBLIC_KEY",
-        help = "The public key of the identity joining the context (obtained from 'context identity generate')"
-    )]
-    pub public_key: PublicKey,
-    #[clap(
         value_name = "INVITE",
         help = "The invitation payload for joining the context"
     )]

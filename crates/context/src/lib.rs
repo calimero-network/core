@@ -200,6 +200,7 @@ impl ContextManager {
         self.add_context(
             &context,
             identity_secret,
+            self.new_private_key(),
             Some(ContextConfigParams {
                 protocol: protocol.as_str().into(),
                 network_id: config.network.as_str().into(),
@@ -298,7 +299,8 @@ impl ContextManager {
     fn add_context(
         &self,
         context: &Context,
-        identity_secret: PrivateKey,
+        main_identity_secret: PrivateKey,
+        sender_identity_secret: PrivateKey,
         context_config: Option<ContextConfigParams<'_>>,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -320,10 +322,10 @@ impl ContextManager {
         }
 
         handle.put(
-            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
+            &ContextIdentityKey::new(context.id, main_identity_secret.public_key()),
             &ContextIdentityValue {
-                private_key: Some(*identity_secret),
-                sender_key: Some(*self.new_private_key()),
+                private_key: Some(*main_identity_secret),
+                sender_key: Some(*sender_identity_secret),
             },
         )?;
 
@@ -348,28 +350,30 @@ impl ContextManager {
         &self,
         invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
-        let (context_id, invitee_id_from_payload, protocol, network_id, contract_id) =
+        let (context_id, invitee_id, protocol, network_id, contract_id) =
             invitation_payload.parts()?;
 
         let placeholder_context_id = ContextId::from([0; 32]);
 
         let stored_identity = self
-            .get_identity_value(placeholder_context_id, invitee_id_from_payload)?
-            .ok_or_else(|| {
-                eyre::eyre!(
-                    "Pre-stored private key not found for public key: {}",
-                    invitee_id_from_payload
-                )
-            })?;
+            .get_identity_value(placeholder_context_id, invitee_id)?
+            .ok_or_eyre(eyre::eyre!(
+                "Missing identity for public key: {}",
+                invitee_id
+            ))?;
 
-        let identity_secret = stored_identity
+        let main_private_key_bytes = stored_identity
             .private_key
-            .ok_or_else(|| eyre::eyre!("Stored identity value is missing private key"))?;
+            .ok_or_eyre(eyre::eyre!("Stored identity value is missing private key"))?;
 
-        self.delete_identity_value(placeholder_context_id, invitee_id_from_payload)?;
+        let sender_private_key_bytes = stored_identity
+            .sender_key
+            .ok_or_eyre(eyre::eyre!("Stored identity value is missing sender key"))?;
+
+        self.delete_identity_value(placeholder_context_id, invitee_id)?;
 
         let handle = self.store.handle();
-        let identity_key = ContextIdentityKey::new(context_id, invitee_id_from_payload);
+        let identity_key = ContextIdentityKey::new(context_id, invitee_id);
         if handle.has(&identity_key)? {
             return Ok(None);
         }
@@ -406,13 +410,18 @@ impl ContextManager {
             bail!("unable to join context: not a member, invalid invitation?")
         }
 
-        self.add_context(&context, PrivateKey::from(identity_secret), config)?;
+        self.add_context(
+            &context,
+            PrivateKey::from(main_private_key_bytes),
+            PrivateKey::from(sender_private_key_bytes),
+            config,
+        )?;
         self.subscribe(&context.id).await?;
 
         let _ignored = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
-        Ok(Some((context_id, invitee_id_from_payload)))
+        Ok(Some((context_id, invitee_id)))
     }
 
     #[expect(clippy::similar_names, reason = "Different enough")]
@@ -1621,7 +1630,7 @@ impl ContextManager {
         Ok(aliases)
     }
 
-    pub fn store_identity_value(
+    fn store_identity_value(
         &self,
         context_id: ContextId,
         public_key: PublicKey,
@@ -1633,7 +1642,7 @@ impl ContextManager {
         Ok(())
     }
 
-    pub fn get_identity_value(
+    fn get_identity_value(
         &self,
         context_id: ContextId,
         public_key: PublicKey,
@@ -1643,7 +1652,7 @@ impl ContextManager {
         handle.get(&key).map_err(eyre::Report::from)
     }
 
-    pub fn delete_identity_value(
+    fn delete_identity_value(
         &self,
         context_id: ContextId,
         public_key: PublicKey,
@@ -1654,14 +1663,15 @@ impl ContextManager {
         Ok(())
     }
 
-    pub fn pre_store_new_identity(&self) -> EyreResult<PublicKey> {
-        let private_key = self.new_private_key();
-        let public_key = private_key.public_key();
+    pub fn new_identity(&self) -> EyreResult<PublicKey> {
+        let main_private_key = self.new_private_key();
+        let public_key = main_private_key.public_key();
+        let sender_private_key = self.new_private_key();
 
         let placeholder_context_id = ContextId::from([0u8; 32]);
         let value = ContextIdentityValue {
-            private_key: Some(*private_key),
-            sender_key: None,
+            private_key: Some(*main_private_key),
+            sender_key: Some(*sender_private_key),
         };
 
         self.store_identity_value(placeholder_context_id, public_key, value)?;

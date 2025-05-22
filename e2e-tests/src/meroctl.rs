@@ -136,14 +136,10 @@ impl Meroctl {
     pub async fn context_join(
         &self,
         node_name: &str,
-        invitee_public_key: &str,
         invitation_data: &str,
     ) -> EyreResult<(String, String)> {
         let json = self
-            .run_cmd(
-                node_name,
-                ["context", "join", invitee_public_key, invitation_data],
-            )
+            .run_cmd(node_name, ["context", "join", invitation_data])
             .await?;
 
         let data = self.remove_value_from_object(json, "data")?;
