@@ -108,12 +108,12 @@ impl SyncManager {
                 .entry(context_id)
                 .and_modify(|state| state.last_sync = Some(now));
 
-            let took = Instant::saturating_duration_since(&now, start).as_secs_f32();
+            let took = Instant::saturating_duration_since(&now, start);
 
             if let Ok(_) = result {
-                debug!(%context_id, took_sec=%took, "Sync finished");
+                debug!(%context_id, ?took, "Sync finished");
             } else {
-                error!(%context_id, took_sec=%took, "Sync timed out");
+                error!(%context_id, ?took, "Sync timed out");
             }
 
             Some(())
@@ -160,12 +160,7 @@ impl SyncManager {
                         let time_since = last_sync.elapsed();
 
                         if time_since < minimum {
-                            debug!(
-                                %context_id,
-                                time_since_sec=%time_since.as_secs_f32(),
-                                minimum_sec=%minimum.as_secs_f32(),
-                                "Skipping sync, last one was too recent"
-                            );
+                            debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
 
                             continue;
                         }
@@ -186,7 +181,14 @@ impl SyncManager {
 
                 let start = Instant::now();
                 let Some(deadline) = start.checked_add(self.sync_config.timeout) else {
-                    error!(?start, timeout=?self.sync_config.timeout, "Unable to determine when to timeout sync procedure");
+                    error!(
+                        ?start,
+                        timeout=?self.sync_config.timeout,
+                        "Unable to determine when to timeout sync procedure"
+                    );
+
+                    // if we can't determine the sync deadline, this is a hard error
+                    // we intentionally want to exit the sync loop
                     return;
                 };
 
