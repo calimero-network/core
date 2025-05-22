@@ -54,6 +54,7 @@ impl RunCommand {
             sync: SyncConfig {
                 timeout: config.sync.timeout,
                 interval: config.sync.interval,
+                frequency: config.sync.frequency,
             },
             datastore: StoreConfig::new(path.join(config.datastore.path)),
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
