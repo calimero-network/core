@@ -40,6 +40,8 @@ pub struct SyncConfig {
     pub timeout: Duration,
     #[serde(rename = "interval_ms", with = "serde_duration")]
     pub interval: Duration,
+    #[serde(rename = "frequency_ms", with = "serde_duration")]
+    pub frequency: Duration,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

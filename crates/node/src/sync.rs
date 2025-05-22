@@ -1,6 +1,5 @@
 use std::collections::{hash_map, HashMap};
 use std::pin::pin;
-use std::time::Duration;
 
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
@@ -26,8 +25,9 @@ mod state;
 
 #[derive(Copy, Clone, Debug)]
 pub struct SyncConfig {
-    pub timeout: Duration,
-    pub interval: Duration,
+    pub timeout: time::Duration,
+    pub interval: time::Duration,
+    pub frequency: time::Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -91,9 +91,9 @@ impl SyncManager {
     }
 
     pub async fn start(self) {
-        let mut interval = time::interval(self.sync_config.interval);
+        let mut next_sync = time::interval(self.sync_config.frequency);
 
-        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         let mut state = HashMap::<_, SyncState>::new();
 
@@ -121,10 +121,11 @@ impl SyncManager {
 
         loop {
             tokio::select! {
-                _ = interval.tick() => {}
+                _ = next_sync.tick() => {}
                 Some(()) = async {
                     loop { advance(&mut futs, &mut state).await? }
                 } => {},
+                // todo! allow explicit sync request
             }
 
             debug!("Performing interval sync");
@@ -155,7 +156,7 @@ impl SyncManager {
                             continue;
                         };
 
-                        let minimum = self.sync_config.interval * 3 / 4;
+                        let minimum = self.sync_config.interval;
                         let time_since = last_sync.elapsed();
 
                         if time_since < minimum {

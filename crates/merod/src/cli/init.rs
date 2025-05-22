@@ -46,6 +46,7 @@ use crate::{cli, defaults};
 
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum ConfigProtocol {
@@ -420,6 +421,7 @@ impl InitCommand {
             SyncConfig {
                 timeout: DEFAULT_SYNC_TIMEOUT,
                 interval: DEFAULT_SYNC_INTERVAL,
+                frequency: DEFAULT_SYNC_FREQUENCY,
             },
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
