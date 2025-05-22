@@ -332,6 +332,8 @@ impl Network {
             }
         };
 
+        dbg!(&response);
+
         let Some(outcome) = response.final_execution_outcome else {
             return Err(NearError::InvalidResponse {
                 operation: ErrorOperation::Mutate,
