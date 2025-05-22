@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use calimero_context_primitives::ContextAtomic;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::stream::Stream;
 use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
@@ -286,6 +287,8 @@ impl SyncManager {
 
         let mut sqx_in = Sequencer::default();
 
+        let mut atomic = ContextAtomic::Lock;
+
         while let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? {
             let (sequence_id, artifact, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
@@ -311,12 +314,19 @@ impl SyncManager {
                 .context_client
                 .execute(
                     &context.id,
+                    &our_identity,
                     "__calimero_sync_next".to_owned(),
                     artifact.into_owned(),
-                    &our_identity,
                     vec![],
+                    Some(atomic),
                 )
                 .await?;
+
+            atomic = ContextAtomic::Held(
+                outcome
+                    .atomic
+                    .ok_or_eyre("expected an exclusive lock on the context")?,
+            );
 
             debug!(
                 context_id=%context.id,
@@ -346,9 +356,11 @@ impl SyncManager {
             }
 
             our_nonce = our_new_nonce;
+
+            context.root_hash = outcome.root_hash;
         }
 
-        // eventually compare that both nodes arrive at the same state
+        // todo! eventually compare that both nodes arrive at the same state
 
         debug!(
             context_id=%context.id,

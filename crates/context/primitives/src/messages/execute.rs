@@ -7,13 +7,16 @@ use calimero_primitives::identity::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
+use crate::{ContextAtomic, ContextAtomicKey};
+
 #[derive(Debug)]
 pub struct ExecuteRequest {
     pub context: ContextId,
+    pub executor: PublicKey,
     pub method: String,
     pub payload: Vec<u8>,
-    pub executor: PublicKey,
     pub aliases: Vec<Alias<PublicKey>>,
+    pub atomic: Option<ContextAtomic>,
 }
 
 #[derive(Debug)]
@@ -23,8 +26,9 @@ pub struct ExecuteResponse {
     pub returns: eyre::Result<Option<Vec<u8>>>,
     pub logs: Vec<String>,
     pub events: Vec<ExecuteEvent>,
-    pub root_hash: Option<Hash>,
+    pub root_hash: Hash,
     pub artifact: Vec<u8>,
+    pub atomic: Option<ContextAtomicKey>,
 }
 
 #[derive(Debug)]

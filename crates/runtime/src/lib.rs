@@ -87,9 +87,9 @@ impl Module {
     pub fn run(
         &self,
         context: ContextId,
+        executor: PublicKey,
         method: &str,
         input: &[u8],
-        executor: PublicKey,
         storage: &mut dyn Storage,
     ) -> RuntimeResult<Outcome> {
         let context = VMContext::new(input.into(), *context, *executor);

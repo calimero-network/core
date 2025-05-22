@@ -59,10 +59,11 @@ impl CallCommand {
         let outcome_result = ctx_client
             .execute(
                 &context.id,
+                &executor,
                 self.method,
                 serde_json::to_vec(&self.args.unwrap_or(json!({})))?,
-                &executor,
                 self.substitutes,
+                None,
             )
             .await;
 

@@ -37,10 +37,11 @@ async fn handle(
         .ctx_client
         .execute(
             &request.context_id,
+            &request.executor_public_key,
             request.method,
             args,
-            &request.executor_public_key,
             request.substitute,
+            None,
         )
         .await
         .map_err(ExecutionError::ExecuteError)?;

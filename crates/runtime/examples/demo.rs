@@ -73,7 +73,7 @@ fn main() -> EyreResult<()> {
             .transpose()?
             .unwrap_or_default();
 
-        let outcome = module.run([0; 32].into(), &name, &input, [0; 32].into(), &mut storage)?;
+        let outcome = module.run([0; 32].into(), [0; 32].into(), &name, &input, &mut storage)?;
 
         // dbg!(&outcome);
 

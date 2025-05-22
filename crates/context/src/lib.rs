@@ -18,7 +18,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 pub mod config;
 pub mod handlers;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ContextMeta {
     meta: Context,
     blob: BlobId,

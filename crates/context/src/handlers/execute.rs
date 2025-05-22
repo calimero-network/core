@@ -6,9 +6,11 @@ use calimero_context_primitives::client::crypto::ContextIdentity;
 use calimero_context_primitives::messages::execute::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
 };
+use calimero_context_primitives::{ContextAtomic, ContextAtomicKey};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
-use calimero_primitives::context::ContextId;
+use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
@@ -24,7 +26,7 @@ use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
 use tracing::error;
 
-use crate::{ContextManager, ContextMeta};
+use crate::ContextManager;
 
 pub mod storage;
 
@@ -41,6 +43,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             payload,
             executor,
             aliases,
+            atomic,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
@@ -60,7 +63,11 @@ impl Handler<ExecuteRequest> for ContextManager {
             return ActorResponse::reply(Err(ExecuteError::Uninitialized));
         }
 
-        let guard = context.lock();
+        let (guard, is_atomic) = match atomic {
+            None => (context.lock(), false),
+            Some(ContextAtomic::Lock) => (context.lock(), true),
+            Some(ContextAtomic::Held(ContextAtomicKey(guard))) => (Either::Left(guard), true),
+        };
 
         let external_config = match self.context_client.context_config(&context_id) {
             Ok(Some(external_config)) => external_config,
@@ -105,23 +112,25 @@ impl Handler<ExecuteRequest> for ContextManager {
                 }
             };
 
-        let guard_fut = async {
+        let guard_task = async move {
             match guard {
                 Either::Left(guard) => guard,
                 Either::Right(task) => task.await,
             }
-        };
+        }
+        .into_actor(self);
 
-        ActorResponse::r#async(guard_fut.into_actor(self).then(move |guard, act, _ctx| {
-            let context = act.get_or_fetch_context(&context_id).map(|c| c.cloned());
+        let execute_task = guard_task.then(move |guard, act, _ctx| {
+            let context = act
+                .get_or_fetch_context(&context_id)
+                .map(|c| c.map(|c| (c.meta, c.blob)));
 
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
-            let context_client = act.context_client.clone();
             let engine = act.runtime_engine.clone();
 
             async move {
-                let Some(mut context) = context? else {
+                let Some((mut context, blob)) = context? else {
                     bail!("context '{context_id}' deleted before we could execute");
                 };
 
@@ -129,17 +138,43 @@ impl Handler<ExecuteRequest> for ContextManager {
                     datastore,
                     &node_client,
                     engine,
-                    &mut context,
                     &guard,
+                    &mut context,
+                    executor,
+                    blob,
                     method.into(),
                     payload.into(),
-                    executor,
                     is_state_op,
                 )
                 .await?;
 
+                Ok((guard, context, outcome))
+            }
+            .map_err(|err| {
+                error!(?err, "failed to execute request");
+
+                err
+            })
+            .into_actor(act)
+        });
+
+        let external_task = execute_task.and_then(move |(guard, context, outcome), act, _ctx| {
+            if let Some(cached_context) = act.contexts.get_mut(&context_id) {
+                cached_context.meta.root_hash = context.root_hash;
+            }
+
+            let node_client = act.node_client.clone();
+            let context_client = act.context_client.clone();
+
+            async move {
                 if outcome.returns.is_err() {
-                    return Ok(outcome);
+                    return Ok((guard, context.root_hash, outcome));
+                }
+
+                if !is_state_op {
+                    node_client
+                        .broadcast(&context, &executor, &sender_key, outcome.artifact.clone())
+                        .await?;
                 }
 
                 let external_client =
@@ -163,34 +198,26 @@ impl Handler<ExecuteRequest> for ContextManager {
                     proxy_client.approve(&executor, &proposal_id).await?;
                 }
 
-                if !is_state_op {
-                    node_client
-                        .broadcast(
-                            &context.meta,
-                            &executor,
-                            &sender_key,
-                            outcome.artifact.clone(),
-                        )
-                        .await?;
-                }
-
-                Ok(outcome)
+                Ok((guard, context.root_hash, outcome))
             }
             .map_err(|err| {
-                error!(?err, "failed to execute request");
+                error!(
+                    ?err,
+                    "execution succeeded, but an error occurred while performing external actions"
+                );
 
+                err
+            })
+            .into_actor(act)
+        });
+
+        let task = external_task
+            .map_err(|err, _act, _ctx| {
                 err.downcast::<ExecuteError>()
                     .unwrap_or_else(|_| ExecuteError::InternalError)
             })
-            .into_actor(act)
-            .map_ok(move |outcome, act, _ctx| {
-                if let Some(root_hash) = outcome.root_hash {
-                    if let Some(context) = act.contexts.get_mut(&context_id) {
-                        context.meta.root_hash = root_hash.into();
-                    }
-                }
-
-                ExecuteResponse {
+            .map_ok(
+                move |(guard, root_hash, outcome), _act, _ctx| ExecuteResponse {
                     returns: outcome.returns.map_err(Into::into),
                     logs: outcome.logs,
                     events: outcome
@@ -201,11 +228,13 @@ impl Handler<ExecuteRequest> for ContextManager {
                             data: e.data,
                         })
                         .collect(),
-                    root_hash: outcome.root_hash.map(Into::into),
+                    root_hash,
                     artifact: outcome.artifact,
-                }
-            })
-        }))
+                    atomic: is_atomic.then_some(ContextAtomicKey(guard)),
+                },
+            );
+
+        ActorResponse::r#async(task)
     }
 }
 
@@ -213,95 +242,98 @@ async fn internal_execute(
     datastore: Store,
     node_client: &NodeClient,
     engine: calimero_runtime::Engine,
-    context: &mut ContextMeta,
     guard: &OwnedMutexGuard<ContextId>,
+    context: &mut Context,
+    executor: PublicKey,
+    blob: BlobId,
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
-    executor: PublicKey,
     is_state_op: bool,
 ) -> eyre::Result<Outcome> {
-    let blob = node_client.get_blob_bytes(&context.blob).await?;
+    let blob = node_client.get_blob_bytes(&blob).await?;
 
     let Some(blob) = blob else {
         bail!(ExecuteError::ApplicationNotInstalled {
-            application_id: context.meta.application_id
+            application_id: context.application_id
         });
     };
 
-    let storage = ContextStorage::from(datastore, context.meta.id);
+    let storage = ContextStorage::from(datastore, context.id);
 
     let module = engine.compile(&blob)?;
 
-    let (outcome, storage) = execute(guard, module, method, input, executor, storage).await?;
+    let (outcome, storage) = execute(guard, executor, module, method, input, storage).await?;
 
-    if outcome.returns.is_ok() {
-        'fine: {
-            if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
-                if is_state_op {
-                    // fixme! temp mitigation for a potential state inconsistency
-                    break 'fine;
-                }
-
-                eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
-            }
-        }
-
-        if !storage.is_empty() {
-            let store = storage.commit()?;
-
-            if let Some(root_hash) = outcome.root_hash {
-                context.meta.root_hash = root_hash.into();
-
-                let mut handle = store.handle();
-
-                handle.put(
-                    &key::ContextMeta::new(context.meta.id),
-                    &types::ContextMeta::new(
-                        key::ApplicationMeta::new(context.meta.application_id),
-                        *context.meta.root_hash,
-                    ),
-                )?;
-
-                node_client.send_event(NodeEvent::Context(ContextEvent {
-                    context_id: context.meta.id,
-                    payload: ContextEventPayload::StateMutation(StateMutationPayload {
-                        new_root: context.meta.root_hash,
-                    }),
-                }))?;
-            }
-        }
-
-        node_client.send_event(NodeEvent::Context(ContextEvent {
-            context_id: context.meta.id,
-            payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
-                events: outcome
-                    .events
-                    .iter()
-                    .map(|e| ExecutionEvent {
-                        kind: e.kind.clone(),
-                        data: e.data.clone(),
-                    })
-                    .collect(),
-            }),
-        }))?;
+    if outcome.returns.is_err() {
+        return Ok(outcome);
     }
+
+    'fine: {
+        if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
+            if is_state_op {
+                // fixme! temp mitigation for a potential state inconsistency
+                break 'fine;
+            }
+
+            eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+        }
+    }
+
+    if !storage.is_empty() {
+        let store = storage.commit()?;
+
+        if let Some(root_hash) = outcome.root_hash {
+            context.root_hash = root_hash.into();
+
+            let mut handle = store.handle();
+
+            handle.put(
+                &key::ContextMeta::new(context.id),
+                &types::ContextMeta::new(
+                    key::ApplicationMeta::new(context.application_id),
+                    *context.root_hash,
+                ),
+            )?;
+
+            node_client.send_event(NodeEvent::Context(ContextEvent {
+                context_id: context.id,
+                payload: ContextEventPayload::StateMutation(StateMutationPayload {
+                    new_root: context.root_hash,
+                }),
+            }))?;
+        }
+    }
+
+    node_client.send_event(NodeEvent::Context(ContextEvent {
+        context_id: context.id,
+        payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
+            events: outcome
+                .events
+                .iter()
+                .map(|e| ExecutionEvent {
+                    kind: e.kind.clone(),
+                    data: e.data.clone(),
+                })
+                .collect(),
+        }),
+    }))?;
 
     Ok(outcome)
 }
 
 pub async fn execute(
     context: &OwnedMutexGuard<ContextId>,
+    executor: PublicKey,
     module: calimero_runtime::Module,
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
-    executor: PublicKey,
     mut storage: ContextStorage,
 ) -> eyre::Result<(Outcome, ContextStorage)> {
     let context_id = **context;
 
     global_runtime()
         .spawn_blocking(move || {
-            let outcome = module.run(context_id, &method, &input, executor, &mut storage)?;
+            let outcome = module.run(context_id, executor, &method, &input, &mut storage)?;
 
             Ok((outcome, storage))
         })
@@ -319,7 +351,7 @@ fn substitute_aliases_in_payload(
         return Ok(payload);
     }
 
-    // todo! evaluate a byte-version of calimero_server{-build}::replace
+    // todo! evaluate a byte-version of calimero_server[build]::replace
     // todo! ref: https://github.com/calimero-network/core/blob/6deb2db81a65e0b5c86af9fe2950cf9019ab61af/crates/server/build.rs#L139-L175
 
     let mut result = Vec::with_capacity(payload.len());

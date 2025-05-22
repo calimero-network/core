@@ -18,6 +18,7 @@ use crate::messages::execute::{ExecuteError, ExecuteRequest, ExecuteResponse};
 use crate::messages::join_context::{JoinContextRequest, JoinContextResponse};
 use crate::messages::update_application::UpdateApplicationRequest;
 use crate::messages::ContextMessage;
+use crate::ContextAtomic;
 
 pub mod crypto;
 pub mod external;
@@ -213,10 +214,11 @@ impl ContextClient {
     pub async fn execute(
         &self,
         context: &ContextId,
+        executor: &PublicKey,
         method: String,
         payload: Vec<u8>,
-        executor: &PublicKey,
         aliases: Vec<Alias<PublicKey>>,
+        atomic: Option<ContextAtomic>,
     ) -> Result<ExecuteResponse, ExecuteError> {
         let (sender, receiver) = oneshot::channel();
 
@@ -224,10 +226,11 @@ impl ContextClient {
             .send(ContextMessage::Execute {
                 request: ExecuteRequest {
                     context: *context,
+                    executor: *executor,
                     method,
                     payload,
-                    executor: *executor,
                     aliases,
+                    atomic,
                 },
                 outcome: sender,
             })

@@ -244,10 +244,10 @@ async fn create_context(
 
     let (outcome, storage) = execute(
         &guard,
+        identity,
         module,
         "init".into(),
         init_params.into(),
-        identity,
         storage,
     )
     .await?;

@@ -38,9 +38,9 @@ fn main() -> EyreResult<()> {
 
     let outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "view_account",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
 

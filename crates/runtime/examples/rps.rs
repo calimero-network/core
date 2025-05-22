@@ -82,9 +82,9 @@ fn main() -> EyreResult<()> {
 
     let create_keypair_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "create_keypair",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&create_keypair_outcome);
@@ -109,9 +109,9 @@ fn main() -> EyreResult<()> {
 
     let create_keypair_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "create_keypair",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&create_keypair_outcome);
@@ -133,7 +133,7 @@ fn main() -> EyreResult<()> {
         "public_key": joe_keypair.pk,
     }))?;
 
-    let join_outcome = module.run([0; 32].into(), "join", &input, [0; 32].into(), &mut storage)?;
+    let join_outcome = module.run([0; 32].into(), [0; 32].into(), "join", &input, &mut storage)?;
     dbg!(&join_outcome);
 
     let joe_idx =
@@ -150,7 +150,7 @@ fn main() -> EyreResult<()> {
         "public_key": melissa_keypair.pk,
     }))?;
 
-    let join_outcome = module.run([0; 32].into(), "join", &input, [0; 32].into(), &mut storage)?;
+    let join_outcome = module.run([0; 32].into(), [0; 32].into(), "join", &input, &mut storage)?;
     dbg!(&join_outcome);
 
     let melissa_idx =
@@ -167,9 +167,9 @@ fn main() -> EyreResult<()> {
 
     let state_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "state",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&state_outcome);
@@ -195,9 +195,9 @@ fn main() -> EyreResult<()> {
 
     let prepare_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "prepare",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&prepare_outcome);
@@ -223,9 +223,9 @@ fn main() -> EyreResult<()> {
 
     let prepare_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "prepare",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&prepare_outcome);
@@ -248,9 +248,9 @@ fn main() -> EyreResult<()> {
 
     let commit_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "commit",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&commit_outcome);
@@ -269,9 +269,9 @@ fn main() -> EyreResult<()> {
 
     let commit_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "commit",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&commit_outcome);
@@ -289,9 +289,9 @@ fn main() -> EyreResult<()> {
 
     let reveal_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "reveal",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&reveal_outcome);
@@ -309,9 +309,9 @@ fn main() -> EyreResult<()> {
 
     let reveal_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "reveal",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&reveal_outcome);
@@ -327,9 +327,9 @@ fn main() -> EyreResult<()> {
 
     let state_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "state",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&state_outcome);
@@ -358,9 +358,9 @@ fn main() -> EyreResult<()> {
 
     let reset_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "reset",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&reset_outcome);
@@ -369,9 +369,9 @@ fn main() -> EyreResult<()> {
 
     let state_outcome = module.run(
         [0; 32].into(),
+        [0; 32].into(),
         "state",
         &input,
-        [0; 32].into(),
         &mut storage,
     )?;
     dbg!(&state_outcome);

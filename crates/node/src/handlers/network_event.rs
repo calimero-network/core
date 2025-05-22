@@ -197,17 +197,16 @@ async fn handle_state_delta(
     let outcome = context_client
         .execute(
             &context_id,
+            &our_identity,
             "__calimero_sync_next".to_owned(),
             artifact,
-            &our_identity,
             vec![],
+            None,
         )
         .await?;
 
-    if let Some(derived_root_hash) = outcome.root_hash {
-        if derived_root_hash != root_hash {
-            return sync_manager.initiate_sync(context_id, source).await;
-        }
+    if outcome.root_hash != root_hash {
+        return sync_manager.initiate_sync(context_id, source).await;
     }
 
     Ok(())
