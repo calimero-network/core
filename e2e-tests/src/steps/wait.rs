@@ -63,7 +63,7 @@ impl Test for WaitStep {
             _ => 1,
         };
 
-        let duration = Duration::from_millis(self.duration_ms * factor + 30000);
+        let duration = Duration::from_millis(self.duration_ms * factor);
 
         ctx.output_writer
             .write_str(&format!("Waiting for {} ms{extra}", duration.as_millis()));
