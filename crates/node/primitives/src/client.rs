@@ -87,9 +87,9 @@ impl NodeClient {
         artifact: Vec<u8>,
     ) -> eyre::Result<()> {
         debug!(
-            %context.id,
+            context_id=%context.id,
             %sender,
-            %context.root_hash,
+            root_hash=%context.root_hash,
             "Sending state delta"
         );
 

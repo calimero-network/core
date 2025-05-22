@@ -70,8 +70,8 @@ impl Merod {
         let config_args = [
             "config",
             "sync.timeout_ms=60000",
-            "sync.interval_ms=30000",
-            "sync.frequency_ms=30000",
+            "sync.interval_ms=0", // sync on every frequency tick
+            "sync.frequency_ms=10000",
             "bootstrap.nodes=[]",
         ]
         .into_iter()
