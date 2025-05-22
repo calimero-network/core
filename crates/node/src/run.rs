@@ -1,5 +1,7 @@
+use std::io::{self, BufRead, BufReader};
 use std::pin::{pin, Pin};
 use std::sync::Arc;
+use std::thread;
 
 use actix::{Actor, Arbiter, System};
 use calimero_blobstore::config::BlobStoreConfig;
@@ -21,7 +23,6 @@ use camino::Utf8PathBuf;
 use eyre::{OptionExt, WrapErr};
 use futures_util::{stream, StreamExt};
 use libp2p::identity::Keypair;
-use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, event_enabled, info, Level};
 
@@ -169,15 +170,25 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut sync = pin!(sync_manager.start());
     let mut server = tokio::spawn(server);
 
-    let mut stdin = BufReader::new(io::stdin()).lines();
+    let (lines_tx, mut lines) = mpsc::channel(1);
+
+    let _ignored = thread::spawn(move || {
+        let stdin = BufReader::new(io::stdin());
+
+        for line in stdin.lines() {
+            let line = line.expect("unable to receive line from stdin");
+
+            lines_tx.blocking_send(line).expect("unable to send line");
+        }
+    });
 
     loop {
         tokio::select! {
             _ = &mut sync => {},
             res = &mut server => res??,
             res = &mut system => break res?,
-            line = stdin.next_line() => {
-                let Some(line) = line? else {
+            line = lines.recv() => {
+                let Some(line) = line else {
                     continue;
                 };
 
