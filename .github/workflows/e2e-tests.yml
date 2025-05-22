@@ -172,6 +172,7 @@ jobs:
         id: e2e-tests
         env:
           NO_COLOR: '1'
+          RUST_LOG: calimero_=debug,near_=debug,workspaces=debug
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
 
