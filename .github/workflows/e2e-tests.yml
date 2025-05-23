@@ -67,7 +67,7 @@ jobs:
     strategy:
       matrix:
         protocol: [near, icp, stellar, ethereum]
-      fail-fast: false
+      # fail-fast: false # disable for now
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
