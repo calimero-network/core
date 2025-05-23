@@ -237,11 +237,14 @@ impl Network {
                     args: FunctionArgs::from(args),
                 },
             })
-            .await
-            .map_err(|err| NearError::Custom {
-                operation: ErrorOperation::Query,
-                reason: err.to_string(),
-            })?;
+            .await;
+
+        println!("{response:?}");
+
+        let response = response.map_err(|err| NearError::Custom {
+            operation: ErrorOperation::Query,
+            reason: err.to_string(),
+        })?;
 
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match response.kind {
