@@ -63,21 +63,6 @@ impl NearSandboxEnvironment {
             .await?
             .into_result()?;
 
-        tokio::spawn({
-            let worker = worker.clone();
-            async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-
-                loop {
-                    interval.tick().await;
-                    match worker.status().await {
-                        Ok(resp) => println!("status passed: {resp:?}"),
-                        Err(err) => eprintln!("status failed: {err}"),
-                    }
-                }
-            }
-        });
-
         Ok(Self {
             worker,
             root_account,

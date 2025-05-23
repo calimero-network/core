@@ -186,11 +186,7 @@ async fn main() -> EyreResult<()> {
 
         let driver = Driver::new(args.into(), config);
 
-        let res = driver.run().await;
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-
-        res?;
+        driver.run().await?;
     }
 
     if let Some(Commands::Combine { dirs, output_dir }) = args.commands {
