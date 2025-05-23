@@ -172,7 +172,7 @@ jobs:
         id: e2e-tests
         env:
           NO_COLOR: 1
-          RUST_LOG: calimero_=debug,near=debug,workspaces=debug
+          RUST_LOG: calimero_=debug,near=debug,workspaces=debug,reqwest=trace,hyper=trace
           NEAR_ENABLE_SANDBOX_LOG: 1
 
         run: |
