@@ -239,7 +239,7 @@ impl Network {
             })
             .await;
 
-        println!("{response:?}");
+        eprintln!("jsonrpc query response: {response:?}");
 
         let response = response.map_err(|err| NearError::Custom {
             operation: ErrorOperation::Query,
@@ -293,6 +293,8 @@ impl Network {
                 wait_until: TxExecutionStatus::Final,
             })
             .await;
+
+        eprintln!("jsonrpc mutate response: {response:?}");
 
         let response: near_jsonrpc_client::methods::tx::RpcTransactionResponse = loop {
             match response {
