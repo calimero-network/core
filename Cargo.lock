@@ -5976,7 +5976,6 @@ dependencies = [
  "calimero-store",
  "calimero-store-rocksdb",
  "camino",
- "chrono",
  "clap",
  "color-eyre",
  "const_format",

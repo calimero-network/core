@@ -2,18 +2,16 @@ use std::env::var;
 
 use clap::Parser;
 use eyre::Result as EyreResult;
-use rand::Rng;
-use reqwest::Client;
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{registry, EnvFilter};
 
-use crate::cli::RootCommand;
-use crate::version::check_for_update;
-
 mod cli;
 mod defaults;
 mod version;
+
+use cli::RootCommand;
+use version::check_for_update;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
