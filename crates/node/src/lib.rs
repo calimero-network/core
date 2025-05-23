@@ -465,9 +465,10 @@ impl Node {
             return Err(CallError::ContextNotFound);
         };
 
-        if method != "init" && &*context.root_hash == &[0; 32] {
-            return Err(CallError::Uninitialized);
-        }
+        // TODO: remove this once we have a logic init method
+        // if method != "init" && &*context.root_hash == &[0; 32] {
+        //     return Err(CallError::Uninitialized);
+        // }
 
         if !self
             .ctx_manager
