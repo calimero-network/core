@@ -1,5 +1,4 @@
 {
-  "protocol": "ethereum",
   "steps": [
     {
       "applicationInstall": {
@@ -32,9 +31,9 @@
           "request": {
             "action_type": "ExternalFunctionCall",
             "params": {
-              "receiver_id": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-              "method_name": "setValueNoDeposit",
-              "args": "[[\"string\",\"someKey\"],[\"string\",\"someValue\"]]",
+              "receiver_id": "be2us-64aaa-aaaaa-qaabq-cai",
+              "method_name": "test_method_no_transfer",
+              "args": "{\"testKey\":\"testValue\"}",
               "deposit": "0"
             }
           }
@@ -61,7 +60,7 @@
           "limit": 10
         },
         "description": [
-            "get current proposals and extract the ID of the first one"
+          "get current proposals and extract the ID of the first one"
         ]
       }
     },
@@ -71,11 +70,11 @@
         "argsJson": {
           "proposal_id": "${proposal_id}",
           "message": {
-              "id": "msg1",
-              "author": "inviter",
-              "text": "This is a test message for the proposal",
-              "created_at": "2023-11-24T12:34:56Z",
-              "proposal_id": "${proposal_id}"
+            "id": "msg1",
+            "author": "inviter",
+            "text": "This is a test message for the proposal",
+            "created_at": "2023-11-24T12:34:56Z",
+            "proposal_id": "${proposal_id}"
           }
         },
         "expectedResultJson": null,
@@ -86,7 +85,9 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": ["wait exactly 5s for the broadcast to propagate"]
+        "description": [
+          "wait exactly 5s for the broadcast to propagate"
+        ]
       }
     },
     {
@@ -125,10 +126,10 @@
     },
     {
       "verifyExternalState": {
-        "contractId": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-        "methodName": "getValue(string)",
-        "args": ["someKey"],
-        "expectedValue": "someValue"
+        "contractId": "be2us-64aaa-aaaaa-qaabq-cai",
+        "methodName": "get_calls",
+        "args": [],
+        "expectedValue": "{\"testKey\":\"testValue\"}"
       }
     }
   ]
