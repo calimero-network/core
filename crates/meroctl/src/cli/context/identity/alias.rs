@@ -13,7 +13,7 @@ use reqwest::Client;
 use crate::cli::Environment;
 use crate::common::{
     create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
-    make_request, multiaddr_to_url, resolve_alias, RequestType,
+    multiaddr_to_url, resolve_alias, RequestType,
 };
 use crate::output::ErrorLine;
 
