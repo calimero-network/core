@@ -255,6 +255,33 @@ impl GetContextIdentitiesResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContextAlias {
+    pub alias: Alias<PublicKey>,
+    pub identity: PublicKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextAliasesResponseData {
+    pub aliases: Vec<ContextAlias>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextAliasesResponse {
+    pub data: ContextAliasesResponseData,
+}
+
+impl GetContextAliasesResponse {
+    pub const fn new(aliases: Vec<ContextAlias>) -> Self {
+        Self {
+            data: ContextAliasesResponseData { aliases },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetContextClientKeysResponseData {
     pub client_keys: Vec<ClientKey>,
 }
