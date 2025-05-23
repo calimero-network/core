@@ -139,6 +139,10 @@ impl<'a> NearTransport<'a> {
         for (network_id, network_config) in &config.networks {
             let client = JsonRpcClient::connect(network_config.rpc_url.clone());
 
+            let client = client
+                .header(("connection", "close"))
+                .expect("this is a valid header value");
+
             let _ignored = networks.insert(
                 network_id.clone(),
                 Network {
