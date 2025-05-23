@@ -9,7 +9,7 @@ use eyre::{bail, Result as EyreResult};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
-use tokio::fs::{read, read_dir, write, DirEntry};
+use tokio::fs::{read, read_dir, write};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::time::{sleep, Duration};
 use tokio::try_join;
@@ -24,7 +24,7 @@ use crate::protocol::near::NearSandboxEnvironment;
 use crate::protocol::stellar::StellarSandboxEnvironment;
 use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
-use crate::TestEnvironment;
+use crate::{Protocol, TestEnvironment};
 
 pub struct TestContext<'a> {
     pub inviter: String,
@@ -34,19 +34,11 @@ pub struct TestContext<'a> {
     pub context_id: Option<String>,
     pub inviter_public_key: Option<String>,
     pub invitees_public_keys: HashMap<String, String>,
-    pub protocol_name: &'a str,
+    pub protocol_name: &'a Protocol,
     pub protocol: &'a ProtocolSandboxEnvironment,
     pub output_writer: OutputWriter,
     pub context_alias: Option<String>,
     pub proposal_id: Option<String>,
-}
-
-#[derive(Debug, Hash, Clone, clap::ValueEnum, Copy, PartialEq, Eq)]
-pub enum Protocol {
-    Ethereum,
-    Near,
-    Stellar,
-    Icp,
 }
 
 pub trait Test {
@@ -60,7 +52,7 @@ impl<'a> TestContext<'a> {
         invitees: Vec<String>,
         meroctl: &'a Meroctl,
         output_writer: OutputWriter,
-        protocol_name: &'a str,
+        protocol_name: &'a Protocol,
         proposal_id: Option<String>,
         protocol: &'a ProtocolSandboxEnvironment,
     ) -> Self {
@@ -148,23 +140,30 @@ impl Driver {
         }
 
         for protocol_name in &self.environment.protocols {
-            let protocol_path = protocols_dir.join(&protocol_name.to_string().to_lowercase());
+            let protocol_path = protocols_dir.join(protocol_name.as_str());
 
             if !protocol_path.is_dir() {
-                self.environment
-                    .output_writer
-                    .write_str(&format!("No directory for protocol: {}", protocol_name));
+                self.environment.output_writer.write_str(&format!(
+                    "No directory for protocol: {}",
+                    protocol_name.as_str()
+                ));
                 continue;
             }
 
             let Some(sandbox) = initialized_protocols.get(&protocol_name) else {
-                bail!("Sandbox not initialized for protocol: {}", protocol_name);
+                bail!(
+                    "Sandbox not initialized for protocol: {}",
+                    protocol_name.as_str()
+                );
             };
 
-            let mero = self.setup_mero(&vec![sandbox.clone()]).await?;
+            let mero = self.setup_mero(&sandbox.clone()).await?;
 
             let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
-                bail!("Not enough nodes to run test for protocol {protocol_name}")
+                bail!(
+                    "Not enough nodes to run test for protocol {}",
+                    protocol_name.as_str()
+                )
             };
 
             self.environment
@@ -176,8 +175,7 @@ impl Driver {
 
             let mut applications = read_dir(&protocol_path).await?;
             while let Some(app) = applications.next_entry().await? {
-                let protocol_name = protocol_name.to_string().to_lowercase();
-                if app.file_type().await?.is_dir() {
+                if !app.file_type().await?.is_file() {
                     continue;
                 }
                 let mut ctx = TestContext::new(
@@ -185,36 +183,33 @@ impl Driver {
                     invitees.clone(),
                     &mero.ctl,
                     self.environment.output_writer,
-                    &protocol_name,
+                    protocol_name,
                     None,
                     sandbox,
                 );
                 let test_file_path = app.path();
-                // let app_name = test_file_path
-                //     .file_stem()
-                //     .and_then(|s| s.to_str())
-                //     .unwrap_or_default();
 
                 let Some(app_name) = test_file_path.file_stem().and_then(|s| s.to_str()) else {
                     bail!("No application name found");
                 };
 
-                if test_file_path.exists() {
-                    let test_content = read(&test_file_path).await?;
-                    let scenario: TestScenario = from_slice(&test_content)?;
-
-                    self.environment
-                        .output_writer
-                        .write_header(&format!("Running protocol {}", sandbox.name()), 1);
-
-                    report = self
-                        .run_scenarios(&mut ctx, report, app_name, scenario, &test_file_path)
-                        .await?;
-
-                    self.environment
-                        .output_writer
-                        .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
+                if !test_file_path.is_file() {
+                    continue;
                 }
+                let test_content = read(&test_file_path).await?;
+                let scenario: TestScenario = from_slice(&test_content)?;
+
+                self.environment
+                    .output_writer
+                    .write_header(&format!("Running protocol {}", sandbox.name()), 1);
+
+                report = self
+                    .run_scenarios(&mut ctx, report, app_name, scenario, &test_file_path)
+                    .await?;
+
+                self.environment
+                    .output_writer
+                    .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
             }
 
             self.stop_merods(&mero.ds).await;
@@ -237,10 +232,7 @@ impl Driver {
         report.result()
     }
 
-    async fn setup_mero(
-        &self,
-        sandbox_environments: &Vec<ProtocolSandboxEnvironment>,
-    ) -> EyreResult<Mero> {
+    async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
@@ -261,11 +253,7 @@ impl Driver {
                     self.environment.test_id
                 )];
 
-                let mut node_args = vec![];
-                for sandbox in sandbox_environments {
-                    node_args = sandbox.node_args(&node_name).await?;
-                }
-
+                let node_args = sandbox.node_args(&node_name).await?;
                 let config_args = config_args.iter().chain(node_args.iter());
 
                 let merod = Merod::new(
@@ -349,7 +337,7 @@ impl Driver {
         drop(
             report
                 .scenario_matrix
-                .entry(ctx.protocol_name.to_owned())
+                .entry((*ctx.protocol_name.as_str()).to_string())
                 .or_default()
                 .insert(app_name.to_owned(), scenario_report),
         );
@@ -514,7 +502,7 @@ impl TestRunReport {
         writeln!(&mut markdown, "## E2E tests report")?;
 
         for (protocol, applications) in &self.scenario_matrix {
-            writeln!(&mut markdown, "## Protocol: {protocol}")?;
+            writeln!(&mut markdown, "### Protocol: {protocol}")?;
 
             for (app_name, report) in applications {
                 let mut step_names = vec![];

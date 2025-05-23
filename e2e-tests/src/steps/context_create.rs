@@ -19,7 +19,7 @@ impl Test for ContextCreateStep {
 
         let (context_id, member_public_key) = ctx
             .meroctl
-            .context_create(&ctx.inviter, application_id, &ctx.protocol_name)
+            .context_create(&ctx.inviter, application_id, ctx.protocol_name.as_str())
             .await?;
 
         ctx.context_id = Some(context_id);

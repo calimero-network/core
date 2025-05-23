@@ -3,7 +3,6 @@
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use const_format::concatcp;
-use driver::Protocol;
 use eyre::Result as EyreResult;
 use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
@@ -98,13 +97,21 @@ pub struct RootArgs {
     pub protocols: Vec<Protocol>,
 }
 
-impl std::fmt::Display for Protocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+#[derive(Debug, Hash, Clone, clap::ValueEnum, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    Ethereum,
+    Near,
+    Stellar,
+    Icp,
+}
+
+impl Protocol {
+    fn as_str(&self) -> &'static str {
         match self {
-            Protocol::Ethereum => write!(f, "ethereum"),
-            Protocol::Near => write!(f, "near"),
-            Protocol::Stellar => write!(f, "stellar"),
-            Protocol::Icp => write!(f, "icp"),
+            Protocol::Ethereum => "ethereum",
+            Protocol::Near => "near",
+            Protocol::Stellar => "stellar",
+            Protocol::Icp => "icp",
         }
     }
 }
