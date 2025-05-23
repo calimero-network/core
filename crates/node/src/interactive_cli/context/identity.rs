@@ -1,8 +1,9 @@
+use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_store::key::ContextIdentity as ContextIdentityKey;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use owo_colors::OwoColorize;
 
@@ -47,6 +48,46 @@ enum ContextIdentitySubcommands {
         )]
         force: bool,
     },
+    #[command(about = "Grant permissions to a member")]
+    Grant {
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+        #[arg(long = "as", default_value = "default")]
+        granter: Alias<PublicKey>,
+        #[arg(help = "The member to grant permissions to")]
+        grantee: PublicKey,
+        #[arg(help = "The capability to grant")]
+        capability: Capability,
+    },
+    #[command(about = "Revoke permissions from a member")]
+    Revoke {
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+        #[arg(long = "as", default_value = "default")]
+        revoker: Alias<PublicKey>,
+        #[arg(help = "The member to revoke permissions from")]
+        revokee: PublicKey,
+        #[arg(help = "The capability to revoke")]
+        capability: Capability,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum, Copy)]
+#[clap(rename_all = "PascalCase")]
+pub enum Capability {
+    ManageApplication,
+    ManageMembers,
+    Proxy,
+}
+
+impl From<Capability> for ConfigCapability {
+    fn from(value: Capability) -> Self {
+        match value {
+            Capability::ManageApplication => ConfigCapability::ManageApplication,
+            Capability::ManageMembers => ConfigCapability::ManageMembers,
+            Capability::Proxy => ConfigCapability::Proxy,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -162,6 +203,57 @@ impl ContextIdentityCommand {
                     identity.cyan(),
                     context_id.cyan()
                 );
+            }
+
+            ContextIdentitySubcommands::Grant {
+                context,
+                granter,
+                grantee,
+                capability,
+            } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                let granter_id = node
+                    .ctx_manager
+                    .resolve_alias(granter, Some(context_id))?
+                    .ok_or_eyre("unable to resolve granter identity")?;
+
+                drop(node.ctx_manager.grant_permission(
+                    context_id,
+                    granter_id,
+                    grantee,
+                    capability.into(),
+                ));
+
+                println!("{ind} Permission granted successfully");
+            }
+            ContextIdentitySubcommands::Revoke {
+                context,
+                revoker,
+                revokee,
+                capability,
+            } => {
+                let context_id = node
+                    .ctx_manager
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                let revoker_id = node
+                    .ctx_manager
+                    .resolve_alias(revoker, Some(context_id))?
+                    .ok_or_eyre("unable to resolve revoker identity")?;
+
+                drop(node.ctx_manager.revoke_permission(
+                    context_id,
+                    revoker_id,
+                    revokee,
+                    capability.into(),
+                ));
+
+                println!("{ind} Permission revoked successfully");
             }
         }
 
