@@ -791,7 +791,12 @@ pub struct GetProxyContractResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsRequest {
     pub offset: usize,
+    #[serde(default = "default_limit")]
     pub limit: usize,
+}
+
+fn default_limit() -> usize {
+    1
 }
 
 #[derive(Debug, Deserialize, Serialize)]
