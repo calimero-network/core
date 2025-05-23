@@ -79,11 +79,11 @@ pub struct RootArgs {
     pub home: Utf8PathBuf,
 
     /// API endpoint URL
-    #[arg(long, value_name = "URL", conflicts_with = "node_name")]
+    #[arg(long, value_name = "URL")]
     pub api: Option<Url>,
 
     /// Use a pre-configured node alias
-    #[arg(long, value_name = "ALIAS", conflicts_with_all = &["node_name", "api"])]
+    #[arg(long, value_name = "ALIAS", conflicts_with = "api")]
     pub node: Option<String>,
 
     #[arg(long, value_name = "FORMAT", default_value_t, value_enum)]
