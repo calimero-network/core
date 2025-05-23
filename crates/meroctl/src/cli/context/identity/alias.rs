@@ -1,7 +1,9 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::GetContextIdentitiesResponse;
+use calimero_server_primitives::admin::{
+    GetContextAliasesResponse, GetContextIdentitiesResponse, GetContextsResponse,
+};
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
@@ -10,8 +12,8 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, multiaddr_to_url,
-    resolve_alias,
+    create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
+    make_request, multiaddr_to_url, resolve_alias, RequestType,
 };
 use crate::output::ErrorLine;
 
@@ -85,6 +87,17 @@ pub enum ContextIdentityAliasSubcommand {
         #[arg(help = "The context that the identity is a member of ")]
         #[arg(long, short)]
         context: Alias<ContextId>,
+    },
+
+    #[command(about = "List all the aliases under the context")]
+    List {
+        #[arg(help = "The context whose aliases need to be listed")]
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+
+        #[arg(help = "If all the aliases for all the contexts need to listed")]
+        #[arg(default_value = "false", conflicts_with = "context")]
+        all: bool,
     },
 }
 
@@ -183,6 +196,63 @@ impl ContextIdentityAliasCommand {
                     lookup_alias(multiaddr, &config.identity, identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
+            }
+            ContextIdentityAliasSubcommand::List { context, all } => {
+                let client = Client::new();
+                let mut context_ids = vec![];
+
+                if all {
+                    let response: GetContextsResponse = do_request(
+                        &client,
+                        multiaddr_to_url(multiaddr, "/admin-api/dev/contexts")?,
+                        None::<()>,
+                        &config.identity,
+                        RequestType::Get,
+                    )
+                    .await?;
+
+                    for ctx in response.data.contexts {
+                        context_ids.push(ctx.id);
+                    }
+                } else {
+                    let resolve_response =
+                        resolve_alias(multiaddr, &config.identity, context, None).await?;
+                    let context_id = resolve_response
+                        .value()
+                        .cloned()
+                        .ok_or_eyre("Failed to resolve context: no value found")?;
+                    context_ids.push(context_id);
+                }
+                for ctx_id in context_ids {
+                    let ctx_response: GetContextAliasesResponse = do_request(
+                        &client,
+                        multiaddr_to_url(
+                            multiaddr,
+                            &format!("/admin-api/dev/contexts/{ctx_id}/aliases"),
+                        )?,
+                        None::<()>,
+                        &config.identity,
+                        RequestType::Get,
+                    )
+                    .await?;
+                    environment.output.write(&ErrorLine(&format!(
+                        "{c1:44} : {c2:44}",
+                        c1 = "Context ID",
+                        c2 = ctx_id,
+                    )));
+                    environment.output.write(&ErrorLine(&format!(
+                        "{c1:44} | {c2}",
+                        c1 = "Identity",
+                        c2 = "Alias",
+                    )));
+                    for aliases in ctx_response.data.aliases {
+                        environment.output.write(&ErrorLine(&format!(
+                            "{c1:44} | {c2}",
+                            c1 = aliases.identity,
+                            c2 = aliases.alias,
+                        )));
+                    }
+                }
             }
         }
 
