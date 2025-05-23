@@ -5951,6 +5951,7 @@ dependencies = [
  "notify",
  "rand 0.8.5",
  "reqwest 0.12.9",
+ "semver 1.0.23",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5988,6 +5989,10 @@ dependencies = [
  "multiaddr",
  "near-crypto",
  "rand 0.8.5",
+ "reqwest 0.12.9",
+ "semver 1.0.23",
+ "serde",
+ "serde_json",
  "soroban-client",
  "starknet",
  "tokio",
@@ -8409,6 +8414,9 @@ name = "semver"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "semver-parser"
