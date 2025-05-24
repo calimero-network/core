@@ -15,6 +15,7 @@ use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
 use crate::cli::context::update::UpdateCommand;
 use crate::cli::context::watch::WatchCommand;
+use crate::cli::context::proposals::ProposalsCommand;
 use crate::cli::Environment;
 use crate::output::Report;
 
@@ -28,6 +29,7 @@ pub mod join;
 mod list;
 mod update;
 mod watch;
+mod proposals;
 
 pub const EXAMPLES: &str = r"
   # List all contexts
@@ -67,6 +69,7 @@ pub enum ContextSubCommands {
     Identity(ContextIdentityCommand),
     Alias(ContextAliasCommand),
     Use(UseCommand),
+    Proposals(ProposalsCommand),
 }
 
 impl Report for Context {
@@ -101,6 +104,7 @@ impl ContextCommand {
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
             ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
+            ContextSubCommands::Proposals(proposals) => proposals.run(environment).await,
         }
     }
 }

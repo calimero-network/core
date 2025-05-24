@@ -17,13 +17,13 @@ mod bootstrap;
 mod call;
 mod context;
 mod peers;
-mod proxy;
+
 
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use peers::PeersCommand;
-use proxy::ProxyCommand;
+
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -57,7 +57,6 @@ pub struct RootCommand {
 pub enum SubCommands {
     App(AppCommand),
     Context(ContextCommand),
-    Proxy(ProxyCommand),
     Call(CallCommand),
     Bootstrap(BootstrapCommand),
     Peers(PeersCommand),
@@ -107,7 +106,6 @@ impl RootCommand {
         let result = match self.action {
             SubCommands::App(application) => application.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
-            SubCommands::Proxy(proxy) => proxy.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Bootstrap(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,

@@ -588,7 +588,9 @@ impl ContextCommand {
                 }
             }
             Commands::Identity(identity) => identity.run(node)?,
-            Commands::Proposals { command } => handle_proposals_command(node, command, &ind.to_string()).await?,
+            Commands::Proposals { command } => {
+                handle_proposals_command(node, command, &ind.to_string()).await?
+            }
         }
         Ok(())
     }
@@ -675,9 +677,17 @@ fn handle_alias_command(node: &Node, command: AliasCommands, ind: &str) -> EyreR
     Ok(())
 }
 
-async fn handle_proposals_command(node: &Node, command: ProposalsCommands, ind: &str) -> EyreResult<()> {
+async fn handle_proposals_command(
+    node: &Node,
+    command: ProposalsCommands,
+    ind: &str,
+) -> EyreResult<()> {
     match command {
-        ProposalsCommands::List { context, offset, limit } => {
+        ProposalsCommands::List {
+            context,
+            offset,
+            limit,
+        } => {
             let context_id = node
                 .ctx_manager
                 .resolve_alias(context, None)?
@@ -701,48 +711,49 @@ async fn handle_proposals_command(node: &Node, command: ProposalsCommands, ind: 
                     );
                 }
             }
-        },
+        }
 
-        ProposalsCommands::View { proposal_id, context } => {
+        ProposalsCommands::View {
+            proposal_id,
+            context,
+        } => {
             let context_id = node
                 .ctx_manager
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve context")?;
 
-
             let proposal_id_rt = proposal_id.rt()?;
-
 
             let proposal = node
                 .proposal_manager
                 .get_proposal(&context_id, &proposal_id_rt)
                 .await?;
-                
-            if let Some(proposal) = proposal {
 
+            if let Some(proposal) = proposal {
                 let approvers = node
                     .proposal_manager
                     .get_proposal_approvers(&context_id, &proposal_id_rt)
                     .await?;
-                
 
                 let approval_info = node
                     .proposal_manager
                     .get_number_of_proposal_approvals(&context_id, &proposal_id_rt)
                     .await?;
-                
+
                 println!("{ind} Proposal ID: {}", format!("{:?}", proposal.id).cyan());
                 println!("{ind} Author: {}", proposal.author_id.cyan());
                 println!("{ind} Context ID: {}", context_id);
-                
 
                 println!("{ind} Actions: ({} total)", proposal.actions.len());
                 for (i, action) in proposal.actions.iter().enumerate() {
-                    println!("{ind}   {}. {:?}", i+1, action);
+                    println!("{ind}   {}. {:?}", i + 1, action);
                 }
-                
 
-                println!("{ind} Approvers: ({}/{})", approvers.len(), approval_info.num_approvals);
+                println!(
+                    "{ind} Approvers: ({}/{})",
+                    approvers.len(),
+                    approval_info.num_approvals
+                );
                 if approvers.is_empty() {
                     println!("{ind}   None");
                 } else {
