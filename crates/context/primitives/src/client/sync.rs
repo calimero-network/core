@@ -156,6 +156,7 @@ impl ContextClient {
         );
 
         if should_save {
+            // todo! if the application_id changed, we need to notify ContextManager
             handle.put(
                 &key::ContextMeta::new(context_id),
                 &types::ContextMeta::new(key::ApplicationMeta::new(application_id), *root_hash),
