@@ -6,16 +6,26 @@ use tracing_subscriber::fmt::layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{registry, EnvFilter};
 
-use crate::cli::RootCommand;
-
 mod cli;
 mod defaults;
+mod version;
+
+use cli::RootCommand;
+use version::check_for_update;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
     setup()?;
 
     let command = RootCommand::parse();
+
+    if rand::random::<u8>() % 10 == 0 {
+        tokio::spawn(async move {
+            if let Err(err) = check_for_update().await {
+                eprintln!("Version check failed: {}", err);
+            }
+        });
+    }
 
     command.run().await
 }
