@@ -9,7 +9,6 @@ pub mod call;
 pub mod common;
 pub mod context;
 pub mod peers;
-mod proxy;
 pub mod state;
 pub mod store;
 pub mod webui;
@@ -38,7 +37,6 @@ pub enum SubCommand {
     State(state::StateCommand),
     #[command(name = "webui")]
     WebUI(webui::WebUICommand),
-    Proxy(proxy::ProxyCommand),
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
@@ -63,7 +61,6 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Peers(peers) => peers.run(node).await?,
         SubCommand::State(state) => state.run(node)?,
         SubCommand::WebUI(cmd) => cmd.run(node)?,
-        SubCommand::Proxy(proxy) => proxy.run(node).await?,
         // SubCommand::Store(store) => store.run(node)?,
     }
 
