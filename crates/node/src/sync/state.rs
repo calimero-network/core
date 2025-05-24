@@ -24,7 +24,7 @@ impl SyncManager {
         debug!(
             context_id=%context.id,
             our_identity=%our_identity,
-            our_root_hash=?context.root_hash,
+            our_root_hash=%context.root_hash,
             our_application_id=%context.application_id,
             "Initiating state sync",
         );
@@ -328,6 +328,8 @@ impl SyncManager {
                     .ok_or_eyre("expected an exclusive lock on the context")?,
             );
 
+            context.root_hash = outcome.root_hash;
+
             debug!(
                 context_id=%context.id,
                 root_hash=?context.root_hash,
@@ -356,8 +358,6 @@ impl SyncManager {
             }
 
             our_nonce = our_new_nonce;
-
-            context.root_hash = outcome.root_hash;
         }
 
         // todo! eventually compare that both nodes arrive at the same state
