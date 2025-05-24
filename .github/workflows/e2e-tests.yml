@@ -67,7 +67,7 @@ jobs:
     strategy:
       matrix:
         protocol: [near, icp, stellar, ethereum]
-      # fail-fast: false # disable for now
+      fail-fast: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -172,8 +172,7 @@ jobs:
         id: e2e-tests
         env:
           NO_COLOR: 1
-          RUST_LOG: calimero_=debug,near=debug,workspaces=debug,reqwest=trace,hyper=trace
-          NEAR_ENABLE_SANDBOX_LOG: 1
+          RUST_LOG: calimero_=debug
           CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
 
         run: |

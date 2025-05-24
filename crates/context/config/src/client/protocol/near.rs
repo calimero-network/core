@@ -245,15 +245,11 @@ impl Network {
                     args: FunctionArgs::from(args),
                 },
             })
-            .await;
-
-        println!("jsonrpc query response: {response:?}");
-        eprintln!("jsonrpc query response: {response:?}");
-
-        let response = response.map_err(|err| NearError::Custom {
-            operation: ErrorOperation::Query,
-            reason: err.to_string(),
-        })?;
+            .await
+            .map_err(|err| NearError::Custom {
+                operation: ErrorOperation::Query,
+                reason: err.to_string(),
+            })?;
 
         #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match response.kind {
@@ -302,9 +298,6 @@ impl Network {
                 wait_until: TxExecutionStatus::Final,
             })
             .await;
-
-        println!("jsonrpc mutate response: {response:?}");
-        eprintln!("jsonrpc mutate response: {response:?}");
 
         let response: near_jsonrpc_client::methods::tx::RpcTransactionResponse = loop {
             match response {
