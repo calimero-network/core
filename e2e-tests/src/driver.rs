@@ -122,7 +122,7 @@ impl Driver {
                         }
 
                         // Initialize protocol if not already done
-                        if !dbg!(&initialized_protocols).contains_key(dbg!(protocol_name)) {
+                        if !initialized_protocols.contains_key(protocol_name) {
                             // Find and initialize the protocol sandbox
                             for protocol_sandbox in &self.config.protocol_sandboxes {
                                 let config_protocol_name = match protocol_sandbox {
