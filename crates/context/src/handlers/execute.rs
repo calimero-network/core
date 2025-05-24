@@ -15,6 +15,7 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
 use calimero_store::{key, types, Store};
@@ -24,7 +25,7 @@ use eyre::{bail, WrapErr};
 use futures_util::future::TryFutureExt;
 use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::ContextManager;
 
@@ -39,14 +40,28 @@ impl Handler<ExecuteRequest> for ContextManager {
         &mut self,
         ExecuteRequest {
             context: context_id,
+            executor,
             method,
             payload,
-            executor,
             aliases,
             atomic,
         }: ExecuteRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
+        debug!(
+            context = %context_id,
+            executor = %executor,
+            method,
+            aliases = ?aliases,
+            payload_len = payload.len(),
+            atomic = %match atomic {
+                None => "no",
+                Some(ContextAtomic::Lock) => "acquire",
+                Some(ContextAtomic::Held(_)) => "yes",
+            },
+            "execution requested"
+        );
+
         let context = match self.get_or_fetch_context(&context_id) {
             Ok(Some(context)) => context,
             Ok(None) => return ActorResponse::reply(Err(ExecuteError::ContextNotFound)),
@@ -134,6 +149,8 @@ impl Handler<ExecuteRequest> for ContextManager {
                     bail!("context '{context_id}' deleted before we could execute");
                 };
 
+                let old_root_hash = context.root_hash;
+
                 let outcome = internal_execute(
                     datastore,
                     &node_client,
@@ -147,6 +164,18 @@ impl Handler<ExecuteRequest> for ContextManager {
                     is_state_op,
                 )
                 .await?;
+
+                debug!(
+                    %context_id,
+                    %executor,
+                    status = outcome.returns.is_ok().then_some("success").unwrap_or("failure"),
+                    %old_root_hash,
+                    new_root_hash=%context.root_hash,
+                    artifact_len = outcome.artifact.len(),
+                    logs_count = outcome.logs.len(),
+                    events_count = outcome.events.len(),
+                    "executed request"
+                );
 
                 Ok((guard, context, outcome))
             }
