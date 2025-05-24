@@ -104,11 +104,11 @@
           }
         ],
         "target": "invitees",
-        "retries": 5,
-        "intervalMs": 5000,
+        "retries": 20,
+        "intervalMs": 10000,
         "description": [
           "if a node still hasn't received the broadcast",
-          "try 5 more times in 5 seconds, but no more"
+          "try 20 more times every 20 seconds, but no more"
         ]
       }
     },
