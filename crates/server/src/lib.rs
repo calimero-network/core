@@ -4,16 +4,14 @@ use std::sync::Arc;
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
 use axum::Router;
-use calimero_context::ContextManager;
-use calimero_node_primitives::ServerSender;
-use calimero_primitives::events::NodeEvent;
+use calimero_context_primitives::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use multiaddr::Protocol;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
@@ -36,16 +34,23 @@ pub mod ws;
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
-    pub ctx_manager: ContextManager,
+    pub ctx_client: ContextClient,
+    pub node_client: NodeClient,
 }
 
 impl AdminState {
     #[must_use]
-    pub const fn new(store: Store, keypair: Keypair, ctx_manager: ContextManager) -> Self {
+    pub const fn new(
+        store: Store,
+        keypair: Keypair,
+        ctx_client: ContextClient,
+        node_client: NodeClient,
+    ) -> Self {
         Self {
             store,
             keypair,
-            ctx_manager,
+            ctx_client,
+            node_client,
         }
     }
 }
@@ -55,17 +60,16 @@ impl AdminState {
 #[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
     config: ServerConfig,
-    server_sender: ServerSender,
-    ctx_manager: ContextManager,
-    node_events: broadcast::Sender<NodeEvent>,
-    store: Store,
+    ctx_client: ContextClient,
+    node_client: NodeClient,
+    datastore: Store,
 ) -> EyreResult<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
 
-    if let Err(e) = get_or_create_jwt_secret(&store) {
+    if let Err(e) = get_or_create_jwt_secret(&datastore) {
         eprintln!("Failed to get JWT key: {e:?}");
         return Err(e);
     }
@@ -106,16 +110,15 @@ pub async fn start(
     let mut serviced = false;
 
     let shared_state = Arc::new(AdminState::new(
-        store.clone(),
+        datastore.clone(),
         config.identity.clone(),
-        ctx_manager,
+        ctx_client.clone(),
+        node_client.clone(),
     ));
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, router)) =
-            jsonrpc::service(&config, server_sender.clone(), store.clone())
-        {
+        if let Some((path, router)) = jsonrpc::service(&config, ctx_client, datastore.clone()) {
             app = app.nest(path, router);
             serviced = true;
         }
@@ -123,7 +126,7 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = ws::service(&config, node_events.clone()) {
+        if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
             app = app.route(path, handler);
 
             serviced = true;
@@ -132,7 +135,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = setup(&config, store.clone(), shared_state) {
+        if let Some((api_path, router)) = setup(&config, datastore.clone(), shared_state) {
             if let Some((site_path, serve_dir)) = site(&config) {
                 app = app.nest_service(site_path, serve_dir);
             }

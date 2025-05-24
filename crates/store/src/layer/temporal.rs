@@ -90,7 +90,7 @@ where
         Ok(())
     }
 
-    fn commit(self) -> EyreResult<()> {
+    fn commit(&mut self) -> EyreResult<()> {
         self.inner.apply(&self.shadow)?;
 
         Ok(())

@@ -80,6 +80,7 @@ impl<'a> Transaction<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct ColRange<'this, 'a> {
     iter: Option<Range<'this, Slice<'a>, Operation<'a>>>,
 }

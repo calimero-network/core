@@ -49,7 +49,7 @@ impl<T: ToTokens> ToTokens for ReservedRef<T> {
 }
 
 macro_rules! _lazy {
-    ($ty:ty => {$($name:ident = $init:expr,)*}) => {
+    ($ty:ty => {$($name:ident = $init:expr),+ $(,)?}) => {
         use core::cell::RefCell;
         use std::rc::Rc;
 
@@ -60,7 +60,7 @@ macro_rules! _lazy {
                 $(
                     #[expect(non_upper_case_globals)]
                     pub static $name: RefCell<Rc<$ty>> = panic!("uninitialized lazy item");
-                )*
+                )+
             }
         }
 
@@ -71,11 +71,11 @@ macro_rules! _lazy {
                 fn $name() {
                     locals::$name.set(Rc::new($init));
                 }
-            )*
+            )+
         }
 
         pub fn init() {
-            $( LazyInit::$name(); )*
+            $( LazyInit::$name(); )+
         }
 
         $(
@@ -85,7 +85,7 @@ macro_rules! _lazy {
                     inner: locals::$name.with(|item| item.borrow().clone())
                 }
             }
-        )*
+        )+
     };
 }
 

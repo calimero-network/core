@@ -16,7 +16,7 @@ use calimero_context_config::client::protocol::{
     ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,
     starknet as starknet_protocol,
 };
-use calimero_network::config::{
+use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
 };
@@ -43,6 +43,10 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::{cli, defaults};
+
+const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum ConfigProtocol {
@@ -72,7 +76,7 @@ pub struct InitCommand {
 
     /// Port to listen on
     #[clap(long, value_name = "PORT")]
-    #[clap(default_value_t = calimero_network::config::DEFAULT_PORT)]
+    #[clap(default_value_t = calimero_network_primitives::config::DEFAULT_PORT)]
     pub swarm_port: u16,
 
     /// Host to listen on for RPC
@@ -415,8 +419,9 @@ impl InitCommand {
                 ),
             ),
             SyncConfig {
-                timeout: Duration::from_secs(30),
-                interval: Duration::from_secs(30),
+                timeout: DEFAULT_SYNC_TIMEOUT,
+                interval: DEFAULT_SYNC_INTERVAL,
+                frequency: DEFAULT_SYNC_FREQUENCY,
             },
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),

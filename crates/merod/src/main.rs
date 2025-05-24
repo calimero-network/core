@@ -1,5 +1,6 @@
 use std::env::var;
 
+use calimero_utils_actix::init_global_runtime;
 use clap::Parser;
 use eyre::Result as EyreResult;
 use tracing_subscriber::fmt::layer;
@@ -39,5 +40,9 @@ fn setup() -> EyreResult<()> {
         .with(layer())
         .init();
 
-    color_eyre::install()
+    color_eyre::install()?;
+
+    init_global_runtime()?;
+
+    Ok(())
 }

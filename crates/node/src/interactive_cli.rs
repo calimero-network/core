@@ -4,6 +4,13 @@
     reason = "TODO: Check if this is necessary"
 )]
 
+use std::sync::Arc;
+
+use calimero_context_primitives::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
+use calimero_store::Store;
+use clap::{Parser, Subcommand};
+
 mod applications;
 pub mod call;
 pub mod common;
@@ -13,12 +20,10 @@ pub mod state;
 pub mod store;
 pub mod webui;
 
-use clap::{Parser, Subcommand};
-
-use crate::Node;
+use crate::NodeConfig;
 
 #[derive(Debug, Parser)]
-#[command(multicall = true, bin_name = "{repl}")]
+#[command(multicall = true)]
 #[non_exhaustive]
 pub struct RootCommand {
     #[command(subcommand)]
@@ -39,7 +44,16 @@ pub enum SubCommand {
     WebUI(webui::WebUICommand),
 }
 
-pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
+pub async fn handle_line(
+    ctx_client: ContextClient,
+    node_client: NodeClient,
+    datastore: Store,
+    config: Arc<NodeConfig>,
+    line: String,
+) -> eyre::Result<()> {
+    // todo! use shell parsing
+    // todo! employ clap completions
+
     let mut args = line.split_whitespace().peekable();
 
     if args.peek().is_none() {
@@ -55,12 +69,12 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     };
 
     match command.action {
-        SubCommand::Application(application) => application.run(node).await?,
-        SubCommand::Call(call) => call.run(node).await?,
-        SubCommand::Context(context) => context.run(node).await?,
-        SubCommand::Peers(peers) => peers.run(node).await?,
-        SubCommand::State(state) => state.run(node)?,
-        SubCommand::WebUI(cmd) => cmd.run(node)?,
+        SubCommand::Application(application) => application.run(&node_client).await?,
+        SubCommand::Call(call) => call.run(&node_client, &ctx_client).await?,
+        SubCommand::Context(context) => context.run(&node_client, &ctx_client).await?,
+        SubCommand::Peers(peers) => peers.run(&node_client).await?,
+        SubCommand::State(state) => state.run(&node_client, datastore)?,
+        SubCommand::WebUI(webui) => webui.run(&config)?,
         // SubCommand::Store(store) => store.run(node)?,
     }
 

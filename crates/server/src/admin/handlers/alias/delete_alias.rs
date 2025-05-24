@@ -26,7 +26,7 @@ where
         return (StatusCode::BAD_REQUEST, "invalid path params").into_response();
     };
 
-    if let Err(err) = state.ctx_manager.delete_alias(alias, scope) {
+    if let Err(err) = state.node_client.delete_alias(alias, scope) {
         return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
     }
 
