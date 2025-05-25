@@ -21,7 +21,6 @@ ed25519-consensus.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
-# lazy_static.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 near-crypto.workspace = true
@@ -33,8 +32,6 @@ semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 starknet.workspace = true
 soroban-client.workspace = true
-# tempfile.workspace = true
-# termcolor.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
 toml.workspace = true
 toml_edit.workspace = true
