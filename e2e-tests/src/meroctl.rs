@@ -255,17 +255,34 @@ impl Meroctl {
         async move {
             let output = command
                 .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()?
                 .wait_with_output()
                 .await?;
 
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                output_writer.write_str(&format!(
+                    "Command failed with status {}:\nStderr: {}",
+                    output.status, stderr
+                ));
+                bail!("Command failed with status {}", output.status);
+            }
+
             let stdout_str = String::from_utf8_lossy(&output.stdout);
+            if stdout_str.trim().is_empty() {
+                output_writer.write_str("Command returned empty output");
+                bail!("Command returned empty output");
+            }
+
             match serde_json::from_slice(&output.stdout) {
                 Ok(json) => Ok(json),
                 Err(e) => {
                     output_writer.write_str(&format!(
-                        "Failed to parse JSON output: {}\nRaw output: {}",
-                        e, stdout_str
+                        "Failed to parse JSON output: {}\nRaw stdout: {}\nRaw stderr: {}",
+                        e,
+                        stdout_str,
+                        String::from_utf8_lossy(&output.stderr)
                     ));
                     Err(e.into())
                 }
