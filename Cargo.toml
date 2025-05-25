@@ -12,6 +12,7 @@ members = [
     "./crates/context",
     "./crates/context/config",
     "./crates/crypto",
+    "./crates/mero-devnet",
     "./crates/meroctl",
     "./crates/merod",
     "./crates/network",
@@ -33,7 +34,7 @@ members = [
 
     "./apps/kv-store",
 
-    "./e2e-tests",
+    "./e2e-tests", "crates/mero-devnet",
 ]
 
 [workspace.dependencies]
@@ -145,6 +146,7 @@ calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config" }
 calimero-crypto = { path = "./crates/crypto" }
+mero-devnet = { path = "./crates/mero-devnet" }
 meroctl = { path = "./crates/meroctl" }
 merod = { path = "./crates/merod" }
 calimero-network = { path = "./crates/network" }
