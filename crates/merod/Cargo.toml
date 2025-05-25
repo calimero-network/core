@@ -14,7 +14,6 @@ axum.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
-comfy-table.workspace = true
 const_format.workspace = true
 ic-agent.workspace = true
 dirs.workspace = true
@@ -22,7 +21,7 @@ ed25519-consensus.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
-lazy_static.workspace = true
+# lazy_static.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 near-crypto.workspace = true
@@ -32,11 +31,10 @@ similar.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 starknet.workspace = true
 soroban-client.workspace = true
-tempfile.workspace = true
-termcolor.workspace = true
+# tempfile.workspace = true
+# termcolor.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
 toml.workspace = true
 toml_edit.workspace = true
