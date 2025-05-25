@@ -92,7 +92,10 @@ impl Report for GetNumberOfProposalApprovalsResponse {
         table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         let _ = table.set_header(vec![Cell::new("Approval Count").fg(Color::Blue)]);
-        let _ = table.add_row(vec![format!("Number of Approvals: {}", self.data.num_approvals)]);
+        let _ = table.add_row(vec![format!(
+            "Number of Approvals: {}",
+            self.data.num_approvals
+        )]);
         println!("{table}");
     }
 }
@@ -103,9 +106,7 @@ impl Report for GetProposalApproversResponse {
         table.load_preset(comfy_table::presets::UTF8_FULL);
         table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
-        let _ = table.set_header(vec![
-            Cell::new("Approver ID").fg(Color::Blue),
-        ]);
+        let _ = table.set_header(vec![Cell::new("Approver ID").fg(Color::Blue)]);
 
         if self.data.is_empty() {
             let _ = table.add_row(vec!["No approvers found"]);
@@ -220,7 +221,7 @@ impl ProposalsCommand {
         }
     }
 
-     async fn get_number_of_proposal_approvals(
+    async fn get_number_of_proposal_approvals(
         &self,
         environment: &Environment,
         multiaddr: &Multiaddr,

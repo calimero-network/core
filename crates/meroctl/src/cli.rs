@@ -18,12 +18,10 @@ mod call;
 mod context;
 mod peers;
 
-
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use peers::PeersCommand;
-
 
 pub const EXAMPLES: &str = r"
   # List all applications

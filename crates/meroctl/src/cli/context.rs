@@ -13,9 +13,9 @@ use crate::cli::context::identity::ContextIdentityCommand;
 use crate::cli::context::invite::InviteCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
+use crate::cli::context::proposals::ProposalsCommand;
 use crate::cli::context::update::UpdateCommand;
 use crate::cli::context::watch::WatchCommand;
-use crate::cli::context::proposals::ProposalsCommand;
 use crate::cli::Environment;
 use crate::output::Report;
 
@@ -27,9 +27,9 @@ mod identity;
 pub mod invite;
 pub mod join;
 mod list;
+mod proposals;
 mod update;
 mod watch;
-mod proposals;
 
 pub const EXAMPLES: &str = r"
   # List all contexts
