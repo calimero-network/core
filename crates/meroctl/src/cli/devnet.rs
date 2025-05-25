@@ -85,7 +85,7 @@ impl DevnetCommand {
 
         {
             let mut running_network = RUNNING_NETWORK.lock().await;
-            *running_network = Some(network.clone());
+            *running_network = Some(Arc::clone(&network));
         }
 
         network
