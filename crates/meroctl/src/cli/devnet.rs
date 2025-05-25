@@ -57,7 +57,6 @@ impl DevnetCommand {
         binary: Utf8PathBuf,
         logs_dir: Utf8PathBuf,
     ) -> Result<()> {
-        // Check if network is already running
         {
             let running_network = RUNNING_NETWORK.lock().await;
             if running_network.is_some() {
@@ -65,10 +64,7 @@ impl DevnetCommand {
             }
         }
 
-        // Load config
-        let config_path = config_path.unwrap_or_else(|| {
-            Utf8PathBuf::from("devnet-config.json") // Default config path
-        });
+        let config_path = config_path.unwrap_or_else(|| Utf8PathBuf::from("devnet-config.json"));
 
         let config_content = tokio::fs::read_to_string(&config_path)
             .await
@@ -76,7 +72,6 @@ impl DevnetCommand {
         let config: Config =
             serde_json::from_str(&config_content).context("Failed to parse config file")?;
 
-        // Create and start network
         let network = DevNetwork::new(config, binary, logs_dir)
             .await
             .context("Failed to initialize devnet")?;
@@ -97,10 +92,8 @@ impl DevnetCommand {
 
         println!("Devnet started successfully. Press Ctrl+C to stop.");
 
-        // Wait for Ctrl+C
         tokio::signal::ctrl_c().await?;
 
-        // Clean up
         Self::stop().await?;
         Ok(())
     }
