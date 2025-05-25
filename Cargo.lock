@@ -5993,7 +5993,6 @@ dependencies = [
  "reqwest 0.12.9",
  "semver 1.0.23",
  "serde",
- "serde_json",
  "soroban-client",
  "starknet",
  "tokio",

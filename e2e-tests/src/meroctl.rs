@@ -228,7 +228,8 @@ impl Meroctl {
         args: impl IntoIterator<Item = &'a str>,
     ) -> impl Future<Output = EyreResult<serde_json::Value>> + 'static {
         let mut command = Command::new(&self.binary);
-
+        let output_writer = self.output_writer.clone(); 
+        
         let mut command_line = format!("Command: '{}", &self.binary);
 
         let root_args = [
@@ -249,7 +250,7 @@ impl Meroctl {
 
         command_line.push('\'');
 
-        self.output_writer.write_str(&command_line);
+        output_writer.write_str(&command_line); 
 
         async move {
             let output = command
@@ -258,7 +259,17 @@ impl Meroctl {
                 .wait_with_output()
                 .await?;
 
-            Ok(serde_json::from_slice(&output.stdout)?)
+            let stdout_str = String::from_utf8_lossy(&output.stdout);
+            match serde_json::from_slice(&output.stdout) {
+                Ok(json) => Ok(json),
+                Err(e) => {
+                    output_writer.write_str(&format!(
+                        "Failed to parse JSON output: {}\nRaw output: {}",
+                        e, stdout_str
+                    ));
+                    Err(e.into())
+                }
+            }
         }
     }
 
