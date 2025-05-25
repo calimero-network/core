@@ -1,10 +1,11 @@
-use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::GenerateContextIdentityResponse;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
+use reqwest::Client;
 
 use crate::cli::Environment;
+use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -13,20 +14,31 @@ pub struct GenerateCommand;
 
 impl Report for GenerateContextIdentityResponse {
     fn report(&self) {
+        println!("public_key: {}", self.data.public_key);
+
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Generated Identity").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("Public Key: {}", self.data.public_key)]);
-        let _ = table.add_row(vec![format!("Private Key: {}", self.data.private_key)]);
         println!("{table}");
     }
 }
 
 impl GenerateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let private_key = PrivateKey::random(&mut rand::thread_rng());
-        let response = GenerateContextIdentityResponse::new(private_key.public_key(), private_key);
-        environment.output.write(&response);
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let multiaddr = fetch_multiaddr(&config)?;
+        let url = multiaddr_to_url(multiaddr, "admin-api/dev/identity/context")?;
 
+        let response: GenerateContextIdentityResponse = do_request(
+            &Client::new(),
+            url,
+            None::<()>,
+            &config.identity,
+            RequestType::Post,
+        )
+        .await?;
+
+        environment.output.write(&response);
         Ok(())
     }
 }
