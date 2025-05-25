@@ -1838,6 +1838,7 @@ dependencies = [
  "libp2p-identity",
  "multiaddr",
  "serde",
+ "tokio",
  "toml",
 ]
 
@@ -1944,6 +1945,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "eyre",
@@ -2143,13 +2145,23 @@ dependencies = [
  "camino",
  "eyre",
  "generic-array 1.1.1",
- "rocksdb",
  "serde",
  "serde_json",
  "strum 0.26.3",
  "tempdir",
  "thiserror 1.0.69",
  "thunderdome",
+]
+
+[[package]]
+name = "calimero-store-rocksdb"
+version = "0.1.0"
+dependencies = [
+ "calimero-store",
+ "eyre",
+ "rocksdb",
+ "strum 0.26.3",
+ "tempdir",
 ]
 
 [[package]]
@@ -3775,15 +3787,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
 dependencies = [
  "byteorder",
-]
-
-[[package]]
-name = "gen-ext"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-sdk-near",
- "calimero-storage",
 ]
 
 [[package]]
@@ -5948,6 +5951,7 @@ dependencies = [
  "notify",
  "rand 0.8.5",
  "reqwest 0.12.9",
+ "semver 1.0.23",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5970,6 +5974,7 @@ dependencies = [
  "calimero-node",
  "calimero-server",
  "calimero-store",
+ "calimero-store-rocksdb",
  "camino",
  "clap",
  "color-eyre",
@@ -5984,6 +5989,10 @@ dependencies = [
  "multiaddr",
  "near-crypto",
  "rand 0.8.5",
+ "reqwest 0.12.9",
+ "semver 1.0.23",
+ "serde",
+ "serde_json",
  "soroban-client",
  "starknet",
  "tokio",
@@ -8405,6 +8414,9 @@ name = "semver"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "semver-parser"
@@ -10381,14 +10393,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "visited"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
-]
 
 [[package]]
 name = "void"

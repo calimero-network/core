@@ -5,7 +5,6 @@ set -ex
 
 BUILD_SCRIPTS=(
     "apps/kv-store/build.sh"
-    "apps/gen-ext/build.sh"
 )
 
 run_script() {

@@ -27,12 +27,11 @@ members = [
     "./crates/storage",
     "./crates/storage-macros",
     "./crates/store",
+    "./crates/store/impl/rocksdb",
     "./crates/store/blobs",
     "./crates/utils/actix",
 
     "./apps/kv-store",
-    "./apps/gen-ext",
-    "./apps/visited",
 
     "./e2e-tests",
 ]
@@ -98,7 +97,6 @@ prettyplease = "0.2.17"
 proc-macro2 = "1.0"
 quote = "1.0.37"
 rand = "0.8.5"
-rand_chacha = "0.3.1"
 reqwest = "0.12.2"
 ring = "0.17.8"
 rocksdb = "0.22.0"
@@ -162,13 +160,12 @@ calimero-server-primitives = { path = "./crates/server-primitives" }
 calimero-storage = { path = "./crates/storage" }
 calimero-storage-macros = { path = "./crates/storage-macros" }
 calimero-store = { path = "./crates/store" }
+calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-blobstore = { path = "./crates/store/blobs" }
 e2e-tests = { path = "./e2e-tests" }
 calimero-utils-actix = { path = "./crates/utils/actix" }
 
 kv-store = { path = "./apps/kv-store" }
-gen-ext = { path = "./apps/gen-ext" }
-visited = { path = "./apps/visited" }
 
 calimero-registry = { path = "./contracts/near/registry" }
 calimero-context-config-near = { path = "./contracts/near/context-config" }

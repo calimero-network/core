@@ -1,5 +1,4 @@
 use core::time::Duration;
-use std::fs::{read_to_string, write};
 
 use calimero_context::config::ContextConfig;
 use calimero_network::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
@@ -10,6 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
+use tokio::fs::{read_to_string, write};
 
 pub const CONFIG_FILE: &str = "config.toml";
 
@@ -156,9 +156,9 @@ impl ConfigFile {
         dir.join(CONFIG_FILE).is_file()
     }
 
-    pub fn load(dir: &Utf8Path) -> EyreResult<Self> {
+    pub async fn load(dir: &Utf8Path) -> EyreResult<Self> {
         let path = dir.join(CONFIG_FILE);
-        let content = read_to_string(&path).wrap_err_with(|| {
+        let content = read_to_string(&path).await.wrap_err_with(|| {
             format!(
                 "failed to read configuration from {:?}",
                 dir.join(CONFIG_FILE)
@@ -168,11 +168,11 @@ impl ConfigFile {
         toml::from_str(&content).map_err(Into::into)
     }
 
-    pub fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
+    pub async fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
         let path = dir.join(CONFIG_FILE);
         let content = toml::to_string_pretty(self)?;
 
-        write(&path, content).wrap_err_with(|| {
+        write(&path, content).await.wrap_err_with(|| {
             format!(
                 "failed to write configuration to {:?}",
                 dir.join(CONFIG_FILE)
