@@ -4,18 +4,28 @@ mod macros_tests;
 
 #[doc(hidden)]
 pub mod __private {
-    #![allow(dead_code, unused_imports, reason = "Macros")]
-
+    pub use core::marker::Send;
+    pub use core::ops::{DerefMut, FnOnce};
+    pub use core::pin::pin;
+    pub use core::ptr;
+    pub use core::task::Poll;
     pub use std::boxed::Box;
-    pub use std::ops::DerefMut;
-    pub use std::ptr;
 
-    pub use actix::{AsyncContext, Context, Handler, Message, StreamHandler};
-    pub use futures_util::{pin_mut, FutureExt, Stream, StreamExt};
+    pub use actix::dev::channel;
+    use actix::dev::ToEnvelope;
+    pub use actix::{
+        Actor, Addr, ArbiterHandle, AsyncContext, Context, Handler, Message, StreamHandler,
+    };
+    pub use futures_util::future::poll_fn;
+    pub use futures_util::{FutureExt, Stream, StreamExt};
     pub use paste::paste;
-    pub use tokio::{select, task};
+    pub use tokio::task;
 
-    pub use crate::spawn_actor;
+    pub use crate::actor;
+
+    pub trait ActorSpawn: Actor {
+        fn spawn(self, ctx: Self::Context);
+    }
 
     #[derive(Debug, Message)]
     #[rtype("()")]
@@ -23,6 +33,15 @@ pub mod __private {
         Started,
         Finished,
         Value(T),
+    }
+
+    impl<T: Send> FromStreamInner<T> {
+        pub fn send<A>(self, addr: &Addr<A>)
+        where
+            A: Actor<Context: ToEnvelope<A, Self>> + Handler<Self> + StreamHandler<T>,
+        {
+            addr.do_send(self);
+        }
     }
 
     impl FromStreamInner<()> {
@@ -43,35 +62,66 @@ pub mod __private {
 }
 
 #[macro_export]
-macro_rules! spawn_actor {
-    (@$type:ident ? $($fn1:ident)::+ : $($fn2:ident)::+) => {
-        $($fn1)::+::<$type, _>
-    };
-    (@? $($fn1:ident)::+ : $($fn2:ident)::+) => {
-        $($fn2)::+
-    };
-    ($self:ident @ Self $($rest:tt),*) => {
+macro_rules! actor {
+    (Self $($rest:tt),*) => {
         compile_error!("`Self` is not allowed")
     };
-    ($self:ident @ $actor:ident $(=> {$(.$stream:ident $(as $type:ident)?),+ $(,)?})?) => {{
-        use $crate::macros::__private::*;
+    ($actor:ty $(=> {$(.$stream:ident $(as $type:ty)?),+ $(,)?})?) => {
+        fn start(self) -> $crate::macros::__private::Addr<Self> {
+            use $crate::macros::__private::*;
 
-        paste! {
-            $($(
-                let [<stream_ $stream>] = {
-                    let stream = Box::deref_mut(&mut $self.$stream);
-                    unsafe { &mut *ptr::from_mut(stream) }
-                };
-            )+)?
+            {
+                actor!(@handler $actor);
+                actor!(@spawn $actor { $($(.$stream $(as $type)?)+)? });
+            }
+
+            let ctx = Context::new();
+            let addr = ctx.address();
+            self.spawn(ctx);
+            addr
         }
 
-        let ctx = Context::new();
+        fn create<F>(f: F) -> $crate::macros::__private::Addr<Self>
+        where
+            F: $crate::macros::__private::FnOnce(
+                    &mut $crate::macros::__private::Context<Self>
+                ) -> Self,
+        {
+            use $crate::macros::__private::*;
 
-        let addr = ctx.address();
+            let mut ctx = Context::new();
+            let addr = ctx.address();
+            let this = f(&mut ctx);
+            this.spawn(ctx);
+            addr
+        }
 
-        let mut fut = ctx.into_future($self);
+        fn start_in_arbiter<F>(
+            wrk: &$crate::macros::__private::ArbiterHandle,
+            f: F
+        ) -> $crate::macros::__private::Addr<Self>
+        where
+            F: $crate::macros::__private::FnOnce(
+                    &mut $crate::macros::__private::Context<Self>
+                ) -> Self
+                + $crate::macros::__private::Send + 'static,
+        {
+            use $crate::macros::__private::*;
 
+            let (tx, rx) = channel::channel(16);
+
+            let _ignored = wrk.spawn(async move {
+                let mut ctx = Context::with_receiver(rx);
+                let this = f(&mut ctx);
+                this.spawn(ctx);
+            });
+
+            Addr::new(tx)
+        }
+    };
+    (@handler $actor:ty) => {
         #[allow(non_local_definitions)]
+        #[diagnostic::do_not_recommend]
         impl<T> Handler<FromStreamInner<T>> for $actor
         where
             Self: StreamHandler<T>,
@@ -86,14 +136,50 @@ macro_rules! spawn_actor {
                 }
             }
         }
+    };
+    (@spawn $actor:ty { $(.$stream:ident $(as $type:ty)?)* }) => {
+        #[allow(non_local_definitions)]
+        impl ActorSpawn for $actor {
+            fn spawn(self, ctx: Self::Context) {
+                use $crate::macros::__private::*;
+
+                actor!(@spawn_impl self ctx { $(.$stream $(as $type)?)* });
+            }
+        }
+    };
+    (@{$type:ty} ? $($fn1:ident)::+ : $($fn2:ident)::+) => {
+        $($fn1)::+::<$type, _>
+    };
+    (@{} ? $($fn1:ident)::+ : $($fn2:ident)::+) => {
+        $($fn2)::+
+    };
+    (@spawn_impl $self:ident $ctx:ident { $(.$stream:ident $(as $type:ty)?)* }) => {
+        #[allow(unused_mut)]
+        let mut this = $self;
+
+        paste! {
+            $(
+                let [<stream_ $stream>] = {
+                    let stream = Box::deref_mut(&mut this.$stream);
+                    unsafe { &mut *ptr::from_mut(stream) }
+                };
+            )*
+        }
+
+        #[allow(unused_variables)]
+        let addr = $ctx.address();
+
+        let mut fut = $ctx.into_future(this);
 
         let _ignored = task::spawn_local({
             paste! {
-                $($(
+                $(
                     let [<task_ $stream>] = {
-                        let func = spawn_actor!(@ $($type)? ? FromStreamInner::scoped_into : FromStreamInner::scoped_identity);
+                        let msg = actor!(@ { $($type)? } ? FromStreamInner::scoped_into : FromStreamInner::scoped_identity);
 
-                        addr.do_send(func(FromStreamInner::Started, [<stream_ $stream>]));
+                        let send = FromStreamInner::send;
+
+                        send(msg(FromStreamInner::Started, [<stream_ $stream>]), &addr);
 
                         let addr = addr.downgrade();
 
@@ -106,38 +192,40 @@ macro_rules! spawn_actor {
                                 };
 
                                 let Some(value) = item else {
-                                    addr.do_send(func(FromStreamInner::Finished, [<stream_ $stream>]));
+                                    send(msg(FromStreamInner::Finished, [<stream_ $stream>]), &addr);
                                     break;
                                 };
 
-                                addr.do_send(func(FromStreamInner::Value(value.into()), [<stream_ $stream>]));
+                                send(msg(FromStreamInner::Value(value.into()), [<stream_ $stream>]), &addr);
                             }
                         }
                     };
-                )+)?
+                )*
             }
 
             async move {
                 paste! {
-                    $($(
-                        pin_mut!([<task_ $stream>]);
-
-                        let mut [<task_ $stream>] = [<task_ $stream>].fuse();
-                    )+)?
+                    $(
+                        let mut [<task_ $stream>] = pin!([<task_ $stream>].fuse());
+                    )*
                 }
 
-                loop {
-                    paste! {
-                        select! {
-                            biased;
-                            _ = &mut fut => { break },
-                            $($( _ = &mut [<task_ $stream>] => {} )+)?
-                        }
+                poll_fn(|cx| {
+                    if fut.poll_unpin(cx).is_ready() {
+                        return Poll::Ready(());
                     }
-                }
+
+                    paste! {
+                        $(
+                            let _ignored = [<task_ $stream>].poll_unpin(cx);
+                        )*
+                    }
+
+                    Poll::Pending
+                })
+                .fuse()
+                .await
             }
         });
-
-        addr
-    }};
+    };
 }

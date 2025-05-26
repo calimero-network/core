@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[path = "../tests/discovery/state.rs"]
+#[path = "state_tests.rs"]
 mod tests;
 
 use core::time::Duration;

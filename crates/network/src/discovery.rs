@@ -1,11 +1,15 @@
+use std::collections::HashSet;
+use std::net::Ipv4Addr;
+use std::time::Duration;
+
+use calimero_network_primitives::config::{AutonatConfig, RelayConfig, RendezvousConfig};
 use eyre::{bail, ContextCompat, Result as EyreResult};
 use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
-use multiaddr::Protocol;
+use multiaddr::{Multiaddr, Protocol};
 use tracing::{debug, error, info};
 
-use super::EventLoop;
-use crate::config::{AutonatConfig, RelayConfig, RendezvousConfig};
+use super::NetworkManager;
 use crate::discovery::state::{
     DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
 };
@@ -17,58 +21,71 @@ pub struct Discovery {
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: RendezvousConfig,
     pub(crate) relay_config: RelayConfig,
+    pub(crate) advertise: Option<AdvertiseState>,
     pub(crate) _autonat_config: AutonatConfig,
 }
 
+#[derive(Debug)]
+pub(crate) struct AdvertiseState {
+    pub(crate) ip: Ipv4Addr,
+    pub(crate) ports: HashSet<u16>,
+}
+
 impl Discovery {
-    pub(crate) fn new(
+    pub(crate) async fn new(
         rendezvous_config: &RendezvousConfig,
         relay_config: &RelayConfig,
         autonat_config: &AutonatConfig,
-    ) -> Self {
-        Self {
+        listening_on: &[Multiaddr],
+    ) -> EyreResult<Self> {
+        let advertise = if listening_on.is_empty() {
+            None
+        } else {
+            let ports = listening_on
+                .iter()
+                .filter_map(|addr| {
+                    addr.iter().find_map(|p| match p {
+                        Protocol::Tcp(port) | Protocol::Udp(port) => Some(port),
+                        _ => None,
+                    })
+                })
+                .collect();
+
+            Some(AdvertiseState {
+                ip: Self::get_public_ip().await?,
+                ports,
+            })
+        };
+
+        let this = Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
             relay_config: relay_config.clone(),
+            advertise,
             _autonat_config: autonat_config.clone(),
-        }
+        };
+
+        Ok(this)
+    }
+
+    async fn get_public_ip() -> EyreResult<Ipv4Addr> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()?;
+
+        let ip_addr = client
+            .get("https://api.ipify.org")
+            .send()
+            .await?
+            .text()
+            .await?
+            .parse()?;
+
+        Ok(ip_addr)
     }
 }
 
-impl EventLoop {
-    // Sends rendezvous discovery requests to all rendezvous peers which are not throttled.
-    // If rendezvous peer is not connected, it will be dialed which will trigger the discovery during identify exchange.
-    pub(crate) fn broadcast_rendezvous_discoveries(&mut self) {
-        #[expect(clippy::needless_collect, reason = "Necessary here; false positive")]
-        for peer_id in self
-            .discovery
-            .state
-            .get_rendezvous_peer_ids()
-            .collect::<Vec<_>>()
-        {
-            let Some(peer_info) = self.discovery.state.get_peer_info(&peer_id) else {
-                error!(%peer_id, "Failed to lookup peer info");
-                continue;
-            };
-
-            if peer_info
-                .is_rendezvous_discover_throttled(self.discovery.rendezvous_config.discovery_rpm)
-            {
-                continue;
-            }
-
-            if !self.swarm.is_connected(&peer_id) {
-                for addr in peer_info.addrs().cloned() {
-                    if let Err(err) = self.swarm.dial(addr) {
-                        error!(%err, "Failed to dial rendezvous peer");
-                    }
-                }
-            } else if let Err(err) = self.rendezvous_discover(&peer_id) {
-                error!(%err, "Failed to perform rendezvous discover");
-            }
-        }
-    }
-
+impl NetworkManager {
     // Sends rendezvous discovery request to the rendezvous peer if not throttled.
     // This function expectes that the rendezvous peer is already connected.
     pub(crate) fn rendezvous_discover(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {

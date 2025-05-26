@@ -1,0 +1,28 @@
+[package]
+name = "calimero-network-primitives"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+actix.workspace = true
+bytes.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+libp2p = { workspace = true, features = ["gossipsub", "rendezvous"] }
+multiaddr.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["compat"] }
+
+calimero-primitives.workspace = true
+calimero-utils-actix.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+
+[lints]
+workspace = true

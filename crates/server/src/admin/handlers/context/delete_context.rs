@@ -27,7 +27,7 @@ pub async fn handler(
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
-        .ctx_manager
+        .ctx_client
         .delete_context(&context_id_result)
         .await
         .map_err(parse_api_error);
@@ -35,7 +35,9 @@ pub async fn handler(
     match result {
         Ok(result) => ApiResponse {
             payload: DeleteContextResponse {
-                data: DeletedContextResponseData { is_deleted: result },
+                data: DeletedContextResponseData {
+                    is_deleted: result.deleted,
+                },
             },
         }
         .into_response(),
