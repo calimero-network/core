@@ -133,7 +133,11 @@ impl SecretManager {
     /// Initialize the secret manager
     pub async fn initialize(&self) -> Result<()> {
         // Initialize all secret types
-        for secret_type in [SecretType::JwtAuth, SecretType::JwtChallenge, SecretType::Csrf] {
+        for secret_type in [
+            SecretType::JwtAuth,
+            SecretType::JwtChallenge,
+            SecretType::Csrf,
+        ] {
             self.initialize_secret(secret_type).await?;
         }
         Ok(())
@@ -168,7 +172,10 @@ impl SecretManager {
     pub async fn get_secret(&self, secret_type: SecretType) -> Result<String> {
         // First try memory cache
         let secrets = self.secrets.read().await;
-        if let Some(secret) = secrets.iter().find(|s| s.secret_type == secret_type && s.is_primary) {
+        if let Some(secret) = secrets
+            .iter()
+            .find(|s| s.secret_type == secret_type && s.is_primary)
+        {
             return Ok(secret.value.clone());
         }
         drop(secrets);
@@ -185,11 +192,7 @@ impl SecretManager {
                     Some(data) => {
                         let secret: VersionedSecret = serde_json::from_slice(&data)?;
                         // Restore to primary location
-                        if let Err(e) = self
-                            .storage
-                            .set(secret_type.primary_key(), &data)
-                            .await
-                        {
+                        if let Err(e) = self.storage.set(secret_type.primary_key(), &data).await {
                             error!("Failed to restore secret to primary storage: {}", e);
                         }
                         Ok(secret.value)
@@ -203,7 +206,7 @@ impl SecretManager {
     /// Rotate a secret
     pub async fn rotate_secret(&self, secret_type: SecretType) -> Result<()> {
         let mut secrets = self.secrets.write().await;
-        
+
         // Create new primary secret
         let new_secret = VersionedSecret::new(secret_type, &self.rotation_config);
         let data = serde_json::to_vec(&new_secret)?;
@@ -212,10 +215,15 @@ impl SecretManager {
         self.storage.set(secret_type.primary_key(), &data).await?;
 
         // Update old secret as backup
-        if let Some(old_secret) = secrets.iter_mut().find(|s| s.secret_type == secret_type && s.is_primary) {
+        if let Some(old_secret) = secrets
+            .iter_mut()
+            .find(|s| s.secret_type == secret_type && s.is_primary)
+        {
             old_secret.is_primary = false;
             let backup_data = serde_json::to_vec(old_secret)?;
-            self.storage.set(secret_type.backup_key(), &backup_data).await?;
+            self.storage
+                .set(secret_type.backup_key(), &backup_data)
+                .await?;
         }
 
         // Update memory cache
@@ -231,8 +239,12 @@ impl SecretManager {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await; // Check every hour
-                
-                for secret_type in [SecretType::JwtAuth, SecretType::JwtChallenge, SecretType::Csrf] {
+
+                for secret_type in [
+                    SecretType::JwtAuth,
+                    SecretType::JwtChallenge,
+                    SecretType::Csrf,
+                ] {
                     if let Err(e) = self.rotate_if_needed(secret_type).await {
                         error!("Failed to rotate secret {:?}: {}", secret_type, e);
                     }
@@ -244,7 +256,10 @@ impl SecretManager {
     /// Check and rotate a secret if needed
     async fn rotate_if_needed(&self, secret_type: SecretType) -> Result<()> {
         let secrets = self.secrets.read().await;
-        if let Some(secret) = secrets.iter().find(|s| s.secret_type == secret_type && s.is_primary) {
+        if let Some(secret) = secrets
+            .iter()
+            .find(|s| s.secret_type == secret_type && s.is_primary)
+        {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

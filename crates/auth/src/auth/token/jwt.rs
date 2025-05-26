@@ -115,7 +115,10 @@ impl TokenManager {
         };
 
         // Both access and refresh tokens should use the JWT auth secret
-        let secret = self.secret_manager.get_jwt_auth_secret().await
+        let secret = self
+            .secret_manager
+            .get_jwt_auth_secret()
+            .await
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let header = Header::new(Algorithm::HS256);
@@ -168,7 +171,10 @@ impl TokenManager {
         }
 
         // Get the appropriate secret
-        let secret = self.secret_manager.get_jwt_auth_secret().await
+        let secret = self
+            .secret_manager
+            .get_jwt_auth_secret()
+            .await
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let mut validation = Validation::new(Algorithm::HS256);
