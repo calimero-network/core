@@ -7,7 +7,7 @@ use thiserror::Error as ThisError;
 
 use crate::hash::{Hash, HashError};
 
-#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Ord, Hash, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
@@ -24,6 +24,12 @@ impl BlobId {
 impl From<[u8; 32]> for BlobId {
     fn from(id: [u8; 32]) -> Self {
         Self(id.into())
+    }
+}
+
+impl AsRef<[u8; 32]> for BlobId {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 

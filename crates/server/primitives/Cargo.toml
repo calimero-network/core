@@ -1,0 +1,22 @@
+[package]
+name = "calimero-server-primitives"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+camino = { workspace = true, features = ["serde1"] }
+eyre.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+url = { workspace = true, features = ["serde"] }
+
+calimero-context-config.workspace = true
+calimero-context-primitives.workspace = true
+calimero-primitives.workspace = true
+
+[lints]
+workspace = true
