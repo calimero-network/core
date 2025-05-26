@@ -1,6 +1,6 @@
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
-use calimero_network::config::NetworkConfig;
+use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
 use calimero_node::{start, NodeConfig};
 use calimero_server::config::ServerConfig;
@@ -42,24 +42,25 @@ impl RunCommand {
             jsonrpc.auth_enabled = self.auth;
         }
 
-        start(NodeConfig::new(
-            path.clone(),
-            config.identity.clone(),
-            NetworkConfig::new(
+        start(NodeConfig {
+            home: path.clone(),
+            identity: config.identity.clone(),
+            network: NetworkConfig::new(
                 config.identity.clone(),
                 config.network.swarm,
                 config.network.bootstrap,
                 config.network.discovery,
             ),
-            SyncConfig {
+            sync: SyncConfig {
                 timeout: config.sync.timeout,
                 interval: config.sync.interval,
+                frequency: config.sync.frequency,
             },
-            StoreConfig::new(path.join(config.datastore.path)),
-            BlobStoreConfig::new(path.join(config.blobstore.path)),
-            config.context,
-            server_config,
-        ))
+            datastore: StoreConfig::new(path.join(config.datastore.path)),
+            blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
+            context: config.context,
+            server: server_config,
+        })
         .await
     }
 }

@@ -1,7 +1,7 @@
 use core::time::Duration;
 
 use calimero_context::config::ContextConfig;
-use calimero_network::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
+use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
@@ -40,6 +40,8 @@ pub struct SyncConfig {
     pub timeout: Duration,
     #[serde(rename = "interval_ms", with = "serde_duration")]
     pub interval: Duration,
+    #[serde(rename = "frequency_ms", with = "serde_duration")]
+    pub frequency: Duration,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

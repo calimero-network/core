@@ -1,5 +1,5 @@
 use core::fmt::{self, Debug, Formatter};
-use core::pin::Pin;
+use core::pin::{pin, Pin};
 use core::task::{Context, Poll};
 use std::io::ErrorKind as IoErrorKind;
 
@@ -12,7 +12,7 @@ use calimero_store::Store as DataStore;
 use camino::Utf8PathBuf;
 use eyre::{Report, Result as EyreResult};
 use futures_util::io::BufReader;
-use futures_util::{pin_mut, AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
+use futures_util::{AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_write};
@@ -111,9 +111,7 @@ impl BlobManager {
     where
         T: AsyncRead,
     {
-        let stream = BufReader::new(stream);
-
-        pin_mut!(stream);
+        let mut stream = pin!(BufReader::new(stream));
 
         let blobs = try_stream!({
             let mut buf = vec![0_u8; CHUNK_SIZE].into_boxed_slice();
@@ -185,7 +183,7 @@ impl BlobManager {
         });
 
         let blobs = typed_stream::<EyreResult<_>>(blobs).peekable();
-        pin_mut!(blobs);
+        let mut blobs = pin!(blobs);
 
         let mut links = Vec::with_capacity(
             size.map(|s| s.hint().saturating_div(CHUNK_SIZE))
