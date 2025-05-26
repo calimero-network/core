@@ -203,22 +203,22 @@ impl ConfigCommand {
 
     fn type_hint(&self, item: &Item) -> String {
         match item {
-            Item::None => "null".to_string(),
-            Item::Value(Value::String(_)) => "string".to_string(),
-            Item::Value(Value::Integer(_)) => "integer".to_string(),
-            Item::Value(Value::Float(_)) => "float".to_string(),
-            Item::Value(Value::Boolean(_)) => "boolean".to_string(),
-            Item::Value(Value::Datetime(_)) => "datetime".to_string(),
+            Item::None => "null".to_owned(),
+            Item::Value(Value::String(_)) => "string".to_owned(),
+            Item::Value(Value::Integer(_)) => "integer".to_owned(),
+            Item::Value(Value::Float(_)) => "float".to_owned(),
+            Item::Value(Value::Boolean(_)) => "boolean".to_owned(),
+            Item::Value(Value::Datetime(_)) => "datetime".to_owned(),
             Item::Value(Value::Array(arr)) => {
                 if let Some(first) = arr.get(0) {
                     format!("array[{}]", self.type_hint(&Item::Value(first.clone())))
                 } else {
-                    "array[]".to_string()
+                    "array[]".to_owned()
                 }
             }
-            Item::Value(Value::InlineTable(_)) => "object".to_string(),
-            Item::Table(_) => "object".to_string(),
-            Item::ArrayOfTables(_) => "array[object]".to_string(),
+            Item::Value(Value::InlineTable(_)) => "object".to_owned(),
+            Item::Table(_) => "object".to_owned(),
+            Item::ArrayOfTables(_) => "array[object]".to_owned(),
         }
     }
     fn show_diff(
