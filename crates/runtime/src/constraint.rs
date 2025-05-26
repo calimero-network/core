@@ -9,6 +9,17 @@ pub struct Constrained<T, R> {
     _phantom: PhantomData<R>,
 }
 
+impl<T: Copy, R> Copy for Constrained<T, R> {}
+
+impl<T: Clone, R> Clone for Constrained<T, R> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<T, R> Deref for Constrained<T, R> {
     type Target = T;
 
@@ -36,7 +47,7 @@ impl<T> Constraint for T {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MaxU64<const MAX: u64>;
 
 #[derive(Debug, ThisError)]

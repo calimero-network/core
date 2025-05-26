@@ -1,0 +1,27 @@
+[package]
+name = "calimero-context-primitives"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+actix.workspace = true
+async-stream.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+rand.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
+url.workspace = true
+
+calimero-context-config = { workspace = true, features = ["client"] }
+calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
+calimero-node-primitives.workspace = true
+calimero-store = { workspace = true, features = ["datatypes"] }
+calimero-utils-actix.workspace = true
+
+[lints]
+workspace = true

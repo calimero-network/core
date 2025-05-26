@@ -1,7 +1,9 @@
 #![allow(single_use_lifetimes, unused_lifetimes, reason = "False positive")]
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
+use core::fmt;
 use core::num::NonZeroU64;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
@@ -14,6 +16,7 @@ use serde::Serialize;
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
 use crate::store::Storage;
+use crate::Constraint;
 
 mod errors;
 mod imports;
@@ -26,15 +29,19 @@ pub type VMLogicResult<T, E = VMLogicError> = Result<T, E>;
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct VMContext {
-    pub input: Vec<u8>,
+pub struct VMContext<'a> {
+    pub input: Cow<'a, [u8]>,
     pub context_id: [u8; 32],
     pub executor_public_key: [u8; 32],
 }
 
-impl VMContext {
+impl<'a> VMContext<'a> {
     #[must_use]
-    pub const fn new(input: Vec<u8>, context_id: [u8; 32], executor_public_key: [u8; 32]) -> Self {
+    pub const fn new(
+        input: Cow<'a, [u8]>,
+        context_id: [u8; 32],
+        executor_public_key: [u8; 32],
+    ) -> Self {
         Self {
             input,
             context_id,
@@ -43,7 +50,7 @@ impl VMContext {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -63,11 +70,35 @@ pub struct VMLimits {
     // number of functions per contract
 }
 
-#[derive(Debug)]
+impl Default for VMLimits {
+    fn default() -> Self {
+        #[inline(always)]
+        fn is_valid<T, E: fmt::Debug>(t: Result<T, E>) -> T {
+            t.expect("is valid")
+        }
+
+        VMLimits {
+            max_memory_pages: 1 << 10,                               // 1 KiB (64 KiB?)
+            max_stack_size: 200 << 10,                               // 200 KiB
+            max_registers: 100,                                      //
+            max_register_size: is_valid((100 << 20).validate()),     // 100 MiB
+            max_registers_capacity: 1 << 30,                         // 1 GiB
+            max_logs: 100,                                           //
+            max_log_size: 16 << 10,                                  // 16 KiB
+            max_events: 100,                                         //
+            max_event_kind_size: 100,                                //
+            max_event_data_size: 16 << 10,                           // 16 KiB
+            max_storage_key_size: is_valid((1 << 20).try_into()),    // 1 MiB
+            max_storage_value_size: is_valid((10 << 20).try_into()), // 10 MiB
+        }
+    }
+}
+
+#[expect(missing_debug_implementations, reason = "storage can't impl Debug")]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,
-    context: VMContext,
+    context: VMContext<'a>,
     limits: &'a VMLimits,
     registers: Registers,
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
@@ -80,7 +111,7 @@ pub struct VMLogic<'a> {
 }
 
 impl<'a> VMLogic<'a> {
-    pub fn new(storage: &'a mut dyn Storage, context: VMContext, limits: &'a VMLimits) -> Self {
+    pub fn new(storage: &'a mut dyn Storage, context: VMContext<'a>, limits: &'a VMLimits) -> Self {
         VMLogic {
             storage,
             memory: None,

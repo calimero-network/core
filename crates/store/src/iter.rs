@@ -26,7 +26,7 @@ impl<K, V> Debug for Iter<'_, K, V> {
     }
 }
 
-pub trait DBIter {
+pub trait DBIter: Send + Sync {
     // todo! indicate somehow that Key<'a> doesn't contain mutable references to &'a mut self
     fn seek(&mut self, key: Key<'_>) -> EyreResult<Option<Key<'_>>>;
     fn next(&mut self) -> EyreResult<Option<Key<'_>>>;
@@ -139,7 +139,11 @@ impl<'a, K> Iter<'a, K, Unstructured> {
 type Key<'a> = Slice<'a>;
 type Value<'a> = Slice<'a>;
 
-impl<K, V> DBIter for Iter<'_, K, V> {
+impl<K, V> DBIter for Iter<'_, K, V>
+where
+    K: Send + Sync,
+    V: Send + Sync,
+{
     fn seek(&mut self, key: Key<'_>) -> EyreResult<Option<Key<'_>>> {
         self.inner.seek(key)
     }
@@ -240,6 +244,9 @@ where
 pub struct Structured<K> {
     _priv: PhantomData<K>,
 }
+
+unsafe impl<K> Send for Structured<K> {}
+unsafe impl<K> Sync for Structured<K> {}
 
 #[derive(Clone, Copy, Debug)]
 #[expect(clippy::exhaustive_enums, reason = "This will never have variants")]

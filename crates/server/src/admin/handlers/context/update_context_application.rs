@@ -27,11 +27,11 @@ pub async fn handler(
     };
 
     let result = state
-        .ctx_manager
-        .update_application_id(
-            context_id_result,
-            req.application_id,
-            req.executor_public_key,
+        .ctx_client
+        .update_application(
+            &context_id_result,
+            &req.application_id,
+            &req.executor_public_key,
         )
         .await
         .map_err(parse_api_error);
