@@ -1,16 +1,15 @@
 use calimero_crypto::{Nonce, SharedKey};
-use calimero_network::stream::Stream;
+use calimero_network_primitives::stream::Stream;
+use calimero_node_primitives::sync::{InitPayload, MessagePayload, StreamMessage};
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
 use rand::{thread_rng, Rng};
 use tracing::debug;
 
-use crate::sync::{recv, send, Sequencer};
-use crate::types::{InitPayload, MessagePayload, StreamMessage};
-use crate::Node;
+use super::{Sequencer, SyncManager};
 
-impl Node {
+impl SyncManager {
     pub(super) async fn initiate_key_share_process(
         &self,
         context: &mut Context,
@@ -25,7 +24,7 @@ impl Node {
 
         let our_nonce = thread_rng().gen::<Nonce>();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
@@ -37,7 +36,7 @@ impl Node {
         )
         .await?;
 
-        let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
+        let Some(ack) = self.recv(stream, None).await? else {
             bail!("connection closed while awaiting state sync handshake");
         };
 
@@ -82,7 +81,7 @@ impl Node {
 
         let our_nonce = thread_rng().gen::<Nonce>();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Init {
                 context_id: context.id,
@@ -121,21 +120,22 @@ impl Node {
             "Starting bidirectional key share",
         );
 
-        let private_key = self
-            .ctx_manager
-            .get_private_key(context.id, our_identity)?
-            .ok_or_eyre("expected own identity to have private key")?;
+        let mut their_identity = self
+            .context_client
+            .get_identity(&context.id, &their_identity)?
+            .ok_or_eyre("expected peer identity to exist")?;
 
-        let shared_key = SharedKey::new(&private_key, &their_identity);
+        let (private_key, sender_key) = self
+            .context_client
+            .get_identity(&context.id, &our_identity)?
+            .and_then(|i| Some((i.private_key?, i.sender_key?)))
+            .ok_or_eyre("expected own identity to have private & sender keys")?;
 
-        let sender_key = self
-            .ctx_manager
-            .get_sender_key(&context.id, &our_identity)?
-            .ok_or_eyre("expected own identity to have sender key")?;
+        let shared_key = SharedKey::new(&private_key, &their_identity.public_key);
 
         let mut sqx_out = Sequencer::default();
 
-        send(
+        self.send(
             stream,
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
@@ -146,13 +146,7 @@ impl Node {
         )
         .await?;
 
-        let Some(msg) = recv(
-            stream,
-            self.sync_config.timeout,
-            Some((shared_key, their_nonce)),
-        )
-        .await?
-        else {
+        let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? else {
             bail!("connection closed while awaiting key share");
         };
 
@@ -173,13 +167,15 @@ impl Node {
 
         sqx_in.test(sequence_id)?;
 
-        self.ctx_manager
-            .update_sender_key(&context.id, &their_identity, &sender_key)?;
+        their_identity.sender_key = Some(sender_key);
+
+        self.context_client
+            .update_identity(&context.id, &their_identity)?;
 
         debug!(
             context_id=%context.id,
             our_identity=%our_identity,
-            their_identity=%their_identity,
+            their_identity=%their_identity.public_key,
             "Key share completed",
         );
 

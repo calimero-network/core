@@ -35,7 +35,7 @@ pub trait WriteLayer<'a>: Layer {
     fn delete<K: AsKeyParts>(&mut self, key: &'a K) -> EyreResult<()>;
     fn apply(&mut self, tx: &Transaction<'a>) -> EyreResult<()>;
 
-    fn commit(self) -> EyreResult<()>;
+    fn commit(&mut self) -> EyreResult<()>;
 }
 
 pub trait LayerExt: Layer + Sized {
@@ -93,7 +93,7 @@ impl<'a> WriteLayer<'a> for Store {
         self.db.apply(tx)
     }
 
-    fn commit(self) -> EyreResult<()> {
+    fn commit(&mut self) -> EyreResult<()> {
         Ok(())
     }
 }
