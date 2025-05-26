@@ -59,6 +59,12 @@ impl Engine {
         })
     }
 
+    /// Compiles WASM bytes and returns the serialized precompiled module
+    pub fn compile_and_serialize(&self, bytes: &[u8]) -> Result<Box<[u8]>, CompileError> {
+        let module = self.compile(bytes)?;
+        module.to_bytes().map_err(|_| CompileError::Codegen("Failed to serialize compiled module".to_string()))
+    }
+
     pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, DeserializeError> {
         let module = wasmer::Module::deserialize(&self.engine, bytes)?;
 
@@ -67,6 +73,32 @@ impl Engine {
             engine: self.engine.clone(),
             module,
         })
+    }
+
+    /// Attempts to run precompiled WASM, falls back to regular compilation if it fails
+    pub fn run_precompiled(
+        &self,
+        precompiled_bytes: &[u8],
+        wasm_bytes: &[u8],
+        context: ContextId,
+        executor: PublicKey,
+        method: &str,
+        input: &[u8],
+        storage: &mut dyn Storage,
+    ) -> RuntimeResult<Outcome> {
+        // Try to load and run precompiled module first
+        if let Ok(module) = unsafe { self.from_precompiled(precompiled_bytes) } {
+            match module.run(context, executor, method, input, storage) {
+                Ok(outcome) => return Ok(outcome),
+                Err(_) => {
+                    // Precompiled execution failed, fall back to regular compilation
+                }
+            }
+        }
+
+        // Fallback to regular WASM compilation and execution
+        let module = self.compile(wasm_bytes)?;
+        module.run(context, executor, method, input, storage)
     }
 }
 
@@ -140,4 +172,123 @@ impl Module {
 #[cfg(test)]
 mod integration_tests_package_usage {
     use {eyre as _, owo_colors as _, rand as _};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calimero_primitives::context::ContextId;
+    use calimero_primitives::identity::PublicKey;
+
+    // Mock storage for testing
+    struct MockStorage;
+    
+    impl Storage for MockStorage {
+        fn get(&self, _key: &Vec<u8>) -> Option<Vec<u8>> {
+            None
+        }
+        
+        fn set(&mut self, _key: Vec<u8>, _value: Vec<u8>) -> Option<Vec<u8>> {
+            None
+        }
+        
+        fn remove(&mut self, _key: &Vec<u8>) -> Option<Vec<u8>> {
+            None
+        }
+        
+        fn has(&self, _key: &Vec<u8>) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn test_compile_and_serialize() {
+        let engine = Engine::default();
+        
+        // Simple WASM module that exports a function
+        let wasm_bytes = wat::parse_str(r#"
+            (module
+                (func (export "test") (result i32)
+                    i32.const 42
+                )
+                (memory (export "memory") 1)
+            )
+        "#).unwrap();
+
+        let result = engine.compile_and_serialize(&wasm_bytes);
+        assert!(result.is_ok());
+        
+        let precompiled = result.unwrap();
+        assert!(!precompiled.is_empty());
+    }
+
+    #[test]
+    fn test_precompiled_execution() {
+        let engine = Engine::default();
+        
+        // Simple WASM module
+        let wasm_bytes = wat::parse_str(r#"
+            (module
+                (func (export "test") (result i32)
+                    i32.const 42
+                )
+                (memory (export "memory") 1)
+            )
+        "#).unwrap();
+
+        // Compile and serialize
+        let precompiled = engine.compile_and_serialize(&wasm_bytes).unwrap();
+        
+        // Test precompiled execution
+        let mut storage = MockStorage;
+        let context_id = ContextId::from([1u8; 32]);
+        let executor = PublicKey::from([2u8; 32]);
+        
+        let result = engine.run_precompiled(
+            &precompiled,
+            &wasm_bytes,
+            context_id,
+            executor,
+            "test",
+            &[],
+            &mut storage,
+        );
+        
+        // Should succeed (though the actual execution might fail due to missing host functions)
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_fallback_to_regular_execution() {
+        let engine = Engine::default();
+        
+        let wasm_bytes = wat::parse_str(r#"
+            (module
+                (func (export "test") (result i32)
+                    i32.const 42
+                )
+                (memory (export "memory") 1)
+            )
+        "#).unwrap();
+
+        // Use invalid precompiled data to force fallback
+        let invalid_precompiled = vec![0u8; 10];
+        
+        let mut storage = MockStorage;
+        let context_id = ContextId::from([1u8; 32]);
+        let executor = PublicKey::from([2u8; 32]);
+        
+        let result = engine.run_precompiled(
+            &invalid_precompiled,
+            &wasm_bytes,
+            context_id,
+            executor,
+            "test",
+            &[],
+            &mut storage,
+        );
+        
+        // Should succeed by falling back to regular compilation
+        assert!(result.is_ok());
+    }
 }

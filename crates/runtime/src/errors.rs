@@ -17,6 +17,9 @@ pub enum VMRuntimeError {
 
     #[error(transparent)]
     HostError(HostError),
+
+    #[error(transparent)]
+    FunctionCallError(FunctionCallError),
 }
 
 #[derive(Copy, Clone, Debug, ThisError)]
@@ -220,5 +223,11 @@ impl From<RuntimeError> for FunctionCallError {
             Some(TrapCode::UnalignedAtomic) => Self::WasmTrap(WasmTrap::UnalignedAtomic),
             None => Self::WasmTrap(WasmTrap::Indeterminate),
         }
+    }
+}
+
+impl From<CompileError> for VMRuntimeError {
+    fn from(err: CompileError) -> Self {
+        Self::FunctionCallError(FunctionCallError::CompilationError { source: err })
     }
 }

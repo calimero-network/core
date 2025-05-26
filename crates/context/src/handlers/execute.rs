@@ -15,7 +15,7 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
-use calimero_primitives::hash::Hash;
+
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
 use calimero_store::{key, types, Store};
@@ -289,9 +289,32 @@ async fn internal_execute(
 
     let storage = ContextStorage::from(datastore, context.id);
 
-    let module = engine.compile(&blob)?;
+    // Try to use precompiled module first, fallback to regular compilation
+    let outcome = match node_client.get_precompiled_application_bytes(&context.application_id).await? {
+        Some(precompiled_bytes) => {
+            debug!("Using precompiled WASM for execution");
+            // Use the runtime engine's run_precompiled method which handles fallback
+            let mut storage_mut = storage;
+            let outcome = engine.run_precompiled(
+                &precompiled_bytes,
+                &blob,
+                **guard,
+                executor,
+                &method,
+                &input,
+                &mut storage_mut,
+            )?;
+            (outcome, storage_mut)
+        }
+        None => {
+            debug!("No precompiled WASM available, using regular compilation");
+            // Regular compilation path
+            let module = engine.compile(&blob)?;
+            execute(guard, executor, module, method, input, storage).await?
+        }
+    };
 
-    let (outcome, storage) = execute(guard, executor, module, method, input, storage).await?;
+    let (outcome, storage) = outcome;
 
     if outcome.returns.is_err() {
         return Ok(outcome);
