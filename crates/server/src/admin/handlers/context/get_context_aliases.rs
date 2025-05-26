@@ -15,7 +15,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     _req: Request,
 ) -> impl IntoResponse {
-    let context = match state.ctx_manager.get_context(&context_id) {
+    let context = match state.ctx_client.get_context(&context_id) {
         Ok(Some(ctx)) => ctx,
         Ok(None) => {
             return ApiError {
@@ -27,7 +27,7 @@ pub async fn handler(
         Err(err) => return parse_api_error(err).into_response(),
     };
 
-    let result = state.ctx_manager.list_aliases(Some(context.id));
+    let result = state.node_client.list_aliases(Some(context.id));
     let aliases_raw = match result {
         Ok(a) => a,
         Err(err) => return parse_api_error(err).into_response(),
