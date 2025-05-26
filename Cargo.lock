@@ -1851,6 +1851,7 @@ dependencies = [
  "calimero-network",
  "calimero-node-primitives",
  "calimero-primitives",
+ "calimero-runtime",
  "calimero-store",
  "camino",
  "eyre",
@@ -2007,6 +2008,7 @@ dependencies = [
  "ureq",
  "wasmer",
  "wasmer-types",
+ "wat",
 ]
 
 [[package]]

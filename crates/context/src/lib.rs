@@ -30,6 +30,8 @@ use calimero_primitives::context::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_runtime::logic::VMLimits;
+use calimero_runtime::Constraint;
 use calimero_store::key::{
     Alias as AliasKey, Aliasable, ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
@@ -1100,6 +1102,50 @@ impl ContextManager {
         Ok(application_id)
     }
 
+    async fn install_application_with_precompilation(
+        &self,
+        blob_id: BlobId,
+        size: u64,
+        source: &ApplicationSource,
+        metadata: Vec<u8>,
+    ) -> EyreResult<ApplicationId> {
+        // First, load the WASM blob to compile it
+        let Some(mut stream) = self.get_blob(blob_id)? else {
+            bail!("fatal: blob not found during precompilation");
+        };
+
+        let mut wasm_code = vec![];
+        while let Some(chunk) = stream.try_next().await? {
+            wasm_code.extend_from_slice(&chunk);
+        }
+
+        // Compile and serialize the module
+        let limits = get_runtime_limits()?;
+        let (_module, serialized) = calimero_runtime::compile_and_serialize(&wasm_code, &limits)?;
+
+        // Store the precompiled blob
+        let (precompiled_blob_id, _precompiled_size) = self
+            .add_blob(std::io::Cursor::new(serialized).compat(), None, None)
+            .await?;
+
+        // Create application metadata with precompiled blob
+        let application = ApplicationMetaValue::new_with_precompiled(
+            BlobMetaKey::new(blob_id),
+            size,
+            source.to_string().into_boxed_str(),
+            metadata.into_boxed_slice(),
+            Some(BlobMetaKey::new(precompiled_blob_id)),
+        );
+
+        let application_id = ApplicationId::from(*Hash::hash_borsh(&application)?);
+
+        let mut handle = self.store.handle();
+
+        handle.put(&ApplicationMetaKey::new(application_id), &application)?;
+
+        Ok(application_id)
+    }
+
     pub fn uninstall_application(&self, application_id: ApplicationId) -> EyreResult<()> {
         let application_meta_key = ApplicationMetaKey::new(application_id);
         let mut handle = self.store.handle();
@@ -1126,7 +1172,13 @@ impl ContextManager {
             bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, size, &(uri.as_str().parse()?), metadata)
+        self.install_application_with_precompilation(
+            blob_id,
+            size,
+            &(uri.as_str().parse()?),
+            metadata,
+        )
+        .await
     }
 
     #[expect(clippy::similar_names, reason = "Different enough")]
@@ -1153,7 +1205,8 @@ impl ContextManager {
             )
             .await?;
 
-        self.install_application(blob_id, size, &uri, metadata)
+        self.install_application_with_precompilation(blob_id, size, &uri, metadata)
+            .await
     }
 
     pub fn list_installed_applications(&self) -> EyreResult<Vec<Application>> {
@@ -1227,6 +1280,34 @@ impl ContextManager {
         let mut buf = vec![];
 
         // todo! guard against loading excessively large blobs into memory
+        while let Some(chunk) = stream.try_next().await? {
+            buf.extend_from_slice(&chunk);
+        }
+
+        Ok(Some(buf))
+    }
+
+    pub async fn load_precompiled_application_blob(
+        &self,
+        application_id: &ApplicationId,
+    ) -> EyreResult<Option<Vec<u8>>> {
+        let handle = self.store.handle();
+
+        let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? else {
+            return Ok(None);
+        };
+
+        let Some(precompiled_blob_key) = &application.precompiled_blob else {
+            return Ok(None);
+        };
+
+        let Some(mut stream) = self.get_blob(precompiled_blob_key.blob_id())? else {
+            // Precompiled blob is missing, fall back to regular WASM
+            return Ok(None);
+        };
+
+        let mut buf = vec![];
+
         while let Some(chunk) = stream.try_next().await? {
             buf.extend_from_slice(&chunk);
         }
@@ -1711,4 +1792,24 @@ impl ContextManager {
 
         Ok(())
     }
+}
+
+// TODO: move this into the config
+// TODO: also this would be nice to have global default with per application customization
+fn get_runtime_limits() -> EyreResult<VMLimits> {
+    Ok(VMLimits {
+        max_memory_pages: 1 << 10, // 1 KiB
+        max_stack_size: 200 << 10, // 200 KiB
+        max_registers: 100,
+        max_register_size: (100 << 20).validate()?, // 100 MiB
+        max_registers_capacity: 1 << 30,            // 1 GiB
+        max_logs: 100,
+        max_log_size: 16 << 10, // 16 KiB
+        max_events: 100,
+        max_event_kind_size: 100,
+        max_event_data_size: 16 << 10,               // 16 KiB
+        max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
+        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
+                                                     // can_write: writes, // todo!
+    })
 }

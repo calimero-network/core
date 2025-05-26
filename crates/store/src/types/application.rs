@@ -13,6 +13,9 @@ pub struct ApplicationMeta {
     pub size: u64,
     pub source: Box<str>,
     pub metadata: Box<[u8]>,
+    /// Optional precompiled WASM blob for faster execution
+    /// This is architecture-specific and should not be shared between nodes
+    pub precompiled_blob: Option<BlobMetaKey>,
 }
 
 impl ApplicationMeta {
@@ -23,6 +26,24 @@ impl ApplicationMeta {
             size,
             source,
             metadata,
+            precompiled_blob: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_precompiled(
+        blob: BlobMetaKey,
+        size: u64,
+        source: Box<str>,
+        metadata: Box<[u8]>,
+        precompiled_blob: Option<BlobMetaKey>,
+    ) -> Self {
+        Self {
+            blob,
+            size,
+            source,
+            metadata,
+            precompiled_blob,
         }
     }
 }

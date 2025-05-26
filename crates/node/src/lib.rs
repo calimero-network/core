@@ -594,25 +594,62 @@ impl Node {
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> EyreResult<Option<Outcome>> {
-        let Some(blob) = self
-            .ctx_manager
-            .load_application_blob(&context.application_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-
         let mut store = self.store.clone();
-
         let mut storage = RuntimeCompatStore::new(&mut store, context.id);
 
-        let outcome = calimero_runtime::run(
-            &blob,
-            &method,
-            VMContext::new(payload, *context.id, *executor_public_key),
-            &mut storage,
-            &get_runtime_limits()?,
-        )?;
+        // Try to load precompiled blob first for faster execution
+        let outcome = if let Some(precompiled_blob) = self
+            .ctx_manager
+            .load_precompiled_application_blob(&context.application_id)
+            .await?
+        {
+            // Use precompiled module for faster execution
+            match calimero_runtime::run_precompiled(
+                &precompiled_blob,
+                &method,
+                VMContext::new(payload.clone(), *context.id, *executor_public_key),
+                &mut storage,
+                &get_runtime_limits()?,
+            ) {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    // Precompiled execution failed, fall back to regular WASM
+                    // This could happen due to architecture differences or corruption
+                    let Some(blob) = self
+                        .ctx_manager
+                        .load_application_blob(&context.application_id)
+                        .await?
+                    else {
+                        return Ok(None);
+                    };
+
+                    calimero_runtime::run(
+                        &blob,
+                        &method,
+                        VMContext::new(payload, *context.id, *executor_public_key),
+                        &mut storage,
+                        &get_runtime_limits()?,
+                    )?
+                }
+            }
+        } else {
+            // No precompiled blob available, use regular WASM
+            let Some(blob) = self
+                .ctx_manager
+                .load_application_blob(&context.application_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+
+            calimero_runtime::run(
+                &blob,
+                &method,
+                VMContext::new(payload, *context.id, *executor_public_key),
+                &mut storage,
+                &get_runtime_limits()?,
+            )?
+        };
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {

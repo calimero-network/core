@@ -22,6 +22,7 @@ calimero-blobstore.workspace = true
 calimero-primitives = { workspace = true, features = ["borsh", "rand"] }
 calimero-network.workspace = true
 calimero-node-primitives.workspace = true
+calimero-runtime.workspace = true
 calimero-store = { workspace = true, features = ["datatypes"] }
 
 [lints]
