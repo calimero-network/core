@@ -16,7 +16,7 @@ pub async fn handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoR
         }
         .into_response(),
         Err(e) => {
-            error!("Failed to generate and pre-store context identity: {}", e);
+            error!("Failed to generate context identity: {}", e);
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
                 message: "Failed to generate context identity".into(),

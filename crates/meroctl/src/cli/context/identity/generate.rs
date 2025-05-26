@@ -14,8 +14,6 @@ pub struct GenerateCommand;
 
 impl Report for GenerateContextIdentityResponse {
     fn report(&self) {
-        println!("public_key: {}", self.data.public_key);
-
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("Generated Identity").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("Public Key: {}", self.data.public_key)]);
@@ -25,7 +23,7 @@ impl Report for GenerateContextIdentityResponse {
 
 impl GenerateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
         let multiaddr = fetch_multiaddr(&config)?;
         let url = multiaddr_to_url(multiaddr, "admin-api/dev/identity/context")?;
 

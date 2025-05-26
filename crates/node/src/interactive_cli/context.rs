@@ -84,8 +84,6 @@ enum Commands {
     },
     /// Join a context
     Join {
-        /// The private key of the user
-        private_key: PrivateKey,
         /// The invitation payload from the inviter
         invitation_payload: ContextInvitationPayload,
         /// Alias for the newly joined context
@@ -225,7 +223,6 @@ impl ContextCommand {
                 }
             }
             Commands::Join {
-                private_key: _,
                 invitation_payload,
                 context,
                 identity,
