@@ -1,6 +1,7 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
 use std::env::temp_dir;
+use std::fmt::Write;
 use std::str::FromStr;
 
 use calimero_config::{ConfigFile, CONFIG_FILE};
@@ -175,9 +176,9 @@ impl ConfigCommand {
                 }
                 PrintFormat::Toml => {
                     let mut output = String::new();
-                    output.push_str(&format!("# {}\n", key));
+                    write!(&mut output, "# {}\n", key)?;
                     for (k, v) in table.iter() {
-                        output.push_str(&format!("# .{}: {}\n", k, self.type_hint(v)));
+                        write!(&mut output, "# .{}: {}\n", k, self.type_hint(v))?;
                     }
                     println!("{}", output);
                 }
