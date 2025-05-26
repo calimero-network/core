@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, Once};
 use lazy_static::lazy_static;
 
 use crate::config::StorageConfig;
-use crate::storage::{KeyStorage, StorageError};
+use crate::storage::{Storage, StorageError};
 
 /// Storage provider trait
 ///
@@ -17,7 +17,7 @@ pub trait StorageProvider: Send + Sync {
     fn supports_config(&self, config: &StorageConfig) -> bool;
 
     /// Create a storage instance from the configuration
-    fn create_storage(&self, config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError>;
+    fn create_storage(&self, config: &StorageConfig) -> Result<Arc<dyn Storage>, StorageError>;
 }
 
 // Global registry for storage providers

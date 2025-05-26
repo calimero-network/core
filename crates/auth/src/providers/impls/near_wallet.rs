@@ -22,11 +22,12 @@ use crate::config::{AuthConfig, NearWalletConfig};
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
-use crate::storage::models::{prefixes, RootKey};
-use crate::storage::{deserialize, serialize, ClientKey, KeyStorage};
+use crate::storage::models::{RootKey, ClientKey};
+use crate::storage::{Storage, KeyManager};
 use crate::{
     register_auth_data_type, register_auth_provider, AuthError, AuthResponse, RequestValidator,
 };
+use crate::providers::ProviderContext;
 
 /// NEAR wallet authentication data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,28 +76,20 @@ impl AuthDataType for NearWalletAuthDataType {
 
 /// NEAR wallet authentication provider
 pub struct NearWalletProvider {
-    config: NearWalletConfig,
-    storage: Arc<dyn KeyStorage>,
+    storage: Arc<dyn Storage>,
+    key_manager: KeyManager,
     token_manager: TokenManager,
+    config: NearWalletConfig,
 }
 
 impl NearWalletProvider {
     /// Create a new NEAR wallet provider
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - NEAR wallet configuration
-    /// * `storage` - Storage backend
-    /// * `token_manager` - JWT token manager
-    pub fn new(
-        config: NearWalletConfig,
-        storage: Arc<dyn KeyStorage>,
-        token_manager: TokenManager,
-    ) -> Self {
+    pub fn new(context: ProviderContext, config: NearWalletConfig) -> Self {
         Self {
+            storage: context.storage,
+            key_manager: context.key_manager,
+            token_manager: context.token_manager,
             config,
-            storage,
-            token_manager,
         }
     }
 
@@ -334,7 +327,7 @@ impl NearWalletProvider {
         Ok(false)
     }
 
-    /// Get the root key for an account
+    /// Get or create the root key for an account
     ///
     /// # Arguments
     ///
@@ -353,20 +346,13 @@ impl NearWalletProvider {
         let hash = hasher.finalize();
         let key_id = hex::encode(hash);
 
-        // Look up the root key
-        let key = format!("{}{}", prefixes::ROOT_KEY, key_id);
-
-        match self.storage.get(&key).await {
-            Ok(Some(data)) => {
-                let root_key: RootKey = deserialize(&data).map_err(|err| {
-                    AuthError::StorageError(format!("Failed to deserialize root key: {}", err))
-                })?;
-
+        // Look up the root key using KeyManager
+        match self.key_manager.get_root_key(&key_id).await {
+            Ok(Some(root_key)) => {
                 // Check if the key has been revoked
                 if root_key.revoked_at.is_some() {
                     return Ok(None);
                 }
-
                 Ok(Some((key_id, root_key)))
             }
             Ok(None) => Ok(None),
@@ -412,15 +398,8 @@ impl NearWalletProvider {
             metadata: None,
         };
 
-        // Store the root key
-        let key = format!("{}{}", prefixes::ROOT_KEY, key_id);
-        let data = serialize(&root_key).map_err(|err| {
-            AuthError::StorageError(format!("Failed to serialize root key: {}", err))
-        })?;
-
-        self.storage
-            .set(&key, &data)
-            .await
+        // Store the root key using KeyManager
+        self.key_manager.set_root_key(&key_id, &root_key).await
             .map_err(|err| AuthError::StorageError(format!("Failed to store root key: {}", err)))?;
 
         Ok((key_id, root_key))
@@ -436,37 +415,17 @@ impl NearWalletProvider {
     ///
     /// * `Result<(), AuthError>` - Success or error
     async fn update_last_used(&self, key_id: &str) -> Result<(), AuthError> {
-        let key = format!("{}{}", prefixes::ROOT_KEY, key_id);
+        // Get the current root key
+        let mut root_key = self.key_manager.get_root_key(key_id).await
+            .map_err(|err| AuthError::StorageError(format!("Failed to get root key: {}", err)))?
+            .ok_or_else(|| AuthError::StorageError("Root key not found".to_string()))?;
 
-        match self.storage.get(&key).await {
-            Ok(Some(data)) => {
-                let mut root_key: RootKey = deserialize(&data).map_err(|err| {
-                    AuthError::StorageError(format!("Failed to deserialize root key: {}", err))
-                })?;
+        // Update the last used timestamp
+        root_key.update_last_used();
 
-                // Update the last used timestamp
-                root_key.last_used_at = Some(Utc::now().timestamp() as u64);
-
-                // Store the updated root key
-                let data = serialize(&root_key).map_err(|err| {
-                    AuthError::StorageError(format!("Failed to serialize root key: {}", err))
-                })?;
-
-                self.storage.set(&key, &data).await.map_err(|err| {
-                    AuthError::StorageError(format!("Failed to update root key: {}", err))
-                })?;
-
-                Ok(())
-            }
-            Ok(None) => Err(AuthError::StorageError("Root key not found".to_string())),
-            Err(err) => {
-                error!("Failed to get root key: {}", err);
-                Err(AuthError::StorageError(format!(
-                    "Failed to get root key: {}",
-                    err
-                )))
-            }
-        }
+        // Save the updated root key
+        self.key_manager.set_root_key(key_id, &root_key).await
+            .map_err(|err| AuthError::StorageError(format!("Failed to update root key: {}", err)))
     }
 
     /// Core authentication logic for NEAR wallet
@@ -652,9 +611,10 @@ impl AuthVerifierFn for NearWalletVerifier {
 impl Clone for NearWalletProvider {
     fn clone(&self) -> Self {
         Self {
-            config: self.config.clone(),
             storage: Arc::clone(&self.storage),
+            key_manager: self.key_manager.clone(),
             token_manager: self.token_manager.clone(),
+            config: self.config.clone(),
         }
     }
 }
@@ -854,23 +814,20 @@ fn decode_to_fixed_array<const N: usize>(
     Ok(fixed_array)
 }
 
-/// Registration for the NEAR wallet provider
-#[derive(Clone)]
-pub struct NearWalletRegistration;
+/// NEAR Wallet provider registration
+pub struct NearWalletProviderRegistration;
 
-impl ProviderRegistration for NearWalletRegistration {
+impl ProviderRegistration for NearWalletProviderRegistration {
     fn provider_id(&self) -> &str {
         "near_wallet"
     }
 
     fn create_provider(
         &self,
-        storage: Arc<dyn KeyStorage>,
-        config: &AuthConfig,
-        token_manager: TokenManager,
+        context: ProviderContext,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
-        let near_config = config.near.clone();
-        let provider = NearWalletProvider::new(near_config, storage, token_manager);
+        let config = context.config.near.clone();
+        let provider = NearWalletProvider::new(context, config);
         Ok(Box::new(provider))
     }
 
@@ -879,13 +836,13 @@ impl ProviderRegistration for NearWalletRegistration {
         config
             .providers
             .get("near_wallet")
-            .copied() // Get the bool value directly
+            .copied()
             .unwrap_or(false)
     }
 }
 
-// Self-register the provider
-register_auth_provider!(NearWalletRegistration);
+// Register the NEAR wallet provider
+register_auth_provider!(NearWalletProviderRegistration);
 
 // Register the NEAR wallet auth data type
 register_auth_data_type!(NearWalletAuthDataType);

@@ -10,10 +10,12 @@ use crate::config::StorageConfig;
 pub mod models;
 pub mod providers;
 pub mod registry;
+pub mod key_manager;
 
-// Re-export storage implementations for backward compatibility
+// Re-export storage implementations and key manager for backward compatibility
 pub use models::{prefixes, ClientKey, Permission, RootKey};
 pub use providers::memory::MemoryStorage;
+pub use key_manager::KeyManager;
 
 /// Storage error
 #[derive(Debug, Error)]
@@ -247,64 +249,6 @@ pub trait Storage: Send + Sync + 'static {
     }
 }
 
-/// Domain-specific storage operations for key management
-#[async_trait]
-pub trait KeyStorage: Storage {
-    /// Get a root key by ID
-    async fn get_root_key(&self, key_id: &str) -> Result<Option<RootKey>, StorageError>;
-
-    /// Set a root key with public key indexing
-    async fn set_root_key(&self, key_id: &str, root_key: &RootKey) -> Result<(), StorageError>;
-
-    /// Delete a root key and its indices
-    async fn delete_root_key(&self, key_id: &str) -> Result<(), StorageError>;
-
-    /// List all root keys
-    async fn list_root_keys(&self) -> Result<Vec<(String, RootKey)>, StorageError>;
-
-    /// Find a root key by its public key
-    async fn find_root_key_by_public_key(
-        &self,
-        public_key: &str,
-    ) -> Result<Option<(String, RootKey)>, StorageError>;
-
-    /// Get a client key by ID
-    async fn get_client_key(&self, client_id: &str) -> Result<Option<ClientKey>, StorageError>;
-
-    /// Set a client key with root key indexing
-    async fn set_client_key(
-        &self,
-        client_id: &str,
-        client_key: &ClientKey,
-    ) -> Result<(), StorageError>;
-
-    /// Delete a client key and update indices
-    async fn delete_client_key(&self, client_id: &str) -> Result<(), StorageError>;
-
-    /// List client keys for a root key
-    async fn list_client_keys_for_root(
-        &self,
-        root_key_id: &str,
-    ) -> Result<Vec<ClientKey>, StorageError>;
-
-    /// Get a permission by ID
-    async fn get_permission(&self, permission_id: &str)
-        -> Result<Option<Permission>, StorageError>;
-
-    /// Set a permission
-    async fn set_permission(
-        &self,
-        permission_id: &str,
-        permission: &Permission,
-    ) -> Result<(), StorageError>;
-
-    /// Delete a permission
-    async fn delete_permission(&self, permission_id: &str) -> Result<(), StorageError>;
-
-    /// List all permissions
-    async fn list_permissions(&self) -> Result<Vec<Permission>, StorageError>;
-}
-
 /// Create a storage instance based on the configuration
 ///
 /// # Arguments
@@ -313,15 +257,16 @@ pub trait KeyStorage: Storage {
 ///
 /// # Returns
 ///
-/// * `Result<Arc<dyn KeyStorage>, StorageError>` - The storage instance
-pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn KeyStorage>, StorageError> {
+/// * `Result<Arc<dyn Storage>, StorageError>` - The storage instance
+pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn Storage>, StorageError> {
     // Get all registered providers
     let providers = registry::get_all_providers();
 
     // Find a provider that supports this configuration
     for provider in providers {
         if provider.supports_config(config) {
-            return provider.create_storage(config);
+            let storage = provider.create_storage(config)?;
+            return Ok(storage);
         }
     }
 

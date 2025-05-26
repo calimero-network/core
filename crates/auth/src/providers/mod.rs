@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
-use crate::storage::KeyStorage;
+use crate::storage::{Storage, KeyManager};
 
 // Export modules
 pub mod core;
@@ -15,6 +15,19 @@ pub mod impls;
 // Re-export core components
 pub use core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 pub use core::provider_registry::ProviderRegistration;
+
+/// Provider context containing dependencies needed by providers
+#[derive(Clone)]
+pub struct ProviderContext {
+    /// Storage backend
+    pub storage: Arc<dyn Storage>,
+    /// Key manager for domain operations
+    pub key_manager: KeyManager,
+    /// Token manager
+    pub token_manager: TokenManager,
+    /// Configuration
+    pub config: Arc<AuthConfig>,
+}
 
 /// Provider factory for creating and registering authentication providers
 pub struct ProviderFactory {
@@ -36,16 +49,22 @@ impl ProviderFactory {
     /// Create all enabled providers from configuration
     pub fn create_providers(
         &self,
-        storage: Arc<dyn KeyStorage>,
+        storage: Arc<dyn Storage>,
         config: &AuthConfig,
         token_manager: TokenManager,
     ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
         let mut providers = Vec::new();
+        let key_manager = KeyManager::new(Arc::clone(&storage));
+        let context = ProviderContext {
+            storage,
+            key_manager,
+            token_manager: token_manager.clone(),
+            config: Arc::new(config.clone()),
+        };
 
         for registration in self.registrations.values() {
             if registration.is_enabled(config) {
-                let provider =
-                    registration.create_provider(storage.clone(), config, token_manager.clone())?;
+                let provider = registration.create_provider(context.clone())?;
                 providers.push(provider);
             }
         }
@@ -57,12 +76,19 @@ impl ProviderFactory {
     pub fn create_provider(
         &self,
         name: &str,
-        storage: Arc<dyn KeyStorage>,
+        storage: Arc<dyn Storage>,
         config: &AuthConfig,
         token_manager: TokenManager,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
         if let Some(registration) = self.registrations.get(name) {
-            registration.create_provider(storage, config, token_manager)
+            let key_manager = KeyManager::new(Arc::clone(&storage));
+            let context = ProviderContext {
+                storage,
+                key_manager,
+                token_manager,
+                config: Arc::new(config.clone()),
+            };
+            registration.create_provider(context)
         } else {
             Err(eyre::eyre!("Unknown provider: {}", name))
         }
@@ -85,7 +111,7 @@ impl ProviderFactory {
 
 /// Create all enabled providers from configuration
 pub fn create_providers(
-    storage: Arc<dyn KeyStorage>,
+    storage: Arc<dyn Storage>,
     config: &AuthConfig,
     token_manager: TokenManager,
 ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {

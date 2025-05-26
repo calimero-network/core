@@ -4,10 +4,9 @@ use std::sync::{Arc, Mutex, Once};
 use eyre::Result;
 use lazy_static::lazy_static;
 
-use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::providers::core::provider::AuthProvider;
-use crate::storage::KeyStorage;
+use crate::providers::ProviderContext;
 
 /// Provider registration trait
 ///
@@ -20,9 +19,7 @@ pub trait ProviderRegistration: Send + Sync {
     /// Create a provider instance
     fn create_provider(
         &self,
-        storage: Arc<dyn KeyStorage>,
-        config: &AuthConfig,
-        token_manager: TokenManager,
+        context: ProviderContext,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error>;
 
     /// Check if this provider is enabled in config

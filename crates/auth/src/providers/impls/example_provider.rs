@@ -13,22 +13,25 @@ use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 use crate::providers::core::provider_registry::ProviderRegistration;
+use crate::providers::ProviderContext;
 use crate::secrets::SecretManager;
-use crate::storage::{KeyStorage, MemoryStorage};
+use crate::storage::{Storage, KeyManager};
 use crate::{register_auth_provider, AuthError, AuthResponse, RequestValidator};
 
 /// Example provider for demonstration purposes
 pub struct ExampleProvider {
-    storage: Arc<dyn KeyStorage>,
+    storage: Arc<dyn Storage>,
+    key_manager: KeyManager,
     token_manager: TokenManager,
 }
 
 impl ExampleProvider {
     /// Create a new example provider
-    pub fn new(storage: Arc<dyn KeyStorage>, token_manager: TokenManager) -> Self {
+    pub fn new(context: ProviderContext) -> Self {
         Self {
-            storage,
-            token_manager,
+            storage: context.storage,
+            key_manager: context.key_manager,
+            token_manager: context.token_manager,
         }
     }
 }
@@ -47,7 +50,8 @@ impl<B: Send + Sync> RequestValidator<B> for ExampleProvider {
 impl Clone for ExampleProvider {
     fn clone(&self) -> Self {
         Self {
-            storage: self.storage.clone(),
+            storage: Arc::clone(&self.storage),
+            key_manager: self.key_manager.clone(),
             token_manager: self.token_manager.clone(),
         }
     }
@@ -150,8 +154,7 @@ impl AuthVerifierFn for ExampleVerifier {
     }
 }
 
-/// Registration for the example provider
-#[derive(Clone)]
+/// Example provider registration
 pub struct ExampleProviderRegistration;
 
 impl ProviderRegistration for ExampleProviderRegistration {
@@ -161,11 +164,9 @@ impl ProviderRegistration for ExampleProviderRegistration {
 
     fn create_provider(
         &self,
-        storage: Arc<dyn KeyStorage>,
-        config: &AuthConfig,
-        token_manager: TokenManager,
+        context: ProviderContext,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
-        let provider = ExampleProvider::new(storage, token_manager);
+        let provider = ExampleProvider::new(context);
         Ok(Box::new(provider))
     }
 
@@ -179,5 +180,5 @@ impl ProviderRegistration for ExampleProviderRegistration {
     }
 }
 
-// Self-register the provider
+// Register the example provider
 register_auth_provider!(ExampleProviderRegistration);

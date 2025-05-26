@@ -8,8 +8,8 @@ use uuid;
 
 use crate::config::JwtConfig;
 use crate::secrets::SecretManager;
-use crate::storage::models::{prefixes, ClientKey};
-use crate::storage::{deserialize, serialize, KeyStorage};
+use crate::storage::models::ClientKey;
+use crate::storage::{Storage, KeyManager};
 use crate::{AuthError, AuthResponse};
 
 /// Token type enum
@@ -47,7 +47,8 @@ pub struct Claims {
 #[derive(Clone)]
 pub struct TokenManager {
     config: JwtConfig,
-    storage: Arc<dyn KeyStorage>,
+    storage: Arc<dyn Storage>,
+    key_manager: KeyManager,
     secret_manager: Arc<SecretManager>,
 }
 
@@ -65,12 +66,14 @@ impl TokenManager {
     /// * `Self` - The token generator
     pub fn new(
         config: JwtConfig,
-        storage: Arc<dyn KeyStorage>,
+        storage: Arc<dyn Storage>,
         secret_manager: Arc<SecretManager>,
     ) -> Self {
+        let key_manager = KeyManager::new(Arc::clone(&storage));
         Self {
             config,
             storage,
+            key_manager,
             secret_manager,
         }
     }
@@ -177,7 +180,7 @@ impl TokenManager {
 
         // Get the client key to verify it's still valid
         let client_key = self
-            .storage
+            .key_manager
             .get_client_key(&claims.sub)
             .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?
@@ -198,7 +201,7 @@ impl TokenManager {
         // Update last used timestamp
         let mut client_key = client_key.clone();
         client_key.update_last_used();
-        self.storage
+        self.key_manager
             .set_client_key(&client_key.client_id, &client_key)
             .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?;
@@ -243,7 +246,7 @@ impl TokenManager {
 
         // Get the client key
         let client_key = self
-            .storage
+            .key_manager
             .get_client_key(&claims.aud)
             .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?
@@ -311,7 +314,7 @@ impl TokenManager {
     /// * `Result<(), AuthError>` - Success or error
     pub async fn revoke_client_tokens(&self, client_id: &str) -> Result<(), AuthError> {
         let client_key = self
-            .storage
+            .key_manager
             .get_client_key(client_id)
             .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?
@@ -321,8 +324,8 @@ impl TokenManager {
         let mut client_key = client_key.clone();
         client_key.revoke();
 
-        // Save the updated client key
-        self.storage
+        // Save the updated client key using KeyManager
+        self.key_manager
             .set_client_key(client_id, &client_key)
             .await
             .map_err(|e| AuthError::StorageError(format!("Failed to update client key: {}", e)))?;
