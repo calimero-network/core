@@ -69,7 +69,7 @@ calimero-store = { path = "../store" }
 
 toml = "0.8"
 
-# New dependency
+# New dependencies
 regex = "1.10.2"
 
 [dev-dependencies]
@@ -77,10 +77,3 @@ tokio-test = "0.4"
 mockall = "0.11"
 tempfile = "3.8"
 reqwest = { workspace = true, features = ["json"] }
-
-[features]
-default = []
-# redis-storage = ["redis"]
-# postgres = ["sqlx/postgres"]
-# sqlite = ["sqlx/sqlite"]
-# icp = ["ic-agent"] 

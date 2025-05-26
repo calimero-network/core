@@ -114,10 +114,8 @@ impl TokenManager {
             },
         };
 
-        let secret = self
-            .secret_manager
-            .get_secret()
-            .await
+        // Both access and refresh tokens should use the JWT auth secret
+        let secret = self.secret_manager.get_jwt_auth_secret().await
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let header = Header::new(Algorithm::HS256);
@@ -147,10 +145,30 @@ impl TokenManager {
         token: &str,
         expected_type: Option<TokenType>,
     ) -> Result<Claims, AuthError> {
-        let secret = self
-            .secret_manager
-            .get_secret()
-            .await
+        // First decode without verification to determine token type
+        let unverified_token = decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(&[]), // dummy key for initial decode
+            &Validation::new(Algorithm::HS256),
+        )
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+
+        // Get the appropriate secret based on token type
+        let token_type = match unverified_token.claims.token_type.as_str() {
+            "access" => TokenType::Access,
+            "refresh" => TokenType::Refresh,
+            _ => return Err(AuthError::InvalidToken("Invalid token type".to_string())),
+        };
+
+        // Validate token type if specified
+        if let Some(expected) = expected_type {
+            if token_type != expected {
+                return Err(AuthError::InvalidToken("Incorrect token type".to_string()));
+            }
+        }
+
+        // Get the appropriate secret
+        let secret = self.secret_manager.get_jwt_auth_secret().await
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let mut validation = Validation::new(Algorithm::HS256);
@@ -165,18 +183,6 @@ impl TokenManager {
         .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
 
         let claims = token_data.claims;
-
-        // Validate token type if specified
-        if let Some(expected) = expected_type {
-            let token_type = match claims.token_type.as_str() {
-                "access" => TokenType::Access,
-                "refresh" => TokenType::Refresh,
-                _ => return Err(AuthError::InvalidToken("Invalid token type".to_string())),
-            };
-            if token_type != expected {
-                return Err(AuthError::InvalidToken("Incorrect token type".to_string()));
-            }
-        }
 
         // Get the client key to verify it's still valid
         let client_key = self
