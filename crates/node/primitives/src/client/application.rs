@@ -10,7 +10,7 @@ use eyre::bail;
 use reqwest::Url;
 use tokio::fs::File;
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::NodeClient;
 
@@ -57,7 +57,6 @@ impl NodeClient {
         Ok(Some(bytes))
     }
 
-    /// Get precompiled application bytes if available
     pub async fn get_precompiled_application_bytes(
         &self,
         application_id: &ApplicationId,
@@ -70,13 +69,11 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let Some(precompiled_blob_key) = application.precompiled_blob else {
-            return Ok(None);
-        };
-
-        let Some(bytes) = self.get_blob_bytes(&precompiled_blob_key.blob_id()).await? else {
-            warn!("precompiled blob exists in metadata but not in blob store, falling back to regular WASM");
-            return Ok(None);
+        let Some(bytes) = self
+            .get_blob_bytes(&application.precompiled_blob.blob_id())
+            .await?
+        else {
+            bail!("fatal: application points to dangling precompiled blob");
         };
 
         Ok(Some(bytes))
@@ -94,18 +91,24 @@ impl NodeClient {
         Ok(false)
     }
 
-    fn install_application(
+    async fn install_application_with_precompilation(
         &self,
         blob_id: &BlobId,
         size: u64,
         source: &ApplicationSource,
         metadata: Vec<u8>,
+        wasm_bytes: &[u8],
     ) -> eyre::Result<ApplicationId> {
+        let precompiled_blob_id = self.precompile_wasm(wasm_bytes).await?;
+
+        debug!("Successfully precompiled WASM for application");
+
         let application = types::ApplicationMeta::new(
             key::BlobMeta::new(*blob_id),
             size,
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
+            key::BlobMeta::new(precompiled_blob_id),
         );
 
         let application_id = ApplicationId::from(*Hash::hash_borsh(&application)?);
@@ -119,66 +122,11 @@ impl NodeClient {
         Ok(application_id)
     }
 
-    /// Install application with precompilation support
-    async fn install_application_with_precompilation(
-        &self,
-        blob_id: &BlobId,
-        size: u64,
-        source: &ApplicationSource,
-        metadata: Vec<u8>,
-        wasm_bytes: &[u8],
-    ) -> eyre::Result<ApplicationId> {
-        // Try to precompile the WASM
-        let precompiled_blob = match self.try_precompile_wasm(wasm_bytes).await {
-            Ok(blob_id) => {
-                debug!("Successfully precompiled WASM for application");
-                Some(key::BlobMeta::new(blob_id))
-            }
-            Err(err) => {
-                warn!(
-                    "Failed to precompile WASM, continuing without precompilation: {}",
-                    err
-                );
-                None
-            }
-        };
-
-        let application = if let Some(precompiled_blob) = precompiled_blob {
-            types::ApplicationMeta::with_precompiled(
-                key::BlobMeta::new(*blob_id),
-                size,
-                source.to_string().into_boxed_str(),
-                metadata.into_boxed_slice(),
-                precompiled_blob,
-            )
-        } else {
-            types::ApplicationMeta::new(
-                key::BlobMeta::new(*blob_id),
-                size,
-                source.to_string().into_boxed_str(),
-                metadata.into_boxed_slice(),
-            )
-        };
-
-        let application_id = ApplicationId::from(*Hash::hash_borsh(&application)?);
-
-        let mut handle = self.datastore.handle();
-
-        let key = key::ApplicationMeta::new(application_id);
-
-        handle.put(&key, &application)?;
-
-        Ok(application_id)
-    }
-
-    /// Try to precompile WASM and store it as a blob
-    async fn try_precompile_wasm(&self, wasm_bytes: &[u8]) -> eyre::Result<BlobId> {
+    async fn precompile_wasm(&self, wasm_bytes: &[u8]) -> eyre::Result<BlobId> {
         let runtime_engine = RuntimeEngine::default();
 
-        // Compile and serialize the WASM
         let precompiled_bytes = runtime_engine.compile_and_serialize(wasm_bytes)?;
 
-        // Store the precompiled bytes as a blob
         let (blob_id, _size) = self
             .add_blob(
                 precompiled_bytes.as_ref(),
@@ -201,7 +149,6 @@ impl NodeClient {
 
         let expected_size = file.metadata().await?.len();
 
-        // Read the file content for precompilation
         let wasm_bytes = tokio::fs::read(&path).await?;
 
         let (blob_id, size) = self

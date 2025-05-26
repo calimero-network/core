@@ -13,23 +13,12 @@ pub struct ApplicationMeta {
     pub size: u64,
     pub source: Box<str>,
     pub metadata: Box<[u8]>,
-    pub precompiled_blob: Option<BlobMetaKey>,
+    pub precompiled_blob: BlobMetaKey,
 }
 
 impl ApplicationMeta {
     #[must_use]
-    pub const fn new(blob: BlobMetaKey, size: u64, source: Box<str>, metadata: Box<[u8]>) -> Self {
-        Self {
-            blob,
-            size,
-            source,
-            metadata,
-            precompiled_blob: None,
-        }
-    }
-
-    #[must_use]
-    pub const fn with_precompiled(
+    pub const fn new(
         blob: BlobMetaKey,
         size: u64,
         source: Box<str>,
@@ -41,7 +30,7 @@ impl ApplicationMeta {
             size,
             source,
             metadata,
-            precompiled_blob: Some(precompiled_blob),
+            precompiled_blob,
         }
     }
 }

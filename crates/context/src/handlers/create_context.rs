@@ -21,7 +21,6 @@ use rand::SeedableRng;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::debug;
 
-use super::execute::execute;
 use super::execute::storage::ContextStorage;
 use crate::{ContextManager, ContextMeta};
 
@@ -229,7 +228,7 @@ async fn create_context(
     identity_secret: PrivateKey,
     sender_key: PrivateKey,
     init_params: Vec<u8>,
-    guard: OwnedMutexGuard<ContextId>,
+    _guard: OwnedMutexGuard<ContextId>,
 ) -> eyre::Result<Hash> {
     let Some(blob) = node_client.get_blob_bytes(&application.blob).await? else {
         bail!(
@@ -239,41 +238,33 @@ async fn create_context(
         );
     };
 
+    let precompiled_bytes = node_client
+        .get_precompiled_application_bytes(&application.id)
+        .await?;
+
+    let Some(precompiled_bytes) = precompiled_bytes else {
+        bail!(
+            "missing precompiled blob for application `{}`",
+            application.id
+        );
+    };
+
     let storage = ContextStorage::from(datastore, context.id);
 
-    // Try to use precompiled module for context initialization
-    let (outcome, storage) = match node_client
-        .get_precompiled_application_bytes(&application.id)
-        .await?
-    {
-        Some(precompiled_bytes) => {
-            debug!("Using precompiled WASM for context initialization");
-            let mut storage_mut = storage;
-            let outcome = engine.run_precompiled(
-                &precompiled_bytes,
-                &blob,
-                context.id,
-                identity,
-                "init",
-                &init_params,
-                &mut storage_mut,
-            )?;
-            (outcome, storage_mut)
-        }
-        None => {
-            debug!("No precompiled WASM available for context initialization, using regular compilation");
-            let module = engine.compile(&blob)?;
-            execute(
-                &guard,
-                identity,
-                module,
-                "init".into(),
-                init_params.into(),
-                storage,
-            )
-            .await?
-        }
-    };
+    debug!("Using precompiled WASM for context initialization");
+
+    let mut storage_mut = storage;
+    let outcome = engine.run_precompiled(
+        &precompiled_bytes,
+        &blob,
+        context.id,
+        identity,
+        "init",
+        &init_params,
+        &mut storage_mut,
+    )?;
+
+    let (outcome, storage) = (outcome, storage_mut);
 
     if let Some(res) = outcome.returns? {
         bail!(

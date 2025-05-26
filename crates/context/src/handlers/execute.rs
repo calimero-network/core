@@ -286,37 +286,32 @@ async fn internal_execute(
         });
     };
 
-    let storage = ContextStorage::from(datastore, context.id);
-
-    // Try to use precompiled module first, fallback to regular compilation
-    let outcome = match node_client
+    let precompiled_bytes = node_client
         .get_precompiled_application_bytes(&context.application_id)
-        .await?
-    {
-        Some(precompiled_bytes) => {
-            debug!("Using precompiled WASM for execution");
-            // Use the runtime engine's run_precompiled method which handles fallback
-            let mut storage_mut = storage;
-            let outcome = engine.run_precompiled(
-                &precompiled_bytes,
-                &blob,
-                **guard,
-                executor,
-                &method,
-                &input,
-                &mut storage_mut,
-            )?;
-            (outcome, storage_mut)
-        }
-        None => {
-            debug!("No precompiled WASM available, using regular compilation");
-            // Regular compilation path
-            let module = engine.compile(&blob)?;
-            execute(guard, executor, module, method, input, storage).await?
-        }
+        .await?;
+
+    let Some(precompiled_bytes) = precompiled_bytes else {
+        bail!(ExecuteError::ApplicationNotInstalled {
+            application_id: context.application_id
+        });
     };
 
-    let (outcome, storage) = outcome;
+    let storage = ContextStorage::from(datastore, context.id);
+
+    debug!("Using precompiled WASM for execution");
+
+    let mut storage_mut = storage;
+    let outcome = engine.run_precompiled(
+        &precompiled_bytes,
+        &blob,
+        **guard,
+        executor,
+        &method,
+        &input,
+        &mut storage_mut,
+    )?;
+
+    let (outcome, storage) = (outcome, storage_mut);
 
     if outcome.returns.is_err() {
         return Ok(outcome);
