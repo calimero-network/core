@@ -1,8 +1,7 @@
+use calimero_node_primitives::client::NodeClient;
 use clap::{Parser, Subcommand};
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
-
-use crate::Node;
 
 #[derive(Debug, Parser)]
 #[non_exhaustive]
@@ -20,7 +19,7 @@ enum Commands {
 
 impl StoreCommand {
     // todo! revisit: get specific context state
-    pub fn run(self, _node: &Node) -> EyreResult<()> {
+    pub fn run(self, _node: &NodeClient) -> EyreResult<()> {
         let ind = ">>".blue();
 
         println!("{ind} Not implemented yet",);

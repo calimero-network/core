@@ -23,6 +23,12 @@ impl From<[u8; 32]> for PrivateKey {
     }
 }
 
+impl AsRef<[u8; 32]> for PrivateKey {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 impl Deref for PrivateKey {
     type Target = [u8; 32];
 
@@ -98,23 +104,17 @@ impl From<[u8; 32]> for PublicKey {
     }
 }
 
+impl AsRef<[u8; 32]> for PublicKey {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 impl Deref for PublicKey {
     type Target = [u8; 32];
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl From<PublicKey> for Hash {
-    fn from(key: PublicKey) -> Self {
-        key.0
-    }
-}
-
-impl From<Hash> for PublicKey {
-    fn from(key: Hash) -> Self {
-        Self(key)
     }
 }
 

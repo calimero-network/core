@@ -3,15 +3,15 @@ use clap::Args;
 use eyre::{eyre, Context, Result};
 use webbrowser;
 
-use crate::Node;
+use crate::NodeConfig;
 
 #[derive(Copy, Clone, Debug, Args)]
 pub struct WebUICommand;
 
 impl WebUICommand {
-    pub fn run(&self, node: &Node) -> Result<()> {
-        let mut attempts = node
-            .server_config
+    pub fn run(&self, node_config: &NodeConfig) -> Result<()> {
+        let mut attempts = node_config
+            .server
             .listen
             .iter()
             .map(|addr| multiaddr_to_url(addr, "/admin-dashboard"))
