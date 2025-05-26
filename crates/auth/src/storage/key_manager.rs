@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use crate::storage::{
-    models::{prefixes, ClientKey, Permission, RootKey},
-    deserialize, serialize, Storage, StorageError,
-};
+use crate::storage::models::{prefixes, ClientKey, Permission, RootKey};
+use crate::storage::{deserialize, serialize, Storage, StorageError};
 
 /// KeyManager handles all domain-specific key management operations
 /// using an underlying storage implementation
@@ -37,7 +35,9 @@ impl KeyManager {
 
         // Create secondary index for public key lookups
         let public_key_index = format!("{}{}", prefixes::PUBLIC_KEY_INDEX, root_key.public_key);
-        self.storage.set(&public_key_index, key_id.as_bytes()).await?;
+        self.storage
+            .set(&public_key_index, key_id.as_bytes())
+            .await?;
 
         Ok(())
     }
@@ -129,7 +129,9 @@ impl KeyManager {
 
         if !client_ids.contains(&client_id.to_string()) {
             client_ids.push(client_id.to_string());
-            self.storage.set(&root_clients_key, &serialize(&client_ids)?).await?;
+            self.storage
+                .set(&root_clients_key, &serialize(&client_ids)?)
+                .await?;
         }
 
         Ok(())
@@ -147,11 +149,13 @@ impl KeyManager {
             if let Some(data) = self.storage.get(&root_clients_key).await? {
                 let mut client_ids: Vec<String> = deserialize(&data)?;
                 client_ids.retain(|id| id != client_id);
-                
+
                 if client_ids.is_empty() {
                     self.storage.delete(&root_clients_key).await?;
                 } else {
-                    self.storage.set(&root_clients_key, &serialize(&client_ids)?).await?;
+                    self.storage
+                        .set(&root_clients_key, &serialize(&client_ids)?)
+                        .await?;
                 }
             }
 
@@ -252,16 +256,22 @@ mod tests {
         };
 
         // Test set and get
-        key_manager.set_root_key("test_key", &root_key).await.unwrap();
+        key_manager
+            .set_root_key("test_key", &root_key)
+            .await
+            .unwrap();
         let retrieved = key_manager.get_root_key("test_key").await.unwrap();
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.public_key, root_key.public_key);
         assert_eq!(retrieved.auth_method, root_key.auth_method);
         assert_eq!(retrieved.permissions, root_key.permissions);
-        
+
         // Test find by public key
-        let found = key_manager.find_root_key_by_public_key("test_pub_key").await.unwrap();
+        let found = key_manager
+            .find_root_key_by_public_key("test_pub_key")
+            .await
+            .unwrap();
         assert!(found.is_some());
         let (found_id, found_key) = found.unwrap();
         assert_eq!(found_id, "test_key");
@@ -275,8 +285,16 @@ mod tests {
 
         // Test delete
         key_manager.delete_root_key("test_key").await.unwrap();
-        assert!(key_manager.get_root_key("test_key").await.unwrap().is_none());
-        assert!(key_manager.find_root_key_by_public_key("test_pub_key").await.unwrap().is_none());
+        assert!(key_manager
+            .get_root_key("test_key")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(key_manager
+            .find_root_key_by_public_key("test_pub_key")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -294,7 +312,10 @@ mod tests {
             permissions: vec!["test_perm".to_string()],
             metadata: Some(serde_json::json!({"test": "metadata"})),
         };
-        key_manager.set_root_key("root_key", &root_key).await.unwrap();
+        key_manager
+            .set_root_key("root_key", &root_key)
+            .await
+            .unwrap();
 
         // Create a test client key
         let client_key = ClientKey {
@@ -309,7 +330,10 @@ mod tests {
         };
 
         // Test set and get
-        key_manager.set_client_key("test_client", &client_key).await.unwrap();
+        key_manager
+            .set_client_key("test_client", &client_key)
+            .await
+            .unwrap();
         let retrieved = key_manager.get_client_key("test_client").await.unwrap();
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
@@ -318,14 +342,28 @@ mod tests {
         assert_eq!(retrieved.permissions, client_key.permissions);
 
         // Test list client keys for root
-        let clients = key_manager.list_client_keys_for_root("root_key").await.unwrap();
+        let clients = key_manager
+            .list_client_keys_for_root("root_key")
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].client_id, client_key.client_id);
 
         // Test delete
         key_manager.delete_client_key("test_client").await.unwrap();
-        assert!(key_manager.get_client_key("test_client").await.unwrap().is_none());
-        assert_eq!(key_manager.list_client_keys_for_root("root_key").await.unwrap().len(), 0);
+        assert!(key_manager
+            .get_client_key("test_client")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            key_manager
+                .list_client_keys_for_root("root_key")
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -345,7 +383,10 @@ mod tests {
         };
 
         // Test set and get
-        key_manager.set_permission("test_perm", &permission).await.unwrap();
+        key_manager
+            .set_permission("test_perm", &permission)
+            .await
+            .unwrap();
         let retrieved = key_manager.get_permission("test_perm").await.unwrap();
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
@@ -360,7 +401,11 @@ mod tests {
 
         // Test delete
         key_manager.delete_permission("test_perm").await.unwrap();
-        assert!(key_manager.get_permission("test_perm").await.unwrap().is_none());
+        assert!(key_manager
+            .get_permission("test_perm")
+            .await
+            .unwrap()
+            .is_none());
         assert_eq!(key_manager.list_permissions().await.unwrap().len(), 0);
     }
 
@@ -379,7 +424,10 @@ mod tests {
             permissions: vec!["test_perm".to_string()],
             metadata: Some(serde_json::json!({"test": "metadata"})),
         };
-        key_manager.set_root_key("root_key", &root_key).await.unwrap();
+        key_manager
+            .set_root_key("root_key", &root_key)
+            .await
+            .unwrap();
 
         // Create multiple client keys
         for i in 1..=5 {
@@ -393,11 +441,17 @@ mod tests {
                 last_used_at: None,
                 expires_at: None,
             };
-            key_manager.set_client_key(&format!("client{}", i), &client_key).await.unwrap();
+            key_manager
+                .set_client_key(&format!("client{}", i), &client_key)
+                .await
+                .unwrap();
         }
 
         // Verify we can list all clients
-        let clients = key_manager.list_client_keys_for_root("root_key").await.unwrap();
+        let clients = key_manager
+            .list_client_keys_for_root("root_key")
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 5);
 
         // Delete a couple of clients
@@ -405,7 +459,10 @@ mod tests {
         key_manager.delete_client_key("client3").await.unwrap();
 
         // Verify the remaining clients
-        let clients = key_manager.list_client_keys_for_root("root_key").await.unwrap();
+        let clients = key_manager
+            .list_client_keys_for_root("root_key")
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 3);
 
         // Verify specific clients
@@ -416,7 +473,10 @@ mod tests {
 
         // Delete the root key and verify no clients are returned
         key_manager.delete_root_key("root_key").await.unwrap();
-        let clients = key_manager.list_client_keys_for_root("root_key").await.unwrap();
+        let clients = key_manager
+            .list_client_keys_for_root("root_key")
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 0);
     }
 
@@ -446,10 +506,13 @@ mod tests {
             last_used_at: None,
             expires_at: None,
         };
-        key_manager.set_client_key("test_client", &client_key).await.unwrap();
+        key_manager
+            .set_client_key("test_client", &client_key)
+            .await
+            .unwrap();
 
         // The client should still be created even if the root key doesn't exist
         let retrieved = key_manager.get_client_key("test_client").await.unwrap();
         assert!(retrieved.is_some());
     }
-} 
+}

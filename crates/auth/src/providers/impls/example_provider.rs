@@ -15,7 +15,7 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
 use crate::secrets::SecretManager;
-use crate::storage::{Storage, KeyManager};
+use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_provider, AuthError, AuthResponse, RequestValidator};
 
 /// Example provider for demonstration purposes

@@ -7,7 +7,7 @@ use tracing::info;
 use crate::api::routes::create_router;
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
-use crate::storage::{Storage, KeyManager};
+use crate::storage::{KeyManager, Storage};
 use crate::utils::AuthMetrics;
 use crate::AuthService;
 

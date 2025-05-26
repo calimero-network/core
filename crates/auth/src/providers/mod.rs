@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
-use crate::storage::{Storage, KeyManager};
+use crate::storage::{KeyManager, Storage};
 
 // Export modules
 pub mod core;

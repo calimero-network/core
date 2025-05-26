@@ -7,15 +7,15 @@ use thiserror::Error;
 
 use crate::config::StorageConfig;
 
+pub mod key_manager;
 pub mod models;
 pub mod providers;
 pub mod registry;
-pub mod key_manager;
 
 // Re-export storage implementations and key manager for backward compatibility
+pub use key_manager::KeyManager;
 pub use models::{prefixes, ClientKey, Permission, RootKey};
 pub use providers::memory::MemoryStorage;
-pub use key_manager::KeyManager;
 
 /// Storage error
 #[derive(Debug, Error)]

@@ -9,7 +9,7 @@ use uuid;
 use crate::config::JwtConfig;
 use crate::secrets::SecretManager;
 use crate::storage::models::ClientKey;
-use crate::storage::{Storage, KeyManager};
+use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
 
 /// Token type enum

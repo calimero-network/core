@@ -22,12 +22,12 @@ use crate::config::{AuthConfig, NearWalletConfig};
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
-use crate::storage::models::{RootKey, ClientKey};
-use crate::storage::{Storage, KeyManager};
+use crate::providers::ProviderContext;
+use crate::storage::models::{ClientKey, RootKey};
+use crate::storage::{KeyManager, Storage};
 use crate::{
     register_auth_data_type, register_auth_provider, AuthError, AuthResponse, RequestValidator,
 };
-use crate::providers::ProviderContext;
 
 /// NEAR wallet authentication data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,7 +399,9 @@ impl NearWalletProvider {
         };
 
         // Store the root key using KeyManager
-        self.key_manager.set_root_key(&key_id, &root_key).await
+        self.key_manager
+            .set_root_key(&key_id, &root_key)
+            .await
             .map_err(|err| AuthError::StorageError(format!("Failed to store root key: {}", err)))?;
 
         Ok((key_id, root_key))
@@ -416,7 +418,10 @@ impl NearWalletProvider {
     /// * `Result<(), AuthError>` - Success or error
     async fn update_last_used(&self, key_id: &str) -> Result<(), AuthError> {
         // Get the current root key
-        let mut root_key = self.key_manager.get_root_key(key_id).await
+        let mut root_key = self
+            .key_manager
+            .get_root_key(key_id)
+            .await
             .map_err(|err| AuthError::StorageError(format!("Failed to get root key: {}", err)))?
             .ok_or_else(|| AuthError::StorageError("Root key not found".to_string()))?;
 
@@ -424,7 +429,9 @@ impl NearWalletProvider {
         root_key.update_last_used();
 
         // Save the updated root key
-        self.key_manager.set_root_key(key_id, &root_key).await
+        self.key_manager
+            .set_root_key(key_id, &root_key)
+            .await
             .map_err(|err| AuthError::StorageError(format!("Failed to update root key: {}", err)))
     }
 

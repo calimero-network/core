@@ -150,7 +150,7 @@ mod tests {
 
         // Test set_batch
         storage.set_batch(&batch_values).await.unwrap();
-        
+
         // Test get_batch
         let keys: Vec<String> = batch_values.keys().cloned().collect();
         let retrieved = storage.get_batch(&keys).await.unwrap();
@@ -173,11 +173,11 @@ mod tests {
         // Test empty batch operations
         let empty_batch: HashMap<String, Vec<u8>> = HashMap::new();
         storage.set_batch(&empty_batch).await.unwrap();
-        
+
         let empty_keys: Vec<String> = Vec::new();
         let result = storage.get_batch(&empty_keys).await.unwrap();
         assert!(result.is_empty());
-        
+
         storage.delete_batch(&empty_keys).await.unwrap();
     }
 }
