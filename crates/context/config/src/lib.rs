@@ -12,7 +12,6 @@ pub mod icp;
 pub mod repr;
 #[cfg(feature = "stellar")]
 pub mod stellar;
-
 pub mod types;
 
 use repr::Repr;
