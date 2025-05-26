@@ -15,7 +15,6 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
-
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
 use calimero_store::{key, types, Store};
@@ -290,7 +289,10 @@ async fn internal_execute(
     let storage = ContextStorage::from(datastore, context.id);
 
     // Try to use precompiled module first, fallback to regular compilation
-    let outcome = match node_client.get_precompiled_application_bytes(&context.application_id).await? {
+    let outcome = match node_client
+        .get_precompiled_application_bytes(&context.application_id)
+        .await?
+    {
         Some(precompiled_bytes) => {
             debug!("Using precompiled WASM for execution");
             // Use the runtime engine's run_precompiled method which handles fallback

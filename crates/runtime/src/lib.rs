@@ -62,7 +62,9 @@ impl Engine {
     /// Compiles WASM bytes and returns the serialized precompiled module
     pub fn compile_and_serialize(&self, bytes: &[u8]) -> Result<Box<[u8]>, CompileError> {
         let module = self.compile(bytes)?;
-        module.to_bytes().map_err(|_| CompileError::Codegen("Failed to serialize compiled module".to_string()))
+        module
+            .to_bytes()
+            .map_err(|_| CompileError::Codegen("Failed to serialize compiled module".to_string()))
     }
 
     pub unsafe fn from_precompiled(&self, bytes: &[u8]) -> Result<Module, DeserializeError> {
@@ -176,26 +178,27 @@ mod integration_tests_package_usage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use calimero_primitives::context::ContextId;
     use calimero_primitives::identity::PublicKey;
 
+    use super::*;
+
     // Mock storage for testing
     struct MockStorage;
-    
+
     impl Storage for MockStorage {
         fn get(&self, _key: &Vec<u8>) -> Option<Vec<u8>> {
             None
         }
-        
+
         fn set(&mut self, _key: Vec<u8>, _value: Vec<u8>) -> Option<Vec<u8>> {
             None
         }
-        
+
         fn remove(&mut self, _key: &Vec<u8>) -> Option<Vec<u8>> {
             None
         }
-        
+
         fn has(&self, _key: &Vec<u8>) -> bool {
             false
         }
@@ -204,20 +207,23 @@ mod tests {
     #[test]
     fn test_compile_and_serialize() {
         let engine = Engine::default();
-        
+
         // Simple WASM module that exports a function
-        let wasm_bytes = wat::parse_str(r#"
+        let wasm_bytes = wat::parse_str(
+            r#"
             (module
                 (func (export "test") (result i32)
                     i32.const 42
                 )
                 (memory (export "memory") 1)
             )
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let result = engine.compile_and_serialize(&wasm_bytes);
         assert!(result.is_ok());
-        
+
         let precompiled = result.unwrap();
         assert!(!precompiled.is_empty());
     }
@@ -225,25 +231,28 @@ mod tests {
     #[test]
     fn test_precompiled_execution() {
         let engine = Engine::default();
-        
+
         // Simple WASM module
-        let wasm_bytes = wat::parse_str(r#"
+        let wasm_bytes = wat::parse_str(
+            r#"
             (module
                 (func (export "test") (result i32)
                     i32.const 42
                 )
                 (memory (export "memory") 1)
             )
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         // Compile and serialize
         let precompiled = engine.compile_and_serialize(&wasm_bytes).unwrap();
-        
+
         // Test precompiled execution
         let mut storage = MockStorage;
         let context_id = ContextId::from([1u8; 32]);
         let executor = PublicKey::from([2u8; 32]);
-        
+
         let result = engine.run_precompiled(
             &precompiled,
             &wasm_bytes,
@@ -253,7 +262,7 @@ mod tests {
             &[],
             &mut storage,
         );
-        
+
         // Should succeed (though the actual execution might fail due to missing host functions)
         assert!(result.is_ok());
     }
@@ -261,23 +270,26 @@ mod tests {
     #[test]
     fn test_fallback_to_regular_execution() {
         let engine = Engine::default();
-        
-        let wasm_bytes = wat::parse_str(r#"
+
+        let wasm_bytes = wat::parse_str(
+            r#"
             (module
                 (func (export "test") (result i32)
                     i32.const 42
                 )
                 (memory (export "memory") 1)
             )
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         // Use invalid precompiled data to force fallback
         let invalid_precompiled = vec![0u8; 10];
-        
+
         let mut storage = MockStorage;
         let context_id = ContextId::from([1u8; 32]);
         let executor = PublicKey::from([2u8; 32]);
-        
+
         let result = engine.run_precompiled(
             &invalid_precompiled,
             &wasm_bytes,
@@ -287,7 +299,7 @@ mod tests {
             &[],
             &mut storage,
         );
-        
+
         // Should succeed by falling back to regular compilation
         assert!(result.is_ok());
     }

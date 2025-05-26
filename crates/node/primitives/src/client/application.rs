@@ -135,7 +135,10 @@ impl NodeClient {
                 Some(key::BlobMeta::new(blob_id))
             }
             Err(err) => {
-                warn!("Failed to precompile WASM, continuing without precompilation: {}", err);
+                warn!(
+                    "Failed to precompile WASM, continuing without precompilation: {}",
+                    err
+                );
                 None
             }
         };
@@ -171,10 +174,10 @@ impl NodeClient {
     /// Try to precompile WASM and store it as a blob
     async fn try_precompile_wasm(&self, wasm_bytes: &[u8]) -> eyre::Result<BlobId> {
         let runtime_engine = RuntimeEngine::default();
-        
+
         // Compile and serialize the WASM
         let precompiled_bytes = runtime_engine.compile_and_serialize(wasm_bytes)?;
-        
+
         // Store the precompiled bytes as a blob
         let (blob_id, _size) = self
             .add_blob(
@@ -242,14 +245,8 @@ impl NodeClient {
             )
             .await?;
 
-        self.install_application_with_precompilation(
-            &blob_id,
-            size,
-            &uri,
-            metadata,
-            &wasm_bytes,
-        )
-        .await
+        self.install_application_with_precompilation(&blob_id, size, &uri, metadata, &wasm_bytes)
+            .await
     }
 
     pub fn uninstall_application(&self, application_id: ApplicationId) -> eyre::Result<()> {

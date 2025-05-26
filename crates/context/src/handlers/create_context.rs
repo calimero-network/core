@@ -242,7 +242,10 @@ async fn create_context(
     let storage = ContextStorage::from(datastore, context.id);
 
     // Try to use precompiled module for context initialization
-    let (outcome, storage) = match node_client.get_precompiled_application_bytes(&application.id).await? {
+    let (outcome, storage) = match node_client
+        .get_precompiled_application_bytes(&application.id)
+        .await?
+    {
         Some(precompiled_bytes) => {
             debug!("Using precompiled WASM for context initialization");
             let mut storage_mut = storage;
