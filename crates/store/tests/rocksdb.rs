@@ -1,4 +1,4 @@
-// #![allow(unused_crate_dependencies, reason = "False positives")]
+#![allow(unused_crate_dependencies, reason = "False positives")]
 
 // use std::fs::{remove_dir_all, remove_file};
 
