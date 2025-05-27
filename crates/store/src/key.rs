@@ -6,7 +6,6 @@ use std::io::{Read, Result as IoResult, Write};
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
-use component::KeyComponents;
 use generic_array::typenum::Const;
 use generic_array::{GenericArray, IntoArrayLength};
 
@@ -23,6 +22,7 @@ mod generic;
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
+use component::KeyComponents;
 pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState};
 pub use generic::Generic;
 

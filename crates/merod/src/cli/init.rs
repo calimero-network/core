@@ -1,7 +1,6 @@
 use core::net::IpAddr;
 use core::time::Duration;
 use std::collections::BTreeMap;
-use std::fs::{create_dir, create_dir_all};
 
 use alloy::signers::local::PrivateKeySigner;
 use calimero_config::{
@@ -17,7 +16,7 @@ use calimero_context_config::client::protocol::{
     ethereum as ethereum_protocol, icp as icp_protocol, near as near_protocol,
     starknet as starknet_protocol,
 };
-use calimero_network::config::{
+use calimero_network_primitives::config::{
     AutonatConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
 };
@@ -39,10 +38,15 @@ use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
 use soroban_client::keypair::{Keypair as StellarKeypair, KeypairBehavior};
 use starknet::signers::SigningKey;
+use tokio::fs::{create_dir, create_dir_all};
 use tracing::{info, warn};
 use url::Url;
 
 use crate::{cli, defaults};
+
+const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum ConfigProtocol {
@@ -72,7 +76,7 @@ pub struct InitCommand {
 
     /// Port to listen on
     #[clap(long, value_name = "PORT")]
-    #[clap(default_value_t = calimero_network::config::DEFAULT_PORT)]
+    #[clap(default_value_t = calimero_network_primitives::config::DEFAULT_PORT)]
     pub swarm_port: u16,
 
     /// Host to listen on for RPC
@@ -152,22 +156,22 @@ impl InitCommand {
         clippy::too_many_lines,
         reason = "TODO: Will be refactored"
     )]
-    pub fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
+    pub async fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.home.join(root_args.node_name);
 
         if !path.exists() {
             if root_args.home == defaults::default_node_dir() {
-                create_dir_all(&path)
+                create_dir_all(&path).await
             } else {
-                create_dir(&path)
+                create_dir(&path).await
             }
             .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
         if ConfigFile::exists(&path) {
-            if let Err(err) = ConfigFile::load(&path) {
+            if let Err(err) = ConfigFile::load(&path).await {
                 if self.force {
                     warn!(
                         "Failed to load existing configuration, overwriting: {}",
@@ -176,8 +180,7 @@ impl InitCommand {
                 } else {
                     bail!("Failed to load existing configuration: {}", err);
                 }
-            }
-            if !self.force {
+            } else if !self.force {
                 warn!("Node is already initialized in {:?}", path);
                 return Ok(());
             }
@@ -416,8 +419,9 @@ impl InitCommand {
                 ),
             ),
             SyncConfig {
-                timeout: Duration::from_secs(30),
-                interval: Duration::from_secs(30),
+                timeout: DEFAULT_SYNC_TIMEOUT,
+                interval: DEFAULT_SYNC_INTERVAL,
+                frequency: DEFAULT_SYNC_FREQUENCY,
             },
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
@@ -426,7 +430,7 @@ impl InitCommand {
             },
         );
 
-        config.save(&path)?;
+        config.save(&path).await?;
 
         drop(Store::open::<RocksDB>(&StoreConfig::new(
             path.join(config.datastore.path),

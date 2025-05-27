@@ -3,6 +3,11 @@ name: PR Description
 
 on:
   pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
 
 permissions:
   pull-requests: write
@@ -22,16 +27,21 @@ jobs:
     steps:
       - name: Validate Description
         id: validate_description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           readarray -t required_sections <<< "$REQUIRED_SECTIONS"
-          pr_body_base64=$(echo -n "${{ github.event.pull_request.body }}" | base64 -w0)
           missing_sections=()
 
+          declare -p required_sections
+
           for section in "${required_sections[@]}"; do
-            if ! echo "$pr_body_base64" | base64 --decode | grep -q -i "$section"; then
+            if ! echo "$PR_BODY" | grep -qi "$section"; then
               missing_sections+=("$section")
             fi
           done
+
+          declare -p missing_sections
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             EOF=$(openssl rand -hex 8)
@@ -44,6 +54,8 @@ jobs:
             echo "$EOF" >> $GITHUB_OUTPUT
 
             echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
+
+            exit 1
           else
             echo "comment_action=delete" >> "$GITHUB_OUTPUT"
           fi
@@ -56,9 +68,10 @@ jobs:
           --arg tag pr-description-check
           --arg mode '${{ steps.validate_description.outputs.comment_action }}'
           --arg message '${{ steps.validate_description.outputs.comment_content }}'
-          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
+          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
 
       - name: Upload Comment
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: pr-comment-payload

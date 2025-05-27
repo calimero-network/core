@@ -2,7 +2,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    ExecuteRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
+    ExecutionRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
 };
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
@@ -84,7 +84,7 @@ impl Report for Response {
 #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 impl CallCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
 
         let multiaddr = fetch_multiaddr(&config)?;
 
@@ -102,7 +102,7 @@ impl CallCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
-        let payload = RequestPayload::Execute(ExecuteRequest::new(
+        let payload = RequestPayload::Execute(ExecutionRequest::new(
             context_id,
             self.method,
             self.args.unwrap_or(json!({})),
