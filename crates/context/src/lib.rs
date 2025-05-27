@@ -360,9 +360,9 @@ impl ContextManager {
                 invitee_id
             ))?;
 
-        let main_private_key_bytes = stored_identity
+        let private_key = stored_identity
             .private_key
-            .ok_or_eyre(eyre::eyre!("Stored identity value is missing private key"))?;
+            .ok_or_eyre("Stored identity value is missing private key")?;
 
         self.delete_identity_value(placeholder_context_id, invitee_id)?;
 
