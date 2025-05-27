@@ -7,8 +7,10 @@ use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{eyre, Report as EyreReport};
 use libp2p::identity::Keypair;
+use reqwest::Client;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
+use tokio::time::Duration;
 use url::Url;
 
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
@@ -133,7 +135,14 @@ impl RootCommand {
                 let node_config = Config::load()?;
                 if let Some(conn) = node_config.nodes.get(node_name) {
                     match conn.get_connection_info(Some(node_name)).await {
-                        Ok(info) => info,
+                        Ok(info) => {
+                            // Verify node is reachable
+                            if let Err(e) = Self::check_node_ready(&info).await {
+                                output.write(&ErrorLine(&format!("Node not ready: {}", e)));
+                                return Err(e);
+                            }
+                            info
+                        }
                         Err(e) => {
                             output.write(&ErrorLine(&format!("Failed to connect to node: {}", e)));
                             return Err(e);
@@ -179,6 +188,30 @@ impl RootCommand {
             };
             environment.output.write(&err);
             return Err(err);
+        }
+
+        Ok(())
+    }
+
+    async fn check_node_ready(connection: &ConnectionInfo) -> Result<(), CliError> {
+        let client = Client::new();
+        let health_url = connection
+            .api_url
+            .join("health")
+            .map_err(|e| CliError::Other(eyre!("Failed to construct health URL: {}", e)))?;
+
+        let response = client
+            .get(health_url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| CliError::Other(eyre!("Health check failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(CliError::Other(eyre!(
+                "Node not healthy: HTTP {}",
+                response.status()
+            )));
         }
 
         Ok(())

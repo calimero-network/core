@@ -20,6 +20,7 @@ use libp2p::Multiaddr;
 use reqwest::{Client, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tokio::time::Duration;
 
 use crate::cli::{ApiError, Environment};
 use crate::output::Report;
@@ -59,34 +60,53 @@ where
     I: Serialize,
     O: DeserializeOwned,
 {
-    let mut builder = match req_type {
-        RequestType::Get => client.get(url),
-        RequestType::Post => client.post(url).json(&body),
-        RequestType::Delete => client.delete(url),
+    const MAX_RETRIES: usize = 3;
+    const RETRY_DELAY: Duration = Duration::from_secs(1);
+
+    let mut last_error = None;
+
+    for attempt in 0..MAX_RETRIES {
+        let mut builder = match req_type {
+            RequestType::Get => client.get(url.clone()),
+            RequestType::Post => client.post(url.clone()).json(&body),
+            RequestType::Delete => client.delete(url.clone()),
+        }
+        .timeout(Duration::from_secs(30));
+
+        if let Some(keypair) = keypair {
+            let timestamp = Utc::now().timestamp().to_string();
+            let signature = keypair.sign(timestamp.as_bytes())?;
+            builder = builder
+                .header("X-Signature", bs58::encode(signature).into_string())
+                .header("X-Timestamp", timestamp);
+        }
+
+        match builder.send().await {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    bail!(ApiError {
+                        status_code: status.as_u16(),
+                        message: text,
+                    });
+                }
+                return Ok(response.json::<O>().await?);
+            }
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < MAX_RETRIES - 1 {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
     }
-    .timeout(tokio::time::Duration::from_secs(30));
 
-    // Add authentication if keypair is provided
-    if let Some(keypair) = keypair {
-        let timestamp = Utc::now().timestamp().to_string();
-        let signature = keypair.sign(timestamp.as_bytes())?;
-
-        builder = builder
-            .header("X-Signature", bs58::encode(signature).into_string())
-            .header("X-Timestamp", timestamp);
-    }
-    let response = builder.send().await?;
-
-    if !response.status().is_success() {
-        bail!(ApiError {
-            status_code: response.status().as_u16(),
-            message: response.text().await?,
-        });
-    }
-
-    let result = response.json::<O>().await?;
-
-    Ok(result)
+    bail!(
+        "Request failed after {} attempts: {:?}",
+        MAX_RETRIES,
+        last_error
+    )
 }
 // pub async fn do_request<I, O>(
 //     client: &Client,
