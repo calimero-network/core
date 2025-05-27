@@ -81,9 +81,10 @@ enum ContextIdentityAliasSubcommands {
     #[command(about = "Resolve the alias to a context identity")]
     Get {
         /// Name of the alias to look up
+        #[arg(default_value = "default")]
         identity: Alias<PublicKey>,
         /// The context that the identity is a member of
-        #[arg(long, short)]
+        #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
     #[command(about = "List context identity aliases", alias = "ls")]
@@ -118,7 +119,7 @@ impl ContextIdentityCommand {
                     .ok_or_eyre("unable to resolve context")?;
 
                 let identity_id = node_client
-                    .lookup_alias(identity, Some(context_id))?
+                    .resolve_alias(identity, Some(context_id))?
                     .ok_or_eyre("unable to resolve identity")?;
 
                 let default_alias: Alias<PublicKey> = "default"
@@ -130,7 +131,7 @@ impl ContextIdentityCommand {
                 {
                     if existing_identity == identity_id {
                         println!(
-                            "{} Default identity already set to: {} for context {}",
+                            "{} Default identity already set to: '{}' for context '{}'",
                             ind,
                             identity.cyan(),
                             context_id.cyan()
@@ -154,8 +155,10 @@ impl ContextIdentityCommand {
                     node_client.delete_alias(default_alias, Some(context_id))?;
                 }
 
+                node_client.create_alias(default_alias, Some(context_id), identity_id)?;
+
                 println!(
-                    "{} Default identity set to: {} for context {}",
+                    "{} Default identity set to: '{}' for context '{}'",
                     ind,
                     identity.cyan(),
                     context_id.cyan()
