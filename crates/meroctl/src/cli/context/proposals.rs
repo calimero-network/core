@@ -52,13 +52,10 @@ pub enum ProposalsSubcommand {
         /// Proposal ID to view
         #[arg(help = "ID of the proposal to view")]
         proposal_id: Hash,
-        
+
         /// Context to query
         #[arg(long, short)]
-        #[arg(
-            value_name = "CONTEXT",
-            help = "Context for which to query"
-        )]
+        #[arg(value_name = "CONTEXT", help = "Context for which to query")]
         context: Option<Alias<ContextId>>,
     },
 }
@@ -188,15 +185,16 @@ impl ProposalsCommand {
                 )
                 .await
             }
-            Some(ProposalsSubcommand::View { proposal_id, context }) => {
-
+            Some(ProposalsSubcommand::View {
+                proposal_id,
+                context,
+            }) => {
                 let context_alias = context.as_ref().unwrap_or(&self.context);
                 let context_id = resolve_alias(multiaddr, &config.identity, *context_alias, None)
                     .await?
                     .value()
                     .cloned()
                     .ok_or_eyre("unable to resolve context")?;
-
 
                 let proposal_result = self
                     .get_proposal(
@@ -213,7 +211,6 @@ impl ProposalsCommand {
                     println!("Proposal not found");
                     return Ok(());
                 }
-
 
                 let _ = self
                     .get_number_of_proposal_approvals(
