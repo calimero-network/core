@@ -44,7 +44,7 @@ jobs:
             fi
           done
 
-          declare -p required_sections
+          declare -p missing_sections
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             EOF=$(openssl rand -hex 8)
@@ -74,6 +74,7 @@ jobs:
           '{pr: $pr, tag: $tag, mode: $mode, message: $message}' > payload.json
 
       - name: Upload Comment
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: pr-comment-payload
