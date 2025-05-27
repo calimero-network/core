@@ -24,39 +24,33 @@ use crate::output::Report;
 pub struct ProposalsCommand {
     #[command(subcommand)]
     pub command: Option<ProposalsSubcommand>,
-
-    /// Context to query
-    #[arg(long, short)]
-    #[arg(
-        value_name = "CONTEXT",
-        help = "Context for which to query",
-        default_value = "default"
-    )]
-    pub context: Alias<ContextId>,
-
-    /// Offset for pagination (when listing proposals)
-    #[arg(long, help = "Offset for paginated results", default_value = "0")]
-    pub offset: usize,
-
-    /// Limit for pagination (when listing proposals)
-    #[arg(long, help = "Limit for paginated results", default_value = "20")]
-    pub limit: usize,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ProposalsSubcommand {
     #[command(about = "List all proposals in a context")]
-    List,
+    List {
+        /// Context to list proposals for
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+
+        /// Offset for pagination
+        #[arg(long, help = "Offset for paginated results", default_value = "0")]
+        offset: usize,
+
+        /// Limit for pagination
+        #[arg(long, help = "Limit for paginated results", default_value = "20")]
+        limit: usize,
+    },
     #[command(about = "View details of a specific proposal including approvers and actions")]
     View {
         /// Proposal ID to view
         #[arg(help = "ID of the proposal to view")]
         proposal_id: Hash,
 
-        /// Context to query
-        #[arg(long, short)]
-        #[arg(value_name = "CONTEXT", help = "Context for which to query")]
-        context: Option<Alias<ContextId>>,
+        /// Context the proposal belongs to
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
 }
 
@@ -163,16 +157,20 @@ impl ProposalsCommand {
         let client = Client::new();
 
         match &self.command {
-            Some(ProposalsSubcommand::List) | None => {
-                let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+            Some(ProposalsSubcommand::List {
+                context,
+                offset,
+                limit,
+            }) => {
+                let context_id = resolve_alias(multiaddr, &config.identity, *context, None)
                     .await?
                     .value()
                     .cloned()
                     .ok_or_eyre("unable to resolve context")?;
 
                 let args = serde_json::json!({
-                    "offset": self.offset,
-                    "limit": self.limit
+                    "offset": offset,
+                    "limit": limit
                 });
 
                 self.list_proposals(
@@ -189,8 +187,7 @@ impl ProposalsCommand {
                 proposal_id,
                 context,
             }) => {
-                let context_alias = context.as_ref().unwrap_or(&self.context);
-                let context_id = resolve_alias(multiaddr, &config.identity, *context_alias, None)
+                let context_id = resolve_alias(multiaddr, &config.identity, *context, None)
                     .await?
                     .value()
                     .cloned()
@@ -213,17 +210,6 @@ impl ProposalsCommand {
                 }
 
                 let _ = self
-                    .get_number_of_proposal_approvals(
-                        environment,
-                        multiaddr,
-                        &client,
-                        &config.identity,
-                        context_id,
-                        proposal_id,
-                    )
-                    .await;
-
-                let _ = self
                     .get_proposal_approvers(
                         environment,
                         multiaddr,
@@ -234,6 +220,23 @@ impl ProposalsCommand {
                     )
                     .await;
 
+                let _ = self
+                    .get_number_of_proposal_approvals(
+                        environment,
+                        multiaddr,
+                        &client,
+                        &config.identity,
+                        context_id,
+                        proposal_id,
+                    )
+                    .await;
+
+                Ok(())
+            }
+            None => {
+                use clap::CommandFactory;
+                let mut cmd = ProposalsCommand::command();
+                cmd.print_help()?;
                 Ok(())
             }
         }
