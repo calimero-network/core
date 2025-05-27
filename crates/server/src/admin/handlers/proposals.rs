@@ -287,7 +287,8 @@ pub async fn get_proposal_approvers_handler(
     {
         Ok(proposal_approvers) => {
             match proposal_approvers
-                .into_iter()
+                // fixme! this is wrong, ContextIdentity is an implementation detail
+                // fixme! it should be PublicKey, so we shouldn't be using rt() here
                 .map(|pk| pk.rt())
                 .collect::<Result<_, _>>()
             {

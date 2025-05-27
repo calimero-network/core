@@ -121,7 +121,7 @@ impl ExternalProxyClient<'_> {
     pub async fn get_proposal_approvers(
         &self,
         proposal_id: &ProposalId,
-    ) -> eyre::Result<Vec<PublicKey>> {
+    ) -> eyre::Result<impl Iterator<Item = PublicKey>> {
         let client = self.client.query::<ContextProxy>(
             self.client.config.protocol.as_ref().into(),
             self.client.config.network_id.as_ref().into(),
@@ -132,8 +132,7 @@ impl ExternalProxyClient<'_> {
 
         let approvers = approvers
             .into_iter()
-            .map(|identity| identity.as_bytes().into())
-            .collect();
+            .map(|identity| identity.as_bytes().into());
 
         Ok(approvers)
     }
