@@ -181,6 +181,7 @@ enum AliasCommands {
     #[command(about = "Resolve the alias to a context")]
     Get {
         /// Name of the alias to look up
+        #[clap(default_value = "default")]
         context: Alias<ContextId>,
     },
     #[command(about = "List all context aliases", alias = "ls")]
