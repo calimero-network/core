@@ -21,7 +21,7 @@ async fn main() -> EyreResult<()> {
     let command = RootCommand::parse();
 
     if rand::random::<u8>() % 10 == 0 {
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             if let Err(err) = check_for_update().await {
                 eprintln!("Version check failed: {}", err);
             }
