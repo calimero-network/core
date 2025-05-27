@@ -7,10 +7,7 @@ on:
       - opened
       - edited
       - reopened
-      # with external contributions, we have to manually "approve and run"
-      # before the workflow can run, so we take advantage "external" label
-      - labeled
-      - synchronize # testing
+      - synchronize
 
 permissions:
   pull-requests: write
@@ -27,11 +24,11 @@ jobs:
     name: Validate
     runs-on: ubuntu-latest
     if: github.actor != 'dependabot[bot]'
-    env:
-      PR_BODY: ${{ github.event.pull_request.body }}
     steps:
       - name: Validate Description
         id: validate_description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           readarray -t required_sections <<< "$REQUIRED_SECTIONS"
           missing_sections=()
