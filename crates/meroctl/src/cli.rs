@@ -14,7 +14,7 @@ use url::Url;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::defaults;
-use crate::output::{Format, Output, Report};
+use crate::output::{ErrorLine, Format, Output, Report};
 
 mod app;
 mod bootstrap;
@@ -132,7 +132,13 @@ impl RootCommand {
                 // Check if node exists in config
                 let node_config = Config::load()?;
                 if let Some(conn) = node_config.nodes.get(node_name) {
-                    conn.get_connection_info(Some(node_name)).await?
+                    match conn.get_connection_info(Some(node_name)).await {
+                        Ok(info) => info,
+                        Err(e) => {
+                            output.write(&ErrorLine(&format!("Failed to connect to node: {}", e)));
+                            return Err(e);
+                        }
+                    }
                 } else {
                     // Fall back to checking default home directory
                     let config = load_config(&defaults::default_node_dir(), node_name).await?;

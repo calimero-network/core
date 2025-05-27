@@ -63,7 +63,8 @@ where
         RequestType::Get => client.get(url),
         RequestType::Post => client.post(url).json(&body),
         RequestType::Delete => client.delete(url),
-    };
+    }
+    .timeout(tokio::time::Duration::from_secs(30));
 
     // Add authentication if keypair is provided
     if let Some(keypair) = keypair {

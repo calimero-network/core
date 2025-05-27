@@ -259,6 +259,10 @@ impl Meroctl {
                 .wait_with_output()
                 .await?;
 
+            if output.stdout.is_empty() {
+                bail!("Command returned empty output");
+            }
+
             Ok(serde_json::from_slice(&output.stdout)?)
         }
     }
