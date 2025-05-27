@@ -10,6 +10,7 @@ on:
       # with external contributions, we have to manually "approve and run"
       # before the workflow can run, so we take advantage "external" label
       - labeled
+      - synchronize # testing
 
 permissions:
   pull-requests: write
@@ -42,6 +43,8 @@ jobs:
               missing_sections+=("$section")
             fi
           done
+
+          declare -p required_sections
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             EOF=$(openssl rand -hex 8)
