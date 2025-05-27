@@ -19,9 +19,6 @@ thunderdome.workspace = true
 
 calimero-primitives.workspace = true
 
-[dev-dependencies]
-tempdir.workspace = true
-
 [features]
 borsh = ["borsh/derive"]
 serde = ["dep:serde", "dep:serde_json"]

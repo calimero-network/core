@@ -2204,7 +2204,6 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.26.3",
- "tempdir",
  "thiserror 1.0.69",
  "thunderdome",
 ]
