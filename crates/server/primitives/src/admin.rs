@@ -855,6 +855,8 @@ pub struct GetNumberOfActiveProposalsResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalApproversResponse {
+    // fixme! this is wrong, ContextIdentity is an implementation
+    // fixme! detail it should be PublicKey instead
     pub data: Vec<Repr<ContextIdentity>>,
 }
 

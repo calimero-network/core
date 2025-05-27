@@ -15,7 +15,6 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
-use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
 use calimero_store::{key, types, Store};
