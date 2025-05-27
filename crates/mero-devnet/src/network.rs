@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
 use crate::merod::Merod;
+// use crate::output::OutputWriter;
 use crate::protocol::ProtocolSandboxEnvironment;
 use crate::{Config, ProtocolSandboxConfig};
 
@@ -20,6 +21,7 @@ impl DevNetwork {
         config: Config,
         binary_path: Utf8PathBuf,
         logs_dir: Utf8PathBuf,
+        // output_writer: OutputWriter,
     ) -> Result<Self> {
         let mut nodes = Vec::with_capacity(config.network.node_count as usize);
         let mut protocol_envs = Vec::with_capacity(config.protocol_sandboxes.len());
@@ -54,6 +56,7 @@ impl DevNetwork {
                 &logs_dir,
                 binary_path.clone(),
                 Default::default(),
+                // output_writer,
             );
 
             let swarm_port = config.network.start_swarm_port + i as u16;
