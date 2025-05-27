@@ -183,8 +183,7 @@ impl ClientKey {
     /// Check if the key is valid (not revoked and not expired)
     pub fn is_valid(&self) -> bool {
         let now = Utc::now().timestamp() as u64;
-        self.revoked_at.is_none()
-            && self.expires_at.map(|exp| exp > now).unwrap_or(true)
+        self.revoked_at.is_none() && self.expires_at.map(|exp| exp > now).unwrap_or(true)
     }
 
     /// Update the last used timestamp

@@ -232,7 +232,7 @@ pub async fn token_handler(
     }
 
     let key_id = auth_response.key_id;
-    
+
     // Generate tokens using the validated permissions from auth_response
     match state
         .0
@@ -281,7 +281,12 @@ pub async fn refresh_token_handler(
     ValidatedJson(request): ValidatedJson<RefreshTokenRequest>,
 ) -> impl IntoResponse {
     // First verify the refresh token to get the claims
-    let claims = match state.0.token_generator.verify_token(&request.refresh_token).await {
+    let claims = match state
+        .0
+        .token_generator
+        .verify_token(&request.refresh_token)
+        .await
+    {
         Ok(claims) => claims,
         Err(err) => {
             debug!("Failed to verify refresh token: {}", err);
@@ -544,7 +549,12 @@ pub async fn generate_client_key_handler(
     ValidatedJson(request): ValidatedJson<GenerateClientKeyRequest>,
 ) -> impl IntoResponse {
     // Verify the Root JWT token from headers
-    let auth_response = match state.0.token_generator.verify_token_from_headers(&headers).await {
+    let auth_response = match state
+        .0
+        .token_generator
+        .verify_token_from_headers(&headers)
+        .await
+    {
         Ok(response) => response,
         Err(err) => {
             error!("Failed to verify token: {}", err);
@@ -579,10 +589,8 @@ pub async fn generate_client_key_handler(
 
     // Create a client ID based on context info and timestamp
     let client_id = format!(
-        "client_{}_{}_{}", 
-        request.context_id,
-        request.context_identity,
-        timestamp
+        "client_{}_{}_{}",
+        request.context_id, request.context_identity, timestamp
     );
 
     // Create context-specific permission
@@ -611,7 +619,12 @@ pub async fn generate_client_key_handler(
     );
 
     // Store the client key
-    if let Err(err) = state.0.key_manager.set_client_key(&client_id, &client_key).await {
+    if let Err(err) = state
+        .0
+        .key_manager
+        .set_client_key(&client_id, &client_key)
+        .await
+    {
         error!("Failed to store client key: {}", err);
         return internal_error_response("Failed to store client key");
     }

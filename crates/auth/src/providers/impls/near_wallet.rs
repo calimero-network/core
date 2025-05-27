@@ -25,9 +25,7 @@ use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
 use crate::storage::models::{ClientKey, RootKey};
 use crate::storage::{KeyManager, Storage};
-use crate::{
-    register_auth_data_type, register_auth_provider, AuthError, AuthResponse,
-};
+use crate::{register_auth_data_type, register_auth_provider, AuthError, AuthResponse};
 
 /// NEAR wallet authentication data
 #[derive(Debug, Clone, Serialize, Deserialize)]

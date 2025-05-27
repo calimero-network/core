@@ -115,17 +115,21 @@ impl TokenManager {
         user_id: String,
         permissions: Vec<String>,
     ) -> Result<(String, String), AuthError> {
-        let access_token = self.generate_token(
-            user_id.clone(),
-            permissions.clone(),
-            Duration::seconds(self.config.access_token_expiry as i64),
-        ).await?;
+        let access_token = self
+            .generate_token(
+                user_id.clone(),
+                permissions.clone(),
+                Duration::seconds(self.config.access_token_expiry as i64),
+            )
+            .await?;
 
-        let refresh_token = self.generate_token(
-            user_id,
-            permissions,
-            Duration::seconds(self.config.refresh_token_expiry as i64),
-        ).await?;
+        let refresh_token = self
+            .generate_token(
+                user_id,
+                permissions,
+                Duration::seconds(self.config.refresh_token_expiry as i64),
+            )
+            .await?;
 
         Ok((access_token, refresh_token))
     }
@@ -173,7 +177,9 @@ impl TokenManager {
 
         let token = auth_header.trim_start_matches("Bearer ").trim();
         if token.is_empty() {
-            return Err(AuthError::InvalidRequest("Empty token provided".to_string()));
+            return Err(AuthError::InvalidRequest(
+                "Empty token provided".to_string(),
+            ));
         }
 
         let claims = self.verify_token(token).await?;
@@ -224,7 +230,10 @@ impl TokenManager {
     /// # Returns
     ///
     /// * `Result<(String, String), AuthError>` - New access and refresh tokens
-    pub async fn refresh_token_pair(&self, refresh_token: &str) -> Result<(String, String), AuthError> {
+    pub async fn refresh_token_pair(
+        &self,
+        refresh_token: &str,
+    ) -> Result<(String, String), AuthError> {
         // Verify the refresh token and get claims
         let claims = self.verify_token(refresh_token).await?;
 
@@ -242,7 +251,9 @@ impl TokenManager {
                 .ok_or_else(|| AuthError::InvalidToken("Root key not found".to_string()))?;
 
             if !root_key.is_valid() {
-                return Err(AuthError::InvalidToken("Root key has been revoked".to_string()));
+                return Err(AuthError::InvalidToken(
+                    "Root key has been revoked".to_string(),
+                ));
             }
         } else {
             // For client key, verify it exists and is valid
@@ -254,11 +265,14 @@ impl TokenManager {
                 .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
 
             if !client_key.is_valid() {
-                return Err(AuthError::InvalidToken("Client key has been revoked".to_string()));
+                return Err(AuthError::InvalidToken(
+                    "Client key has been revoked".to_string(),
+                ));
             }
         }
 
         // Generate new token pair with the same permissions
-        self.generate_token_pair(claims.sub, claims.permissions).await
+        self.generate_token_pair(claims.sub, claims.permissions)
+            .await
     }
 }

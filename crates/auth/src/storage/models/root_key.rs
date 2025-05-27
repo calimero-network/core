@@ -17,13 +17,12 @@ pub struct RootKey {
 
     /// When the key expires
     pub expires_at: Option<u64>,
-    
+
     /// When the key was last used
     pub last_used_at: Option<u64>,
 
     /// When the key was revoked (if it was)
     pub revoked_at: Option<u64>,
-
 }
 
 impl RootKey {
