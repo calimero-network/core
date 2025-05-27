@@ -3,14 +3,12 @@ use std::sync::Arc;
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
-use calimero_runtime::Engine as RuntimeEngine;
 use calimero_store::{key, types};
 use camino::Utf8PathBuf;
 use eyre::bail;
 use reqwest::Url;
 use tokio::fs::File;
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::debug;
 
 use super::NodeClient;
 
@@ -69,6 +67,10 @@ impl NodeClient {
             return Ok(None);
         };
 
+        if application.precompiled_blob.blob_id() == BlobId::from([0; 32]) {
+            return Ok(None);
+        }
+
         let Some(bytes) = self
             .get_blob_bytes(&application.precompiled_blob.blob_id())
             .await?
@@ -91,24 +93,19 @@ impl NodeClient {
         Ok(false)
     }
 
-    async fn install_application_with_precompilation(
+    async fn install_application(
         &self,
         blob_id: &BlobId,
         size: u64,
         source: &ApplicationSource,
         metadata: Vec<u8>,
-        wasm_bytes: &[u8],
     ) -> eyre::Result<ApplicationId> {
-        let precompiled_blob_id = self.precompile_wasm(wasm_bytes).await?;
-
-        debug!("Successfully precompiled WASM for application");
-
         let application = types::ApplicationMeta::new(
             key::BlobMeta::new(*blob_id),
             size,
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
-            key::BlobMeta::new(precompiled_blob_id),
+            key::BlobMeta::new(BlobId::from([0; 32])),
         );
 
         let application_id = ApplicationId::from(*Hash::hash_borsh(&application)?);
@@ -122,22 +119,6 @@ impl NodeClient {
         Ok(application_id)
     }
 
-    async fn precompile_wasm(&self, wasm_bytes: &[u8]) -> eyre::Result<BlobId> {
-        let runtime_engine = RuntimeEngine::default();
-
-        let precompiled_bytes = runtime_engine.compile_and_serialize(wasm_bytes)?;
-
-        let (blob_id, _size) = self
-            .add_blob(
-                precompiled_bytes.as_ref(),
-                Some(precompiled_bytes.len() as u64),
-                None,
-            )
-            .await?;
-
-        Ok(blob_id)
-    }
-
     pub async fn install_application_from_path(
         &self,
         path: Utf8PathBuf,
@@ -149,8 +130,6 @@ impl NodeClient {
 
         let expected_size = file.metadata().await?.len();
 
-        let wasm_bytes = tokio::fs::read(&path).await?;
-
         let (blob_id, size) = self
             .add_blob(file.compat(), Some(expected_size), None)
             .await?;
@@ -159,14 +138,8 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_application_with_precompilation(
-            &blob_id,
-            size,
-            &(uri.as_str().parse()?),
-            metadata,
-            &wasm_bytes,
-        )
-        .await
+        self.install_application(&blob_id, size, &(uri.as_str().parse()?), metadata)
+            .await
     }
 
     pub async fn install_application_from_url(
@@ -181,7 +154,7 @@ impl NodeClient {
 
         let _expected_size = response.content_length();
 
-        // Collect bytes for precompilation
+        // Collect bytes
         let wasm_bytes = response.bytes().await?;
 
         let (blob_id, size) = self
@@ -192,7 +165,7 @@ impl NodeClient {
             )
             .await?;
 
-        self.install_application_with_precompilation(&blob_id, size, &uri, metadata, &wasm_bytes)
+        self.install_application(&blob_id, size, &uri, metadata)
             .await
     }
 
@@ -225,5 +198,25 @@ impl NodeClient {
         }
 
         Ok(applications)
+    }
+
+    pub async fn update_precompiled_blob(
+        &self,
+        application_id: &ApplicationId,
+        precompiled_blob_id: BlobId,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.handle();
+
+        let key = key::ApplicationMeta::new(*application_id);
+
+        let Some(mut application) = handle.get(&key)? else {
+            bail!("Application not found");
+        };
+
+        application.precompiled_blob = key::BlobMeta::new(precompiled_blob_id);
+
+        handle.put(&key, &application)?;
+
+        Ok(())
     }
 }

@@ -290,26 +290,55 @@ async fn internal_execute(
         .get_precompiled_application_bytes(&context.application_id)
         .await?;
 
-    let Some(precompiled_bytes) = precompiled_bytes else {
-        bail!(ExecuteError::ApplicationNotInstalled {
-            application_id: context.application_id
-        });
-    };
-
     let storage = ContextStorage::from(datastore, context.id);
 
-    debug!("Using precompiled WASM for execution");
-
     let mut storage_mut = storage;
-    let outcome = engine.run_precompiled(
-        &precompiled_bytes,
-        &blob,
-        **guard,
-        executor,
-        &method,
-        &input,
-        &mut storage_mut,
-    )?;
+
+    let outcome = if let Some(precompiled_bytes) = precompiled_bytes {
+        match unsafe { engine.from_precompiled(&precompiled_bytes) } {
+            Ok(module) => {
+                debug!("Using cached compiled module for execution");
+                module.run(**guard, executor, &method, &input, &mut storage_mut)?
+            }
+            Err(_) => {
+                debug!("Cached compiled module is incompatible, compiling fresh");
+                let module = engine.compile(&blob)?;
+
+                if let Ok(serialized) = module.to_bytes() {
+                    if let Ok((blob_id, _)) = node_client
+                        .add_blob(serialized.as_ref(), Some(serialized.len() as u64), None)
+                        .await
+                    {
+                        drop(
+                            node_client
+                                .update_precompiled_blob(&context.application_id, blob_id)
+                                .await,
+                        );
+                    }
+                }
+
+                module.run(**guard, executor, &method, &input, &mut storage_mut)?
+            }
+        }
+    } else {
+        debug!("No cached compiled module found, compiling");
+        let module = engine.compile(&blob)?;
+
+        if let Ok(serialized) = module.to_bytes() {
+            if let Ok((blob_id, _)) = node_client
+                .add_blob(serialized.as_ref(), Some(serialized.len() as u64), None)
+                .await
+            {
+                drop(
+                    node_client
+                        .update_precompiled_blob(&context.application_id, blob_id)
+                        .await,
+                );
+            }
+        }
+
+        module.run(**guard, executor, &method, &input, &mut storage_mut)?
+    };
 
     let (outcome, storage) = (outcome, storage_mut);
 

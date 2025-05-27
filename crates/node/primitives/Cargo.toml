@@ -24,7 +24,6 @@ calimero-crypto.workspace = true
 calimero-primitives.workspace = true
 calimero-blobstore.workspace = true
 calimero-network-primitives.workspace = true
-calimero-runtime.workspace = true
 calimero-store.workspace = true
 calimero-utils-actix.workspace = true
 

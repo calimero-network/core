@@ -238,31 +238,14 @@ async fn create_context(
         );
     };
 
-    let precompiled_bytes = node_client
-        .get_precompiled_application_bytes(&application.id)
-        .await?;
-
-    let Some(precompiled_bytes) = precompiled_bytes else {
-        bail!(
-            "missing precompiled blob for application `{}`",
-            application.id
-        );
-    };
-
     let storage = ContextStorage::from(datastore, context.id);
 
-    debug!("Using precompiled WASM for context initialization");
+    debug!("Compiling module for context initialization");
+
+    let module = engine.compile(&blob)?;
 
     let mut storage_mut = storage;
-    let outcome = engine.run_precompiled(
-        &precompiled_bytes,
-        &blob,
-        context.id,
-        identity,
-        "init",
-        &init_params,
-        &mut storage_mut,
-    )?;
+    let outcome = module.run(context.id, identity, "init", &init_params, &mut storage_mut)?;
 
     let (outcome, storage) = (outcome, storage_mut);
 
