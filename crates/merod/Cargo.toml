@@ -28,7 +28,6 @@ rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 starknet.workspace = true
 soroban-client.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "fs"] }
@@ -42,10 +41,11 @@ calimero-config.workspace = true
 calimero-context.workspace = true
 calimero-context-config = { workspace = true, features = ["client"] }
 calimero-node.workspace = true
-calimero-network.workspace = true
+calimero-network-primitives.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
+calimero-utils-actix.workspace = true
 
 [lints]
 workspace = true

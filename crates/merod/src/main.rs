@@ -1,5 +1,6 @@
 use std::env::var;
 
+use calimero_utils_actix::init_global_runtime;
 use clap::Parser;
 use eyre::Result as EyreResult;
 use tracing_subscriber::fmt::layer;
@@ -20,7 +21,7 @@ async fn main() -> EyreResult<()> {
     let command = RootCommand::parse();
 
     if rand::random::<u8>() % 10 == 0 {
-        tokio::spawn(async move {
+        let _ignored = tokio::spawn(async move {
             if let Err(err) = check_for_update().await {
                 eprintln!("Version check failed: {}", err);
             }
@@ -39,5 +40,9 @@ fn setup() -> EyreResult<()> {
         .with(layer())
         .init();
 
-    color_eyre::install()
+    color_eyre::install()?;
+
+    init_global_runtime()?;
+
+    Ok(())
 }

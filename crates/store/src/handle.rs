@@ -77,7 +77,7 @@ impl<'a, L: WriteLayer<'a>> Handle<L> {
             .map_err(HandleError::LayerError)
     }
 
-    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<'_, E>> {
+    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<'a, E>> {
         self.inner
             .delete(entry.key())
             .map_err(HandleError::LayerError)
