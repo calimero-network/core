@@ -3,6 +3,13 @@ name: PR Description
 
 on:
   pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      # with external contributions, we have to manually "approve and run"
+      # before the workflow can run, so we take advantage "external" label
+      - labeled
 
 permissions:
   pull-requests: write
@@ -19,23 +26,26 @@ jobs:
     name: Validate
     runs-on: ubuntu-latest
     if: github.actor != 'dependabot[bot]'
+    env:
+      PR_BODY: ${{ github.event.pull_request.body }}
     steps:
       - name: Validate Description
         id: validate_description
         run: |
           readarray -t required_sections <<< "$REQUIRED_SECTIONS"
-          pr_body_base64=$(echo -n "${{ github.event.pull_request.body }}" | base64 -w0)
           missing_sections=()
 
+          declare -p required_sections
+
           for section in "${required_sections[@]}"; do
-            if ! echo "$pr_body_base64" | base64 --decode | grep -q -i "$section"; then
+            if ! echo "$PR_BODY" | grep -qi "$section"; then
               missing_sections+=("$section")
             fi
           done
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             EOF=$(openssl rand -hex 8)
-            echo "comment_content<<$EOF" >> "$GITHUB_OUTPUT"
+            echo "comment_content << $EOF" >> "$GITHUB_OUTPUT"
             echo -e "**❌ The PR description is missing these required sections:**\n" >> "$GITHUB_OUTPUT"
             for section in "${missing_sections[@]}"; do
               echo "- \`$section\`" >> "$GITHUB_OUTPUT"
@@ -44,6 +54,8 @@ jobs:
             echo "$EOF" >> $GITHUB_OUTPUT
 
             echo "comment_action=recreate" >> "$GITHUB_OUTPUT"
+
+            exit 1
           else
             echo "comment_action=delete" >> "$GITHUB_OUTPUT"
           fi
