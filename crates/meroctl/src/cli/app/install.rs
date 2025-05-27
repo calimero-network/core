@@ -92,17 +92,27 @@ impl InstallCommand {
             bail!("Either path or url must be provided");
         };
 
-        let response: InstallApplicationResponse = do_request(
+        let response: Result<InstallApplicationResponse, _> = do_request(
             &Client::new(),
             url,
             Some(request),
             connection.auth_key.as_ref(),
             RequestType::Post,
         )
-        .await?;
+        .await;
 
-        environment.output.write(&response);
-        Ok(response.data.application_id)
+        match response {
+            Ok(response) => {
+                environment.output.write(&response);
+                Ok(response.data.application_id)
+            }
+            Err(e) => {
+                environment
+                    .output
+                    .write(&ErrorLine(&format!("Install failed: {}", e)));
+                Err(e)
+            }
+        }
     }
 
     pub async fn watch_app(&self, environment: &Environment) -> EyreResult<()> {
