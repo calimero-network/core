@@ -40,7 +40,7 @@ pub enum ContextAliasSubcommand {
 
     #[command(about = "Resolve the alias to a context")]
     Get {
-        #[arg(help = "Name of the alias to look up")]
+        #[arg(help = "Name of the alias to look up", default_value = "default")]
         alias: Alias<ContextId>,
     },
 }
@@ -188,15 +188,6 @@ impl UseCommand {
         .wrap_err("Failed to set default context")?;
 
         environment.output.write(&res);
-
-        if self.context.as_str() == context_id.as_str() {
-            println!("Default context set to: {}", context_id);
-        } else {
-            println!(
-                "Default context set to: {} (from alias '{}')",
-                context_id, self.context
-            );
-        }
 
         Ok(())
     }

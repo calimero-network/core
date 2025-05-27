@@ -131,10 +131,6 @@ impl ContextIdentityCommand {
 
                 environment.output.write(&res);
 
-                println!(
-                    "Default identity set to: {} for context {}",
-                    identity, context_id
-                );
                 Ok(())
             }
         }
