@@ -45,7 +45,7 @@ jobs:
 
           if [[ ${#missing_sections[@]} -gt 0 ]]; then
             EOF=$(openssl rand -hex 8)
-            echo "comment_content << $EOF" >> "$GITHUB_OUTPUT"
+            echo "comment_content <<$EOF" >> "$GITHUB_OUTPUT"
             echo -e "**❌ The PR description is missing these required sections:**\n" >> "$GITHUB_OUTPUT"
             for section in "${missing_sections[@]}"; do
               echo "- \`$section\`" >> "$GITHUB_OUTPUT"
