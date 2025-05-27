@@ -24,7 +24,7 @@ pub struct AuthResponse {
     /// Whether the authentication is valid
     pub is_valid: bool,
     /// The identifier of the authenticated user
-    pub key_id: Option<String>,
+    pub key_id: String,
     /// The permissions granted to the authenticated user
     pub permissions: Vec<String>,
 }
@@ -54,19 +54,4 @@ pub enum AuthError {
     RateLimitExceeded(String),
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
-}
-
-/// Request validation trait for generic types
-#[async_trait]
-pub trait RequestValidator<B> {
-    /// Verify the authentication and check permissions for a specific body type
-    ///
-    /// # Arguments
-    ///
-    /// * `request` - The request to verify
-    ///
-    /// # Returns
-    ///
-    /// * `Result<AuthResponse, AuthError>` - The result of the verification
-    async fn validate_request(&self, request: &Request<B>) -> Result<AuthResponse, AuthError>;
 }

@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 /// Authentication service configuration
@@ -158,10 +156,6 @@ impl Default for CorsConfig {
 /// Security configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
-    /// CSRF secret key (must be at least 32 bytes when decoded from base64)
-    #[serde(default = "default_csrf_secret")]
-    pub csrf_secret: String,
-
     /// Rate limit configuration (requests per minute)
     #[serde(default = "default_rate_limit")]
     pub rate_limit: u32,
@@ -174,17 +168,10 @@ pub struct SecurityConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            csrf_secret: default_csrf_secret(),
             rate_limit: default_rate_limit(),
             max_body_size: default_max_body_size(),
         }
     }
-}
-
-fn default_csrf_secret() -> String {
-    // Generate a random 32-byte key and encode as base64
-    let key = rand::random::<[u8; 32]>();
-    STANDARD.encode(key)
 }
 
 fn default_rate_limit() -> u32 {

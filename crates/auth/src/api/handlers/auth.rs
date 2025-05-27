@@ -226,33 +226,25 @@ pub async fn token_handler(
         }
     };
 
-    // Extract the key ID from the response
-    let key_id = match auth_response.key_id {
-        Some(id) => id,
-        None => return internal_error_response("No key ID available"),
-    };
+    // Ensure authentication was successful
+    if !auth_response.is_valid {
+        return unauthorized_response("Authentication failed: Invalid credentials");
+    }
 
-    // Create a client key with the authenticated permissions
-    let client_key = ClientKey::new(
-        token_request.client_name.clone(),
-        key_id,
-        token_request.client_name,
-        auth_response.permissions,
-        None, // No expiry for now
-    );
-
-    // Generate tokens
+    let key_id = auth_response.key_id;
+    
+    // Generate tokens using the validated permissions from auth_response
     match state
         .0
         .token_generator
-        .generate_token_pair(&client_key)
+        .generate_token_pair(key_id.clone(), auth_response.permissions)
         .await
     {
         Ok((access_token, refresh_token)) => {
             let response = TokenResponse::new(
                 access_token,
                 refresh_token,
-                client_key.client_id,
+                key_id,
                 state.0.config.jwt.access_token_expiry,
             );
             success_response(response)
@@ -288,6 +280,23 @@ pub async fn refresh_token_handler(
     state: Extension<Arc<AppState>>,
     ValidatedJson(request): ValidatedJson<RefreshTokenRequest>,
 ) -> impl IntoResponse {
+    // First verify the refresh token to get the claims
+    let claims = match state.0.token_generator.verify_token(&request.refresh_token).await {
+        Ok(claims) => claims,
+        Err(err) => {
+            debug!("Failed to verify refresh token: {}", err);
+            let error_response = TokenResponse::error("Invalid refresh token");
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!(error_response)),
+            );
+        }
+    };
+
+    // Extract client_id from claims
+    let client_id = claims.sub;
+
+    // Generate new token pair
     match state
         .0
         .token_generator
@@ -295,9 +304,6 @@ pub async fn refresh_token_handler(
         .await
     {
         Ok((access_token, refresh_token)) => {
-            // TODO: Extract client_id from the refresh token
-            let client_id = "default_client".to_string();
-
             let response = TokenResponse::new(
                 access_token,
                 refresh_token,
@@ -349,10 +355,9 @@ pub async fn validate_handler(
             // Return success with appropriate headers
             let mut response_headers = HeaderMap::new();
 
-            if let Some(key_id) = auth_response.key_id.as_ref() {
-                if let Ok(header_value) = key_id.parse() {
-                    response_headers.insert("X-Auth-User", header_value);
-                }
+            // Add key_id header directly since it's no longer optional
+            if let Ok(header_value) = auth_response.key_id.parse() {
+                response_headers.insert("X-Auth-User", header_value);
             }
 
             // Add permissions as a comma-separated list
@@ -500,6 +505,136 @@ pub async fn revoke_token_handler(
                     "error": format!("Failed to revoke tokens: {}", err)
                 })),
             )
+        }
+    }
+}
+
+/// Request for generating a client key token after context selection
+#[derive(Debug, Deserialize, Validate)]
+pub struct GenerateClientKeyRequest {
+    /// Context ID selected by user
+    #[validate(length(min = 1, message = "Context ID is required"))]
+    pub context_id: String,
+
+    /// Context identity selected by user
+    #[validate(length(min = 1, message = "Context identity is required"))]
+    pub context_identity: String,
+
+    /// Additional permissions requested
+    pub permissions: Option<Vec<String>>,
+}
+
+/// Generate client key token handler
+///
+/// This endpoint generates a client key and its JWT tokens after context selection.
+/// It requires a valid Root JWT token in the Authorization header.
+///
+/// # Arguments
+///
+/// * `state` - The application state
+/// * `headers` - Request headers containing Root JWT token
+/// * `request` - The client key generation request
+///
+/// # Returns
+///
+/// * `impl IntoResponse` - The response with client key tokens
+pub async fn generate_client_key_handler(
+    state: Extension<Arc<AppState>>,
+    headers: HeaderMap,
+    ValidatedJson(request): ValidatedJson<GenerateClientKeyRequest>,
+) -> impl IntoResponse {
+    // Verify the Root JWT token from headers
+    let auth_response = match state.0.token_generator.verify_token_from_headers(&headers).await {
+        Ok(response) => response,
+        Err(err) => {
+            error!("Failed to verify token: {}", err);
+            return unauthorized_response("Invalid token");
+        }
+    };
+
+    // Check if the token is valid and has admin permissions
+    if !auth_response.is_valid {
+        return unauthorized_response("Invalid token");
+    }
+    if !auth_response.permissions.contains(&"admin".to_string()) {
+        return unauthorized_response("Token does not have admin permissions");
+    }
+
+    // The key_id in auth_response is the root key ID
+    let root_key_id = auth_response.key_id;
+
+    // Verify the root key exists and is not revoked
+    match state.0.key_manager.get_root_key(&root_key_id).await {
+        Ok(Some(key)) if !key.is_valid() => return unauthorized_response("Root key is revoked"),
+        Ok(None) => return unauthorized_response("Root key not found"),
+        Err(err) => {
+            error!("Failed to get root key: {}", err);
+            return internal_error_response("Failed to get root key");
+        }
+        Ok(Some(_)) => (), // Key exists and is valid
+    };
+
+    // Get current timestamp for unique client ID
+    let timestamp = Utc::now().timestamp();
+
+    // Create a client ID based on context info and timestamp
+    let client_id = format!(
+        "client_{}_{}_{}", 
+        request.context_id,
+        request.context_identity,
+        timestamp
+    );
+
+    // Create context-specific permission
+    let mut permissions = vec![format!(
+        "context[{},{}]",
+        request.context_id, request.context_identity
+    )];
+
+    // Add any additional permissions requested
+    if let Some(additional_perms) = request.permissions {
+        permissions.extend(additional_perms);
+    }
+
+    // Create a descriptive name for the client key
+    let name = format!(
+        "Context Client - {} ({})",
+        request.context_id, request.context_identity
+    );
+
+    // Create the client key with context permission and any additional permissions
+    let client_key = ClientKey::new(
+        root_key_id,
+        name,
+        permissions.clone(),
+        None, // No expiry for now
+    );
+
+    // Store the client key
+    if let Err(err) = state.0.key_manager.set_client_key(&client_id, &client_key).await {
+        error!("Failed to store client key: {}", err);
+        return internal_error_response("Failed to store client key");
+    }
+
+    // Generate JWT tokens for the client key
+    match state
+        .0
+        .token_generator
+        .generate_token_pair(client_id.clone(), permissions)
+        .await
+    {
+        Ok((access_token, refresh_token)) => {
+            let response = TokenResponse::new(
+                access_token,
+                refresh_token,
+                client_id,
+                state.0.config.jwt.access_token_expiry,
+            );
+            success_response(response)
+        }
+        Err(err) => {
+            error!("Failed to generate client tokens: {}", err);
+            internal_error_response("Failed to generate client tokens")
         }
     }
 }

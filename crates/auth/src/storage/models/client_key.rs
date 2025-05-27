@@ -8,9 +8,6 @@ use serde::{Deserialize, Serialize};
 /// or services that are authorized to act on behalf of that user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientKey {
-    /// The client key ID (unique identifier for this application key)
-    pub client_id: String,
-
     /// The root key ID this client belongs to (user identity)
     pub root_key_id: String,
 
@@ -38,7 +35,6 @@ impl ClientKey {
     ///
     /// # Arguments
     ///
-    /// * `client_id` - Unique identifier for this application key
     /// * `root_key_id` - The root key (user) this client belongs to
     /// * `name` - The application name
     /// * `permissions` - The permissions granted to this application (must be a subset of root key permissions)
@@ -48,20 +44,19 @@ impl ClientKey {
     ///
     /// * `Self` - The new client key
     pub fn new(
-        client_id: String,
         root_key_id: String,
         name: String,
         permissions: Vec<String>,
         expires_at: Option<u64>,
     ) -> Self {
+        let now = Utc::now().timestamp() as u64;
         Self {
-            client_id,
             root_key_id,
             name,
             permissions,
-            created_at: Utc::now().timestamp() as u64,
+            created_at: now,
             expires_at,
-            last_used_at: None,
+            last_used_at: Some(now),
             revoked_at: None,
         }
     }
@@ -87,7 +82,6 @@ impl ClientKey {
         expires_at: Option<u64>,
     ) -> Self {
         Self::new(
-            "default-client".to_string(),
             root_key_id,
             "Default Application".to_string(),
             permissions,
@@ -102,7 +96,6 @@ impl ClientKey {
     ///
     /// # Arguments
     ///
-    /// * `client_id` - The registered OAuth client ID
     /// * `root_key_id` - The root key ID (user identity)
     /// * `name` - Human-readable name of the client application
     /// * `permissions` - The permissions (scopes) granted to this client
@@ -112,13 +105,12 @@ impl ClientKey {
     ///
     /// * `Self` - A new client key for the OAuth client
     pub fn create_for_oauth_client(
-        client_id: String,
         root_key_id: String,
         name: String,
         permissions: Vec<String>,
         expires_at: Option<u64>,
     ) -> Self {
-        Self::new(client_id, root_key_id, name, permissions, expires_at)
+        Self::new(root_key_id, name, permissions, expires_at)
     }
 
     /// Check if the key has a specific permission
@@ -190,7 +182,9 @@ impl ClientKey {
 
     /// Check if the key is valid (not revoked and not expired)
     pub fn is_valid(&self) -> bool {
-        !self.is_revoked() && !self.is_expired()
+        let now = Utc::now().timestamp() as u64;
+        self.revoked_at.is_none()
+            && self.expires_at.map(|exp| exp > now).unwrap_or(true)
     }
 
     /// Update the last used timestamp

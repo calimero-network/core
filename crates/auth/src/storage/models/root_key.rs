@@ -9,21 +9,21 @@ pub struct RootKey {
     /// The authentication method
     pub auth_method: String,
 
+    /// Permissions assigned to this key
+    pub permissions: Vec<String>,
+
     /// When the key was created
     pub created_at: u64,
+
+    /// When the key expires
+    pub expires_at: Option<u64>,
+    
+    /// When the key was last used
+    pub last_used_at: Option<u64>,
 
     /// When the key was revoked (if it was)
     pub revoked_at: Option<u64>,
 
-    /// When the key was last used
-    pub last_used_at: Option<u64>,
-
-    /// Permissions assigned to this key
-    pub permissions: Vec<String>,
-
-    /// Optional metadata (for future extensions)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
 }
 
 impl RootKey {
@@ -41,11 +41,11 @@ impl RootKey {
         Self {
             public_key,
             auth_method,
-            created_at: chrono::Utc::now().timestamp() as u64,
-            revoked_at: None,
-            last_used_at: None,
             permissions: Vec::new(),
-            metadata: None,
+            created_at: chrono::Utc::now().timestamp() as u64,
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
         }
     }
 
@@ -68,11 +68,11 @@ impl RootKey {
         Self {
             public_key,
             auth_method,
-            created_at: chrono::Utc::now().timestamp() as u64,
-            revoked_at: None,
-            last_used_at: None,
             permissions,
-            metadata: None,
+            created_at: chrono::Utc::now().timestamp() as u64,
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
         }
     }
 
@@ -126,10 +126,5 @@ impl RootKey {
         }
 
         self.permissions.contains(&permission.to_string())
-    }
-
-    /// Set metadata for this key
-    pub fn set_metadata(&mut self, metadata: serde_json::Value) {
-        self.metadata = Some(metadata);
     }
 }

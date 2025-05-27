@@ -24,8 +24,6 @@ allowed_headers = ["Authorization", "Content-Type", "Accept", "X-CSRF-Token"]
 
 # Security configuration
 [security]
-# Base64-encoded 32-byte key for CSRF protection
-csrf_secret = "your-base64-encoded-csrf-secret-key-here"
 # Rate limit (requests per minute)
 rate_limit = 50
 # Maximum request body size in bytes (1MB)

@@ -26,7 +26,7 @@ use crate::providers::ProviderContext;
 use crate::storage::models::{ClientKey, RootKey};
 use crate::storage::{KeyManager, Storage};
 use crate::{
-    register_auth_data_type, register_auth_provider, AuthError, AuthResponse, RequestValidator,
+    register_auth_data_type, register_auth_provider, AuthError, AuthResponse,
 };
 
 /// NEAR wallet authentication data
@@ -391,11 +391,11 @@ impl NearWalletProvider {
         let root_key = RootKey {
             public_key: public_key.to_string(),
             auth_method: "near_wallet".to_string(),
-            created_at: Utc::now().timestamp() as u64,
-            revoked_at: None,
-            last_used_at: Some(Utc::now().timestamp() as u64),
             permissions: vec!["admin".to_string()], // Default admin permission
-            metadata: None,
+            created_at: Utc::now().timestamp() as u64,
+            expires_at: None,
+            last_used_at: Some(Utc::now().timestamp() as u64),
+            revoked_at: None,
         };
 
         // Store the root key using KeyManager
@@ -487,80 +487,6 @@ impl NearWalletProvider {
         Ok((key_id, permissions))
     }
 
-    /// Handle authentication and generate tokens
-    ///
-    /// # Arguments
-    ///
-    /// * `request` - The request to authenticate
-    /// * `account_id` - The account ID
-    /// * `public_key` - The public key
-    /// * `message` - The message
-    ///
-    /// # Returns
-    ///
-    /// * `Result<AuthResponse, AuthError>` - Authentication response
-    async fn authenticate<B>(
-        &self,
-        request: &Request<B>,
-        account_id: &str,
-        public_key: &str,
-        message: &[u8],
-    ) -> Result<AuthResponse, AuthError>
-    where
-        B: Send + Sync,
-    {
-        // Extract the signature from headers
-        let signature = request
-            .headers()
-            .get("x-near-signature")
-            .ok_or_else(|| AuthError::AuthenticationFailed("Missing NEAR signature".to_string()))?
-            .to_str()
-            .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR signature".to_string()))?;
-
-        // Authenticate using the core authentication logic
-        let (key_id, permissions) = self
-            .authenticate_core(account_id, public_key, message, signature)
-            .await?;
-
-        // Generate a client ID and client key
-        let client_id = format!("client_{}", Utc::now().timestamp());
-
-        // Create client key for the authenticated user
-        let client_key = ClientKey::new(
-            client_id.clone(),
-            key_id.clone(),
-            "NEAR Wallet".to_string(),
-            permissions.clone(),
-            None, // No expiry for NEAR wallet keys
-        );
-
-        // Generate tokens for the client
-        match self.token_manager.generate_token_pair(&client_key).await {
-            Ok((access_token, refresh_token)) => {
-                // Store the token info in request extensions (as a HashMap) for later use
-                if let Some(extensions) = request
-                    .extensions()
-                    .get::<std::collections::HashMap<String, String>>()
-                {
-                    let mut new_extensions = extensions.clone();
-                    new_extensions.insert("access_token".to_string(), access_token);
-                    new_extensions.insert("refresh_token".to_string(), refresh_token);
-                    new_extensions.insert("client_id".to_string(), client_id);
-                }
-            }
-            Err(err) => {
-                error!("Failed to generate tokens: {}", err);
-                return Err(AuthError::TokenGenerationFailed(err.to_string()));
-            }
-        }
-
-        Ok(AuthResponse {
-            is_valid: true,
-            key_id: Some(key_id),
-            permissions,
-        })
-    }
-
     /// Get the token manager
     ///
     /// # Returns
@@ -568,18 +494,6 @@ impl NearWalletProvider {
     /// * `&TokenManager` - Reference to the token manager
     pub fn get_token_manager(&self) -> &TokenManager {
         &self.token_manager
-    }
-}
-
-#[async_trait]
-impl<B: Send + Sync> RequestValidator<B> for NearWalletProvider {
-    async fn validate_request(&self, request: &Request<B>) -> Result<AuthResponse, AuthError> {
-        // Extract the signature data
-        let (account_id, public_key, message) = self.extract_signature_data(request)?;
-
-        // Authenticate the request
-        self.authenticate(request, &account_id, &public_key, &message)
-            .await
     }
 }
 
@@ -608,7 +522,7 @@ impl AuthVerifierFn for NearWalletVerifier {
         // Return the authentication response
         Ok(AuthResponse {
             is_valid: true,
-            key_id: Some(key_id),
+            key_id,
             permissions,
         })
     }

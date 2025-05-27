@@ -12,7 +12,7 @@ pub mod prefixes {
     pub const ROOT_KEY: &str = "root_key:";
 
     /// Prefix for client keys
-    pub const CLIENT_KEY: &str = "client:";
+    pub const CLIENT_KEY: &str = "client_key:";
 
     /// Prefix for permissions
     pub const PERMISSION: &str = "permission:";

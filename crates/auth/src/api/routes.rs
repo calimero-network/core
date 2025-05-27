@@ -10,7 +10,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::api::handlers::auth::{
     callback_handler, challenge_handler, login_handler, refresh_token_handler,
-    revoke_token_handler, token_handler, validate_handler,
+    revoke_token_handler, token_handler, validate_handler, generate_client_key_handler,
 };
 use crate::api::handlers::clients::{
     create_client_handler, delete_client_handler, list_clients_handler,
@@ -83,6 +83,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/auth/revoke", post(revoke_token_handler))
         .route("/auth/validate", post(validate_handler))
         .route("/auth/callback", get(callback_handler))
+        .route("/auth/client-key", post(generate_client_key_handler))
         // Root key management
         .route("/auth/keys", get(list_keys_handler))
         .route("/auth/keys", post(create_key_handler))

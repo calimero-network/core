@@ -14,9 +14,8 @@ use crate::config::AuthConfig;
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
-use crate::secrets::SecretManager;
 use crate::storage::{KeyManager, Storage};
-use crate::{register_auth_provider, AuthError, AuthResponse, RequestValidator};
+use crate::{register_auth_provider, AuthError, AuthResponse};
 
 /// Example provider for demonstration purposes
 pub struct ExampleProvider {
@@ -33,17 +32,6 @@ impl ExampleProvider {
             key_manager: context.key_manager,
             token_manager: context.token_manager,
         }
-    }
-}
-
-#[async_trait]
-impl<B: Send + Sync> RequestValidator<B> for ExampleProvider {
-    async fn validate_request(&self, _request: &Request<B>) -> Result<AuthResponse, AuthError> {
-        // In a real provider, this would validate authentication credentials
-        // For this example, we just return a dummy error
-        Err(AuthError::AuthenticationFailed(
-            "Example provider is not yet implemented".to_string(),
-        ))
     }
 }
 
