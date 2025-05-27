@@ -2,6 +2,7 @@
 
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
+use calimero_context_config::types::Capability;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
@@ -9,6 +10,7 @@ use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload}
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
+use eyre::bail;
 use futures_util::Stream;
 use tokio::sync::oneshot;
 
@@ -280,5 +282,43 @@ impl ContextClient {
             .expect("Mailbox not to be dropped");
 
         receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub async fn grant_permission(
+        &self,
+        context_id: ContextId,
+        granter_id: PublicKey,
+        grantee_id: PublicKey,
+        capability: Capability,
+    ) -> eyre::Result<()> {
+        let Some(config_client) = self.context_config(&context_id)? else {
+            bail!("context '{}' does not exist", context_id);
+        };
+
+        let external_client = self.external_client(&context_id, &config_client)?;
+
+        external_client
+            .config()
+            .grant(&granter_id, &[(grantee_id, capability)])
+            .await
+    }
+
+    pub async fn revoke_permission(
+        &self,
+        context_id: ContextId,
+        revoker_id: PublicKey,
+        revokee_id: PublicKey,
+        capability: Capability,
+    ) -> eyre::Result<()> {
+        let Some(config_client) = self.context_config(&context_id)? else {
+            bail!("context '{}' does not exist", context_id);
+        };
+
+        let external_client = self.external_client(&context_id, &config_client)?;
+
+        external_client
+            .config()
+            .revoke(&revoker_id, &[(revokee_id, capability)])
+            .await
     }
 }

@@ -1,5 +1,5 @@
 use calimero_context_config::repr::Repr;
-use calimero_context_config::types::{ContextIdentity, ContextStorageEntry};
+use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
@@ -837,4 +837,78 @@ pub struct GetProposalApproversResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GetNumberOfProposalApprovalsResponse {
     pub data: ProposalWithApprovals,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantPermissionRequest {
+    pub context_id: ContextId,
+    pub granter_id: PublicKey,
+    pub grantee_id: PublicKey,
+    pub capability: Capability,
+}
+
+impl GrantPermissionRequest {
+    pub const fn new(
+        context_id: ContextId,
+        granter_id: PublicKey,
+        grantee_id: PublicKey,
+        capability: Capability,
+    ) -> Self {
+        Self {
+            context_id,
+            granter_id,
+            grantee_id,
+            capability,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantPermissionResponse {
+    pub data: Empty,
+}
+
+impl GrantPermissionResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokePermissionRequest {
+    pub context_id: ContextId,
+    pub revoker_id: PublicKey,
+    pub revokee_id: PublicKey,
+    pub capability: Capability,
+}
+
+impl RevokePermissionRequest {
+    pub const fn new(
+        context_id: ContextId,
+        revoker_id: PublicKey,
+        revokee_id: PublicKey,
+        capability: Capability,
+    ) -> Self {
+        Self {
+            context_id,
+            revoker_id,
+            revokee_id,
+            capability,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokePermissionResponse {
+    pub data: Empty,
+}
+
+impl RevokePermissionResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
 }
