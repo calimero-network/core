@@ -337,7 +337,7 @@ impl Driver {
         drop(
             report
                 .scenario_matrix
-                .entry((*ctx.protocol_name.as_str()).to_string())
+                .entry(ctx.protocol_name.as_str().to_string())
                 .or_default()
                 .insert(app_name.to_owned(), scenario_report),
         );
