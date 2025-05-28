@@ -20,19 +20,12 @@ export default defineConfig({
           ],
         },
       },
-      external: ['vm'],
     },
     chunkSizeWarningLimit: 1000, // Increase warning limit to 1000kb
   },
   resolve: {
     alias: {
-      buffer: 'buffer',
-      crypto: 'crypto-browserify',
-      stream: 'stream-browserify',
-      util: 'util',
-      process: 'process/browser',
-      vm: 'vm-browserify',
-      'js-sha256': resolve(__dirname, 'src/utils/sha256.js'), // We'll create a safe replacement
+      buffer: 'buffer'
     },
   },
   define: {
@@ -41,10 +34,5 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: ['buffer'],
-    esbuildOptions: {
-      define: {
-        global: 'globalThis'
-      }
-    }
   }
 });

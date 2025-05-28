@@ -19,6 +19,11 @@ async function fetchWithAuth(url: string, options: RequestInit = {}) {
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      // Clear the invalid token
+      localStorage.removeItem('auth_token');
+      throw new Error('Authentication required');
+    }
     const error = await response.json().catch(() => ({}));
     throw new Error(error.message || `API Error: ${response.status}`);
   }
@@ -33,48 +38,34 @@ export async function getProviders(): Promise<Provider[]> {
 }
 
 // Request authentication token
-export async function requestToken(provider: string, authData: any): Promise<TokenResponse> {
-  const requestBody = {
-    auth_method: provider,
-    public_key: authData.public_key,
-    wallet_address: authData.account_id,
-    client_name: 'web-browser',
-    permissions: [],
-    signature: authData.signature,
-    message: authData.message,
-    timestamp: Math.floor(Date.now() / 1000)
-  };
-
-  console.log('Message being sent:', authData.message);
-  console.log('Token request body:', requestBody);
-
+export async function requestToken(requestBody: any): Promise<TokenResponse> {
   return fetchWithAuth('/auth/token', {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
     body: JSON.stringify(requestBody)
   });
 }
 
 // Get a challenge for authentication (e.g., for NEAR wallet)
-export async function getChallenge(challengeRequest: ChallengeRequest): Promise<ChallengeResponse> {
-  const params = new URLSearchParams({
-    provider: challengeRequest.provider,
-    redirect_uri: challengeRequest.redirect_uri || window.location.href,
-    client_id: challengeRequest.client_id || 'web-browser'
-  });
-  
-  return fetchWithAuth(`/auth/challenge?${params.toString()}`);
+export async function getChallenge(): Promise<ChallengeResponse> {
+  return fetchWithAuth(`/auth/challenge`);
 }
 
-// Verify an existing token
-export async function verifyToken(): Promise<{ valid: boolean, userId: string, permissions: string[] }> {
-  try {
-    const response = await fetchWithAuth('/auth/validate');
-    return {
-      valid: response.is_valid || false,
-      userId: response.key_id || '',
-      permissions: response.permissions || []
-    };
-  } catch (error) {
-    return { valid: false, userId: '', permissions: [] };
-  }
+// Generate client key token
+interface GenerateClientKeyRequest {
+  context_id: string;
+  context_identity: string;
+}
+
+export async function generateClientKey(rootToken: string, request: GenerateClientKeyRequest): Promise<TokenResponse> {
+  return fetchWithAuth('/auth/client-key', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${rootToken}`
+    },
+    body: JSON.stringify(request)
+  });
 }

@@ -1,8 +1,9 @@
 export interface Provider {
   name: string;
-  displayName: string;
-  description?: string;
-  icon?: string;
+  type: string;
+  description: string;
+  configured: boolean;
+  config?: Record<string, any>;
 }
 
 export interface TokenResponse {
@@ -11,13 +12,12 @@ export interface TokenResponse {
   token_type: string;
   expires_in: number;
   client_id: string;
+  error?: string;
 }
 
 export interface AuthState {
   isAuthenticated: boolean;
   loading: boolean;
-  userId: string | null;
-  permissions: string[];
   error: string | null;
 }
 
@@ -33,13 +33,7 @@ export interface ChallengeRequest {
 }
 
 export interface ChallengeResponse {
-  message: string;
-  timestamp: number;
-  network: string;
-  rpc_url: string;
-  wallet_url: string;
-  redirect_uri: string;
-  recipient?: string;
+  challenge: string;
 }
 
 export interface SignedMessage {

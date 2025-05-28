@@ -1,119 +1,139 @@
-import React, { useEffect, useState } from 'react';
-import styled from '@emotion/styled';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
-import { Provider, ChallengeRequest, ChallengeResponse, SignedMessage } from '../../types/auth';
-import ProviderSelector from './ProviderSelector';
+import { Provider } from '../../types/auth';
+import { Context, ContextIdentity } from '../../types/api';
 import * as api from '../../services/api';
-import { NetworkId, setupWalletSelector } from '@near-wallet-selector/core';
+import { AuthStorage } from '../../services/authStorage';
+import { Container, Button, ButtonGroup, ErrorMessage, SessionPrompt } from '../auth/styles';
+import ProviderSelector from './ProviderSelector';
+import { ContextSelector } from '../ContextSelector';
+import { setupWalletSelector } from '@near-wallet-selector/core';
 import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
+import { Buffer } from 'buffer';
 
-const Container = styled.div`
-  max-width: 100%;
-`;
-
-const ErrorMessage = styled.div`
-  background-color: #ffebee;
-  color: #c62828;
-  padding: 12px;
-  border-radius: 4px;
-  margin-bottom: 20px;
-  text-align: center;
-`;
+interface SignedMessage {
+  accountId: string;
+  publicKey: string;
+  signature: string;
+}
 
 const LoginView: React.FC = () => {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showProviders, setShowProviders] = useState(false);
+  const [showContextSelector, setShowContextSelector] = useState(false);
+  const [rootToken, setRootToken] = useState<string | null>(null);
   
   const { login, isAuthenticated } = useAuth();
-  
-  // Load available providers
-  useEffect(() => {
-    const loadProviders = async () => {
-      try {
-        const availableProviders = await api.getProviders();
-        setProviders(availableProviders);
-        setLoading(false);
-      } catch (err) {
-        console.error('Failed to load providers:', err);
-        setError('Failed to load authentication providers');
-        setLoading(false);
-      }
-    };
-    
-    loadProviders();
+
+  // Load providers
+  const loadProviders = useCallback(async () => {
+    try {
+      const availableProviders = await api.getProviders();
+      setProviders(availableProviders);
+    } catch (err) {
+      console.error('Failed to load providers:', err);
+      setError('Failed to load authentication providers');
+    }
   }, []);
   
-  // Handle provider selection
-  const handleProviderSelect = async (provider: Provider) => {
-    setError(null);
+  useEffect(() => {
+    const checkExistingSession = async () => {
+      const existingRootToken = AuthStorage.getRootToken();
+      const clientTokens = AuthStorage.getClientTokens();
+      
+      if (existingRootToken && clientTokens?.refresh_token) {
+        // If there's an existing token, show providers only if user explicitly chooses new login
+        setShowProviders(false);
+        setRootToken(existingRootToken);
+      } else {
+        // If no existing token, show providers directly
+        setShowProviders(true);
+        await loadProviders();
+      }
+      setLoading(false);
+    };
     
+    checkExistingSession();
+  }, [loadProviders]);
+  
+  const handleContinueSession = () => {
+    const existingRootToken = AuthStorage.getRootToken();
+    if (existingRootToken) {
+      setRootToken(existingRootToken);
+      setShowContextSelector(true);
+    }
+  };
+
+  const handleNewLogin = async () => {
+    // Clear existing tokens before starting new login
+    AuthStorage.clearTokens();
+    setRootToken(null);
+    setShowProviders(true);
+    await loadProviders();
+  };
+
+  const handleProviderSelect = async (provider: Provider) => {
     try {
       if (provider.name === 'near_wallet') {
-        let challengeRequest = {
-          provider: 'near_wallet',
-          redirect_uri: window.location.href,
-          client_id: 'web-browser',
-        } as ChallengeRequest;
+        // Get challenge for NEAR wallet
+        const challengeResponse = await api.getChallenge();
+        console.log('Challenge response:', challengeResponse);
+        
+        // Generate nonce
+        const nonceArray = new Uint8Array(32);
+        window.crypto.getRandomValues(nonceArray);
+        const nonceBuffer = Buffer.from(nonceArray);
+        const nonceString = nonceBuffer.toString('base64');
 
-        try {
-          let challengeResponse = await api.getChallenge(challengeRequest);
-          // Handle the challenge response
-          if (!challengeResponse || !challengeResponse.message) {
-            console.error('Invalid challenge response:', challengeResponse);
-            return;
-          }
-          console.log('Challenge response:', challengeResponse);
+        // Setup NEAR wallet
+        const selector = await setupWalletSelector({
+          network: 'testnet',
+          modules: [setupMyNearWallet()]
+        });
 
-          const challengeNonce = challengeResponse.message.split(':')[1];
-          const nonce = Buffer.from(challengeNonce, 'base64');
+        const wallet = await selector.wallet('my-near-wallet');
+        
+        // Sign the challenge
+        const signature = await wallet.signMessage({
+          message: challengeResponse.challenge,
+          nonce: nonceBuffer,
+          recipient: 'calimero',
+          callbackUrl: window.location.href
+        }) as SignedMessage;
 
-          const selector = await setupWalletSelector({
-            network: challengeResponse.network as NetworkId,
-            debug: true,
-            modules: [
-              setupMyNearWallet()
-            ]
-          });
+        console.log('Signature:', signature);
 
-          const wallet = await selector.wallet('my-near-wallet');
+        // Create token request
+        const tokenPayload = {
+          auth_method: 'near_wallet',
+          public_key: signature.publicKey,
+          wallet_address: signature.accountId,
+          client_name: 'NEAR Wallet',
+          message: challengeResponse.challenge,
+          signature: signature.signature,
+          timestamp: Date.now(),
+          nonce: nonceString,
+          recipient: 'calimero',
+          callback_url: window.location.href
+        };
 
-          const signature = await wallet.signMessage({
-              message: challengeResponse.message,
-              nonce,
-              callbackUrl: window.location.href, 
-              recipient: challengeResponse.recipient || 'calimero',
-          }) as SignedMessage;
+        console.log('Token request payload:', tokenPayload);
 
-          console.log('Signature:', signature);
-          
-          // Create the token request payload
-          const tokenPayload = {
-            public_key: signature.publicKey,
-            account_id: signature.accountId,
-            message: challengeResponse.message,
-            signature: signature.signature
-          };
-          
-          console.log('Token request payload:', tokenPayload);
-          
-          // Request JWT token with the signature
-          const tokenResponse = await api.requestToken('near_wallet', tokenPayload);
-          console.log('Token response:', tokenResponse);
+        // Get root token
+        const tokenResponse = await api.requestToken(tokenPayload);
+        console.log('Token response:', tokenResponse);
 
-          // // Store the token and update auth state
-          // if (tokenResponse.access_token) {
-          //   localStorage.setItem('auth_token', tokenResponse.access_token);
-          //   localStorage.setItem('refresh_token', tokenResponse.refresh_token);
-          //   login(tokenResponse.access_token, tokenResponse.refresh_token);
-          // }
-          
-        } catch (err) {
-          console.error('Authentication error:', err);
-          setError(err instanceof Error ? err.message : 'Authentication failed');
+        if (tokenResponse.access_token) {
+          // Store root token and show context selector
+          AuthStorage.setRootToken(tokenResponse.access_token);
+          setRootToken(tokenResponse.access_token);
+          setShowContextSelector(true);
+        } else {
+          throw new Error('Failed to get access token');
         }
       } else {
-        // For other providers, add implementation here
         setError(`Provider ${provider.name} is not implemented yet`);
       }
     } catch (err) {
@@ -121,18 +141,30 @@ const LoginView: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     }
   };
-  
-  // Show authentication success
-  if (isAuthenticated) {
-    return (
-      <Container>
-        <div style={{ textAlign: 'center', padding: '20px' }}>
-          <h2>Authentication Successful</h2>
-          <p>You have successfully authenticated.</p>
-        </div>
-      </Container>
-    );
-  }
+
+  const handleContextAndIdentitySelect = async (context: Context, identity: ContextIdentity) => {
+    try {
+      // Generate client key using context and identity
+      const response = await api.generateClientKey(rootToken!, {
+        context_id: context.id,
+        context_identity: identity
+      });
+
+      console.log('generateClientKey response', response);
+
+      if (response.access_token && response.refresh_token) {
+        // Store the client tokens
+        AuthStorage.setClientTokens(response);
+        // Complete login with the client tokens
+        await login(response.access_token, response.refresh_token);
+      } else {
+        throw new Error('Failed to generate client key');
+      }
+    } catch (err) {
+      console.error('Failed to generate client key:', err);
+      setError(err instanceof Error ? err.message : 'Failed to generate client key');
+    }
+  };
   
   if (loading) {
     return <div>Loading...</div>;
@@ -140,6 +172,33 @@ const LoginView: React.FC = () => {
 
   if (error) {
     return <ErrorMessage>{error}</ErrorMessage>;
+  }
+
+  if (showContextSelector && rootToken) {
+    return (
+      <Container>
+        <ContextSelector onComplete={handleContextAndIdentitySelect} />
+      </Container>
+    );
+  }
+
+  if (!showProviders && AuthStorage.getRootToken()) {
+    return (
+      <Container>
+        <SessionPrompt>
+          <h2>Welcome Back!</h2>
+          <p>We noticed you have an existing session. Would you like to continue with it?</p>
+          <ButtonGroup>
+            <Button className="primary" onClick={handleContinueSession}>
+              Continue Session
+            </Button>
+            <Button className="secondary" onClick={handleNewLogin}>
+              New Login
+            </Button>
+          </ButtonGroup>
+        </SessionPrompt>
+      </Container>
+    );
   }
 
   return (
