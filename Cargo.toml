@@ -36,7 +36,7 @@ members = [
 
     "./apps/kv-store",
 
-    "./e2e-tests", "crates/mero-devnet",
+    "./e2e-tests", 
 ]
 
 [workspace.dependencies]
