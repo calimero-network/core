@@ -6,11 +6,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
+use hex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 use validator::Validate;
-use sha2::{Sha256, Digest};
-use hex;
 
 use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::validation::ValidatedJson;
@@ -196,7 +196,6 @@ pub async fn token_handler(
     state: Extension<Arc<AppState>>,
     ValidatedJson(token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
-
     // Authenticate directly using the token request
     let auth_response = match state
         .0
@@ -413,9 +412,7 @@ pub struct ChallengeResponse {
 /// # Returns
 ///
 /// * `impl IntoResponse` - The response containing the challenge token
-pub async fn challenge_handler(
-    state: Extension<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     // Generate the challenge token
     let challenge = match state.0.token_generator.generate_challenge().await {
         Ok(token) => token,
@@ -426,9 +423,7 @@ pub async fn challenge_handler(
     };
 
     // Create the response
-    let response = ChallengeResponse {
-        challenge,
-    };
+    let response = ChallengeResponse { challenge };
 
     success_response(response)
 }

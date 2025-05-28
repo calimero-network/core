@@ -1,15 +1,17 @@
 use std::any::Any;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use borsh::{BorshSerialize, BorshDeserialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use chrono::Utc;
 use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
+use eyre::{eyre, Result as EyreResult};
+use near_crypto::{KeyType, PublicKey, Signature};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::QueryRequest;
@@ -17,8 +19,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, error};
-use eyre::{eyre, Result as EyreResult};
-use near_crypto::{PublicKey, Signature, KeyType};
 
 use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;
@@ -149,35 +149,39 @@ impl NearWalletProvider {
         // Parse the public key
         let public_key = PublicKey::from_str(public_key_str)
             .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid public key: {}", e)))?;
-        
+
         // Decode the base64 nonce
-        let nonce_bytes = STANDARD.decode(nonce)
+        let nonce_bytes = STANDARD
+            .decode(nonce)
             .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid nonce base64: {}", e)))?;
-        
-        let nonce_array: [u8; 32] = nonce_bytes.try_into()
+
+        let nonce_array: [u8; 32] = nonce_bytes
+            .try_into()
             .map_err(|_| AuthError::AuthenticationFailed("Invalid nonce length".to_string()))?;
-            
+
         // Create the payload that was signed
         let payload = create_payload(message, nonce_array, app, callback_url);
-        
+
         // Serialize the payload using borsh::to_vec
-        let payload_bytes = borsh::to_vec(&payload)
-            .map_err(|e| AuthError::AuthenticationFailed(format!("Failed to serialize payload: {}", e)))?;
-            
+        let payload_bytes = borsh::to_vec(&payload).map_err(|e| {
+            AuthError::AuthenticationFailed(format!("Failed to serialize payload: {}", e))
+        })?;
+
         // Hash the payload - this is what was actually signed
         let hash = hash_bytes(&payload_bytes);
-        
+
         // Decode the base64 signature
-        let signature_bytes = STANDARD.decode(signature_str)
-            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid signature base64: {}", e)))?;
-        
+        let signature_bytes = STANDARD.decode(signature_str).map_err(|e| {
+            AuthError::AuthenticationFailed(format!("Invalid signature base64: {}", e))
+        })?;
+
         // Create signature from bytes
         let signature = Signature::from_parts(KeyType::ED25519, &signature_bytes)
             .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid signature: {}", e)))?;
 
         // Verify the signature against the hashed payload
         let is_valid = signature.verify(&hash, &public_key);
-        
+
         println!("Signature verification result: {}", is_valid);
 
         Ok(is_valid)
@@ -562,7 +566,10 @@ impl AuthProvider for NearWalletProvider {
             }
         };
 
-        let recipient = token_request.recipient.clone().unwrap_or_else(|| "calimero".to_string());
+        let recipient = token_request
+            .recipient
+            .clone()
+            .unwrap_or_else(|| "calimero".to_string());
         let callback_url = token_request.callback_url.clone().unwrap_or_default();
 
         // Create NEAR-specific auth data JSON
@@ -723,13 +730,13 @@ fn decode_to_fixed_array<const N: usize>(
 /// # Returns
 /// * `Payload` - The constructed payload.
 fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
-  Payload {
-      tag: 2_147_484_061,
-      message: message.to_owned(),
-      nonce,
-      recipient: recipient.to_owned(),
-      callback_url: Some(callback_url.to_owned()),
-  }
+    Payload {
+        tag: 2_147_484_061,
+        message: message.to_owned(),
+        nonce,
+        recipient: recipient.to_owned(),
+        callback_url: Some(callback_url.to_owned()),
+    }
 }
 
 /// Hashes the given bytes using SHA-256.
