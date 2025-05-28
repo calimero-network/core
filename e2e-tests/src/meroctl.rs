@@ -258,9 +258,6 @@ impl Meroctl {
                 .wait_with_output()
                 .await?;
 
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            dbg!(stdout);
-
             Ok(serde_json::from_slice(&output.stdout)?)
         }
     }
