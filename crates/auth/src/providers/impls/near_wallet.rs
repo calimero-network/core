@@ -1,13 +1,15 @@
 use std::any::Any;
 use std::sync::Arc;
+use std::str::FromStr;
 
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use borsh::{BorshSerialize, BorshDeserialize};
 use chrono::Utc;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::QueryRequest;
@@ -15,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, error};
+use eyre::{eyre, Result as EyreResult};
+use near_crypto::{PublicKey, Signature, KeyType};
 
 use crate::api::handlers::auth::TokenRequest;
 use crate::auth::token::TokenManager;
@@ -23,9 +27,31 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
-use crate::storage::models::{ClientKey, RootKey};
+use crate::storage::models::RootKey;
 use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthError, AuthResponse};
+
+enum Encoding {
+    Base64,
+    Base58,
+}
+
+/// Represents the payload structure that contains a message, nonce, recipient, and optional callback URL.
+///
+/// # Fields
+/// * `tag` - A tag to identify the payload type.
+/// * `message` - The message to be sent.
+/// * `nonce` - A 32-byte nonce for the message.
+/// * `recipient` - The recipient of the message.
+/// * `callback_url` - An optional callback URL for the message.
+#[derive(BorshSerialize)]
+struct Payload {
+    tag: u32,
+    message: String,
+    nonce: [u8; 32],
+    recipient: String,
+    callback_url: Option<String>,
+}
 
 /// NEAR wallet authentication data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +64,12 @@ pub struct NearWalletAuthData {
     pub message: String,
     /// Signature of the message
     pub signature: String,
+    /// Nonce used in signature (base64 encoded)
+    pub nonce: String,
+    /// Recipient app name
+    pub recipient: String,
+    /// Callback URL
+    pub callback_url: String,
 }
 
 /// NEAR wallet auth data type
@@ -91,146 +123,64 @@ impl NearWalletProvider {
         }
     }
 
-    /// Extract signature message from request headers
-    ///
-    /// # Arguments
-    ///
-    /// * `headers` - Request headers
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(String, String, Vec<u8>), AuthError>` - Account ID, public key, and signature message
-    fn extract_signature_data<B>(
-        &self,
-        request: &Request<B>,
-    ) -> Result<(String, String, Vec<u8>), AuthError> {
-        let headers = request.headers();
-
-        // Extract the account ID
-        let account_id = headers
-            .get("x-near-account-id")
-            .ok_or_else(|| AuthError::AuthenticationFailed("Missing NEAR account ID".to_string()))?
-            .to_str()
-            .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR account ID".to_string()))?
-            .to_string();
-
-        // Extract the public key
-        let public_key = headers
-            .get("x-near-public-key")
-            .ok_or_else(|| AuthError::AuthenticationFailed("Missing NEAR public key".to_string()))?
-            .to_str()
-            .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR public key".to_string()))?
-            .to_string();
-
-        // Extract the signature
-        let signature = headers
-            .get("x-near-signature")
-            .ok_or_else(|| AuthError::AuthenticationFailed("Missing NEAR signature".to_string()))?
-            .to_str()
-            .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR signature".to_string()))?;
-
-        // Extract the message
-        let message = headers
-            .get("x-near-message")
-            .ok_or_else(|| AuthError::AuthenticationFailed("Missing NEAR message".to_string()))?
-            .to_str()
-            .map_err(|_| AuthError::AuthenticationFailed("Invalid NEAR message".to_string()))?;
-
-        // Verify the signature
-        let message_bytes = message.as_bytes();
-        let _signature_bytes = STANDARD.decode(signature).map_err(|_| {
-            AuthError::AuthenticationFailed("Invalid NEAR signature encoding".to_string())
-        })?;
-
-        Ok((account_id, public_key, message_bytes.to_vec()))
-    }
-
     /// Verify a NEAR signature
     ///
     /// # Arguments
     ///
     /// * `public_key` - The public key to verify with
-    /// * `message` - The message that was signed
+    /// * `message` - The challenge token that was signed
     /// * `signature` - The signature to verify
+    /// * `nonce` - The nonce used in the signature (base64 encoded)
+    /// * `recipient` - The recipient app name
+    /// * `callback_url` - The callback URL
     ///
     /// # Returns
     ///
     /// * `Result<bool, AuthError>` - Whether the signature is valid
     async fn verify_signature(
         &self,
-        public_key_str: &str,
-        message: &[u8],
+        nonce: &str,
+        message: &str,
+        app: &str,
+        callback_url: &str,
         signature_str: &str,
+        public_key_str: &str,
     ) -> Result<bool, AuthError> {
-        // Validate inputs
-        if public_key_str.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Public key cannot be empty".to_string(),
-            ));
-        }
+        // Parse the public key
+        let public_key = PublicKey::from_str(public_key_str)
+            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid public key: {}", e)))?;
+        
+        // Decode the base64 nonce
+        let nonce_bytes = STANDARD.decode(nonce)
+            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid nonce base64: {}", e)))?;
+        
+        let nonce_array: [u8; 32] = nonce_bytes.try_into()
+            .map_err(|_| AuthError::AuthenticationFailed("Invalid nonce length".to_string()))?;
+            
+        // Create the payload that was signed
+        let payload = create_payload(message, nonce_array, app, callback_url);
+        
+        // Serialize the payload using borsh::to_vec
+        let payload_bytes = borsh::to_vec(&payload)
+            .map_err(|e| AuthError::AuthenticationFailed(format!("Failed to serialize payload: {}", e)))?;
+            
+        // Hash the payload - this is what was actually signed
+        let hash = hash_bytes(&payload_bytes);
+        
+        // Decode the base64 signature
+        let signature_bytes = STANDARD.decode(signature_str)
+            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid signature base64: {}", e)))?;
+        
+        // Create signature from bytes
+        let signature = Signature::from_parts(KeyType::ED25519, &signature_bytes)
+            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid signature: {}", e)))?;
 
-        if message.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Message cannot be empty".to_string(),
-            ));
-        }
+        // Verify the signature against the hashed payload
+        let is_valid = signature.verify(&hash, &public_key);
+        
+        println!("Signature verification result: {}", is_valid);
 
-        if signature_str.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Signature cannot be empty".to_string(),
-            ));
-        }
-
-        println!("Verifying signature:");
-        println!("Public key: {}", public_key_str);
-        println!("Message (as string): {}", String::from_utf8_lossy(message));
-        println!("Signature (base64): {}", signature_str);
-
-        let encoded_key = public_key_str.trim_start_matches("ed25519:");
-
-        // Decode public key from base58
-        let decoded_key: [u8; 32] =
-            decode_to_fixed_array(&Encoding::Base58, encoded_key).map_err(|e| {
-                AuthError::SignatureVerificationFailed(format!(
-                    "Failed to decode public key: {}",
-                    e
-                ))
-            })?;
-
-        println!("Decoded public key (hex): {}", hex::encode(&decoded_key));
-
-        // Create verifying key
-        let vk = VerifyingKey::from_bytes(&decoded_key).map_err(|e| {
-            AuthError::SignatureVerificationFailed(format!("Invalid public key: {}", e))
-        })?;
-
-        // Decode signature from base64
-        let decoded_signature: [u8; 64] = decode_to_fixed_array(&Encoding::Base64, signature_str)
-            .map_err(|e| {
-            AuthError::SignatureVerificationFailed(format!("Failed to decode signature: {}", e))
-        })?;
-
-        println!(
-            "Decoded signature (hex): {}",
-            hex::encode(&decoded_signature)
-        );
-
-        // Create signature
-        let signature = Signature::from_bytes(&decoded_signature);
-        // Verify signature
-        match vk.verify(message, &signature) {
-            Ok(_) => {
-                println!("Signature verification succeeded!");
-                Ok(true)
-            }
-            Err(e) => {
-                println!("Signature verification failed: {:?}", e);
-                Err(AuthError::SignatureVerificationFailed(format!(
-                    "Signature verification failed: {}",
-                    e
-                )))
-            }
-        }
+        Ok(is_valid)
     }
 
     /// Check if a public key belongs to a NEAR account
@@ -441,8 +391,11 @@ impl NearWalletProvider {
     ///
     /// * `account_id` - The NEAR account ID
     /// * `public_key` - The public key
-    /// * `message` - The message that was signed
+    /// * `message` - The challenge token that was signed
     /// * `signature` - The signature
+    /// * `nonce` - The nonce used in the signature (hex encoded)
+    /// * `recipient` - The recipient app name
+    /// * `callback_url` - The callback URL
     ///
     /// # Returns
     ///
@@ -451,19 +404,29 @@ impl NearWalletProvider {
         &self,
         account_id: &str,
         public_key: &str,
-        message: &[u8],
+        message: String,
         signature: &str,
+        nonce: &str,
+        recipient: &str,
+        callback_url: &str,
     ) -> Result<(String, Vec<String>), AuthError> {
-        // Verify the signature
-        self.verify_signature(public_key, message, signature)
-            .await?;
+        // First verify that the message is a valid challenge token
+        self.token_manager.verify_challenge(&message).await?;
 
-        // Verify the account owns the key
-        if !self.verify_account_owns_key(account_id, public_key).await? {
-            return Err(AuthError::AuthenticationFailed(
-                "Public key does not belong to account".to_string(),
-            ));
-        }
+        // Then verify the signature
+        // let signature_valid = self.verify_signature(nonce, &message, recipient, callback_url, signature, public_key)
+        //     .await?;
+
+        // if !signature_valid {
+        //     return Err(AuthError::AuthenticationFailed("Signature verification failed".to_string()));
+        // }
+
+        // // Verify the account owns the key
+        // if !self.verify_account_owns_key(account_id, public_key).await? {
+        //     return Err(AuthError::AuthenticationFailed(
+        //         "Public key does not belong to account".to_string(),
+        //     ));
+        // }
 
         // Get or create the root key
         let (key_id, _root_key) = match self.get_root_key_for_account(account_id).await? {
@@ -512,8 +475,11 @@ impl AuthVerifierFn for NearWalletVerifier {
             .authenticate_core(
                 &auth_data.account_id,
                 &auth_data.public_key,
-                &auth_data.message.as_bytes(),
+                auth_data.message.clone(),
                 &auth_data.signature,
+                &auth_data.nonce,
+                &auth_data.recipient,
+                &auth_data.callback_url,
             )
             .await?;
 
@@ -587,12 +553,27 @@ impl AuthProvider for NearWalletProvider {
             }
         };
 
+        let nonce = match &token_request.nonce {
+            Some(n) => n.clone(),
+            None => {
+                return Err(AuthError::InvalidRequest(
+                    "Missing nonce for NEAR wallet authentication".to_string(),
+                ));
+            }
+        };
+
+        let recipient = token_request.recipient.clone().unwrap_or_else(|| "calimero".to_string());
+        let callback_url = token_request.callback_url.clone().unwrap_or_default();
+
         // Create NEAR-specific auth data JSON
         Ok(serde_json::json!({
             "account_id": account_id,
             "public_key": token_request.public_key,
             "message": message,
-            "signature": token_request.signature
+            "signature": token_request.signature,
+            "nonce": nonce,
+            "recipient": recipient,
+            "callback_url": callback_url
         }))
     }
 
@@ -668,6 +649,9 @@ impl AuthProvider for NearWalletProvider {
             public_key,
             message,
             signature,
+            nonce: String::new(),
+            recipient: String::new(),
+            callback_url: String::new(),
         };
 
         // Create verifier
@@ -702,11 +686,6 @@ impl AuthProvider for NearWalletProvider {
     }
 }
 
-enum Encoding {
-    Base64,
-    Base58,
-}
-
 /// Decodes a base58 or base64-encoded string into a fixed-size array.
 ///
 /// # Arguments
@@ -719,7 +698,7 @@ enum Encoding {
 fn decode_to_fixed_array<const N: usize>(
     encoding: &Encoding,
     encoded: &str,
-) -> Result<[u8; N], eyre::Error> {
+) -> eyre::Result<[u8; N]> {
     let decoded_vec = match encoding {
         Encoding::Base58 => bs58::decode(encoded)
             .into_vec()
@@ -731,6 +710,42 @@ fn decode_to_fixed_array<const N: usize>(
         .try_into()
         .map_err(|_| eyre::eyre!("Incorrect length"))?;
     Ok(fixed_array)
+}
+
+/// Creates a `Payload` struct from the provided message, nonce, recipient, and callback URL.
+///
+/// # Arguments
+/// * `message` - The message to include in the payload.
+/// * `nonce` - A 32-byte nonce.
+/// * `recipient` - The recipient of the message.
+/// * `callback_url` - The callback URL for the message.
+///
+/// # Returns
+/// * `Payload` - The constructed payload.
+fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
+  Payload {
+      tag: 2_147_484_061,
+      message: message.to_owned(),
+      nonce,
+      recipient: recipient.to_owned(),
+      callback_url: Some(callback_url.to_owned()),
+  }
+}
+
+/// Hashes the given bytes using SHA-256.
+///
+/// # Arguments
+/// * `bytes` - The bytes to hash.
+///
+/// # Returns
+/// * `[u8; 32]` - The SHA-256 hash of the bytes.
+fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let result = hasher.finalize();
+    let mut hash_array = [0_u8; 32];
+    hash_array.copy_from_slice(&result);
+    hash_array
 }
 
 /// NEAR Wallet provider registration

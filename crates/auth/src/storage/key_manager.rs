@@ -249,10 +249,10 @@ mod tests {
             public_key: "test_pub_key".to_string(),
             auth_method: "near".to_string(),
             created_at: chrono::Utc::now().timestamp() as u64,
+            expires_at: None,
             revoked_at: None,
             last_used_at: None,
             permissions: vec!["test_perm".to_string()],
-            metadata: Some(serde_json::json!({"test": "metadata"})),
         };
 
         // Test set and get
@@ -307,10 +307,10 @@ mod tests {
             public_key: "root_pub_key".to_string(),
             auth_method: "near".to_string(),
             created_at: chrono::Utc::now().timestamp() as u64,
+            expires_at: None,
             revoked_at: None,
             last_used_at: None,
             permissions: vec!["test_perm".to_string()],
-            metadata: Some(serde_json::json!({"test": "metadata"})),
         };
         key_manager
             .set_root_key("root_key", &root_key)
@@ -319,14 +319,13 @@ mod tests {
 
         // Create a test client key
         let client_key = ClientKey {
-            client_id: "test_client".to_string(),
             root_key_id: "root_key".to_string(),
             name: "Test Client".to_string(),
             permissions: vec!["test_perm".to_string()],
             created_at: chrono::Utc::now().timestamp() as u64,
+            expires_at: None,
             revoked_at: None,
             last_used_at: None,
-            expires_at: None,
         };
 
         // Test set and get
@@ -337,7 +336,6 @@ mod tests {
         let retrieved = key_manager.get_client_key("test_client").await.unwrap();
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
-        assert_eq!(retrieved.client_id, client_key.client_id);
         assert_eq!(retrieved.root_key_id, client_key.root_key_id);
         assert_eq!(retrieved.permissions, client_key.permissions);
 
@@ -347,7 +345,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(clients.len(), 1);
-        assert_eq!(clients[0].client_id, client_key.client_id);
+        assert_eq!(clients[0].root_key_id, client_key.root_key_id);
 
         // Test delete
         key_manager.delete_client_key("test_client").await.unwrap();
@@ -367,49 +365,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_permission_operations() {
-        let storage = Arc::new(MemoryStorage::new());
-        let key_manager = KeyManager::new(storage);
-
-        // Create a test permission
-        let permission = Permission {
-            permission_id: "test_perm".to_string(),
-            name: "Test Permission".to_string(),
-            description: "A test permission".to_string(),
-            resource_type: "test".to_string(),
-            resource_ids: Some(vec!["test".to_string()]),
-            method: Some("GET".to_string()),
-            user_id: Some("test_user".to_string()),
-        };
-
-        // Test set and get
-        key_manager
-            .set_permission("test_perm", &permission)
-            .await
-            .unwrap();
-        let retrieved = key_manager.get_permission("test_perm").await.unwrap();
-        assert!(retrieved.is_some());
-        let retrieved = retrieved.unwrap();
-        assert_eq!(retrieved.permission_id, permission.permission_id);
-        assert_eq!(retrieved.name, permission.name);
-        assert_eq!(retrieved.description, permission.description);
-
-        // Test list permissions
-        let permissions = key_manager.list_permissions().await.unwrap();
-        assert_eq!(permissions.len(), 1);
-        assert_eq!(permissions[0].permission_id, permission.permission_id);
-
-        // Test delete
-        key_manager.delete_permission("test_perm").await.unwrap();
-        assert!(key_manager
-            .get_permission("test_perm")
-            .await
-            .unwrap()
-            .is_none());
-        assert_eq!(key_manager.list_permissions().await.unwrap().len(), 0);
-    }
-
-    #[tokio::test]
     async fn test_multiple_clients_per_root() {
         let storage = Arc::new(MemoryStorage::new());
         let key_manager = KeyManager::new(storage);
@@ -419,10 +374,10 @@ mod tests {
             public_key: "root_pub_key".to_string(),
             auth_method: "near".to_string(),
             created_at: chrono::Utc::now().timestamp() as u64,
+            expires_at: None,
             revoked_at: None,
             last_used_at: None,
             permissions: vec!["test_perm".to_string()],
-            metadata: Some(serde_json::json!({"test": "metadata"})),
         };
         key_manager
             .set_root_key("root_key", &root_key)
@@ -432,14 +387,13 @@ mod tests {
         // Create multiple client keys
         for i in 1..=5 {
             let client_key = ClientKey {
-                client_id: format!("client{}", i),
                 root_key_id: "root_key".to_string(),
                 name: format!("Client {}", i),
                 permissions: vec!["test_perm".to_string()],
                 created_at: chrono::Utc::now().timestamp() as u64,
+                expires_at: None,
                 revoked_at: None,
                 last_used_at: None,
-                expires_at: None,
             };
             key_manager
                 .set_client_key(&format!("client{}", i), &client_key)
@@ -466,10 +420,10 @@ mod tests {
         assert_eq!(clients.len(), 3);
 
         // Verify specific clients
-        let client_ids: Vec<String> = clients.iter().map(|c| c.client_id.clone()).collect();
-        assert!(client_ids.contains(&"client2".to_string()));
-        assert!(client_ids.contains(&"client4".to_string()));
-        assert!(client_ids.contains(&"client5".to_string()));
+        let client_names: Vec<String> = clients.iter().map(|c| c.name.clone()).collect();
+        assert!(client_names.contains(&"Client 2".to_string()));
+        assert!(client_names.contains(&"Client 4".to_string()));
+        assert!(client_names.contains(&"Client 5".to_string()));
 
         // Delete the root key and verify no clients are returned
         key_manager.delete_root_key("root_key").await.unwrap();
@@ -497,14 +451,13 @@ mod tests {
 
         // Test root key not found when creating client
         let client_key = ClientKey {
-            client_id: "test_client".to_string(),
             root_key_id: "nonexistent_root".to_string(),
             name: "Test Client".to_string(),
             permissions: vec![],
             created_at: chrono::Utc::now().timestamp() as u64,
+            expires_at: None,
             revoked_at: None,
             last_used_at: None,
-            expires_at: None,
         };
         key_manager
             .set_client_key("test_client", &client_key)

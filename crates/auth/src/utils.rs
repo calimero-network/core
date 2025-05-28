@@ -2,38 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
-use rand::{thread_rng, Rng};
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-
-/// Challenge request
-#[derive(Debug, Deserialize)]
-pub struct ChallengeRequest {
-    pub provider: String,
-    pub redirect_uri: Option<String>,
-    pub client_id: Option<String>,
-}
-
-/// Challenge response
-#[derive(Debug, Serialize)]
-pub struct ChallengeResponse {
-    pub message: String,
-    pub timestamp: u64,
-    pub network: String,
-    pub rpc_url: String,
-    pub wallet_url: String,
-    pub redirect_uri: String,
-}
-
-/// Generate a random challenge
-pub fn generate_random_challenge() -> String {
-    let mut rng = thread_rng();
-    let random_bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
-    STANDARD.encode(random_bytes)
-}
 
 /// Basic metrics collector for auth operations
 #[derive(Debug, Clone)]

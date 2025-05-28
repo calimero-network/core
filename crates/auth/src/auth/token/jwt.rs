@@ -37,13 +37,25 @@ pub struct Claims {
     pub permissions: Vec<String>,
 }
 
+/// Challenge Claims structure
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChallengeClaims {
+    /// Issuer of the challenge
+    pub iss: String,
+    /// Unique challenge ID
+    pub jti: String,
+    /// Timestamp when the challenge was issued
+    pub iat: u64,
+    /// Expiration time of the challenge
+    pub exp: u64,
+}
+
 /// JWT Token Manager
 ///
 /// This component handles JWT token generation and verification.
 #[derive(Clone)]
 pub struct TokenManager {
     config: JwtConfig,
-    storage: Arc<dyn Storage>,
     key_manager: KeyManager,
     secret_manager: Arc<SecretManager>,
 }
@@ -68,7 +80,6 @@ impl TokenManager {
         let key_manager = KeyManager::new(Arc::clone(&storage));
         Self {
             config,
-            storage,
             key_manager,
             secret_manager,
         }
@@ -87,7 +98,7 @@ impl TokenManager {
         let claims = Claims {
             sub: user_id.clone(),
             iss: self.config.issuer.clone(),
-            aud: user_id,
+            aud: self.config.issuer.clone(),
             exp: exp.timestamp() as u64,
             iat: now.timestamp() as u64,
             jti: uuid::Uuid::new_v4().to_string(),
@@ -145,6 +156,7 @@ impl TokenManager {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
         validation.set_issuer(&[&self.config.issuer]);
+        validation.set_audience(&[&self.config.issuer]);
 
         let token_data = decode::<Claims>(
             token,
@@ -274,5 +286,67 @@ impl TokenManager {
         // Generate new token pair with the same permissions
         self.generate_token_pair(claims.sub, claims.permissions)
             .await
+    }
+
+    /// Generate a challenge token
+    ///
+    /// # Returns
+    ///
+    /// * `Result<String, AuthError>` - The generated challenge token
+    pub async fn generate_challenge(&self) -> Result<String, AuthError> {
+        let now = Utc::now();
+        // Challenges should be short-lived, using a 5-minute expiry
+        let exp = now + Duration::minutes(5);
+
+        let claims = ChallengeClaims {
+            iss: self.config.issuer.clone(),
+            jti: uuid::Uuid::new_v4().to_string(),
+            iat: now.timestamp() as u64,
+            exp: exp.timestamp() as u64,
+        };
+
+        let secret = self
+            .secret_manager
+            .get_jwt_challenge_secret()
+            .await
+            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+
+        let header = Header::new(Algorithm::HS256);
+        encode(
+            &header,
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
+    }
+
+    /// Verify a challenge token
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The challenge token to verify
+    ///
+    /// # Returns
+    ///
+    /// * `Result<ChallengeClaims, AuthError>` - The verified challenge claims
+    pub async fn verify_challenge(&self, token: &str) -> Result<ChallengeClaims, AuthError> {
+        let secret = self
+            .secret_manager
+            .get_jwt_challenge_secret()
+            .await
+            .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.validate_exp = true;
+        validation.set_issuer(&[&self.config.issuer]);
+
+        let token_data = decode::<ChallengeClaims>(
+            token,
+            &DecodingKey::from_secret(secret.as_bytes()),
+            &validation,
+        )
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+
+        Ok(token_data.claims)
     }
 }

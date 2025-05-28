@@ -1,11 +1,8 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::middleware::from_fn;
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Router};
-use tower::layer::util::Identity;
-use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 
 use crate::api::handlers::auth::{

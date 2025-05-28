@@ -53,7 +53,6 @@ fn create_default_config() -> AuthConfig {
         storage: StorageConfig::Memory,
         cors: Default::default(),
         security: SecurityConfig {
-            csrf_secret: "insecure-dev-csrf-key-change-in-production".to_string(),
             rate_limit: 50,
             max_body_size: 1024 * 1024, // 1MB
         },

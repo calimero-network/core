@@ -9,12 +9,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 use validator::Validate;
+use sha2::{Sha256, Digest};
+use hex;
 
 use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
 use crate::storage::ClientKey;
-use crate::utils::{generate_random_challenge, ChallengeRequest, ChallengeResponse};
 use crate::AuthError;
 
 // Common response type used by all helper functions
@@ -90,7 +91,7 @@ pub async fn login_handler(
     )
 }
 
-/// Token request
+/// Token request TODO check how to do this better (additional fields)
 #[derive(Debug, Deserialize, Validate)]
 pub struct TokenRequest {
     /// Authentication method
@@ -120,16 +121,15 @@ pub struct TokenRequest {
 
     /// Message that was signed (only for NEAR wallet)
     pub message: Option<String>,
-}
 
-// Custom validation for NEAR wallet message requirement
-impl TokenRequest {
-    pub fn validate_near_wallet(&self) -> Result<(), String> {
-        if self.auth_method == "near_wallet" && self.message.is_none() {
-            return Err("Message is required for NEAR wallet authentication".to_string());
-        }
-        Ok(())
-    }
+    /// Nonce used in NEAR wallet signature (base64 encoded)
+    pub nonce: Option<String>,
+
+    /// Recipient app name for NEAR wallet signature
+    pub recipient: Option<String>,
+
+    /// Callback URL for NEAR wallet signature
+    pub callback_url: Option<String>,
 }
 
 /// Token response
@@ -180,17 +180,6 @@ impl TokenResponse {
     }
 }
 
-// Helper function to generate authentication challenge
-fn generate_authentication_challenge() -> (String, u64) {
-    let timestamp = Utc::now().timestamp() as u64;
-    let challenge = generate_random_challenge();
-    let message = format!(
-        "Calimero Authentication Request {}:{}",
-        timestamp, challenge
-    );
-    (message, timestamp)
-}
-
 /// Token handler
 ///
 /// This endpoint generates JWT tokens for authenticated clients.
@@ -207,10 +196,6 @@ pub async fn token_handler(
     state: Extension<Arc<AppState>>,
     ValidatedJson(token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
-    // Additional validation for NEAR wallet
-    if let Err(msg) = token_request.validate_near_wallet() {
-        return bad_request_response(&msg);
-    }
 
     // Authenticate directly using the token request
     let auth_response = match state
@@ -345,6 +330,7 @@ pub async fn validate_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    println!("validate_handler headers: {:?}", headers);
     // Validate the request using the headers
     match state
         .0
@@ -409,41 +395,39 @@ pub async fn callback_handler(_state: Extension<Arc<AppState>>) -> impl IntoResp
     )
 }
 
+/// Challenge response
+#[derive(Debug, Serialize)]
+pub struct ChallengeResponse {
+    /// Challenge token to be signed
+    pub challenge: String,
+}
+
 /// Challenge handler
 ///
-/// This endpoint generates a challenge for authentication.
+/// This endpoint generates a challenge token for authentication.
 ///
 /// # Arguments
 ///
 /// * `state` - The application state
-/// * `params` - The challenge request parameters
 ///
 /// # Returns
 ///
-/// * `impl IntoResponse` - The response
+/// * `impl IntoResponse` - The response containing the challenge token
 pub async fn challenge_handler(
     state: Extension<Arc<AppState>>,
-    Query(params): Query<ChallengeRequest>,
 ) -> impl IntoResponse {
-    // Only process NEAR wallet challenges for now
-    if params.provider != "near_wallet" && params.provider != "near" {
-        return bad_request_response("Unsupported provider");
-    }
-
-    // Generate a new challenge
-    let (message, timestamp) = generate_authentication_challenge();
-
-    // Get the redirect URI
-    let redirect_uri = params.redirect_uri.unwrap_or_else(|| "/".to_string());
+    // Generate the challenge token
+    let challenge = match state.0.token_generator.generate_challenge().await {
+        Ok(token) => token,
+        Err(err) => {
+            error!("Failed to generate challenge: {}", err);
+            return internal_error_response("Failed to generate challenge");
+        }
+    };
 
     // Create the response
     let response = ChallengeResponse {
-        message,
-        timestamp,
-        network: state.0.config.near.network.clone(),
-        rpc_url: state.0.config.near.rpc_url.clone(),
-        wallet_url: state.0.config.near.wallet_url.clone(),
-        redirect_uri,
+        challenge,
     };
 
     success_response(response)
@@ -587,11 +571,17 @@ pub async fn generate_client_key_handler(
     // Get current timestamp for unique client ID
     let timestamp = Utc::now().timestamp();
 
-    // Create a client ID based on context info and timestamp
-    let client_id = format!(
-        "client_{}_{}_{}",
-        request.context_id, request.context_identity, timestamp
+    // Create a client ID using SHA256 hash like we do for root keys
+    let mut hasher = Sha256::new();
+    hasher.update(
+        format!(
+            "client:{}:{}:{}",
+            request.context_id, request.context_identity, timestamp
+        )
+        .as_bytes(),
     );
+    let hash = hasher.finalize();
+    let client_id = hex::encode(hash);
 
     // Create context-specific permission
     let mut permissions = vec![format!(
@@ -611,12 +601,15 @@ pub async fn generate_client_key_handler(
     );
 
     // Create the client key with context permission and any additional permissions
-    let client_key = ClientKey::new(
-        root_key_id,
+    let client_key = ClientKey {
+        root_key_id: root_key_id.clone(),
         name,
-        permissions.clone(),
-        None, // No expiry for now
-    );
+        permissions: permissions.clone(),
+        created_at: Utc::now().timestamp() as u64,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    };
 
     // Store the client key
     if let Err(err) = state

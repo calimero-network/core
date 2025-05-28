@@ -145,4 +145,17 @@ impl AuthService {
     pub fn providers(&self) -> &[Box<dyn AuthProvider>] {
         &self.providers
     }
+
+    /// Get a specific provider by name
+    ///
+    /// # Arguments
+    ///
+    /// * `provider_name` - The name of the provider to get
+    ///
+    /// # Returns
+    ///
+    /// * `Option<&Box<dyn AuthProvider>>` - The provider if found
+    pub fn get_provider(&self, provider_name: &str) -> Option<&Box<dyn AuthProvider>> {
+        self.providers.iter().find(|p| p.name() == provider_name)
+    }
 }

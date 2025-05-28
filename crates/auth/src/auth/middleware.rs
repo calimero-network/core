@@ -53,14 +53,12 @@ pub async fn forward_auth_middleware(
     match state.auth_service.verify_token_from_headers(&headers).await {
         Ok(auth_response) => {
             // Log successful authentication
-            if let Some(key_id) = auth_response.key_id.as_ref() {
-                tracing::debug!(
-                    "Successful authentication for {} {} by user {}",
-                    method,
-                    path,
-                    key_id
-                );
-            }
+            tracing::debug!(
+                "Successful authentication for {} {} by user {}",
+                method,
+                path,
+                auth_response.key_id
+            );
 
             // Create permission validator
             let validator = PermissionValidator::new();
@@ -106,11 +104,9 @@ pub async fn forward_auth_middleware(
             tracing::debug!("Request {} {} completed in {:?}", method, path, duration);
 
             // Add authentication headers
-            if let Some(key_id) = auth_response.key_id.as_ref() {
-                response
-                    .headers_mut()
-                    .insert("X-Auth-User", key_id.parse().unwrap());
-            }
+            response
+                .headers_mut()
+                .insert("X-Auth-User", auth_response.key_id.parse().unwrap());
 
             // Add permissions
             if !auth_response.permissions.is_empty() {

@@ -1,9 +1,5 @@
-#[macro_use]
 extern crate lazy_static;
 
-use async_trait::async_trait;
-use axum::http::Request;
-use eyre::Result;
 use thiserror::Error;
 
 pub mod api;

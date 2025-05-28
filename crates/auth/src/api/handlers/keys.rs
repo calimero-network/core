@@ -106,10 +106,10 @@ pub async fn create_key_handler(
         public_key: request.public_key,
         auth_method: request.auth_method,
         created_at: Utc::now().timestamp() as u64,
+        expires_at: None,
         revoked_at: None,
         last_used_at: None,
         permissions: Vec::new(), // Empty permissions by default
-        metadata: None,
     };
 
     // Store the root key
