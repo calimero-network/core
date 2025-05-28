@@ -169,7 +169,7 @@ impl RootCommand {
                     return Ok(conn);
                 }
 
-                let config = load_config(&defaults::default_node_dir(), node).await?;
+                let config = load_config(&self.args.home, node).await?;
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
