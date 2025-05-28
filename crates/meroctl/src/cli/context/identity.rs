@@ -18,9 +18,8 @@ use crate::output::ErrorLine;
 
 mod alias;
 mod generate;
-
-pub mod grant;
-pub mod revoke;
+mod grant;
+mod revoke;
 
 use grant::GrantPermissionCommand;
 use revoke::RevokePermissionCommand;
