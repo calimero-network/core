@@ -77,6 +77,24 @@ pub struct AccountId(pub String);
 /// This struct is used to build a proposal before sending it to the blockchain.
 /// It is distinct from a proposal that has been prepared and needs signing.
 ///
+/// Construct proposals by chaining actions like token transfers or external contract calls.
+/// After adding actions, call [`send`](Self::send) to submit the proposal for approval and execution.
+///
+/// Proposals may require multiple approvals before execution.
+///
+/// # Example
+/// ```rust
+/// let proposal_id = External.propose()
+///     .transfer(AccountId("bob.near".to_string()), 1_000_000_000_000_000_000_000_000)
+///     .external_function_call(
+///         "contract.near".to_string(),
+///         "set_config".to_string(),
+///         r#"{"enabled":true}"#.to_string(),
+///         0
+///     )
+///     .set_num_approvals(2)
+///     .send();
+/// ```
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, PartialEq)]
 pub struct DraftProposal {
     /// The actions to be executed by the proposal. One proposal can contain
@@ -175,16 +193,40 @@ impl DraftProposal {
 }
 
 /// Interface for interacting with external proposals for blockchain actions.
+///
+/// Use [`propose`](Self::propose) to create new proposals with one or more actions,
+/// and [`approve`](Self::approve) to approve pending proposals identified by [`ProposalId`].
+///
+/// # Example
+/// ```rust
+/// let proposal_id = External.propose()
+///     .transfer(AccountId("alice.near".to_string()), 100_000_000_000_000_000_000_000)
+///     .set_num_approvals(1)
+///     .send();
+///
+/// External.approve(proposal_id);
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct External;
 
 impl External {
     /// Create a new proposal. This will initially be a draft, until sent.
+    ///
+    /// Call this first to begin constructing a proposal.
+    ///
+    /// See [`DraftProposal`] for methods to add actions like transfers or function calls.
     #[must_use]
     pub const fn propose(self) -> DraftProposal {
         DraftProposal::new()
     }
 
+    /// Approve an existing proposal by its ID.
+    ///
+    /// This registers your approval for a pending proposal. When enough approvals are collected,
+    /// the proposal will be executed.
+    ///
+    /// # Arguments
+    /// * `proposal_id` – The ID of the proposal to approve.
     pub fn approve(self, proposal_id: ProposalId) {
         unsafe { sys::approve_proposal(BufferMut::new(&proposal_id)) }
     }
@@ -200,6 +242,9 @@ impl AsRef<[u8]> for ProposalId {
     }
 }
 
+/// A unique identifier for a proposal.
+///
+/// Encoded as a 32-byte array and serializable as base58 string.
 impl ProposalId {
     pub fn as_str<'a>(&self, buf: &'a mut [u8; 44]) -> &'a str {
         let len = bs58::encode(&self.0).onto(&mut buf[..]).unwrap();
