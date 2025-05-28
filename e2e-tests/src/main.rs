@@ -60,11 +60,6 @@ pub enum Commands {
 }
 
 #[derive(Debug, Args)]
-#[command(author, version, about, long_about = None)]
-#[command(after_help = concatcp!(
-    "Examples:",
-    EXAMPLES
-))]
 pub struct RootArgs {
     /// Directory containing the test configuration and test scenarios.
     /// In root directory, there should be a `config.json` file. This file
