@@ -38,7 +38,8 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
 
         ActorResponse::r#async(task.into_actor(self).map_ok(move |blob_id, act, _ctx| {
             if let Some(context) = act.contexts.get_mut(&context_id) {
-                context.blob = blob_id;
+                context.bytecode = blob_id;
+                context.compiled = BlobId::from([0; 32]);
                 context.meta.application_id = application_id;
             }
         }))

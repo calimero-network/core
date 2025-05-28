@@ -21,7 +21,8 @@ pub mod handlers;
 #[derive(Debug)]
 struct ContextMeta {
     meta: Context,
-    blob: BlobId,
+    bytecode: BlobId,
+    compiled: BlobId,
     lock: Arc<Mutex<ContextId>>,
 }
 
@@ -103,11 +104,20 @@ impl ContextManager {
                     return Ok(None);
                 };
 
+                let handle = self.datastore.handle();
+                let app_key = calimero_store::key::ApplicationMeta::new(context.application_id);
+                let compiled_blob = if let Some(app_meta) = handle.get(&app_key)? {
+                    app_meta.precompiled_blob.blob_id()
+                } else {
+                    BlobId::from([0; 32])
+                };
+
                 let lock = Arc::new(Mutex::new(*context_id));
 
                 let item = vacant.insert(ContextMeta {
                     meta: context,
-                    blob: application.blob,
+                    bytecode: application.blob,
+                    compiled: compiled_blob,
                     lock,
                 });
 

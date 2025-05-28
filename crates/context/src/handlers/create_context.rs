@@ -11,6 +11,7 @@ use calimero_context_primitives::messages::create_context::{
 };
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
@@ -19,8 +20,8 @@ use eyre::{bail, OptionExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use tracing::debug;
 
+use super::execute::get_or_compile_module;
 use super::execute::storage::ContextStorage;
 use crate::{ContextManager, ContextMeta};
 
@@ -199,7 +200,8 @@ impl Prepared<'_> {
 
         let context = entry.insert(ContextMeta {
             meta,
-            blob: application.blob,
+            bytecode: application.blob,
+            compiled: BlobId::from([0; 32]),
             lock: Arc::new(Mutex::new(context_id)),
         });
 
@@ -230,24 +232,26 @@ async fn create_context(
     init_params: Vec<u8>,
     _guard: OwnedMutexGuard<ContextId>,
 ) -> eyre::Result<Hash> {
-    let Some(blob) = node_client.get_blob_bytes(&application.blob).await? else {
-        bail!(
-            "missing blob `{}` for application `{}`",
-            application.blob,
-            application.id
-        );
+    let handle = datastore.handle();
+    let app_key = key::ApplicationMeta::new(application.id);
+    let compiled_blob_id = if let Some(app_meta) = handle.get(&app_key)? {
+        app_meta.precompiled_blob.blob_id()
+    } else {
+        BlobId::from([0; 32])
     };
 
-    let storage = ContextStorage::from(datastore, context.id);
+    let mut storage = ContextStorage::from(datastore, context.id);
 
-    debug!("Compiling module for context initialization");
+    let module = get_or_compile_module(
+        &node_client,
+        &engine,
+        &application.id,
+        &compiled_blob_id,
+        false,
+    )
+    .await?;
 
-    let module = engine.compile(&blob)?;
-
-    let mut storage_mut = storage;
-    let outcome = module.run(context.id, identity, "init", &init_params, &mut storage_mut)?;
-
-    let (outcome, storage) = (outcome, storage_mut);
+    let outcome = module.run(context.id, identity, "init", &init_params, &mut storage)?;
 
     if let Some(res) = outcome.returns? {
         bail!(

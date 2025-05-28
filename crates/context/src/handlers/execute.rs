@@ -32,6 +32,51 @@ pub mod storage;
 
 use storage::ContextStorage;
 
+pub async fn get_or_compile_module(
+    node_client: &NodeClient,
+    engine: &calimero_runtime::Engine,
+    application_id: &calimero_primitives::application::ApplicationId,
+    compiled_blob_id: &BlobId,
+    should_cache: bool,
+) -> eyre::Result<calimero_runtime::Module> {
+    if *compiled_blob_id != BlobId::from([0; 32]) {
+        if let Some(precompiled_bytes) = node_client.get_blob_bytes(compiled_blob_id).await? {
+            match unsafe { engine.from_precompiled(&precompiled_bytes) } {
+                Ok(module) => {
+                    debug!("Using cached compiled module");
+                    return Ok(module);
+                }
+                Err(_) => {
+                    debug!("Cached compiled module is incompatible, compiling fresh");
+                }
+            }
+        }
+    } else {
+        debug!("No cached compiled module found, compiling");
+    }
+
+    let Some(blob) = node_client.get_application_bytes(application_id).await? else {
+        bail!("Application not found or points to dangling blob");
+    };
+
+    let module = engine.compile(&blob)?;
+
+    if should_cache {
+        if let Ok(serialized) = module.to_bytes() {
+            if let Ok((blob_id, _size)) = node_client
+                .add_blob(serialized.as_ref(), Some(serialized.len() as u64), None)
+                .await
+            {
+                if let Err(err) = node_client.update_precompiled_blob(application_id, &blob_id) {
+                    debug!("Failed to update precompiled blob: {}", err);
+                }
+            }
+        }
+    }
+
+    Ok(module)
+}
+
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ActorResponse<Self, <ExecuteRequest as Message>::Result>;
 
@@ -137,14 +182,14 @@ impl Handler<ExecuteRequest> for ContextManager {
         let execute_task = guard_task.then(move |guard, act, _ctx| {
             let context = act
                 .get_or_fetch_context(&context_id)
-                .map(|c| c.map(|c| (c.meta, c.blob)));
+                .map(|c| c.map(|c| (c.meta, c.bytecode, c.compiled)));
 
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
             let engine = act.runtime_engine.clone();
 
             async move {
-                let Some((mut context, blob)) = context? else {
+                let Some((mut context, _bytecode, compiled_blob_id)) = context? else {
                     bail!("context '{context_id}' deleted before we could execute");
                 };
 
@@ -157,7 +202,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     &guard,
                     &mut context,
                     executor,
-                    blob,
+                    compiled_blob_id,
                     method.into(),
                     payload.into(),
                     is_state_op,
@@ -273,72 +318,25 @@ async fn internal_execute(
     guard: &OwnedMutexGuard<ContextId>,
     context: &mut Context,
     executor: PublicKey,
-    blob: BlobId,
+    compiled_blob_id: BlobId,
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     is_state_op: bool,
 ) -> eyre::Result<Outcome> {
-    let blob = node_client.get_blob_bytes(&blob).await?;
-
-    let Some(blob) = blob else {
-        bail!(ExecuteError::ApplicationNotInstalled {
-            application_id: context.application_id
-        });
-    };
-
-    let precompiled_bytes = node_client
-        .get_precompiled_application_bytes(&context.application_id)
-        .await?;
+    let module = get_or_compile_module(
+        node_client,
+        &engine,
+        &context.application_id,
+        &compiled_blob_id,
+        true,
+    )
+    .await?;
 
     let storage = ContextStorage::from(datastore, context.id);
 
     let mut storage_mut = storage;
 
-    let outcome = if let Some(precompiled_bytes) = precompiled_bytes {
-        match unsafe { engine.from_precompiled(&precompiled_bytes) } {
-            Ok(module) => {
-                debug!("Using cached compiled module for execution");
-                module.run(**guard, executor, &method, &input, &mut storage_mut)?
-            }
-            Err(_) => {
-                debug!("Cached compiled module is incompatible, compiling fresh");
-                let module = engine.compile(&blob)?;
-
-                if let Ok(serialized) = module.to_bytes() {
-                    if let Ok((blob_id, _)) = node_client
-                        .add_blob(serialized.as_ref(), Some(serialized.len() as u64), None)
-                        .await
-                    {
-                        drop(
-                            node_client
-                                .update_precompiled_blob(&context.application_id, blob_id)
-                                .await,
-                        );
-                    }
-                }
-
-                module.run(**guard, executor, &method, &input, &mut storage_mut)?
-            }
-        }
-    } else {
-        debug!("No cached compiled module found, compiling");
-        let module = engine.compile(&blob)?;
-
-        if let Ok(serialized) = module.to_bytes() {
-            if let Ok((blob_id, _)) = node_client
-                .add_blob(serialized.as_ref(), Some(serialized.len() as u64), None)
-                .await
-            {
-                drop(
-                    node_client
-                        .update_precompiled_blob(&context.application_id, blob_id)
-                        .await,
-                );
-            }
-        }
-
-        module.run(**guard, executor, &method, &input, &mut storage_mut)?
-    };
+    let outcome = module.run(**guard, executor, &method, &input, &mut storage_mut)?;
 
     let (outcome, storage) = (outcome, storage_mut);
 

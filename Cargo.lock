@@ -2064,7 +2064,6 @@ dependencies = [
  "ureq",
  "wasmer",
  "wasmer-types",
- "wat",
 ]
 
 [[package]]

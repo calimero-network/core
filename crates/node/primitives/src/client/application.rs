@@ -6,9 +6,11 @@ use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use camino::Utf8PathBuf;
 use eyre::bail;
+use futures_util::TryStreamExt;
 use reqwest::Url;
 use tokio::fs::File;
 use tokio_util::compat::TokioAsyncReadCompatExt;
+use tokio_util::io::StreamReader;
 
 use super::NodeClient;
 
@@ -55,32 +57,6 @@ impl NodeClient {
         Ok(Some(bytes))
     }
 
-    pub async fn get_precompiled_application_bytes(
-        &self,
-        application_id: &ApplicationId,
-    ) -> eyre::Result<Option<Arc<[u8]>>> {
-        let handle = self.datastore.handle();
-
-        let key = key::ApplicationMeta::new(*application_id);
-
-        let Some(application) = handle.get(&key)? else {
-            return Ok(None);
-        };
-
-        if application.precompiled_blob.blob_id() == BlobId::from([0; 32]) {
-            return Ok(None);
-        }
-
-        let Some(bytes) = self
-            .get_blob_bytes(&application.precompiled_blob.blob_id())
-            .await?
-        else {
-            bail!("fatal: application points to dangling precompiled blob");
-        };
-
-        Ok(Some(bytes))
-    }
-
     pub fn has_application(&self, application_id: &ApplicationId) -> eyre::Result<bool> {
         let handle = self.datastore.handle();
 
@@ -93,7 +69,7 @@ impl NodeClient {
         Ok(false)
     }
 
-    async fn install_application(
+    fn install_application(
         &self,
         blob_id: &BlobId,
         size: u64,
@@ -139,7 +115,6 @@ impl NodeClient {
         };
 
         self.install_application(&blob_id, size, &(uri.as_str().parse()?), metadata)
-            .await
     }
 
     pub async fn install_application_from_url(
@@ -152,21 +127,17 @@ impl NodeClient {
 
         let response = reqwest::Client::new().get(url).send().await?;
 
-        let _expected_size = response.content_length();
-
-        // Collect bytes
-        let wasm_bytes = response.bytes().await?;
+        let expected_size = response.content_length();
 
         let (blob_id, size) = self
             .add_blob(
-                wasm_bytes.as_ref(),
-                Some(wasm_bytes.len() as u64),
+                StreamReader::new(response.bytes_stream().map_err(std::io::Error::other)).compat(),
+                expected_size,
                 expected_hash,
             )
             .await?;
 
         self.install_application(&blob_id, size, &uri, metadata)
-            .await
     }
 
     pub fn uninstall_application(&self, application_id: ApplicationId) -> eyre::Result<()> {
@@ -200,10 +171,10 @@ impl NodeClient {
         Ok(applications)
     }
 
-    pub async fn update_precompiled_blob(
+    pub fn update_precompiled_blob(
         &self,
         application_id: &ApplicationId,
-        precompiled_blob_id: BlobId,
+        blob_id: &BlobId,
     ) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
 
@@ -213,7 +184,7 @@ impl NodeClient {
             bail!("Application not found");
         };
 
-        application.precompiled_blob = key::BlobMeta::new(precompiled_blob_id);
+        application.precompiled_blob = key::BlobMeta::new(*blob_id);
 
         handle.put(&key, &application)?;
 
