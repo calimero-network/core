@@ -1,13 +1,5 @@
-use application_install::ApplicationInstallStep;
-use context_create::ContextCreateStep;
-use context_create_alias::ContextCreateAliasStep;
-use context_invite_join::ContextInviteJoinStep;
 use eyre::Result as EyreResult;
-use get_proposals::GetProposalsStep;
-use jsonrpc_call::CallStep;
 use serde::{Deserialize, Serialize};
-use verify_external_state::VerifyExternalStateStep;
-use wait::WaitStep;
 
 use crate::driver::{Test, TestContext};
 
@@ -19,6 +11,15 @@ mod get_proposals;
 mod jsonrpc_call;
 mod verify_external_state;
 mod wait;
+
+use application_install::ApplicationInstallStep;
+use context_create::ContextCreateStep;
+use context_create_alias::ContextCreateAliasStep;
+use context_invite_join::ContextInviteJoinStep;
+use get_proposals::GetProposalsStep;
+use jsonrpc_call::CallStep;
+use verify_external_state::VerifyExternalStateStep;
+use wait::WaitStep;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
