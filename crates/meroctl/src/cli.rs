@@ -1,11 +1,10 @@
 use std::process::ExitCode;
 
-use bootstrap::BootstrapCommand;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{eyre, Report as EyreReport};
+use eyre::{bail, Report as EyreReport, WrapErr};
 use libp2p::identity::Keypair;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
@@ -25,6 +24,7 @@ mod peers;
 mod proxy;
 
 use app::AppCommand;
+use bootstrap::BootstrapCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
@@ -126,32 +126,13 @@ impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
 
-        // Determine connection info
-        let connection = match (&self.args.node, &self.args.api) {
-            (Some(node_name), None) => {
-                // Check if node exists in config
-                let node_config = Config::load()?;
-                if let Some(conn) = node_config.nodes.get(node_name) {
-                    conn.get_connection_info(Some(node_name)).await?
-                } else {
-                    // Fall back to checking default home directory
-                    let config = load_config(&defaults::default_node_dir(), node_name).await?;
-                    let multiaddr = fetch_multiaddr(&config)?;
-                    let url = multiaddr_to_url(&multiaddr, "")?;
-                    ConnectionInfo {
-                        api_url: url,
-                        auth_key: Some(config.identity),
-                    }
-                }
+        let connection = match self.prepare_connection().await {
+            Ok(conn) => conn,
+            Err(err) => {
+                let err = CliError::Other(err);
+                output.write(&err);
+                return Err(err);
             }
-            (None, Some(api_url)) => ConnectionInfo {
-                api_url: api_url.clone(),
-                auth_key: std::env::var("MEROCTL_NODE_KEY")
-                    .ok()
-                    .and_then(|k| bs58::decode(k).into_vec().ok())
-                    .and_then(|bytes| Keypair::from_protobuf_encoding(&bytes).ok()),
-            },
-            _ => return Err(CliError::Other(eyre!("Invalid connection parameters"))),
         };
 
         let environment = Environment::new(self.args, output, Some(connection));
@@ -171,11 +152,55 @@ impl RootCommand {
                 Ok(err) => CliError::ApiError(err),
                 Err(err) => CliError::Other(err),
             };
+
             environment.output.write(&err);
             return Err(err);
         }
 
         Ok(())
+    }
+
+    async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
+        let connection = match (&self.args.node, &self.args.api) {
+            (Some(node), None) => {
+                let config = Config::load().await?;
+
+                if let Some(conn) = config.get_connection(node).await? {
+                    return Ok(conn);
+                }
+
+                let config = load_config(&defaults::default_node_dir(), node).await?;
+                let multiaddr = fetch_multiaddr(&config)?;
+                let url = multiaddr_to_url(&multiaddr, "")?;
+
+                ConnectionInfo {
+                    api_url: url,
+                    auth_key: Some(config.identity),
+                }
+            }
+            (None, Some(api_url)) => {
+                let mut auth_key = None;
+
+                if let Ok(node_key) = std::env::var("MEROCTL_NODE_KEY") {
+                    let bytes = bs58::decode(node_key)
+                        .into_vec()
+                        .wrap_err("failed to decode node key from environment variable")?;
+
+                    let node_key = Keypair::from_protobuf_encoding(&bytes)
+                        .wrap_err("failed to decode node key from environment variable")?;
+
+                    auth_key = Some(node_key);
+                }
+
+                ConnectionInfo {
+                    api_url: api_url.clone(),
+                    auth_key,
+                }
+            }
+            _ => bail!("expected one of `--node` or `--api` to be set"),
+        };
+
+        Ok(connection)
     }
 }
 
@@ -207,7 +232,7 @@ impl Report for CliError {
         let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
         let _ = table.add_row(vec![match self {
             CliError::ApiError(e) => format!("API Error ({}): {}", e.status_code, e.message),
-            CliError::Other(e) => format!("Error: {}", e),
+            CliError::Other(e) => format!("Error: {:?}", e),
         }]);
         println!("{table}");
     }
@@ -224,7 +249,7 @@ fn serialize_eyre_report<S>(report: &EyreReport, serializer: S) -> Result<S::Ok,
 where
     S: Serializer,
 {
-    serializer.collect_str(&report)
+    serializer.collect_seq(report.chain().map(|e| e.to_string()))
 }
 
 pub struct ConnectionInfo {

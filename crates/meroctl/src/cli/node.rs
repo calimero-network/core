@@ -1,7 +1,7 @@
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::Table;
-use eyre::eyre;
+use eyre::bail;
 use url::Url;
 
 use crate::config::{Config, NodeConnection};
@@ -47,7 +47,7 @@ pub enum NodeCommand {
 
 impl NodeCommand {
     pub async fn run(self) -> eyre::Result<()> {
-        let mut config = Config::load()?;
+        let mut config = Config::load().await?;
 
         match self {
             NodeCommand::Add(cmd) => {
@@ -57,24 +57,24 @@ impl NodeCommand {
                         url,
                         auth: cmd.auth,
                     },
-                    _ => return Err(eyre!("Either --path or --url must be specified")),
+                    _ => bail!("either `--path` or `--url` must be specified"),
                 };
-                let _unused = config.nodes.insert(cmd.name, connection);
+                let _ignored = config.nodes.insert(cmd.name, connection);
             }
             NodeCommand::Remove(cmd) => {
-                let _unused = config.nodes.remove(&cmd.name);
+                let _ignored = config.nodes.remove(&cmd.name);
             }
             NodeCommand::List => {
                 let mut table = Table::new();
-                let _ = table.set_header(vec!["Name", "Type", "Location"]);
+                let _ignored = table.set_header(vec!["Name", "Type", "Location"]);
 
                 for (name, conn) in &config.nodes {
                     match conn {
                         NodeConnection::Local { path, .. } => {
-                            let _ = table.add_row(vec![name, "Local", path.as_str()]);
+                            let _ignored = table.add_row(vec![name, "Local", path.as_str()]);
                         }
                         NodeConnection::Remote { url, .. } => {
-                            let _ = table.add_row(vec![name, "Remote", url.as_str()]);
+                            let _ignored = table.add_row(vec![name, "Remote", url.as_str()]);
                         }
                     }
                 }
@@ -83,7 +83,6 @@ impl NodeCommand {
             }
         }
 
-        config.save()?;
-        Ok(())
+        config.save().await
     }
 }
