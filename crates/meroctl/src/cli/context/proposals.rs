@@ -23,23 +23,31 @@ use crate::output::Report;
 #[command(about = "Manage proposals within a context")]
 pub struct ProposalsCommand {
     #[command(subcommand)]
-    pub command: Option<ProposalsSubcommand>,
+    pub command: ProposalsSubcommand, // Remove Option<>
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ProposalsSubcommand {
-    #[command(about = "List all proposals in a context")]
+    #[command(about = "List all proposals in a context", alias = "ls")]
     List {
         /// Context to list proposals for
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
 
         /// Offset for pagination
-        #[arg(long, help = "Offset for paginated results", default_value = "0")]
+        #[arg(
+            long,
+            help = "Starting position for pagination (skip this many proposals)",
+            default_value_t
+        )]
         offset: usize,
 
         /// Limit for pagination
-        #[arg(long, help = "Limit for paginated results", default_value = "20")]
+        #[arg(
+            long,
+            help = "Maximum number of proposals to display in results",
+            default_value = "20"
+        )]
         limit: usize,
     },
     #[command(about = "View details of a specific proposal including approvers and actions")]
@@ -157,11 +165,11 @@ impl ProposalsCommand {
         let client = Client::new();
 
         match &self.command {
-            Some(ProposalsSubcommand::List {
+            ProposalsSubcommand::List {
                 context,
                 offset,
                 limit,
-            }) => {
+            } => {
                 let context_id = resolve_alias(multiaddr, &config.identity, *context, None)
                     .await?
                     .value()
@@ -183,10 +191,10 @@ impl ProposalsCommand {
                 )
                 .await
             }
-            Some(ProposalsSubcommand::View {
+            ProposalsSubcommand::View {
                 proposal_id,
                 context,
-            }) => {
+            } => {
                 let context_id = resolve_alias(multiaddr, &config.identity, *context, None)
                     .await?
                     .value()
@@ -231,12 +239,6 @@ impl ProposalsCommand {
                     )
                     .await;
 
-                Ok(())
-            }
-            None => {
-                use clap::CommandFactory;
-                let mut cmd = ProposalsCommand::command();
-                cmd.print_help()?;
                 Ok(())
             }
         }

@@ -176,7 +176,7 @@ enum ProposalsCommands {
         context: Alias<ContextId>,
 
         /// Offset for pagination
-        #[clap(long, default_value = "0")]
+        #[clap(long, default_value_t)]
         offset: usize,
 
         /// Limit for pagination

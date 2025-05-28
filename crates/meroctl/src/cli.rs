@@ -55,7 +55,6 @@ pub struct RootCommand {
 pub enum SubCommands {
     App(AppCommand),
     Context(ContextCommand),
-
     Call(CallCommand),
     Bootstrap(BootstrapCommand),
     Peers(PeersCommand),
