@@ -220,8 +220,15 @@ impl ContextIdentityCommand {
                     .resolve_alias(granter, Some(context_id))?
                     .ok_or_eyre("unable to resolve granter identity")?;
 
-                ctx_client
-                    .grant_permission(context_id, granter_id, grantee, capability.into())
+                let config_client = ctx_client
+                    .context_config(&context_id)?
+                    .ok_or_eyre(format!("context '{}' does not exist", context_id))?;
+
+                let external_client = ctx_client.external_client(&context_id, &config_client)?;
+
+                external_client
+                    .config()
+                    .grant(&granter_id, &[(grantee, capability.into())])
                     .await?;
 
                 println!("{ind} Permission granted successfully");
@@ -240,8 +247,15 @@ impl ContextIdentityCommand {
                     .resolve_alias(revoker, Some(context_id))?
                     .ok_or_eyre("unable to resolve revoker identity")?;
 
-                ctx_client
-                    .revoke_permission(context_id, revoker_id, revokee, capability.into())
+                let config_client = ctx_client
+                    .context_config(&context_id)?
+                    .ok_or_eyre(format!("context '{}' does not exist", context_id))?;
+
+                let external_client = ctx_client.external_client(&context_id, &config_client)?;
+
+                external_client
+                    .config()
+                    .revoke(&revoker_id, &[(revokee, capability.into())])
                     .await?;
 
                 println!("{ind} Permission revoked successfully");

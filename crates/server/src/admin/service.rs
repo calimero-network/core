@@ -19,9 +19,7 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::handlers::alias;
-use super::handlers::context::{
-    grant_capabilities, grant_permission, revoke_capabilities, revoke_permission,
-};
+use super::handlers::context::{grant_capabilities, revoke_capabilities};
 use super::handlers::did::delete_did_handler;
 use super::handlers::proposals::{
     get_context_storage_entries_handler, get_context_value_handler,
@@ -109,14 +107,6 @@ pub(crate) fn setup(
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application::handler))
-        .route(
-            "/contexts/grant-permission",
-            post(grant_permission::handler),
-        )
-        .route(
-            "/contexts/revoke-permission",
-            post(revoke_permission::handler),
-        )
         .route(
             "/uninstall-application",
             post(uninstall_application::handler),

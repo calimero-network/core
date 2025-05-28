@@ -1,7 +1,8 @@
+use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{GrantPermissionRequest, GrantPermissionResponse};
+use calimero_server_primitives::admin::GrantPermissionResponse;
 use clap::Parser;
 use eyre::OptionExt;
 use reqwest::Client;
@@ -44,23 +45,16 @@ impl GrantPermissionCommand {
             .cloned()
             .ok_or_eyre("unable to resolve context")?;
 
-        let granter_id = resolve_alias(multiaddr, &config.identity, self.granter, Some(context_id))
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve granter identity")?;
+        let endpoint = format!("admin-api/dev/contexts/{}/capabilities/grant", context_id);
+        let url = multiaddr_to_url(multiaddr, &endpoint)?;
 
-        let request = GrantPermissionRequest {
-            context_id,
-            granter_id,
-            grantee_id: self.grantee,
-            capability: self.capability.into(),
-        };
+        let request: Vec<(PublicKey, ConfigCapability)> =
+            vec![(self.grantee, self.capability.into())];
 
         make_request::<_, GrantPermissionResponse>(
             environment,
             &client,
-            multiaddr_to_url(multiaddr, "admin-api/dev/contexts/grant-permission")?,
+            url,
             Some(request),
             &config.identity,
             RequestType::Post,

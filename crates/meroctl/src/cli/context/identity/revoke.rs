@@ -1,7 +1,8 @@
+use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{RevokePermissionRequest, RevokePermissionResponse};
+use calimero_server_primitives::admin::RevokePermissionResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
@@ -48,20 +49,11 @@ impl RevokePermissionCommand {
             .cloned()
             .ok_or_eyre("unable to resolve context")?;
 
-        let revoker_id = resolve_alias(multiaddr, &config.identity, self.revoker, Some(context_id))
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve revoker identity")?;
+        let endpoint = format!("admin-api/dev/contexts/{}/capabilities/revoke", context_id);
+        let url = multiaddr_to_url(multiaddr, &endpoint)?;
 
-        let request = RevokePermissionRequest {
-            context_id,
-            revoker_id,
-            revokee_id: self.revokee,
-            capability: self.capability.into(),
-        };
-
-        let url = multiaddr_to_url(multiaddr, "admin-api/dev/contexts/revoke-permission")?;
+        let request: Vec<(PublicKey, ConfigCapability)> =
+            vec![(self.revokee, self.capability.into())];
 
         let _ = make_request::<_, RevokePermissionResponse>(
             environment,
