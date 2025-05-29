@@ -7,12 +7,37 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_HOME: ''
+  RUSTUP_HOME: ''
+  ALT_HOME: ''
+  STAGE_DIR: ''
 
 jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare
+        run: |
+          export STAGE_DIR="$(dirname $GITHUB_WORKSPACE)"
+          echo "STAGE_DIR=$STAGE_DIR" >> $GITHUB_ENV
+          export ALT_HOME="$STAGE_DIR/.home"
+          echo "ALT_HOME=$ALT_HOME" >> $GITHUB_ENV
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@v10
+        with:
+          build-mount-path: ${{ env.STAGE_DIR }}
+          root-reserve-mb: 8192
+
+      - name: Relocate environment
+        run: |
+          echo "CARGO_HOME=$ALT_HOME/.cargo" >> $GITHUB_ENV
+          echo "RUSTUP_HOME=$ALT_HOME/.rustup" >> $GITHUB_ENV
+          mkdir $ALT_HOME
+          mv ~/.cargo $ALT_HOME
+          mv ~/.rustup $ALT_HOME
+          echo "$ALT_HOME/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
+
       - name: Checkout code
         uses: actions/checkout@v4
 
