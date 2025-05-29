@@ -1,7 +1,6 @@
 use core::fmt::Write;
 use std::collections::btree_map::{BTreeMap, Entry as BTreeMapEntry};
 use std::collections::hash_map::HashMap;
-use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -9,23 +8,12 @@ use camino::Utf8Path;
 use eyre::{bail, Result as EyreResult};
 use mero_devnet::output::OutputWriter;
 use mero_devnet::{Config, DevNetwork, Merod, ProtocolSandboxConfig, ProtocolSandboxEnvironment};
-// use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
 use tokio::fs::{read, read_dir, write};
-// use tokio::net::unix::SocketAddr;
-use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-// use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
-// use crate::merod::Merod;
-// use crate::output::OutputWriter;
-// use crate::protocol::ethereum::EthereumSandboxEnvironment;
-// use crate::protocol::icp::IcpSandboxEnvironment;
-// use crate::protocol::near::NearSandboxEnvironment;
-// use crate::protocol::stellar::StellarSandboxEnvironment;
-// use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
 use crate::TestEnvironment;
 
@@ -124,33 +112,41 @@ impl Driver {
                             continue;
                         }
 
-                        // Initialize protocol if not already done
+                        // Initialize protocol if not already done and only if it matches our scenario
                         if !initialized_protocols.contains_key(protocol_name) {
-                            // Find and initialize the protocol sandbox
                             for protocol_sandbox in &self.config.protocol_sandboxes {
-                                let sandbox_env = match protocol_sandbox {
-                                    ProtocolSandboxConfig::Stellar(config) => {
-                                        ProtocolSandboxEnvironment::Stellar(
-                                            mero_devnet::protocol::stellar::StellarSandboxEnvironment::init(config.clone())?,
-                                        )
-                                    }
-                                    ProtocolSandboxConfig::Near(config) => {
-                                        ProtocolSandboxEnvironment::Near(
-                                            mero_devnet::protocol::near::NearSandboxEnvironment::init(config.clone()).await?,
-                                        )
-                                    }
-                                    ProtocolSandboxConfig::Icp(config) => {
-                                        ProtocolSandboxEnvironment::Icp(
-                                            mero_devnet::protocol::icp::IcpSandboxEnvironment::init(config.clone())?,
-                                        )
-                                    }
-                                    ProtocolSandboxConfig::Ethereum(config) => {
-                                        ProtocolSandboxEnvironment::Ethereum(
+                                // Only initialize the sandbox if it matches our current protocol
+                                match (protocol_name, protocol_sandbox) {
+                                    ("ethereum", ProtocolSandboxConfig::Ethereum(config)) => {
+                                        let sandbox_env = ProtocolSandboxEnvironment::Ethereum(
                                             mero_devnet::protocol::ethereum::EthereumSandboxEnvironment::init(config.clone())?,
-                                        )
+                                        );
+                                        initialized_protocols
+                                            .insert(protocol_name.to_owned(), sandbox_env);
                                     }
-                                };
-                                initialized_protocols.insert(protocol_name.to_owned(), sandbox_env);
+                                    ("near", ProtocolSandboxConfig::Near(config)) => {
+                                        let sandbox_env = ProtocolSandboxEnvironment::Near(
+                                            mero_devnet::protocol::near::NearSandboxEnvironment::init(config.clone()).await?,
+                                        );
+                                        initialized_protocols
+                                            .insert(protocol_name.to_owned(), sandbox_env);
+                                    }
+                                    ("stellar", ProtocolSandboxConfig::Stellar(config)) => {
+                                        let sandbox_env = ProtocolSandboxEnvironment::Stellar(
+                                            mero_devnet::protocol::stellar::StellarSandboxEnvironment::init(config.clone())?,
+                                        );
+                                        initialized_protocols
+                                            .insert(protocol_name.to_owned(), sandbox_env);
+                                    }
+                                    ("icp", ProtocolSandboxConfig::Icp(config)) => {
+                                        let sandbox_env = ProtocolSandboxEnvironment::Icp(
+                                            mero_devnet::protocol::icp::IcpSandboxEnvironment::init(config.clone())?,
+                                        );
+                                        initialized_protocols
+                                            .insert(protocol_name.to_owned(), sandbox_env);
+                                    }
+                                    _ => continue,
+                                }
                             }
                         }
 
@@ -615,107 +611,107 @@ mod serde_eyre {
     }
 }
 
-#[allow(dead_code)]
-struct PortBinding {
-    address: SocketAddr,
-    listener: TcpListener,
-}
+// #[allow(dead_code)]
+// struct PortBinding {
+//     address: SocketAddr,
+//     listener: TcpListener,
+// }
 
-impl PortBinding {
-    #[allow(dead_code)]
-    async fn next_available(host: IpAddr, port: &mut u16) -> EyreResult<PortBinding> {
-        for _ in 0..100 {
-            let address = (host, *port).into();
+// impl PortBinding {
+//     #[allow(dead_code)]
+//     async fn next_available(host: IpAddr, port: &mut u16) -> EyreResult<PortBinding> {
+//         for _ in 0..100 {
+//             let address = (host, *port).into();
 
-            let res = TcpListener::bind(address).await;
+//             let res = TcpListener::bind(address).await;
 
-            *port += 1;
+//             *port += 1;
 
-            if let Ok(listener) = res {
-                return Ok(PortBinding { address, listener });
-            }
-        }
+//             if let Ok(listener) = res {
+//                 return Ok(PortBinding { address, listener });
+//             }
+//         }
 
-        bail!(
-            "unable to select a port in range {}..={}",
-            *port - 100,
-            *port - 1
-        );
-    }
+//         bail!(
+//             "unable to select a port in range {}..={}",
+//             *port - 100,
+//             *port - 1
+//         );
+//     }
 
-    #[allow(dead_code)]
-    fn port(&self) -> u16 {
-        self.address.port()
-    }
+//     #[allow(dead_code)]
+//     fn port(&self) -> u16 {
+//         self.address.port()
+//     }
 
-    #[allow(dead_code)]
-    /// Drop the binding, returning the bound address.
-    fn into_socket_addr(self) -> SocketAddr {
-        drop(self.listener);
-        self.address
-    }
-}
+//     #[allow(dead_code)]
+//     /// Drop the binding, returning the bound address.
+//     fn into_socket_addr(self) -> SocketAddr {
+//         drop(self.listener);
+//         self.address
+//     }
+// }
 
-#[cfg(test)]
-mod tests {
-    use std::env;
-    use std::net::IpAddr;
+// #[cfg(test)]
+// mod tests {
+//     use std::env;
+//     use std::net::IpAddr;
 
-    use super::PortBinding;
+//     use super::PortBinding;
 
-    #[tokio::test]
-    async fn test_ports() -> eyre::Result<()> {
-        let env_hosts = env::var("TEST_HOSTS").ok();
+//     #[tokio::test]
+//     async fn test_ports() -> eyre::Result<()> {
+//         let env_hosts = env::var("TEST_HOSTS").ok();
 
-        dbg!(&env_hosts);
+//         dbg!(&env_hosts);
 
-        let mut env_hosts = env_hosts
-            .iter()
-            .flat_map(|hosts| hosts.split(','))
-            .map(|host| host.parse::<IpAddr>())
-            .into_iter()
-            .peekable();
+//         let mut env_hosts = env_hosts
+//             .iter()
+//             .flat_map(|hosts| hosts.split(','))
+//             .map(|host| host.parse::<IpAddr>())
+//             .into_iter()
+//             .peekable();
 
-        let default = env_hosts
-            .peek()
-            .map_or_else(|| Some(Ok([0, 0, 0, 0].into())), |_| None)
-            .into_iter();
+//         let default = env_hosts
+//             .peek()
+//             .map_or_else(|| Some(Ok([0, 0, 0, 0].into())), |_| None)
+//             .into_iter();
 
-        let port = 2800;
+//         let port = 2800;
 
-        for host in default.chain(env_hosts) {
-            let host = host?;
+//         for host in default.chain(env_hosts) {
+//             let host = host?;
 
-            dbg!(&host, port);
+//             dbg!(&host, port);
 
-            test_port(host, port).await?;
-        }
+//             test_port(host, port).await?;
+//         }
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    async fn test_port(host: IpAddr, start_port: u16) -> eyre::Result<()> {
-        let mut port = start_port;
+//     async fn test_port(host: IpAddr, start_port: u16) -> eyre::Result<()> {
+//         let mut port = start_port;
 
-        let bind1 = PortBinding::next_available(host, &mut port).await?;
+//         let bind1 = PortBinding::next_available(host, &mut port).await?;
 
-        assert_eq!(port, bind1.port() + 1);
+//         assert_eq!(port, bind1.port() + 1);
 
-        let bind2 = PortBinding::next_available(host, &mut port).await?;
+//         let bind2 = PortBinding::next_available(host, &mut port).await?;
 
-        assert_eq!(port, bind2.port() + 1);
+//         assert_eq!(port, bind2.port() + 1);
 
-        let port1 = bind1.into_socket_addr().port();
-        let port2 = bind2.into_socket_addr().port();
+//         let port1 = bind1.into_socket_addr().port();
+//         let port2 = bind2.into_socket_addr().port();
 
-        assert!(port1 < port2);
+//         assert!(port1 < port2);
 
-        let bind1 = PortBinding::next_available(host, &mut { port1 }).await?;
-        let bind2 = PortBinding::next_available(host, &mut { port2 }).await?;
+//         let bind1 = PortBinding::next_available(host, &mut { port1 }).await?;
+//         let bind2 = PortBinding::next_available(host, &mut { port2 }).await?;
 
-        assert_eq!(bind1.port(), port1);
-        assert_eq!(bind2.port(), port2);
+//         assert_eq!(bind1.port(), port1);
+//         assert_eq!(bind2.port(), port2);
 
-        Ok(())
-    }
-}
+//         Ok(())
+//     }
+// }
