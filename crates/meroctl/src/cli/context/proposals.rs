@@ -201,7 +201,7 @@ impl ProposalsCommand {
                     .cloned()
                     .ok_or_eyre("unable to resolve context")?;
 
-                let proposal_result = self
+                match self
                     .get_proposal(
                         environment,
                         multiaddr,
@@ -210,36 +210,44 @@ impl ProposalsCommand {
                         context_id,
                         proposal_id,
                     )
-                    .await;
+                    .await
+                {
+                    Ok(_) => {
+                        self.get_proposal_approvers(
+                            environment,
+                            multiaddr,
+                            &client,
+                            &config.identity,
+                            context_id,
+                            proposal_id,
+                        )
+                        .await?;
 
-                if let Err(_) = proposal_result {
-                    println!("Proposal not found");
-                    return Ok(());
+                        self.get_number_of_proposal_approvals(
+                            environment,
+                            multiaddr,
+                            &client,
+                            &config.identity,
+                            context_id,
+                            proposal_id,
+                        )
+                        .await?;
+
+                        Ok(())
+                    }
+                    Err(e) => {
+                        if let Some(reqwest_error) = e.downcast_ref::<reqwest::Error>() {
+                            if let Some(status) = reqwest_error.status() {
+                                if status == reqwest::StatusCode::NOT_FOUND {
+                                    println!("Proposal not found");
+                                    return Ok(());
+                                }
+                            }
+                        }
+
+                        Err(e)
+                    }
                 }
-
-                let _ = self
-                    .get_proposal_approvers(
-                        environment,
-                        multiaddr,
-                        &client,
-                        &config.identity,
-                        context_id,
-                        proposal_id,
-                    )
-                    .await;
-
-                let _ = self
-                    .get_number_of_proposal_approvals(
-                        environment,
-                        multiaddr,
-                        &client,
-                        &config.identity,
-                        context_id,
-                        proposal_id,
-                    )
-                    .await;
-
-                Ok(())
             }
         }
     }
