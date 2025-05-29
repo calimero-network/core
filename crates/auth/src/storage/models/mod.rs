@@ -1,7 +1,7 @@
 mod keys;
 mod permission;
 
-pub use keys::{Key, KeyType, KeyMetadata};
+pub use keys::{Key, KeyMetadata, KeyType};
 pub use permission::Permission;
 
 /// Storage prefixes for different types of data

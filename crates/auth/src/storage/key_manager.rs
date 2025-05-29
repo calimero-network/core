@@ -54,7 +54,9 @@ impl KeyManager {
                 // Create secondary index for public key lookups
                 if let Some(public_key) = &key.public_key {
                     let public_key_index = format!("{}{}", prefixes::PUBLIC_KEY_INDEX, public_key);
-                    self.storage.set(&public_key_index, key_id.as_bytes()).await?;
+                    self.storage
+                        .set(&public_key_index, key_id.as_bytes())
+                        .await?;
                 }
             }
             KeyType::Client => {
@@ -94,7 +96,8 @@ impl KeyManager {
 
                     // Delete the public key index
                     if let Some(public_key) = key.public_key {
-                        let public_key_index = format!("{}{}", prefixes::PUBLIC_KEY_INDEX, public_key);
+                        let public_key_index =
+                            format!("{}{}", prefixes::PUBLIC_KEY_INDEX, public_key);
                         self.storage.delete(&public_key_index).await?;
                     }
 
@@ -258,11 +261,8 @@ mod tests {
         let key_manager = KeyManager::new(storage);
 
         // Test root key operations
-        let root_key = Key::new_root_key(
-            "test_pub_key".to_string(),
-            "near".to_string(),
-        );
-        
+        let root_key = Key::new_root_key("test_pub_key".to_string(), "near".to_string());
+
         // Test set and get
         key_manager.set_key("test_key", &root_key).await.unwrap();
         let retrieved = key_manager.get_key("test_key").await.unwrap();
@@ -290,7 +290,10 @@ mod tests {
         );
 
         // Test set and get
-        key_manager.set_key("test_client", &client_key).await.unwrap();
+        key_manager
+            .set_key("test_client", &client_key)
+            .await
+            .unwrap();
         let retrieved = key_manager.get_key("test_client").await.unwrap();
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
@@ -299,7 +302,10 @@ mod tests {
         assert_eq!(retrieved.get_name(), Some("Test Client"));
 
         // Test list client keys for root
-        let clients = key_manager.list_client_keys_for_root("test_key").await.unwrap();
+        let clients = key_manager
+            .list_client_keys_for_root("test_key")
+            .await
+            .unwrap();
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].get_root_key_id(), Some("test_key"));
 

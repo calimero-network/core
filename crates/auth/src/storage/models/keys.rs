@@ -68,11 +68,7 @@ impl Key {
     }
 
     /// Create a new client key
-    pub fn new_client_key(
-        root_key_id: String,
-        name: String,
-        permissions: Vec<String>,
-    ) -> Self {
+    pub fn new_client_key(root_key_id: String, name: String, permissions: Vec<String>) -> Self {
         Self {
             key_type: KeyType::Client,
             public_key: None,
@@ -194,7 +190,11 @@ impl Key {
         // Check resource-specific permissions (with IDs)
         if permission.contains('[') && permission.contains(']') {
             let base_permission = permission.split('[').next().unwrap_or("");
-            if self.permissions.iter().any(|p| p.starts_with(base_permission)) {
+            if self
+                .permissions
+                .iter()
+                .any(|p| p.starts_with(base_permission))
+            {
                 return true;
             }
         }
@@ -225,4 +225,4 @@ impl KeyMetadata {
     pub fn revoke(&mut self) {
         self.revoked_at = Some(Utc::now().timestamp() as u64);
     }
-} 
+}

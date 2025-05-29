@@ -376,7 +376,7 @@ impl NearWalletProvider {
 
         // Update the last used timestamp
         // Note: We don't need to update last_used anymore since we removed that field
-        
+
         // Save the updated key
         self.key_manager
             .set_key(key_id, &key)

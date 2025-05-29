@@ -14,7 +14,7 @@ pub mod registry;
 
 // Re-export storage implementations and key manager for backward compatibility
 pub use key_manager::KeyManager;
-pub use models::{prefixes, Permission, Key};
+pub use models::{prefixes, Key, Permission};
 pub use providers::memory::MemoryStorage;
 
 /// Storage error
