@@ -36,15 +36,18 @@ pub struct CreateKeyRequest {
 pub async fn list_keys_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     match state.0.key_manager.list_keys(KeyType::Root).await {
         Ok(keys) => {
-            let root_keys = keys.into_iter().map(|(key_id, key)| {
-                serde_json::json!({
-                    "key_id": key_id,
-                    "public_key": key.public_key,
-                    "auth_method": key.auth_method,
-                    "created_at": key.metadata.created_at,
-                    "revoked_at": key.metadata.revoked_at,
+            let root_keys = keys
+                .into_iter()
+                .map(|(key_id, key)| {
+                    serde_json::json!({
+                        "key_id": key_id,
+                        "public_key": key.public_key,
+                        "auth_method": key.auth_method,
+                        "created_at": key.metadata.created_at,
+                        "revoked_at": key.metadata.revoked_at,
+                    })
                 })
-            }).collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
             (
                 StatusCode::OK,

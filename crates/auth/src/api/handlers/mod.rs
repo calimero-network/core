@@ -1,7 +1,7 @@
 pub mod auth;
 pub mod client_keys;
-pub mod root_keys;
 pub mod permissions;
+pub mod root_keys;
 
 use std::sync::Arc;
 
@@ -21,27 +21,18 @@ struct AuthUiStaticFiles;
 
 /// Re-export authentication flow handlers
 pub use auth::{
-    challenge_handler,   // Step 4-5: Generate challenge for signing
-    login_handler,      // Step 7-8: Verify signature and create root key
-    token_handler,      // Step 12-13: Create client key and JWT
-    validate_handler,   // Forward auth validation
+    callback_handler,  // OAuth callback handling
+    challenge_handler, // Step 4-5: Generate challenge for signing
+    login_handler,     // Step 7-8: Verify signature and create root key
     refresh_token_handler,
     revoke_token_handler,
-    callback_handler,   // OAuth callback handling
+    token_handler,    // Step 12-13: Create client key and JWT
+    validate_handler, // Forward auth validation
 };
-
-/// Re-export key management handlers
-pub use root_keys::{
-    create_key_handler,
-    list_keys_handler,
-    delete_key_handler,
-};
-
 /// Re-export client key management handlers
-pub use client_keys::{
-    list_clients_handler,
-    delete_client_handler,
-};
+pub use client_keys::{delete_client_handler, list_clients_handler};
+/// Re-export key management handlers
+pub use root_keys::{create_key_handler, delete_key_handler, list_keys_handler};
 
 /// Identity handler
 ///

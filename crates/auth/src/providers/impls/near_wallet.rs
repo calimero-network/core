@@ -356,7 +356,6 @@ impl NearWalletProvider {
         Ok((key_id, root_key))
     }
 
-
     // TODO Decide what to do with this function
     /// Update the last used timestamp for a root key
     ///

@@ -10,12 +10,11 @@ use sha2::{Digest, Sha256};
 use tracing::error;
 use validator::Validate;
 
+use super::auth::{internal_error_response, success_response, unauthorized_response};
+use crate::api::handlers::auth::TokenResponse;
+use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
 use crate::storage::models::Key;
-use crate::auth::validation::ValidatedJson;
-use crate::api::handlers::auth::TokenResponse;
-
-use super::auth::{success_response, unauthorized_response, internal_error_response};
 
 /// Generate client key request
 #[derive(Debug, Deserialize, Validate)]
@@ -50,16 +49,19 @@ pub async fn list_clients_handler(
 ) -> impl IntoResponse {
     match state.0.key_manager.list_client_keys_for_root(&key_id).await {
         Ok(client_keys) => {
-            let clients = client_keys.into_iter().map(|key| {
-                serde_json::json!({
-                    "client_id": key.root_key_id.clone().unwrap_or_default(),
-                    "root_key_id": key.root_key_id.unwrap_or_default(),
-                    "name": key.name.unwrap_or_default(),
-                    "permissions": key.permissions,
-                    "created_at": key.metadata.created_at,
-                    "revoked_at": key.metadata.revoked_at,
+            let clients = client_keys
+                .into_iter()
+                .map(|key| {
+                    serde_json::json!({
+                        "client_id": key.root_key_id.clone().unwrap_or_default(),
+                        "root_key_id": key.root_key_id.unwrap_or_default(),
+                        "name": key.name.unwrap_or_default(),
+                        "permissions": key.permissions,
+                        "created_at": key.metadata.created_at,
+                        "revoked_at": key.metadata.revoked_at,
+                    })
                 })
-            }).collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
             (
                 StatusCode::OK,
