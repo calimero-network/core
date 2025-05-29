@@ -245,7 +245,7 @@ impl Report for CreateAliasResponse {
 
 pub(crate) async fn create_alias<T>(
     base_url: &Url,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     alias: Alias<T>,
     scope: Option<T::Scope>,
     value: T,
@@ -273,7 +273,7 @@ where
         &Client::new(),
         url,
         Some(body),
-        Some(keypair),
+        keypair,
         RequestType::Post,
     )
     .await?;
@@ -292,7 +292,7 @@ impl Report for DeleteAliasResponse {
 
 pub(crate) async fn delete_alias<T>(
     base_url: &Url,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     alias: Alias<T>,
     scope: Option<T::Scope>,
 ) -> EyreResult<DeleteAliasResponse>
@@ -313,7 +313,7 @@ where
         &Client::new(),
         url,
         None::<()>,
-        Some(keypair),
+        keypair,
         RequestType::Post,
     )
     .await?;
@@ -323,7 +323,7 @@ where
 
 pub(crate) async fn lookup_alias<T>(
     base_url: &Url,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     alias: Alias<T>,
     scope: Option<T::Scope>,
 ) -> EyreResult<LookupAliasResponse<T>>
@@ -344,7 +344,7 @@ where
         &Client::new(),
         url,
         None::<()>,
-        Some(keypair),
+        keypair,
         RequestType::Post,
     )
     .await?;
@@ -417,7 +417,7 @@ impl<T: fmt::Display> Report for ResolveResponse<T> {
 
 pub(crate) async fn resolve_alias<T>(
     base_url: &Url,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     alias: Alias<T>,
     scope: Option<T::Scope>,
 ) -> EyreResult<ResolveResponse<T>>

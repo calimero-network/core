@@ -241,7 +241,7 @@ pub async fn create_context(
     if let Some(context_alias) = context {
         let res = create_alias(
             &connection.api_url,
-            keypair.unwrap(),
+            keypair,
             context_alias,
             None,
             response.data.context_id,

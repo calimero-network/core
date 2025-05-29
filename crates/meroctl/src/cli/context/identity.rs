@@ -55,10 +55,7 @@ impl ContextIdentityCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_eyre("No authentication key configured")?;
+   
 
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {
@@ -73,7 +70,7 @@ impl ContextIdentityCommand {
                 force,
             } => {
                 let resolve_response =
-                    resolve_alias(&connection.api_url, auth_key, context, None).await?;
+                    resolve_alias(&connection.api_url, connection.auth_key.as_ref(), context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -84,7 +81,7 @@ impl ContextIdentityCommand {
 
                 let lookup_result = lookup_alias(
                     &connection.api_url,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     default_alias,
                     Some(context_id),
                 )
@@ -112,7 +109,7 @@ impl ContextIdentityCommand {
                     )));
                     let _ = delete_alias(
                         &connection.api_url,
-                        auth_key,
+                        connection.auth_key.as_ref(),
                         default_alias,
                         Some(context_id),
                     )
@@ -122,7 +119,7 @@ impl ContextIdentityCommand {
 
                 let res = create_alias(
                     &connection.api_url,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     default_alias,
                     Some(context_id),
                     identity,
@@ -145,7 +142,7 @@ async fn list_identities(
 ) -> EyreResult<()> {
     let resolve_response = resolve_alias(
         &connection.api_url,
-        connection.auth_key.as_ref().unwrap(),
+        connection.auth_key.as_ref(),
         context.unwrap_or_else(|| "default".parse().expect("valid alias")),
         None,
     )

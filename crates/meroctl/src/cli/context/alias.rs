@@ -68,7 +68,7 @@ impl ContextAliasCommand {
 
                 let lookup_result = lookup_alias(
                     &connection.api_url,
-                    connection.auth_key.as_ref().unwrap(),
+                    connection.auth_key.as_ref(),
                     alias,
                     None,
                 )
@@ -92,7 +92,7 @@ impl ContextAliasCommand {
 
                     let _ = delete_alias(
                         &connection.api_url,
-                        connection.auth_key.as_ref().unwrap(),
+                        connection.auth_key.as_ref(),
                         alias,
                         None,
                     )
@@ -102,7 +102,7 @@ impl ContextAliasCommand {
 
                 let res = create_alias(
                     &connection.api_url,
-                    connection.auth_key.as_ref().unwrap(),
+                    connection.auth_key.as_ref(),
                     alias,
                     None,
                     context_id,
@@ -114,7 +114,7 @@ impl ContextAliasCommand {
             ContextAliasSubcommand::Remove { alias } => {
                 let res = delete_alias(
                     &connection.api_url,
-                    connection.auth_key.as_ref().unwrap(),
+                    connection.auth_key.as_ref(),
                     alias,
                     None,
                 )
@@ -125,7 +125,7 @@ impl ContextAliasCommand {
             ContextAliasSubcommand::Get { alias } => {
                 let res = lookup_alias(
                     &connection.api_url,
-                    connection.auth_key.as_ref().unwrap(),
+                    connection.auth_key.as_ref(),
                     alias,
                     None,
                 )
@@ -163,7 +163,7 @@ impl UseCommand {
 
         let resolve_response = resolve_alias(
             &connection.api_url,
-            connection.auth_key.as_ref().unwrap(),
+            connection.auth_key.as_ref(),
             self.context,
             None,
         )
@@ -177,7 +177,7 @@ impl UseCommand {
 
         let lookup_result = lookup_alias(
             &connection.api_url,
-            connection.auth_key.as_ref().unwrap(),
+            connection.auth_key.as_ref(),
             default_alias,
             None,
         )
@@ -202,7 +202,7 @@ impl UseCommand {
             )));
             let _ = delete_alias(
                 &connection.api_url,
-                connection.auth_key.as_ref().unwrap(),
+                connection.auth_key.as_ref(),
                 default_alias,
                 None,
             )
@@ -212,7 +212,7 @@ impl UseCommand {
 
         let res = create_alias(
             &connection.api_url,
-            connection.auth_key.as_ref().unwrap(),
+            connection.auth_key.as_ref(),
             default_alias,
             None,
             context_id,

@@ -77,7 +77,7 @@ impl JoinCommand {
                 let context_id = payload.context_id;
                 let res = create_alias(
                     &connection.api_url,
-                    connection.auth_key.as_ref().unwrap(),
+                    connection.auth_key.as_ref(),
                     context,
                     None,
                     context_id,
@@ -91,7 +91,7 @@ impl JoinCommand {
 
                 let res = create_alias(
                     &connection.api_url,
-                    connection.auth_key.as_ref().unwrap(),
+                    connection.auth_key.as_ref(),
                     identity,
                     Some(context_id),
                     public_key,

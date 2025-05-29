@@ -86,20 +86,17 @@ impl CallCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_else(|| eyre!("No authentication key configured"))?;
+     
 
         let resolve_response =
-            resolve_alias(&connection.api_url, auth_key, self.context, None).await?;
+            resolve_alias(&connection.api_url, connection.auth_key.as_ref(), self.context, None).await?;
         let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
         let executor = resolve_alias(
             &connection.api_url,
-            auth_key,
+            connection.auth_key.as_ref(),
             self.executor,
             Some(context_id),
         )
@@ -130,7 +127,7 @@ impl CallCommand {
             &client,
             url,
             Some(request),
-            Some(auth_key),
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await?;

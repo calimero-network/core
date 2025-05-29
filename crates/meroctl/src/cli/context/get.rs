@@ -115,7 +115,7 @@ impl GetCommand {
 
         let resolve_response = resolve_alias(
             &connection.api_url,
-            connection.auth_key.as_ref().unwrap(),
+            connection.auth_key.as_ref(),
             self.context,
             None,
         )

@@ -78,7 +78,7 @@ impl InviteCommand {
 
         let context_id = resolve_alias(
             &connection.api_url,
-            connection.auth_key.as_ref().unwrap(),
+            connection.auth_key.as_ref(),
             self.context,
             None,
         )
@@ -89,7 +89,7 @@ impl InviteCommand {
 
         let inviter_id = resolve_alias(
             &connection.api_url,
-            connection.auth_key.as_ref().unwrap(),
+            connection.auth_key.as_ref(),
             self.inviter,
             Some(context_id),
         )
@@ -124,7 +124,7 @@ impl InviteCommand {
             if let Some(auth_key) = connection.auth_key.as_ref() {
                 let res = create_alias(
                     &connection.api_url,
-                    auth_key,
+                    Some(auth_key),
                     name,
                     Some(context_id),
                     self.invitee_id,

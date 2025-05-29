@@ -20,7 +20,7 @@ async fn identity_exists_in_context(
 ) -> EyreResult<bool> {
     let context_id = resolve_alias(
         &connection.api_url,
-        connection.auth_key.as_ref().unwrap(),
+        connection.auth_key.as_ref(),
         *context,
         None,
     )
@@ -100,10 +100,7 @@ impl ContextIdentityAliasCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_else(|| eyre!("No authentication key configured"))?;
+   
 
         match self.command {
             ContextIdentityAliasSubcommand::Add {
@@ -113,7 +110,7 @@ impl ContextIdentityAliasCommand {
                 force,
             } => {
                 let resolve_response =
-                    resolve_alias(&connection.api_url, auth_key, context, None).await?;
+                    resolve_alias(&connection.api_url, connection.auth_key.as_ref(), context, None).await?;
 
                 if !identity_exists_in_context(connection, &context, &identity).await? {
                     environment.output.write(&ErrorLine(&format!(
@@ -129,7 +126,7 @@ impl ContextIdentityAliasCommand {
                     .ok_or_eyre("Failed to resolve context: no value found")?;
 
                 let lookup_result =
-                    lookup_alias(&connection.api_url, auth_key, name, Some(context_id)).await?;
+                    lookup_alias(&connection.api_url, connection.auth_key.as_ref(), name, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -152,14 +149,14 @@ impl ContextIdentityAliasCommand {
                         "Overwriting existing alias '{}' from '{}' to '{}'",
                         name, existing_identity, identity
                     )));
-                    let _ = delete_alias(&connection.api_url, auth_key, name, Some(context_id))
+                    let _ = delete_alias(&connection.api_url, connection.auth_key.as_ref(), name, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing alias")?;
                 }
 
                 let res = create_alias(
                     &connection.api_url,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     name,
                     Some(context_id),
                     identity,
@@ -170,27 +167,27 @@ impl ContextIdentityAliasCommand {
             }
             ContextIdentityAliasSubcommand::Remove { identity, context } => {
                 let resolve_response =
-                    resolve_alias(&connection.api_url, auth_key, context, None).await?;
+                    resolve_alias(&connection.api_url, connection.auth_key.as_ref(), context, None).await?;
 
                 let context_id = resolve_response
                     .value()
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
                 let res =
-                    delete_alias(&connection.api_url, auth_key, identity, Some(context_id)).await?;
+                    delete_alias(&connection.api_url, connection.auth_key.as_ref(), identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Get { identity, context } => {
                 let resolve_response =
-                    resolve_alias(&connection.api_url, auth_key, context, None).await?;
+                    resolve_alias(&connection.api_url, connection.auth_key.as_ref(), context, None).await?;
 
                 let context_id = resolve_response
                     .value()
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
                 let res =
-                    lookup_alias(&connection.api_url, auth_key, identity, Some(context_id)).await?;
+                    lookup_alias(&connection.api_url, connection.auth_key.as_ref(), identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
