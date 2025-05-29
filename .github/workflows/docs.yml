@@ -27,17 +27,11 @@ jobs:
         cache-on-failure: true
         cache-all-crates: true
 
-    - name: Build docs
-      run: cargo doc -p calimero-sdk --no-deps
-
-    - name: Prepare root doc folder
-      run: |
-        mkdir -p ./target/doc-root
-        cp -r ./target/doc/calimero_sdk/* ./target/doc-root/
-        cp ./target/doc/calimero_sdk/index.html ./target/doc-root/index.html
+    - name: Build calimero-sdk docs
+      run: cargo doc --no-deps -p calimero-sdk
 
     - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./target/doc-root
+        publish_dir: ./target/doc
