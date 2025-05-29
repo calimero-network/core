@@ -45,6 +45,7 @@ impl Merod {
         server_port: u16,
         args: impl IntoIterator<Item = &'a str>,
     ) -> EyreResult<()> {
+        create_dir_all(&self.home_dir).await?;
         create_dir_all(&self.log_dir).await?;
 
         let mut child = self

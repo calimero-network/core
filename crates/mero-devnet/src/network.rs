@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use camino::Utf8PathBuf;
 use eyre::{Context, Result};
+use tokio::fs::create_dir_all;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
@@ -69,13 +70,29 @@ impl DevNetwork {
             let node_name = format!("node{}", i + 1);
             let home_dir = logs_dir.join(&node_name);
 
+            // Ensure home directory exists
+            create_dir_all(&home_dir).await?;
+
+            // Create basic config file if it doesn't exist
+            let config_file = home_dir.join("config.json");
+            if !config_file.exists() {
+                let default_config = serde_json::json!({
+                    "network": {
+                        "node_name": &node_name,
+                        "swarm_port": config.network.start_swarm_port + i as u16,
+                        "server_port": config.network.start_server_port + i as u16
+                    }
+                });
+                tokio::fs::write(&config_file, serde_json::to_string_pretty(&default_config)?)
+                    .await?;
+            }
+
             let merod = Merod::new(
                 node_name.clone(),
                 home_dir,
                 &logs_dir,
                 binary_path.clone(),
                 Default::default(),
-                // output_writer,
             );
 
             let swarm_port = config.network.start_swarm_port + i as u16;
