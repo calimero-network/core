@@ -83,7 +83,9 @@ pub struct AccountId(pub String);
 /// Proposals may require multiple approvals before execution.
 ///
 /// # Example
-/// ```rust
+/// ```rust,no_run
+/// use calimero_sdk::{External, AccountId};
+///
 /// let proposal_id = External.propose()
 ///     .transfer(AccountId("bob.near".to_string()), 1_000_000_000_000_000_000_000_000)
 ///     .external_function_call(
@@ -198,7 +200,9 @@ impl DraftProposal {
 /// and [`approve`](Self::approve) to approve pending proposals identified by [`ProposalId`].
 ///
 /// # Example
-/// ```rust
+/// ```rust,no_run
+/// use calimero_sdk::{External, AccountId};
+///
 /// let proposal_id = External.propose()
 ///     .transfer(AccountId("alice.near".to_string()), 100_000_000_000_000_000_000_000)
 ///     .set_num_approvals(1)
