@@ -39,3 +39,14 @@ pub enum ProtocolSandboxConfig {
     Stellar(StellarProtocolConfig),
     Ethereum(EthereumProtocolConfig),
 }
+
+impl ProtocolSandboxConfig {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Near(_) => "near",
+            Self::Icp(_) => "icp",
+            Self::Stellar(_) => "stellar",
+            Self::Ethereum(_) => "ethereum",
+        }
+    }
+}

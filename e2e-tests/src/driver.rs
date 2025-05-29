@@ -86,6 +86,13 @@ impl Driver {
         self.environment.init().await?;
 
         let mut report = TestRunReport::new();
+        // Convert scenarios to protocol names
+        let requested_protocols: Vec<String> = self
+            .environment
+            .scenarios
+            .iter()
+            .map(|s| s.to_string().to_lowercase())
+            .collect();
         let mut initialized_protocols: HashMap<String, ProtocolSandboxEnvironment> = HashMap::new();
 
         // Run scenarios directory by directory
@@ -155,6 +162,7 @@ impl Driver {
                                 self.config.clone(),
                                 self.environment.merod_binary.clone(),
                                 self.environment.logs_dir.clone(),
+                                Some(&requested_protocols),
                                 // self.environment.output_writer,
                             )
                             .await?;

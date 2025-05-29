@@ -72,7 +72,7 @@ impl DevnetCommand {
         let config: Config =
             serde_json::from_str(&config_content).context("Failed to parse config file")?;
 
-        let network = DevNetwork::new(config, binary, logs_dir)
+        let network = DevNetwork::new(config, binary, logs_dir, None)
             .await
             .context("Failed to initialize devnet")?;
 
