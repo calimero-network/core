@@ -113,8 +113,13 @@ impl GetCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let resolve_response =
-            resolve_alias(&connection.api_url, connection.auth_key.as_ref().unwrap(), self.context, None).await?;
+        let resolve_response = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref().unwrap(),
+            self.context,
+            None,
+        )
+        .await?;
 
         let context_id = resolve_response
             .value()

@@ -39,13 +39,16 @@ impl DeleteCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-    
-
-        let context_id = resolve_alias(&connection.api_url, connection.auth_key.as_ref().unwrap(), self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let context_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref().unwrap(),
+            self.context,
+            None,
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
         let mut url = connection.api_url.clone();
         url.set_path(&format!("admin-api/dev/contexts/{}", context_id));

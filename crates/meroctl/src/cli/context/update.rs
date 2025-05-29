@@ -76,11 +76,16 @@ impl UpdateCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let context_id = resolve_alias(&connection.api_url, connection.auth_key.as_ref().unwrap(), self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let context_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref().unwrap(),
+            self.context,
+            None,
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
         let executor_id = resolve_alias(
             &connection.api_url,

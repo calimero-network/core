@@ -101,8 +101,6 @@ impl CreateCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        
-
         let client = Client::new();
         match self {
             Self {
