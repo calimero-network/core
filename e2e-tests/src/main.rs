@@ -6,6 +6,9 @@ use const_format::concatcp;
 use eyre::Result as EyreResult;
 use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 mod config;
 mod driver;
@@ -24,7 +27,7 @@ pub const EXAMPLES: &str = r"
   $ e2e-tests --input-dir ./e2e-tests/config
     --output-dir ./e2e-tests/corpus
     --merod-binary ./target/debug/merod
-    --meroctl-binary ./target/debug/meroctl 
+    --meroctl-binary ./target/debug/meroctl
 ";
 
 #[derive(Debug, Parser)]
@@ -57,11 +60,6 @@ pub enum Commands {
 }
 
 #[derive(Debug, Args)]
-#[command(author, version, about, long_about = None)]
-#[command(after_help = concatcp!(
-    "Examples:",
-    EXAMPLES
-))]
 pub struct RootArgs {
     /// Directory containing the test configuration and test scenarios.
     /// In root directory, there should be a `config.json` file. This file
@@ -169,6 +167,11 @@ impl TestEnvironment {
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .try_init()?;
+
     let args = Command::parse();
 
     if let Some(args) = args.args {

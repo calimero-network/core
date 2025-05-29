@@ -14,7 +14,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     Path(application_id): Path<ApplicationId>,
 ) -> impl IntoResponse {
-    match state.ctx_manager.get_application(&application_id) {
+    match state.node_client.get_application(&application_id) {
         Ok(application) => ApiResponse {
             payload: GetApplicationResponse::new(application),
         }

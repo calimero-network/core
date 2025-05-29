@@ -11,21 +11,23 @@ members = [
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
+    "./crates/context/primitives",
     "./crates/crypto",
     "./crates/meroctl",
     "./crates/merod",
     "./crates/network",
+    "./crates/network/primitives",
     "./crates/node",
-    "./crates/node-primitives",
+    "./crates/node/primitives",
     "./crates/primitives",
     "./crates/runtime",
     "./crates/sdk",
     "./crates/sdk/libs/near",
     "./crates/sdk/macros",
     "./crates/server",
-    "./crates/server-primitives",
+    "./crates/server/primitives",
     "./crates/storage",
-    "./crates/storage-macros",
+    "./crates/storage/macros",
     "./crates/store",
     "./crates/store/impl/rocksdb",
     "./crates/store/blobs",
@@ -76,6 +78,7 @@ ic-agent = "0.39.1"
 ic-canister-sig-creation = "1.1"
 ic-signature-verification = "0.2"
 indexmap = "2.6.0"
+itertools = "0.14.0"
 jsonwebtoken = "9.3.0"
 libp2p = "0.53.2"
 libp2p-stream = "0.1.0-alpha.1"
@@ -90,7 +93,7 @@ near-primitives = "0.27.0"
 near-sdk = "5.5.0"
 near-workspaces = "0.15.0"
 notify = "6.1.1"
-ouroboros = "0.18.3"
+ouroboros = "0.18.5"
 owo-colors = "3.5.0"
 parking_lot = "0.12.3"
 paste = "1.0.15"
@@ -98,7 +101,6 @@ prettyplease = "0.2.17"
 proc-macro2 = "1.0"
 quote = "1.0.37"
 rand = "0.8.5"
-rand_chacha = "0.3.1"
 reqwest = "0.12.2"
 ring = "0.17.8"
 rocksdb = "0.22.0"
@@ -146,21 +148,23 @@ x509-parser = "0.16.0"
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config" }
+calimero-context-primitives = { path = "./crates/context/primitives" }
 calimero-crypto = { path = "./crates/crypto" }
 meroctl = { path = "./crates/meroctl" }
 merod = { path = "./crates/merod" }
 calimero-network = { path = "./crates/network" }
+calimero-network-primitives = { path = "./crates/network/primitives" }
 calimero-node = { path = "./crates/node" }
-calimero-node-primitives = { path = "./crates/node-primitives" }
+calimero-node-primitives = { path = "./crates/node/primitives" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-runtime = { path = "./crates/runtime" }
 calimero-sdk = { path = "./crates/sdk" }
 calimero-sdk-near = { path = "./crates/sdk/libs/near" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }
 calimero-server = { path = "./crates/server" }
-calimero-server-primitives = { path = "./crates/server-primitives" }
+calimero-server-primitives = { path = "./crates/server/primitives" }
 calimero-storage = { path = "./crates/storage" }
-calimero-storage-macros = { path = "./crates/storage-macros" }
+calimero-storage-macros = { path = "./crates/storage/macros" }
 calimero-store = { path = "./crates/store" }
 calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
 calimero-blobstore = { path = "./crates/store/blobs" }
@@ -269,7 +273,7 @@ tests_outside_test_module = "deny"
 #unimplemented = "forbid" TODO: Enable as soon as possible, once first release is stable
 unwrap_in_result = "deny" # TODO: Change to "forbid" once all unwraps have been removed
 ## Deny
-clone_on_ref_ptr = "deny"
+# clone_on_ref_ptr = "deny"
 empty_enum_variants_with_brackets = "deny"
 empty_structs_with_brackets = "deny"
 error_impl_error = "deny"
