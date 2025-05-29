@@ -1,7 +1,7 @@
 pub use {borsh, serde, serde_json};
 
 pub mod env;
-pub use env::ext::{DraftProposal, External, ProposalAction, ProposalId};
+pub use env::ext::{AccountId, DraftProposal, External, ProposalAction, ProposalId};
 pub mod event;
 mod macros;
 mod returns;
