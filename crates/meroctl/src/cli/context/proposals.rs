@@ -23,7 +23,7 @@ use crate::output::Report;
 #[command(about = "Manage proposals within a context")]
 pub struct ProposalsCommand {
     #[command(subcommand)]
-    pub command: ProposalsSubcommand, // Remove Option<>
+    pub command: ProposalsSubcommand,
 }
 
 #[derive(Debug, Subcommand)]

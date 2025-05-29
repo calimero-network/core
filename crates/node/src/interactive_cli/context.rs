@@ -169,23 +169,32 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum ProposalsCommands {
-    #[command(about = "List proposals in a context", alias = "ls")]
+    #[command(about = "List all proposals in a context", alias = "ls")]
     List {
         /// Context to list proposals for
         #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
 
         /// Offset for pagination
-        #[clap(long, default_value_t)]
+        #[clap(
+            long,
+            help = "Starting position for pagination (skip this many proposals)",
+            default_value_t
+        )]
         offset: usize,
 
         /// Limit for pagination
-        #[clap(long, default_value = "10")]
+        #[clap(
+            long,
+            help = "Maximum number of proposals to display in results",
+            default_value = "20"
+        )]
         limit: usize,
     },
-    #[command(about = "View detailed information about a specific proposal")]
+    #[command(about = "View details of a specific proposal including approvers and actions")]
     View {
-        /// The proposal ID to view
+        /// Proposal ID to view
+        #[clap(help = "ID of the proposal to view")]
         proposal_id: Hash,
 
         /// Context the proposal belongs to
