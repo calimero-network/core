@@ -21,7 +21,7 @@ pub enum TokenType {
 /// JWT Claims structure
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    /// Subject (user ID - public key for root, client id for client key)
+    /// Subject (key ID)
     pub sub: String,
     /// Issuer
     pub iss: String,
@@ -33,7 +33,7 @@ pub struct Claims {
     pub iat: u64,
     /// JWT ID
     pub jti: String,
-    /// Permissions (context[<context-id>, <user-id>] format for client keys)
+    /// Permissions
     pub permissions: Vec<String>,
 }
 
@@ -88,7 +88,7 @@ impl TokenManager {
     /// Generate a JWT token
     async fn generate_token(
         &self,
-        user_id: String,
+        key_id: String,
         permissions: Vec<String>,
         expiry: Duration,
     ) -> Result<String, AuthError> {
@@ -96,7 +96,7 @@ impl TokenManager {
         let exp = now + expiry;
 
         let claims = Claims {
-            sub: user_id.clone(),
+            sub: key_id.clone(),
             iss: self.config.issuer.clone(),
             aud: self.config.issuer.clone(),
             exp: exp.timestamp() as u64,
@@ -123,12 +123,24 @@ impl TokenManager {
     /// Generate a token pair
     pub async fn generate_token_pair(
         &self,
-        user_id: String,
+        key_id: String,
         permissions: Vec<String>,
     ) -> Result<(String, String), AuthError> {
+        // Verify the key exists and is valid
+        let key = self
+            .key_manager
+            .get_key(&key_id)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
+
+        if !key.is_valid() {
+            return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
+        }
+
         let access_token = self
             .generate_token(
-                user_id.clone(),
+                key_id.clone(),
                 permissions.clone(),
                 Duration::seconds(self.config.access_token_expiry as i64),
             )
@@ -136,7 +148,7 @@ impl TokenManager {
 
         let refresh_token = self
             .generate_token(
-                user_id,
+                key_id,
                 permissions,
                 Duration::seconds(self.config.refresh_token_expiry as i64),
             )
@@ -196,6 +208,18 @@ impl TokenManager {
 
         let claims = self.verify_token(token).await?;
 
+        // Verify the key exists and is valid
+        let key = self
+            .key_manager
+            .get_key(&claims.sub)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
+
+        if !key.is_valid() {
+            return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
+        }
+
         Ok(AuthResponse {
             is_valid: true,
             key_id: claims.sub,
@@ -203,32 +227,32 @@ impl TokenManager {
         })
     }
 
-    /// Revoke a client's tokens
+    /// Revoke a key's tokens
     ///
     /// # Arguments
     ///
-    /// * `client_id` - The client ID to revoke
+    /// * `key_id` - The key ID to revoke
     ///
     /// # Returns
     ///
     /// * `Result<(), AuthError>` - Success or error
-    pub async fn revoke_client_tokens(&self, client_id: &str) -> Result<(), AuthError> {
-        let client_key = self
+    pub async fn revoke_client_tokens(&self, key_id: &str) -> Result<(), AuthError> {
+        // Get the key
+        let mut key = self
             .key_manager
-            .get_client_key(client_id)
+            .get_key(key_id)
             .await
             .map_err(|e| AuthError::StorageError(e.to_string()))?
-            .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
+            .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
-        // Revoke the client key
-        let mut client_key = client_key.clone();
-        client_key.revoke();
+        // Revoke the key
+        key.revoke();
 
-        // Save the updated client key using KeyManager
+        // Save the updated key
         self.key_manager
-            .set_client_key(client_id, &client_key)
+            .set_key(key_id, &key)
             .await
-            .map_err(|e| AuthError::StorageError(format!("Failed to update client key: {}", e)))?;
+            .map_err(|e| AuthError::StorageError(format!("Failed to update key: {}", e)))?;
 
         Ok(())
     }
@@ -246,41 +270,19 @@ impl TokenManager {
         &self,
         refresh_token: &str,
     ) -> Result<(String, String), AuthError> {
-        // Verify the refresh token and get claims
+        // Verify the refresh token to get the claims
         let claims = self.verify_token(refresh_token).await?;
 
-        // Check if this is a root key or client key based on ID format
-        // Client keys follow the pattern "client_<context_id>_<context_identity>"
-        let is_root_key = !claims.sub.starts_with("client_");
+        // Get and verify the key
+        let key = self
+            .key_manager
+            .get_key(&claims.sub)
+            .await
+            .map_err(|e| AuthError::StorageError(e.to_string()))?
+            .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
-        if is_root_key {
-            // For root key, verify it exists and is valid
-            let root_key = self
-                .key_manager
-                .get_root_key(&claims.sub)
-                .await
-                .map_err(|e| AuthError::StorageError(e.to_string()))?
-                .ok_or_else(|| AuthError::InvalidToken("Root key not found".to_string()))?;
-
-            if !root_key.is_valid() {
-                return Err(AuthError::InvalidToken(
-                    "Root key has been revoked".to_string(),
-                ));
-            }
-        } else {
-            // For client key, verify it exists and is valid
-            let client_key = self
-                .key_manager
-                .get_client_key(&claims.sub)
-                .await
-                .map_err(|e| AuthError::StorageError(e.to_string()))?
-                .ok_or_else(|| AuthError::InvalidToken("Client key not found".to_string()))?;
-
-            if !client_key.is_valid() {
-                return Err(AuthError::InvalidToken(
-                    "Client key has been revoked".to_string(),
-                ));
-            }
+        if !key.is_valid() {
+            return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
         }
 
         // Generate new token pair with the same permissions

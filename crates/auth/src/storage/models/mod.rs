@@ -1,10 +1,8 @@
-mod client_key;
+mod keys;
 mod permission;
-mod root_key;
 
-pub use client_key::ClientKey;
+pub use keys::{Key, KeyType, KeyMetadata};
 pub use permission::Permission;
-pub use root_key::RootKey;
 
 /// Storage prefixes for different types of data
 pub mod prefixes {

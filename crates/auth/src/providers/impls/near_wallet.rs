@@ -11,7 +11,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use chrono::Utc;
 use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
 use eyre::{eyre, Result as EyreResult};
-use near_crypto::{KeyType, PublicKey, Signature};
+use near_crypto::{KeyType as NearKeyType, PublicKey, Signature};
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::QueryRequest;
@@ -27,7 +27,7 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
-use crate::storage::models::RootKey;
+use crate::storage::models::{Key, KeyType};
 use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthError, AuthResponse};
 
@@ -176,7 +176,7 @@ impl NearWalletProvider {
         })?;
 
         // Create signature from bytes
-        let signature = Signature::from_parts(KeyType::ED25519, &signature_bytes)
+        let signature = Signature::from_parts(NearKeyType::ED25519, &signature_bytes)
             .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid signature: {}", e)))?;
 
         // Verify the signature against the hashed payload
@@ -287,11 +287,11 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<Option<(String, RootKey)>, AuthError>` - The root key ID and root key, if found
+    /// * `Result<Option<(String, Key)>, AuthError>` - The root key ID and root key, if found
     async fn get_root_key_for_account(
         &self,
         account_id: &str,
-    ) -> Result<Option<(String, RootKey)>, AuthError> {
+    ) -> Result<Option<(String, Key)>, AuthError> {
         // Create a hash of the account ID to use as a lookup key
         let mut hasher = Sha256::new();
         hasher.update(format!("near:{account_id}").as_bytes());
@@ -299,13 +299,14 @@ impl NearWalletProvider {
         let key_id = hex::encode(hash);
 
         // Look up the root key using KeyManager
-        match self.key_manager.get_root_key(&key_id).await {
-            Ok(Some(root_key)) => {
-                // Check if the key has been revoked
-                if root_key.revoked_at.is_some() {
-                    return Ok(None);
+        match self.key_manager.get_key(&key_id).await {
+            Ok(Some(key)) => {
+                // Check if the key is valid and is a root key
+                if key.is_valid() && key.is_root_key() {
+                    Ok(Some((key_id, key)))
+                } else {
+                    Ok(None)
                 }
-                Ok(Some((key_id, root_key)))
             }
             Ok(None) => Ok(None),
             Err(err) => {
@@ -327,12 +328,12 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<(String, RootKey), AuthError>` - The created root key ID and root key
+    /// * `Result<(String, Key), AuthError>` - The created root key ID and root key
     async fn create_root_key(
         &self,
         account_id: &str,
         public_key: &str,
-    ) -> Result<(String, RootKey), AuthError> {
+    ) -> Result<(String, Key), AuthError> {
         // Create a hash of the account ID to use as a key ID
         let mut hasher = Sha256::new();
         hasher.update(format!("near:{account_id}").as_bytes());
@@ -340,19 +341,15 @@ impl NearWalletProvider {
         let key_id = hex::encode(hash);
 
         // Create the root key
-        let root_key = RootKey {
-            public_key: public_key.to_string(),
-            auth_method: "near_wallet".to_string(),
-            permissions: vec!["admin".to_string()], // Default admin permission
-            created_at: Utc::now().timestamp() as u64,
-            expires_at: None,
-            last_used_at: Some(Utc::now().timestamp() as u64),
-            revoked_at: None,
-        };
+        let root_key = Key::new_root_key_with_permissions(
+            public_key.to_string(),
+            "near_wallet".to_string(),
+            vec!["admin".to_string()], // Default admin permission
+        );
 
         // Store the root key using KeyManager
         self.key_manager
-            .set_root_key(&key_id, &root_key)
+            .set_key(&key_id, &root_key)
             .await
             .map_err(|err| AuthError::StorageError(format!("Failed to store root key: {}", err)))?;
 
@@ -370,19 +367,19 @@ impl NearWalletProvider {
     /// * `Result<(), AuthError>` - Success or error
     async fn update_last_used(&self, key_id: &str) -> Result<(), AuthError> {
         // Get the current root key
-        let mut root_key = self
+        let mut key = self
             .key_manager
-            .get_root_key(key_id)
+            .get_key(key_id)
             .await
             .map_err(|err| AuthError::StorageError(format!("Failed to get root key: {}", err)))?
             .ok_or_else(|| AuthError::StorageError("Root key not found".to_string()))?;
 
         // Update the last used timestamp
-        root_key.update_last_used();
-
-        // Save the updated root key
+        // Note: We don't need to update last_used anymore since we removed that field
+        
+        // Save the updated key
         self.key_manager
-            .set_root_key(key_id, &root_key)
+            .set_key(key_id, &key)
             .await
             .map_err(|err| AuthError::StorageError(format!("Failed to update root key: {}", err)))
     }
