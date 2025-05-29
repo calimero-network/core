@@ -16,12 +16,14 @@ mod app;
 mod bootstrap;
 mod call;
 mod context;
+mod devnet;
 mod peers;
 mod proxy;
 
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
+use devnet::DevnetCommand;
 use peers::PeersCommand;
 use proxy::ProxyCommand;
 
@@ -61,6 +63,7 @@ pub enum SubCommands {
     Call(CallCommand),
     Bootstrap(BootstrapCommand),
     Peers(PeersCommand),
+    Devnet(DevnetCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -111,6 +114,7 @@ impl RootCommand {
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Bootstrap(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
+            SubCommands::Devnet(devnet) => devnet.run(&environment).await,
         };
 
         if let Err(err) = result {
