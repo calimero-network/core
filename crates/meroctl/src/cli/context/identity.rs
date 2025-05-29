@@ -175,7 +175,7 @@ async fn list_identities(
         &Client::new(),
         url,
         None::<()>,
-        connection.auth_key.as_ref().unwrap(),
+        connection.auth_key.as_ref(),
         RequestType::Get,
     )
     .await

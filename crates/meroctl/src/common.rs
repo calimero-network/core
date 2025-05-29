@@ -65,7 +65,7 @@ where
         RequestType::Delete => client.delete(url),
     };
 
-    // Add authentication if keypair is provided
+    // Only add authentication if keypair is provided
     if let Some(keypair) = keypair {
         let timestamp = Utc::now().timestamp().to_string();
         let signature = keypair.sign(timestamp.as_bytes())?;
@@ -74,6 +74,7 @@ where
             .header("X-Signature", bs58::encode(signature).into_string())
             .header("X-Timestamp", timestamp);
     }
+
     let response = builder.send().await?;
 
     if !response.status().is_success() {
@@ -169,14 +170,14 @@ pub(crate) async fn make_request<I, O>(
     client: &Client,
     url: Url,
     request: Option<I>,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     request_type: RequestType,
 ) -> EyreResult<()>
 where
     I: Serialize,
     O: DeserializeOwned + Report + Serialize,
 {
-    let response = do_request::<I, O>(client, url, request, Some(keypair), request_type).await?;
+    let response = do_request::<I, O>(client, url, request, keypair, request_type).await?;
     environment.output.write(&response);
     Ok(())
 }

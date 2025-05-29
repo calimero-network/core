@@ -76,12 +76,7 @@ impl UpdateCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_else(|| eyre!("No authentication key configured"))?;
-
-        let context_id = resolve_alias(&connection.api_url, auth_key, self.context, None)
+        let context_id = resolve_alias(&connection.api_url, connection.auth_key.as_ref().unwrap(), self.context, None)
             .await?
             .value()
             .cloned()
@@ -89,7 +84,7 @@ impl UpdateCommand {
 
         let executor_id = resolve_alias(
             &connection.api_url,
-            auth_key,
+            connection.auth_key.as_ref().unwrap(),
             self.executor,
             Some(context_id),
         )
@@ -112,7 +107,7 @@ impl UpdateCommand {
                     &connection.api_url,
                     context_id,
                     application_id,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     executor_id,
                 )
                 .await?;
@@ -131,7 +126,7 @@ impl UpdateCommand {
                     &connection.api_url,
                     path.clone(),
                     metadata.clone(),
-                    auth_key,
+                    connection.auth_key.as_ref(),
                 )
                 .await?;
 
@@ -141,7 +136,7 @@ impl UpdateCommand {
                     &connection.api_url,
                     context_id,
                     application_id,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     executor_id,
                 )
                 .await?;
@@ -154,7 +149,7 @@ impl UpdateCommand {
                         context_id,
                         path,
                         metadata,
-                        auth_key,
+                        connection.auth_key.as_ref(),
                         executor_id,
                     )
                     .await?;
@@ -174,7 +169,7 @@ async fn install_app(
     base_url: &Url,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
 ) -> EyreResult<ApplicationId> {
     let mut url = base_url.clone();
     url.set_path("admin-api/dev/install-dev-application");
@@ -182,7 +177,7 @@ async fn install_app(
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse =
-        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
+        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
 
@@ -195,7 +190,7 @@ async fn update_context_application(
     base_url: &Url,
     context_id: ContextId,
     application_id: ApplicationId,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     member_public_key: PublicKey,
 ) -> EyreResult<()> {
     let mut url = base_url.clone();
@@ -207,7 +202,7 @@ async fn update_context_application(
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
     let response: UpdateContextApplicationResponse =
-        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
+        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
 
@@ -221,7 +216,7 @@ async fn watch_app_and_update_context(
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     member_public_key: PublicKey,
 ) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);

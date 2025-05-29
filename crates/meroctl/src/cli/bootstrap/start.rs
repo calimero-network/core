@@ -317,7 +317,7 @@ impl StartBootstrapCommand {
             None,
             application_id,
             None,
-            auth_key,
+            Some(auth_key),
             protocol,
             None,
             None,

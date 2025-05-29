@@ -39,12 +39,9 @@ impl DeleteCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_eyre("No authentication key configured")?;
+    
 
-        let context_id = resolve_alias(&connection.api_url, auth_key, self.context, None)
+        let context_id = resolve_alias(&connection.api_url, connection.auth_key.as_ref().unwrap(), self.context, None)
             .await?
             .value()
             .cloned()
@@ -57,7 +54,7 @@ impl DeleteCommand {
             &Client::new(),
             url,
             None::<()>,
-            Some(auth_key),
+            connection.auth_key.as_ref(),
             RequestType::Delete,
         )
         .await?;

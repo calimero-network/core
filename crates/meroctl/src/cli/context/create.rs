@@ -101,10 +101,7 @@ impl CreateCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_else(|| eyre!("No authentication key configured"))?;
+        
 
         let client = Client::new();
         match self {
@@ -125,7 +122,7 @@ impl CreateCommand {
                     context_seed,
                     app_id,
                     params,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     protocol,
                     identity,
                     context,
@@ -150,7 +147,7 @@ impl CreateCommand {
                     connection,
                     path.clone(),
                     metadata.clone(),
-                    auth_key,
+                    connection.auth_key.as_ref(),
                 )
                 .await?;
 
@@ -161,7 +158,7 @@ impl CreateCommand {
                     context_seed,
                     application_id,
                     params,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     protocol,
                     identity,
                     context,
@@ -175,7 +172,7 @@ impl CreateCommand {
                     context_id,
                     path,
                     metadata,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     member_public_key,
                 )
                 .await?;
@@ -194,7 +191,7 @@ pub async fn create_context(
     context_seed: Option<Hash>,
     application_id: ApplicationId,
     params: Option<String>,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     protocol: String,
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
@@ -214,7 +211,7 @@ pub async fn create_context(
     );
 
     let response: CreateContextResponse =
-        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
+        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
 
@@ -236,7 +233,7 @@ pub async fn create_context(
             client,
             alias_url,
             Some(alias_request),
-            Some(keypair),
+            keypair,
             RequestType::Post,
         )
         .await?;
@@ -246,7 +243,7 @@ pub async fn create_context(
     if let Some(context_alias) = context {
         let res = create_alias(
             &connection.api_url,
-            keypair,
+            keypair.unwrap(),
             context_alias,
             None,
             response.data.context_id,
@@ -264,7 +261,7 @@ async fn watch_app_and_update_context(
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     member_public_key: PublicKey,
 ) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);
@@ -337,7 +334,7 @@ async fn update_context_application(
     connection: &ConnectionInfo,
     context_id: ContextId,
     application_id: ApplicationId,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
     member_public_key: PublicKey,
 ) -> EyreResult<()> {
     let mut url = connection.api_url.clone();
@@ -346,7 +343,7 @@ async fn update_context_application(
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
     let response: UpdateContextApplicationResponse =
-        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
+        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
 
@@ -357,13 +354,13 @@ async fn app_installed(
     connection: &ConnectionInfo,
     application_id: &ApplicationId,
     client: &Client,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
 ) -> eyre::Result<bool> {
     let mut url = connection.api_url.clone();
     url.set_path(&format!("admin-api/dev/applications/{application_id}"));
 
     let response: GetApplicationResponse =
-        do_request(client, url, None::<()>, Some(keypair), RequestType::Get).await?;
+        do_request(client, url, None::<()>, keypair, RequestType::Get).await?;
 
     Ok(response.data.application.is_some())
 }
@@ -374,7 +371,7 @@ async fn install_app(
     connection: &ConnectionInfo,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
-    keypair: &Keypair,
+    keypair: Option<&Keypair>,
 ) -> EyreResult<ApplicationId> {
     let mut url = connection.api_url.clone();
     url.set_path("admin-api/dev/install-dev-application");
@@ -382,7 +379,7 @@ async fn install_app(
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse =
-        do_request(client, url, Some(request), Some(keypair), RequestType::Post).await?;
+        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
 

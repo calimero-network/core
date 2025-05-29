@@ -55,10 +55,7 @@ impl JoinCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_eyre("No authentication key configured")?;
+
 
         let mut url = connection.api_url.clone();
         url.set_path("admin-api/dev/contexts/join");
@@ -70,7 +67,7 @@ impl JoinCommand {
                 self.private_key,
                 self.invitation_payload,
             )),
-            Some(auth_key),
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await?;
@@ -81,7 +78,7 @@ impl JoinCommand {
             if let Some(context) = self.context {
                 let context_id = payload.context_id;
                 let res =
-                    create_alias(&connection.api_url, auth_key, context, None, context_id).await?;
+                    create_alias(&connection.api_url, connection.auth_key.as_ref().unwrap(), context, None, context_id).await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {
@@ -90,7 +87,7 @@ impl JoinCommand {
 
                 let res = create_alias(
                     &connection.api_url,
-                    auth_key,
+                    connection.auth_key.as_ref().unwrap(),
                     identity,
                     Some(context_id),
                     public_key,

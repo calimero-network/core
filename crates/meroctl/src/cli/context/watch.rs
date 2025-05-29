@@ -65,13 +65,10 @@ impl WatchCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_else(|| eyre!("No authentication key configured"))?;
+    
 
         let resolve_response =
-            resolve_alias(&connection.api_url, auth_key, self.context, None).await?;
+            resolve_alias(&connection.api_url, connection.auth_key.as_ref().unwrap(), self.context, None).await?;
 
         let context_id = resolve_response
             .value()

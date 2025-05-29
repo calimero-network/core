@@ -9,7 +9,7 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{create_alias, do_request, resolve_alias, RequestType};
-use crate::output::Report;
+use crate::output::{InfoLine, Report};
 
 #[derive(Debug, Parser)]
 #[command(about = "Create invitation to a context")]
@@ -76,20 +76,20 @@ impl InviteCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_eyre("No authentication key configured")?;
-
-        let context_id = resolve_alias(&connection.api_url, auth_key, self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let context_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref().unwrap(),
+            self.context,
+            None,
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
         let inviter_id = resolve_alias(
             &connection.api_url,
-            auth_key,
+            connection.auth_key.as_ref().unwrap(),
             self.inviter,
             Some(context_id),
         )
@@ -109,7 +109,7 @@ impl InviteCommand {
                 inviter_id,
                 invitee_id: self.invitee_id,
             }),
-            Some(auth_key),
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await?;
@@ -121,15 +121,21 @@ impl InviteCommand {
             .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
 
         if let Some(name) = self.name {
-            let res = create_alias(
-                &connection.api_url,
-                auth_key,
-                name,
-                Some(context_id),
-                self.invitee_id,
-            )
-            .await?;
-            environment.output.write(&res);
+            if let Some(auth_key) = connection.auth_key.as_ref() {
+                let res = create_alias(
+                    &connection.api_url,
+                    auth_key,
+                    name,
+                    Some(context_id),
+                    self.invitee_id,
+                )
+                .await?;
+                environment.output.write(&res);
+            } else {
+                environment.output.write(&InfoLine(
+                    "Skipping alias creation - no authentication key provided",
+                ));
+            }
         }
 
         Ok(invitation_payload)

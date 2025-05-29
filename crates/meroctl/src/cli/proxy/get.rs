@@ -116,18 +116,18 @@ impl GetCommand {
             .as_ref()
             .ok_or_else(|| eyre!("No connection configured"))?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_else(|| eyre!("No authentication key configured"))?;
-
         let client = Client::new();
 
-        let context_id = resolve_alias(&connection.api_url, auth_key, self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let context_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref().unwrap(),
+            self.context,
+            None,
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
         match &self.method {
             GetRequest::NumProposalApprovals => {
@@ -135,7 +135,7 @@ impl GetCommand {
                     environment,
                     connection,
                     &client,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     context_id,
                 )
                 .await
@@ -145,22 +145,40 @@ impl GetCommand {
                     environment,
                     connection,
                     &client,
-                    auth_key,
+                    connection.auth_key.as_ref(),
                     context_id,
                 )
                 .await
             }
             GetRequest::Proposal => {
-                self.get_proposal(environment, connection, &client, auth_key, context_id)
-                    .await
+                self.get_proposal(
+                    environment,
+                    connection,
+                    &client,
+                    connection.auth_key.as_ref(),
+                    context_id,
+                )
+                .await
             }
             GetRequest::Proposals => {
-                self.get_proposals(environment, connection, &client, auth_key, context_id)
-                    .await
+                self.get_proposals(
+                    environment,
+                    connection,
+                    &client,
+                    connection.auth_key.as_ref(),
+                    context_id,
+                )
+                .await
             }
             GetRequest::ProposalApprovers => {
-                self.get_proposal_approvers(environment, connection, &client, auth_key, context_id)
-                    .await
+                self.get_proposal_approvers(
+                    environment,
+                    connection,
+                    &client,
+                    connection.auth_key.as_ref(),
+                    context_id,
+                )
+                .await
             }
         }
     }
@@ -170,7 +188,7 @@ impl GetCommand {
         environment: &Environment,
         connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
         context_id: ContextId,
     ) -> EyreResult<()> {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
@@ -195,7 +213,8 @@ impl GetCommand {
         environment: &Environment,
         connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
         let mut url = connection.api_url.clone();
@@ -219,7 +238,8 @@ impl GetCommand {
         environment: &Environment,
         connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
@@ -244,7 +264,8 @@ impl GetCommand {
         environment: &Environment,
         connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
         let mut url = connection.api_url.clone();
@@ -268,7 +289,8 @@ impl GetCommand {
         environment: &Environment,
         connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
