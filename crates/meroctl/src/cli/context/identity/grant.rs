@@ -26,7 +26,7 @@ pub struct GrantPermissionCommand {
     pub granter: Alias<PublicKey>,
 
     #[arg(help = "The grantee's public key")]
-    pub grantee: PublicKey,
+    pub grantee: Alias<PublicKey>,
 
     #[arg(help = "The capability to grant")]
     #[clap(value_enum)]
@@ -44,12 +44,17 @@ impl GrantPermissionCommand {
             .value()
             .cloned()
             .ok_or_eyre("unable to resolve context")?;
+        let grantee_id = resolve_alias(multiaddr, &config.identity, self.grantee, Some(context_id))
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve grantee identity")?;
 
         let endpoint = format!("admin-api/dev/contexts/{}/capabilities/grant", context_id);
         let url = multiaddr_to_url(multiaddr, &endpoint)?;
 
         let request: Vec<(PublicKey, ConfigCapability)> =
-            vec![(self.grantee, self.capability.into())];
+            vec![(grantee_id, self.capability.into())];
 
         make_request::<_, GrantPermissionResponse>(
             environment,

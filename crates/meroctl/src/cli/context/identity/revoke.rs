@@ -30,7 +30,7 @@ pub struct RevokePermissionCommand {
     pub revoker: Alias<PublicKey>,
 
     #[clap(help = "The member to revoke permissions from")]
-    pub revokee: PublicKey,
+    pub revokee: Alias<PublicKey>,
 
     #[clap(help = "The capability to revoke")]
     #[clap(value_enum)]
@@ -49,11 +49,17 @@ impl RevokePermissionCommand {
             .cloned()
             .ok_or_eyre("unable to resolve context")?;
 
+        let revokee_id = resolve_alias(multiaddr, &config.identity, self.revokee, Some(context_id))
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve grantee identity")?;
+
         let endpoint = format!("admin-api/dev/contexts/{}/capabilities/revoke", context_id);
         let url = multiaddr_to_url(multiaddr, &endpoint)?;
 
         let request: Vec<(PublicKey, ConfigCapability)> =
-            vec![(self.revokee, self.capability.into())];
+            vec![(revokee_id, self.capability.into())];
 
         let _ = make_request::<_, RevokePermissionResponse>(
             environment,

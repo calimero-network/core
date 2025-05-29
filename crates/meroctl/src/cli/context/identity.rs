@@ -21,9 +21,6 @@ mod generate;
 mod grant;
 mod revoke;
 
-use grant::GrantPermissionCommand;
-use revoke::RevokePermissionCommand;
-
 #[derive(Debug, Clone, ValueEnum, Copy)]
 #[clap(rename_all = "PascalCase")]
 pub enum Capability {
@@ -73,8 +70,8 @@ pub enum ContextIdentitySubcommand {
         #[arg(long, short, help = "Force overwrite if alias already exists")]
         force: bool,
     },
-    Grant(GrantPermissionCommand),
-    Revoke(RevokePermissionCommand),
+    Grant(grant::GrantPermissionCommand),
+    Revoke(revoke::RevokePermissionCommand),
 }
 
 impl ContextIdentityCommand {
