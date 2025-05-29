@@ -87,12 +87,12 @@ impl Driver {
 
         let mut report = TestRunReport::new();
         // Convert scenarios to protocol names
-        let requested_protocols: Vec<String> = self
-            .environment
-            .scenarios
-            .iter()
-            .map(|s| s.to_string().to_lowercase())
-            .collect();
+        // let requested_protocols: Vec<String> = self
+        //     .environment
+        //     .scenarios
+        //     .iter()
+        //     .map(|s| s.to_string().to_lowercase())
+        //     .collect();
         let mut initialized_protocols: HashMap<String, ProtocolSandboxEnvironment> = HashMap::new();
 
         // Run scenarios directory by directory
@@ -109,15 +109,13 @@ impl Driver {
 
                     if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str())
                     {
-                        // Skip if this isn't one of the requested scenarios/protocols
-                        if !self
-                            .environment
-                            .scenarios
-                            .iter()
-                            .any(|s| s.to_string().to_lowercase() == protocol_name)
-                        {
-                            continue;
-                        }
+                        let protocol_enum = match protocol_name {
+                            "ethereum" => Protocol::Ethereum,
+                            "near" => Protocol::Near,
+                            "stellar" => Protocol::Stellar,
+                            "icp" => Protocol::Icp,
+                            _ => continue,
+                        };
 
                         // Initialize protocol if not already done and only if it matches our scenario
                         if !initialized_protocols.contains_key(protocol_name) {
@@ -162,7 +160,7 @@ impl Driver {
                                 self.config.clone(),
                                 self.environment.merod_binary.clone(),
                                 self.environment.logs_dir.clone(),
-                                Some(&requested_protocols),
+                                // Some(&requested_protocols),
                                 self.environment.test_id,
                                 // self.environment.output_writer,
                             )
@@ -194,7 +192,7 @@ impl Driver {
                                 invitee_names,
                                 &meroctl,
                                 self.environment.output_writer,
-                                protocol_name,
+                                &protocol_enum,
                                 None,
                                 sandbox,
                             );
@@ -213,130 +211,15 @@ impl Driver {
 
                             network.stop().await?;
                         }
-        let mut initialized_protocols: HashMap<Protocol, ProtocolSandboxEnvironment> =
-            HashMap::new();
-
-        let protocols_dir = self.environment.input_dir.join("protocols");
-
-        for protocol in &self.environment.protocols {
-            if initialized_protocols.contains_key(protocol) {
-                continue;
-            }
-
-            for sandbox_cfg in &self.config.protocol_sandboxes {
-                let config_protocol = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(_) => Protocol::Stellar,
-                    ProtocolSandboxConfig::Near(_) => Protocol::Near,
-                    ProtocolSandboxConfig::Icp(_) => Protocol::Icp,
-                    ProtocolSandboxConfig::Ethereum(_) => Protocol::Ethereum,
-                };
-
-                if &config_protocol != protocol {
-                    continue;
-                }
-
-                let sandbox_env = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(config) => ProtocolSandboxEnvironment::Stellar(
-                        StellarSandboxEnvironment::init(config.clone())?,
-                    ),
-                    ProtocolSandboxConfig::Near(config) => ProtocolSandboxEnvironment::Near(
-                        NearSandboxEnvironment::init(config.clone()).await?,
-                    ),
-                    ProtocolSandboxConfig::Icp(config) => ProtocolSandboxEnvironment::Icp(
-                        IcpSandboxEnvironment::init(config.clone())?,
-                    ),
-                    ProtocolSandboxConfig::Ethereum(config) => {
-                        ProtocolSandboxEnvironment::Ethereum(EthereumSandboxEnvironment::init(
-                            config.clone(),
-                        )?)
                     }
-                };
-
-                initialized_protocols.insert(*protocol, sandbox_env);
-                break;
-            }
-        }
-
-        for protocol_name in &self.environment.protocols {
-            let protocol_path = protocols_dir.join(protocol_name.as_str());
-
-            if !protocol_path.is_dir() {
-                self.environment.output_writer.write_str(&format!(
-                    "No directory for protocol: {}",
-                    protocol_name.as_str()
-                ));
-                continue;
-            }
-
-            let Some(sandbox) = initialized_protocols.get(&protocol_name) else {
-                bail!(
-                    "Sandbox not initialized for protocol: {}",
-                    protocol_name.as_str()
-                );
-            };
-
-            let mero = self.setup_mero(&sandbox.clone()).await?;
-
-            let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
-                bail!(
-                    "Not enough nodes to run test for protocol {}",
-                    protocol_name.as_str()
-                )
-            };
-
-            self.environment
-                .output_writer
-                .write_str(&format!("Picked inviter: {inviter}"));
-            self.environment
-                .output_writer
-                .write_str(&format!("Picked invitees: {invitees:?}"));
-
-            let mut applications = read_dir(&protocol_path).await?;
-            while let Some(app) = applications.next_entry().await? {
-                if !app.file_type().await?.is_file() {
-                    continue;
                 }
-                let mut ctx = TestContext::new(
-                    inviter.clone(),
-                    invitees.clone(),
-                    &mero.ctl,
-                    self.environment.output_writer,
-                    protocol_name,
-                    None,
-                    sandbox,
-                );
-                let test_file_path = app.path();
-
-                let Some(app_name) = test_file_path.file_stem().and_then(|s| s.to_str()) else {
-                    bail!("No application name found");
-                };
-
-                if !test_file_path.is_file() {
-                    continue;
-                }
-                let test_content = read(&test_file_path).await?;
-                let scenario: TestScenario = from_slice(&test_content)?;
-
-                self.environment
-                    .output_writer
-                    .write_header(&format!("Running protocol {}", sandbox.name()), 1);
-
-                report = self
-                    .run_scenarios(&mut ctx, report, app_name, scenario, &test_file_path)
-                    .await?;
-
-                self.environment
-                    .output_writer
-                    .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
             }
-
-            self.stop_merods(&mero.ds).await;
         }
 
         report.result()
     }
 
-  async fn pick_inviter_node(
+    async fn pick_inviter_node(
         &self,
         nodes: &[Arc<Mutex<Merod>>],
     ) -> Option<(Arc<Mutex<Merod>>, Vec<Arc<Mutex<Merod>>>)> {
@@ -349,82 +232,82 @@ impl Driver {
         Some((inviter, nodes))
     }
 
-    async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
-        self.environment
-            .output_writer
-            .write_header("Starting merod nodes", 2);
+    // async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
+    //     self.environment
+    //         .output_writer
+    //         .write_header("Starting merod nodes", 2);
 
-        let mut merods = HashMap::new();
+    //     let mut merods = HashMap::new();
 
-        let swarm_host = self.config.network.swarm_host.to_string();
-        let mut swarm_port = self.config.network.start_swarm_port;
+    //     let swarm_host = self.config.network.swarm_host.to_string();
+    //     let mut swarm_port = self.config.network.start_swarm_port;
 
-        let server_host = self.config.network.server_host.to_string();
-        let mut server_port = self.config.network.start_server_port;
+    //     let server_host = self.config.network.server_host.to_string();
+    //     let mut server_port = self.config.network.start_server_port;
 
-        for i in 0..self.config.network.node_count {
-            let node_name = format!("node{}", i + 1);
-            if let HashMapEntry::Vacant(e) = merods.entry(node_name.clone()) {
-                let config_args = [format!(
-                    "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
-                    self.environment.test_id
-                )];
+    //     for i in 0..self.config.network.node_count {
+    //         let node_name = format!("node{}", i + 1);
+    //         if let HashMapEntry::Vacant(e) = merods.entry(node_name.clone()) {
+    //             let config_args = [format!(
+    //                 "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
+    //                 self.environment.test_id
+    //             )];
 
-                let node_args = sandbox.node_args(&node_name).await?;
-                let config_args = config_args.iter().chain(node_args.iter());
+    //             let node_args = sandbox.node_args(&node_name).await?;
+    //             let config_args = config_args.iter().chain(node_args.iter());
 
-                let merod = Merod::new(
-                    node_name,
-                    self.environment.nodes_dir.clone(),
-                    &self.environment.logs_dir,
-                    self.environment.merod_binary.clone(),
-                    self.environment.output_writer,
-                );
+    //             let merod = Merod::new(
+    //                 node_name,
+    //                 self.environment.nodes_dir.clone(),
+    //                 &self.environment.logs_dir,
+    //                 self.environment.merod_binary.clone(),
+    //                 self.environment.output_writer,
+    //             );
 
-                let swarm_port =
-                    PortBinding::next_available(self.config.network.swarm_host, &mut swarm_port)
-                        .await?;
+    //             let swarm_port =
+    //                 PortBinding::next_available(self.config.network.swarm_host, &mut swarm_port)
+    //                     .await?;
 
-                let server_port =
-                    PortBinding::next_available(self.config.network.server_host, &mut server_port)
-                        .await?;
+    //             let server_port =
+    //                 PortBinding::next_available(self.config.network.server_host, &mut server_port)
+    //                     .await?;
 
-                merod
-                    .init(
-                        &swarm_host,
-                        &server_host,
-                        swarm_port.port(),
-                        server_port.port(),
-                        config_args.map(String::as_str),
-                    )
-                    .await?;
+    //             merod
+    //                 .init(
+    //                     &swarm_host,
+    //                     &server_host,
+    //                     swarm_port.port(),
+    //                     server_port.port(),
+    //                     config_args.map(String::as_str),
+    //                 )
+    //                 .await?;
 
-                let swarm_addr = swarm_port.into_socket_addr();
-                let server_addr = server_port.into_socket_addr();
+    //             let swarm_addr = swarm_port.into_socket_addr();
+    //             let server_addr = server_port.into_socket_addr();
 
-                merod.run().await?;
+    //             merod.run().await?;
 
-                let merod = e.insert(merod);
+    //             let merod = e.insert(merod);
 
-                while let Err(_) = try_join!(
-                    TcpSocket::new_v4()?.connect(swarm_addr),
-                    TcpSocket::new_v4()?.connect(server_addr)
-                ) {
-                    if let Some(exit_code) = merod.try_wait().await? {
-                        bail!(
-                            "merod process exited with code {} before becoming ready",
-                            exit_code
-                        );
-                    }
-                    sleep(Duration::from_secs(1)).await;
-                }
-            }
-        }
+    //             while let Err(_) = try_join!(
+    //                 TcpSocket::new_v4()?.connect(swarm_addr),
+    //                 TcpSocket::new_v4()?.connect(server_addr)
+    //             ) {
+    //                 if let Some(exit_code) = merod.try_wait().await? {
+    //                     bail!(
+    //                         "merod process exited with code {} before becoming ready",
+    //                         exit_code
+    //                     );
+    //                 }
+    //                 sleep(Duration::from_secs(1)).await;
+    //             }
+    //         }
+    //     }
 
-        let mut nodes = nodes.to_vec();
-        let inviter = nodes.remove(0);
-        Some((inviter, nodes))
-    }
+    //     let mut nodes = nodes.to_vec();
+    //     let inviter = nodes.remove(0);
+    //     Some((inviter, nodes))
+    // }
 
     // async fn setup_mero(
     //     &self,

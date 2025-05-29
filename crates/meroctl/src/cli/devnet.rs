@@ -75,7 +75,7 @@ impl DevnetCommand {
 
         let test_id = rand::thread_rng().gen::<u32>();
 
-        let network = DevNetwork::new(config, binary, logs_dir, None, test_id)
+        let network = DevNetwork::new(config, binary, logs_dir, test_id)
             .await
             .context("Failed to initialize devnet")?;
 

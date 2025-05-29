@@ -22,43 +22,25 @@ impl DevNetwork {
         config: Config,
         binary_path: Utf8PathBuf,
         logs_dir: Utf8PathBuf,
-        requested_protocols: Option<&[String]>,
+        // requested_protocols: Option<&[String]>,
         test_id: u32,
         // output_writer: OutputWriter,
     ) -> Result<Self> {
         let mut nodes = Vec::with_capacity(config.network.node_count as usize);
         let mut protocol_envs = Vec::with_capacity(config.protocol_sandboxes.len());
 
-        // Initialize protocol environments - only those that are enabled
+        // Initialize protocol environments
         for protocol in config.protocol_sandboxes.iter() {
-            if let Some(requested) = requested_protocols {
-                if !requested.contains(&protocol.name().to_string()) {
-                    continue;
-                }
-            }
-
             let env = match protocol {
                 ProtocolSandboxConfig::Near(cfg) => ProtocolSandboxEnvironment::Near(
                     crate::protocol::near::NearSandboxEnvironment::init(cfg.clone()).await?,
                 ),
-                ProtocolSandboxConfig::Icp(cfg) => {
-                    match crate::protocol::icp::IcpSandboxEnvironment::init(cfg.clone()) {
-                        Ok(env) => ProtocolSandboxEnvironment::Icp(env),
-                        Err(e) => {
-                            eprintln!("Warning: Failed to initialize ICP sandbox: {}", e);
-                            continue;
-                        }
-                    }
-                }
-                ProtocolSandboxConfig::Stellar(cfg) => {
-                    match crate::protocol::stellar::StellarSandboxEnvironment::init(cfg.clone()) {
-                        Ok(env) => ProtocolSandboxEnvironment::Stellar(env),
-                        Err(e) => {
-                            eprintln!("Warning: Failed to initialize Stellar sandbox: {}", e);
-                            continue;
-                        }
-                    }
-                }
+                ProtocolSandboxConfig::Icp(cfg) => ProtocolSandboxEnvironment::Icp(
+                    crate::protocol::icp::IcpSandboxEnvironment::init(cfg.clone())?,
+                ),
+                ProtocolSandboxConfig::Stellar(cfg) => ProtocolSandboxEnvironment::Stellar(
+                    crate::protocol::stellar::StellarSandboxEnvironment::init(cfg.clone())?,
+                ),
                 ProtocolSandboxConfig::Ethereum(cfg) => ProtocolSandboxEnvironment::Ethereum(
                     crate::protocol::ethereum::EthereumSandboxEnvironment::init(cfg.clone())?,
                 ),

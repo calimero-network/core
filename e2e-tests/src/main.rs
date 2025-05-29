@@ -138,7 +138,7 @@ impl From<RootArgs> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            protocols: val.protocols,
+            protocols: val.protocols.clone(),
         }
     }
 }
