@@ -163,6 +163,7 @@ impl Driver {
                                 self.environment.merod_binary.clone(),
                                 self.environment.logs_dir.clone(),
                                 Some(&requested_protocols),
+                                self.environment.test_id,
                                 // self.environment.output_writer,
                             )
                             .await?;

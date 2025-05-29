@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use clap::{arg, Parser, Subcommand};
 use eyre::{Context, Result};
 use mero_devnet::{Config, DevNetwork};
+use rand::Rng;
 use tokio::sync::Mutex;
 
 use crate::cli::Environment;
@@ -72,7 +73,9 @@ impl DevnetCommand {
         let config: Config =
             serde_json::from_str(&config_content).context("Failed to parse config file")?;
 
-        let network = DevNetwork::new(config, binary, logs_dir, None)
+        let test_id = rand::thread_rng().gen::<u32>();
+
+        let network = DevNetwork::new(config, binary, logs_dir, None, test_id)
             .await
             .context("Failed to initialize devnet")?;
 

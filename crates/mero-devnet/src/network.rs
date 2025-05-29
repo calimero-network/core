@@ -23,6 +23,7 @@ impl DevNetwork {
         binary_path: Utf8PathBuf,
         logs_dir: Utf8PathBuf,
         requested_protocols: Option<&[String]>,
+        test_id: u32,
         // output_writer: OutputWriter,
     ) -> Result<Self> {
         let mut nodes = Vec::with_capacity(config.network.node_count as usize);
@@ -73,14 +74,25 @@ impl DevNetwork {
             // Ensure home directory exists
             create_dir_all(&home_dir).await?;
 
-            // Create basic config file if it doesn't exist
+            // Create complete config file if it doesn't exist
             let config_file = home_dir.join("config.json");
             if !config_file.exists() {
                 let default_config = serde_json::json!({
                     "network": {
                         "node_name": &node_name,
+                        "swarm_host": config.network.swarm_host.to_string(),
+                        "server_host": config.network.server_host.to_string(),
                         "swarm_port": config.network.start_swarm_port + i as u16,
-                        "server_port": config.network.start_server_port + i as u16
+                        "server_port": config.network.start_server_port + i as u16,
+                        "rendezvous_namespace": format!("calimero/e2e-tests/{}", test_id),
+                        "discovery": {
+                            "rendezvous": {
+                                "namespace": format!("calimero/e2e-tests/{}", test_id)
+                            }
+                        }
+                    },
+                    "storage": {
+                        "path": home_dir.join("data").to_string()
                     }
                 });
                 tokio::fs::write(&config_file, serde_json::to_string_pretty(&default_config)?)
