@@ -20,7 +20,6 @@ mod peers;
 mod proxy;
 
 use app::AppCommand;
-use calimero_version;
 use call::CallCommand;
 use context::ContextCommand;
 use peers::PeersCommand;

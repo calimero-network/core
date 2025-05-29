@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::LazyLock;
 
@@ -40,8 +41,6 @@ impl fmt::Display for CalimeroVersion<'_> {
         )
     }
 }
-
-// pub use CalimeroVersion;
 
 pub fn current_str() -> &'static str {
     CalimeroVersion::current_str()

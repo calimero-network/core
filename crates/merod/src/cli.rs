@@ -11,7 +11,6 @@ mod init;
 mod relay;
 mod run;
 
-use calimero_version;
 use config::ConfigCommand;
 use init::InitCommand;
 use relay::RelayCommand;
