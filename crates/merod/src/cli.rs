@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
+use crate::cli::run::RunCommand;
 use crate::defaults;
 
 mod config;
@@ -13,7 +14,6 @@ mod run;
 use config::ConfigCommand;
 use init::InitCommand;
 use relay::RelayCommand;
-use run::RunCommand;
 
 pub const EXAMPLES: &str = r"
   # Initialize node
@@ -31,7 +31,7 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = calimero_version::current_str(), about, long_about = None)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",
