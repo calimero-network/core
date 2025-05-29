@@ -356,6 +356,8 @@ impl NearWalletProvider {
         Ok((key_id, root_key))
     }
 
+
+    // TODO Decide what to do with this function
     /// Update the last used timestamp for a root key
     ///
     /// # Arguments
@@ -367,7 +369,7 @@ impl NearWalletProvider {
     /// * `Result<(), AuthError>` - Success or error
     async fn update_last_used(&self, key_id: &str) -> Result<(), AuthError> {
         // Get the current root key
-        let mut key = self
+        let key = self
             .key_manager
             .get_key(key_id)
             .await

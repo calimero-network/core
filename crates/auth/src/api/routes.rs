@@ -6,13 +6,13 @@ use axum::{Extension, Router};
 use tower_http::cors::CorsLayer;
 
 use crate::api::handlers::auth::{
-    callback_handler, challenge_handler, generate_client_key_handler, login_handler,
+    callback_handler, challenge_handler, login_handler,
     refresh_token_handler, revoke_token_handler, token_handler, validate_handler,
 };
-use crate::api::handlers::clients::{
-    create_client_handler, delete_client_handler, list_clients_handler,
+use crate::api::handlers::client_keys::{
+    delete_client_handler, list_clients_handler,
 };
-use crate::api::handlers::keys::{create_key_handler, delete_key_handler, list_keys_handler};
+use crate::api::handlers::root_keys::{create_key_handler, delete_key_handler, list_keys_handler};
 use crate::api::handlers::permissions::{
     get_key_permissions_handler, list_permissions_handler, update_key_permissions_handler,
 };
@@ -26,6 +26,8 @@ use crate::auth::middleware::forward_auth_middleware;
 // };
 use crate::config::AuthConfig;
 use crate::server::AppState;
+
+use super::handlers::client_keys::generate_client_key_handler;
 
 /// Creates and configures the router with all routes and middleware
 pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
@@ -87,7 +89,6 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/auth/keys/:key_id", delete(delete_key_handler))
         // Client key management
         .route("/auth/keys/:key_id/clients", get(list_clients_handler))
-        .route("/auth/keys/:key_id/clients", post(create_client_handler))
         .route(
             "/auth/keys/:key_id/clients/:client_id",
             delete(delete_client_handler),

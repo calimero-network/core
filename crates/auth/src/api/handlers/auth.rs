@@ -5,31 +5,27 @@ use axum::extract::{Extension, Query};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
-use chrono::Utc;
-use hex;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
-use crate::storage::ClientKey;
 use crate::AuthError;
 
 // Common response type used by all helper functions
 type ApiResponse = (StatusCode, Json<serde_json::Value>);
 
 // Helper functions for common response patterns
-fn unauthorized_response(message: &str) -> ApiResponse {
+pub fn unauthorized_response(message: &str) -> ApiResponse {
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({ "error": message })),
     )
 }
 
-fn internal_error_response(message: &str) -> ApiResponse {
+pub fn internal_error_response(message: &str) -> ApiResponse {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({ "error": message })),
@@ -43,7 +39,7 @@ fn bad_request_response(message: &str) -> ApiResponse {
     )
 }
 
-fn success_response<T: Serialize>(data: T) -> ApiResponse {
+pub fn success_response<T: Serialize>(data: T) -> ApiResponse {
     (StatusCode::OK, Json(serde_json::json!(data)))
 }
 
@@ -151,7 +147,7 @@ pub struct TokenResponse {
 
 impl TokenResponse {
     /// Create a new success token response
-    fn new(
+    pub fn new(
         access_token: String,
         refresh_token: String,
         client_id: String,
@@ -489,153 +485,6 @@ pub async fn revoke_token_handler(
                     "error": format!("Failed to revoke tokens: {}", err)
                 })),
             )
-        }
-    }
-}
-
-/// Request for generating a client key token after context selection
-#[derive(Debug, Deserialize, Validate)]
-pub struct GenerateClientKeyRequest {
-    /// Context ID selected by user
-    #[validate(length(min = 1, message = "Context ID is required"))]
-    pub context_id: String,
-
-    /// Context identity selected by user
-    #[validate(length(min = 1, message = "Context identity is required"))]
-    pub context_identity: String,
-
-    /// Additional permissions requested
-    pub permissions: Option<Vec<String>>,
-}
-
-/// Generate client key token handler
-///
-/// This endpoint generates a client key and its JWT tokens after context selection.
-/// It requires a valid Root JWT token in the Authorization header.
-///
-/// # Arguments
-///
-/// * `state` - The application state
-/// * `headers` - Request headers containing Root JWT token
-/// * `request` - The client key generation request
-///
-/// # Returns
-///
-/// * `impl IntoResponse` - The response with client key tokens
-pub async fn generate_client_key_handler(
-    state: Extension<Arc<AppState>>,
-    headers: HeaderMap,
-    ValidatedJson(request): ValidatedJson<GenerateClientKeyRequest>,
-) -> impl IntoResponse {
-    // Verify the Root JWT token from headers
-    let auth_response = match state
-        .0
-        .token_generator
-        .verify_token_from_headers(&headers)
-        .await
-    {
-        Ok(response) => response,
-        Err(err) => {
-            error!("Failed to verify token: {}", err);
-            return unauthorized_response("Invalid token");
-        }
-    };
-
-    // Check if the token is valid and has admin permissions
-    if !auth_response.is_valid {
-        return unauthorized_response("Invalid token");
-    }
-    if !auth_response.permissions.contains(&"admin".to_string()) {
-        return unauthorized_response("Token does not have admin permissions");
-    }
-
-    // The key_id in auth_response is the root key ID
-    let root_key_id = auth_response.key_id;
-
-    // Verify the root key exists and is not revoked
-    match state.0.key_manager.get_root_key(&root_key_id).await {
-        Ok(Some(key)) if !key.is_valid() => return unauthorized_response("Root key is revoked"),
-        Ok(None) => return unauthorized_response("Root key not found"),
-        Err(err) => {
-            error!("Failed to get root key: {}", err);
-            return internal_error_response("Failed to get root key");
-        }
-        Ok(Some(_)) => (), // Key exists and is valid
-    };
-
-    // Get current timestamp for unique client ID
-    let timestamp = Utc::now().timestamp();
-
-    // Create a client ID using SHA256 hash like we do for root keys
-    let mut hasher = Sha256::new();
-    hasher.update(
-        format!(
-            "client:{}:{}:{}",
-            request.context_id, request.context_identity, timestamp
-        )
-        .as_bytes(),
-    );
-    let hash = hasher.finalize();
-    let client_id = hex::encode(hash);
-
-    // Create context-specific permission
-    let mut permissions = vec![format!(
-        "context[{},{}]",
-        request.context_id, request.context_identity
-    )];
-
-    // Add any additional permissions requested
-    if let Some(additional_perms) = request.permissions {
-        permissions.extend(additional_perms);
-    }
-
-    // Create a descriptive name for the client key
-    let name = format!(
-        "Context Client - {} ({})",
-        request.context_id, request.context_identity
-    );
-
-    // Create the client key with context permission and any additional permissions
-    let client_key = ClientKey {
-        root_key_id: root_key_id.clone(),
-        name,
-        permissions: permissions.clone(),
-        created_at: Utc::now().timestamp() as u64,
-        expires_at: None,
-        revoked_at: None,
-        last_used_at: None,
-    };
-
-    // Store the client key
-    if let Err(err) = state
-        .0
-        .key_manager
-        .set_client_key(&client_id, &client_key)
-        .await
-    {
-        error!("Failed to store client key: {}", err);
-        return internal_error_response("Failed to store client key");
-    }
-
-    // Generate JWT tokens for the client key
-    match state
-        .0
-        .token_generator
-        .generate_token_pair(client_id.clone(), permissions)
-        .await
-    {
-        Ok((access_token, refresh_token)) => {
-            let response = TokenResponse::new(
-                access_token,
-                refresh_token,
-                client_id,
-                state.0.config.jwt.access_token_expiry,
-            );
-            success_response(response)
-        }
-        Err(err) => {
-            error!("Failed to generate client tokens: {}", err);
-            internal_error_response("Failed to generate client tokens")
         }
     }
 }

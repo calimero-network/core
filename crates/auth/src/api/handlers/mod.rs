@@ -1,12 +1,12 @@
 pub mod auth;
-pub mod clients;
-pub mod keys;
+pub mod client_keys;
+pub mod root_keys;
 pub mod permissions;
 
 use std::sync::Arc;
 
 use axum::extract::{Extension, Path};
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use rust_embed::RustEmbed;
@@ -18,6 +18,30 @@ use crate::server::AppState;
 #[derive(RustEmbed)]
 #[folder = "frontend/dist/"]
 struct AuthUiStaticFiles;
+
+/// Re-export authentication flow handlers
+pub use auth::{
+    challenge_handler,   // Step 4-5: Generate challenge for signing
+    login_handler,      // Step 7-8: Verify signature and create root key
+    token_handler,      // Step 12-13: Create client key and JWT
+    validate_handler,   // Forward auth validation
+    refresh_token_handler,
+    revoke_token_handler,
+    callback_handler,   // OAuth callback handling
+};
+
+/// Re-export key management handlers
+pub use root_keys::{
+    create_key_handler,
+    list_keys_handler,
+    delete_key_handler,
+};
+
+/// Re-export client key management handlers
+pub use client_keys::{
+    list_clients_handler,
+    delete_client_handler,
+};
 
 /// Identity handler
 ///
@@ -35,7 +59,7 @@ pub async fn identity_handler(state: Extension<Arc<AppState>>) -> impl IntoRespo
         "service": "calimero-auth",
         "version": env!("CARGO_PKG_VERSION"),
         "authentication_mode": "forward",
-        "providers": state.auth_service.providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
+        "providers": state.0.auth_service.providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
     });
 
     (StatusCode::OK, Json(response))
@@ -53,7 +77,7 @@ pub async fn identity_handler(state: Extension<Arc<AppState>>) -> impl IntoRespo
 ///
 /// * `impl IntoResponse` - The response
 pub async fn metrics_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
-    let metrics = state.metrics.get_metrics().await;
+    let metrics = state.0.metrics.get_metrics().await;
 
     (StatusCode::OK, Json(metrics))
 }
@@ -71,7 +95,7 @@ pub async fn metrics_handler(state: Extension<Arc<AppState>>) -> impl IntoRespon
 /// * `impl IntoResponse` - The response
 pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     // Check the connection to the storage backend
-    let storage_ok = state.storage.exists("health-check").await.is_ok();
+    let storage_ok = state.0.storage.exists("health-check").await.is_ok();
 
     let status = if storage_ok {
         StatusCode::OK
@@ -82,7 +106,7 @@ pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoRespons
     let response = json!({
         "status": if status == StatusCode::OK { "healthy" } else { "unhealthy" },
         "storage": storage_ok,
-        "uptime_seconds": state.metrics.get_uptime_seconds(),
+        "uptime_seconds": state.0.metrics.get_uptime_seconds(),
     });
 
     (status, Json(response))
@@ -101,6 +125,7 @@ pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoRespons
 /// * `impl IntoResponse` - The response
 pub async fn providers_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     let providers = state
+        .0
         .auth_service
         .providers()
         .iter()
