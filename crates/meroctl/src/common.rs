@@ -269,14 +269,8 @@ where
         value: value.create(),
     };
 
-    let response: CreateAliasResponse = do_request(
-        &Client::new(),
-        url,
-        Some(body),
-        keypair,
-        RequestType::Post,
-    )
-    .await?;
+    let response: CreateAliasResponse =
+        do_request(&Client::new(), url, Some(body), keypair, RequestType::Post).await?;
 
     Ok(response)
 }
@@ -309,14 +303,8 @@ where
     let mut url = base_url.clone();
     url.set_path(&format!("{prefix}/{kind}/{scope}{alias}"));
 
-    let response: DeleteAliasResponse = do_request(
-        &Client::new(),
-        url,
-        None::<()>,
-        keypair,
-        RequestType::Post,
-    )
-    .await?;
+    let response: DeleteAliasResponse =
+        do_request(&Client::new(), url, None::<()>, keypair, RequestType::Post).await?;
 
     Ok(response)
 }
@@ -340,14 +328,7 @@ where
     let mut url = base_url.clone();
     url.set_path(&format!("{prefix}/{kind}/{scope}{alias}"));
 
-    let response = do_request(
-        &Client::new(),
-        url,
-        None::<()>,
-        keypair,
-        RequestType::Post,
-    )
-    .await?;
+    let response = do_request(&Client::new(), url, None::<()>, keypair, RequestType::Post).await?;
 
     Ok(response)
 }

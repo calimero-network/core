@@ -55,8 +55,6 @@ impl ContextIdentityCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-   
-
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {
                 list_identities(environment, connection, Some(context), owned).await
@@ -69,8 +67,13 @@ impl ContextIdentityCommand {
                 context,
                 force,
             } => {
-                let resolve_response =
-                    resolve_alias(&connection.api_url, connection.auth_key.as_ref(), context, None).await?;
+                let resolve_response = resolve_alias(
+                    &connection.api_url,
+                    connection.auth_key.as_ref(),
+                    context,
+                    None,
+                )
+                .await?;
 
                 let context_id = resolve_response
                     .value()
