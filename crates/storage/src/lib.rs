@@ -3,6 +3,7 @@
 //! This module provides the primary interface for interacting with the storage
 //! system, as a layer on top of the underlying database store.
 //!
+//! #[cfg(test)]
 
 #![forbid(unreachable_pub, unsafe_op_in_unsafe_fn)]
 #![deny(
@@ -76,6 +77,7 @@ pub mod exports {
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
+    #[allow(missing_docs)]
     pub mod common;
 }
 
