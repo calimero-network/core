@@ -1,6 +1,9 @@
+use std::io;
 use std::sync::Arc;
 
-use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
+use calimero_primitives::application::{
+    Application, ApplicationBlob, ApplicationId, ApplicationSource,
+};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
@@ -10,7 +13,6 @@ use futures_util::TryStreamExt;
 use reqwest::Url;
 use tokio::fs::File;
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tokio_util::io::StreamReader;
 
 use super::NodeClient;
 
@@ -29,7 +31,10 @@ impl NodeClient {
 
         let application = Application::new(
             *application_id,
-            application.blob.blob_id(),
+            ApplicationBlob::new(
+                application.blob.blob_id(),
+                application.precompiled_blob.blob_id(),
+            ),
             application.size,
             application.source.parse()?,
             application.metadata.into_vec(),
@@ -84,7 +89,15 @@ impl NodeClient {
             key::BlobMeta::new(BlobId::from([0; 32])),
         );
 
-        let application_id = ApplicationId::from(*Hash::hash_borsh(&application)?);
+        let application_id = {
+            let components = (
+                application.blob,
+                application.size,
+                &application.source,
+                &application.metadata,
+            );
+            ApplicationId::from(*Hash::hash_borsh(&components)?)
+        };
 
         let mut handle = self.datastore.handle();
 
@@ -131,7 +144,10 @@ impl NodeClient {
 
         let (blob_id, size) = self
             .add_blob(
-                StreamReader::new(response.bytes_stream().map_err(std::io::Error::other)).compat(),
+                response
+                    .bytes_stream()
+                    .map_err(io::Error::other)
+                    .into_async_read(),
                 expected_size,
                 expected_hash,
             )
@@ -161,7 +177,7 @@ impl NodeClient {
             let (id, app) = (id?, app?);
             applications.push(Application::new(
                 id.application_id(),
-                app.blob.blob_id(),
+                ApplicationBlob::new(app.blob.blob_id(), app.precompiled_blob.blob_id()),
                 app.size,
                 app.source.parse()?,
                 app.metadata.to_vec(),

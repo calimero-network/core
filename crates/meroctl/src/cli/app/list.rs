@@ -19,7 +19,7 @@ impl Report for ListApplicationsResponse {
             Cell::new("Application ID").fg(Color::Blue),
             Cell::new("Source").fg(Color::Blue),
             Cell::new("Size").fg(Color::Blue),
-            Cell::new("Blob ID").fg(Color::Blue),
+            Cell::new("Bytecode Blob ID").fg(Color::Blue),
         ]);
 
         for app in &self.data.apps {
@@ -27,7 +27,7 @@ impl Report for ListApplicationsResponse {
                 app.id.to_string(),
                 app.source.to_string(),
                 format!("{} bytes", app.size),
-                app.blob.to_string(),
+                app.blob.bytecode.to_string(),
             ]);
         }
         println!("{table}");

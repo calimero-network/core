@@ -9,15 +9,14 @@ use calimero_context_primitives::messages::execute::{
 use calimero_context_primitives::{ContextAtomic, ContextAtomicKey};
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
-use calimero_store::{key, types, Store};
+use calimero_store::{key, types};
 use calimero_utils_actix::global_runtime;
 use either::Either;
 use eyre::{bail, WrapErr};
@@ -26,56 +25,11 @@ use memchr::memmem;
 use tokio::sync::OwnedMutexGuard;
 use tracing::{debug, error};
 
-use crate::ContextManager;
+use crate::{get_module, ContextManager};
 
 pub mod storage;
 
 use storage::ContextStorage;
-
-pub async fn get_or_compile_module(
-    node_client: &NodeClient,
-    engine: &calimero_runtime::Engine,
-    application_id: &calimero_primitives::application::ApplicationId,
-    compiled_blob_id: &BlobId,
-    should_cache: bool,
-) -> eyre::Result<calimero_runtime::Module> {
-    if *compiled_blob_id != BlobId::from([0; 32]) {
-        if let Some(precompiled_bytes) = node_client.get_blob_bytes(compiled_blob_id).await? {
-            match unsafe { engine.from_precompiled(&precompiled_bytes) } {
-                Ok(module) => {
-                    debug!("Using cached compiled module");
-                    return Ok(module);
-                }
-                Err(_) => {
-                    debug!("Cached compiled module is incompatible, compiling fresh");
-                }
-            }
-        }
-    } else {
-        debug!("No cached compiled module found, compiling");
-    }
-
-    let Some(blob) = node_client.get_application_bytes(application_id).await? else {
-        bail!("Application not found or points to dangling blob");
-    };
-
-    let module = engine.compile(&blob)?;
-
-    if should_cache {
-        if let Ok(serialized) = module.to_bytes() {
-            if let Ok((blob_id, _size)) = node_client
-                .add_blob(serialized.as_ref(), Some(serialized.len() as u64), None)
-                .await
-            {
-                if let Err(err) = node_client.update_precompiled_blob(application_id, &blob_id) {
-                    debug!("Failed to update precompiled blob: {}", err);
-                }
-            }
-        }
-    }
-
-    Ok(module)
-}
 
 impl Handler<ExecuteRequest> for ContextManager {
     type Result = ActorResponse<Self, <ExecuteRequest as Message>::Result>;
@@ -179,35 +133,96 @@ impl Handler<ExecuteRequest> for ContextManager {
         }
         .into_actor(self);
 
-        let execute_task = guard_task.then(move |guard, act, _ctx| {
-            let context = act
+        let prepare_task = guard_task.then(move |guard, act, _ctx| {
+            let context_result = act
                 .get_or_fetch_context(&context_id)
                 .map(|c| c.map(|c| (c.meta, c.bytecode, c.compiled)));
 
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
-            let engine = act.runtime_engine.clone();
+            let runtime_engine = act.runtime_engine.clone();
+            let modules = act.modules.clone();
 
             async move {
-                let Some((mut context, _bytecode, compiled_blob_id)) = context? else {
+                let Some((context, bytecode, _compiled_blob_id)) = context_result? else {
                     bail!("context '{context_id}' deleted before we could execute");
                 };
 
+                let module = get_module(&node_client, &runtime_engine, &modules, &bytecode).await?;
+
+                Ok((guard, context, module, datastore))
+            }
+            .map_err(|err| {
+                error!(?err, "failed to prepare execution");
+                err
+            })
+            .into_actor(act)
+        });
+
+        let execute_task = prepare_task.then(move |prepared_result, act, _ctx| {
+            let node_client = act.node_client.clone();
+            async move {
+                let (guard, mut context, module, datastore) = prepared_result?;
+
                 let old_root_hash = context.root_hash;
 
-                let outcome = internal_execute(
-                    datastore,
-                    &node_client,
-                    engine,
-                    &guard,
-                    &mut context,
-                    executor,
-                    compiled_blob_id,
-                    method.into(),
-                    payload.into(),
-                    is_state_op,
-                )
-                .await?;
+                let method_clone = method.clone();
+                let (outcome, storage) = execute(&guard, executor, module, method.into(), payload.into(), ContextStorage::from(datastore, context.id)).await?;
+
+                if outcome.returns.is_ok() {
+                    if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
+                        if is_state_op {
+                            debug!(
+                                %context_id,
+                                %method_clone,
+                                old_root_hash = ?old_root_hash,
+                                new_root_hash = ?outcome.root_hash.unwrap(),
+                                "State operation completed - state change without artifact is expected for internal operations"
+                            );
+                        } else {
+                            eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+                        }
+                    }
+
+                    if !storage.is_empty() {
+                        let store = storage.commit()?;
+
+                        if let Some(root_hash) = outcome.root_hash {
+                            context.root_hash = root_hash.into();
+
+                            let mut handle = store.handle();
+
+                            handle.put(
+                                &key::ContextMeta::new(context.id),
+                                &types::ContextMeta::new(
+                                    key::ApplicationMeta::new(context.application_id),
+                                    *context.root_hash,
+                                ),
+                            )?;
+
+                            node_client.send_event(NodeEvent::Context(ContextEvent {
+                                context_id: context.id,
+                                payload: ContextEventPayload::StateMutation(StateMutationPayload {
+                                    new_root: context.root_hash,
+                                }),
+                            }))?;
+                        }
+                    }
+
+                    node_client.send_event(NodeEvent::Context(ContextEvent {
+                        context_id: context.id,
+                        payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
+                            events: outcome
+                                .events
+                                .iter()
+                                .map(|e| ExecutionEvent {
+                                    kind: e.kind.clone(),
+                                    data: e.data.clone(),
+                                })
+                                .collect(),
+                        }),
+                    }))?;
+                }
 
                 debug!(
                     %context_id,
@@ -225,7 +240,6 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
             .map_err(|err| {
                 error!(?err, "failed to execute request");
-
                 err
             })
             .into_actor(act)
@@ -309,92 +323,6 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         ActorResponse::r#async(task)
     }
-}
-
-async fn internal_execute(
-    datastore: Store,
-    node_client: &NodeClient,
-    engine: calimero_runtime::Engine,
-    guard: &OwnedMutexGuard<ContextId>,
-    context: &mut Context,
-    executor: PublicKey,
-    compiled_blob_id: BlobId,
-    method: Cow<'static, str>,
-    input: Cow<'static, [u8]>,
-    is_state_op: bool,
-) -> eyre::Result<Outcome> {
-    let module = get_or_compile_module(
-        node_client,
-        &engine,
-        &context.application_id,
-        &compiled_blob_id,
-        true,
-    )
-    .await?;
-
-    let storage = ContextStorage::from(datastore, context.id);
-
-    let mut storage_mut = storage;
-
-    let outcome = module.run(**guard, executor, &method, &input, &mut storage_mut)?;
-
-    let (outcome, storage) = (outcome, storage_mut);
-
-    if outcome.returns.is_err() {
-        return Ok(outcome);
-    }
-
-    'fine: {
-        if outcome.root_hash.is_some() && outcome.artifact.is_empty() {
-            if is_state_op {
-                // fixme! temp mitigation for a potential state inconsistency
-                break 'fine;
-            }
-
-            eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
-        }
-    }
-
-    if !storage.is_empty() {
-        let store = storage.commit()?;
-
-        if let Some(root_hash) = outcome.root_hash {
-            context.root_hash = root_hash.into();
-
-            let mut handle = store.handle();
-
-            handle.put(
-                &key::ContextMeta::new(context.id),
-                &types::ContextMeta::new(
-                    key::ApplicationMeta::new(context.application_id),
-                    *context.root_hash,
-                ),
-            )?;
-
-            node_client.send_event(NodeEvent::Context(ContextEvent {
-                context_id: context.id,
-                payload: ContextEventPayload::StateMutation(StateMutationPayload {
-                    new_root: context.root_hash,
-                }),
-            }))?;
-        }
-    }
-
-    node_client.send_event(NodeEvent::Context(ContextEvent {
-        context_id: context.id,
-        payload: ContextEventPayload::ExecutionEvent(ExecutionEventPayload {
-            events: outcome
-                .events
-                .iter()
-                .map(|e| ExecutionEvent {
-                    kind: e.kind.clone(),
-                    data: e.data.clone(),
-                })
-                .collect(),
-        }),
-    }))?;
-
-    Ok(outcome)
 }
 
 pub async fn execute(

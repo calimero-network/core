@@ -10,7 +10,7 @@ use calimero_context_primitives::messages::create_context::{
     CreateContextRequest, CreateContextResponse,
 };
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::{Application, ApplicationId};
+use calimero_primitives::application::{Application, ApplicationBlob, ApplicationId};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
@@ -21,9 +21,8 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use super::execute::get_or_compile_module;
 use super::execute::storage::ContextStorage;
-use crate::{ContextManager, ContextMeta};
+use crate::{get_module, ContextManager, ContextMeta};
 
 impl Handler<CreateContextRequest> for ContextManager {
     type Result = ActorResponse<Self, <CreateContextRequest as Message>::Result>;
@@ -65,6 +64,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             self.node_client.clone(),
             self.context_client.clone(),
             self.runtime_engine.clone(),
+            self.modules.clone(),
             prepared.external_config,
             prepared.context.meta,
             prepared.context_secret,
@@ -190,7 +190,7 @@ impl Prepared<'_> {
             bail!("application not found");
         };
 
-        if !node_client.has_blob(&application.blob)? {
+        if !node_client.has_blob(&application.blob.bytecode)? {
             bail!("application points to dangling blob");
         }
 
@@ -200,8 +200,8 @@ impl Prepared<'_> {
 
         let context = entry.insert(ContextMeta {
             meta,
-            bytecode: application.blob,
-            compiled: BlobId::from([0; 32]),
+            bytecode: application.blob.bytecode,
+            compiled: application.blob.compiled,
             lock: Arc::new(Mutex::new(context_id)),
         });
 
@@ -222,6 +222,7 @@ async fn create_context(
     node_client: NodeClient,
     context_client: ContextClient,
     engine: calimero_runtime::Engine,
+    modules: BTreeMap<BlobId, ApplicationBlob>,
     external_config: ContextConfigParams<'_>,
     mut context: Context,
     context_secret: PrivateKey,
@@ -232,24 +233,9 @@ async fn create_context(
     init_params: Vec<u8>,
     _guard: OwnedMutexGuard<ContextId>,
 ) -> eyre::Result<Hash> {
-    let handle = datastore.handle();
-    let app_key = key::ApplicationMeta::new(application.id);
-    let compiled_blob_id = if let Some(app_meta) = handle.get(&app_key)? {
-        app_meta.precompiled_blob.blob_id()
-    } else {
-        BlobId::from([0; 32])
-    };
-
     let mut storage = ContextStorage::from(datastore, context.id);
 
-    let module = get_or_compile_module(
-        &node_client,
-        &engine,
-        &application.id,
-        &compiled_blob_id,
-        false,
-    )
-    .await?;
+    let module = get_module(&node_client, &engine, &modules, &application.blob.bytecode).await?;
 
     let outcome = module.run(context.id, identity, "init", &init_params, &mut storage)?;
 
