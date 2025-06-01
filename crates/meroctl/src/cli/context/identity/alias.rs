@@ -90,15 +90,11 @@ pub enum ContextIdentityAliasSubcommand {
         context: Alias<ContextId>,
     },
 
-    #[command(about = "List all the aliases under the context")]
+    #[command(about = "List all the aliases under the context",alias='ls')]
     List {
         #[arg(help = "The context whose aliases need to be listed")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
-
-        #[arg(help = "If all the aliases for all the contexts need to listed")]
-        #[arg(long, default_value = "false", conflicts_with = "context")]
-        all: bool,
     },
 }
 

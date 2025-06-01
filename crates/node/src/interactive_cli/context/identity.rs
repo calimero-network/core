@@ -90,7 +90,8 @@ enum ContextIdentityAliasSubcommands {
     #[command(about = "List context identity aliases", alias = "ls")]
     List {
         /// The context whose aliases we're listing
-        context: Option<Alias<ContextId>>,
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
 }
 
