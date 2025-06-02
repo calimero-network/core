@@ -1,19 +1,11 @@
-use axum::http::Request;
 use axum::body::Body;
+use axum::http::Request;
 use lazy_static::lazy_static;
 use regex::Regex;
 
 use super::types::{
-    Permission,
-    HttpMethod,
-    ResourceScope,
-    UserScope,
-    ApplicationPermission,
-    BlobPermission,
-    ContextPermission,
-    KeyPermission,
-    AddBlobPermission,
-    AliasPermission,
+    AddBlobPermission, AliasPermission, ApplicationPermission, BlobPermission, ContextPermission,
+    HttpMethod, KeyPermission, Permission, ResourceScope, UserScope,
 };
 
 /// Permission validator for checking request permissions
@@ -222,7 +214,7 @@ impl PermissionValidator {
                         .filter_map(|i| captures.get(i))
                         .map(|m| m.as_str())
                         .collect();
-                    
+
                     // Get permissions from the handler
                     let perms = (mapping.handler)(&components, method.clone());
                     required_permissions.extend(perms);
@@ -236,13 +228,21 @@ impl PermissionValidator {
             if !components.is_empty() {
                 match components[0] {
                     "applications" => {
-                        self.add_application_permissions(&components, &method, &mut required_permissions);
+                        self.add_application_permissions(
+                            &components,
+                            &method,
+                            &mut required_permissions,
+                        );
                     }
                     "blobs" => {
                         self.add_blob_permissions(&components, &method, &mut required_permissions);
                     }
                     "contexts" => {
-                        self.add_context_permissions(&components, &method, &mut required_permissions);
+                        self.add_context_permissions(
+                            &components,
+                            &method,
+                            &mut required_permissions,
+                        );
                     }
                     "keys" => {
                         self.add_key_permissions(&components, &method, &mut required_permissions);
@@ -256,7 +256,11 @@ impl PermissionValidator {
     }
 
     /// Validate if user permissions satisfy required permissions
-    pub fn validate_permissions(&self, user_permissions: &[String], required: &[Permission]) -> bool {
+    pub fn validate_permissions(
+        &self,
+        user_permissions: &[String],
+        required: &[Permission],
+    ) -> bool {
         // Convert string permissions to Permission enums
         let user_perms: Vec<Permission> = user_permissions
             .iter()
@@ -264,9 +268,9 @@ impl PermissionValidator {
             .collect();
 
         // Check if any user permission satisfies each required permission
-        required.iter().all(|req| {
-            user_perms.iter().any(|user_perm| user_perm.satisfies(req))
-        })
+        required
+            .iter()
+            .all(|req| user_perms.iter().any(|user_perm| user_perm.satisfies(req)))
     }
 
     // Helper methods to add specific types of permissions
@@ -280,19 +284,23 @@ impl PermissionValidator {
 
         match (method, components.get(1)) {
             (HttpMethod::GET, None) => {
-                permissions.push(Permission::Application(ApplicationPermission::List(ResourceScope::Global)));
+                permissions.push(Permission::Application(ApplicationPermission::List(
+                    ResourceScope::Global,
+                )));
             }
             (HttpMethod::GET, Some(&id)) => {
                 permissions.push(Permission::Application(ApplicationPermission::List(
-                    ResourceScope::Specific(vec![id.to_string()])
+                    ResourceScope::Specific(vec![id.to_string()]),
                 )));
             }
             (HttpMethod::POST, _) => {
-                permissions.push(Permission::Application(ApplicationPermission::Install(ResourceScope::Global)));
+                permissions.push(Permission::Application(ApplicationPermission::Install(
+                    ResourceScope::Global,
+                )));
             }
             (HttpMethod::DELETE, Some(&id)) => {
                 permissions.push(Permission::Application(ApplicationPermission::Uninstall(
-                    ResourceScope::Specific(vec![id.to_string()])
+                    ResourceScope::Specific(vec![id.to_string()]),
                 )));
             }
             _ => {}
@@ -305,21 +313,27 @@ impl PermissionValidator {
         method: &HttpMethod,
         permissions: &mut Vec<Permission>,
     ) {
-        use super::types::{BlobPermission, AddBlobPermission, ResourceScope};
+        use super::types::{AddBlobPermission, BlobPermission, ResourceScope};
 
         match (method, components.get(1)) {
             (HttpMethod::POST, Some(&"stream")) => {
-                permissions.push(Permission::Blob(BlobPermission::Add(AddBlobPermission::Stream)));
+                permissions.push(Permission::Blob(BlobPermission::Add(
+                    AddBlobPermission::Stream,
+                )));
             }
             (HttpMethod::POST, Some(&"file")) => {
-                permissions.push(Permission::Blob(BlobPermission::Add(AddBlobPermission::File)));
+                permissions.push(Permission::Blob(BlobPermission::Add(
+                    AddBlobPermission::File,
+                )));
             }
             (HttpMethod::POST, Some(&"url")) => {
-                permissions.push(Permission::Blob(BlobPermission::Add(AddBlobPermission::Url)));
+                permissions.push(Permission::Blob(BlobPermission::Add(
+                    AddBlobPermission::Url,
+                )));
             }
             (HttpMethod::DELETE, Some(&id)) => {
                 permissions.push(Permission::Blob(BlobPermission::Remove(
-                    ResourceScope::Specific(vec![id.to_string()])
+                    ResourceScope::Specific(vec![id.to_string()]),
                 )));
             }
             _ => {}
@@ -336,38 +350,42 @@ impl PermissionValidator {
 
         match (method, components.get(1), components.get(2)) {
             (HttpMethod::GET, None, None) => {
-                permissions.push(Permission::Context(ContextPermission::List(ResourceScope::Global)));
+                permissions.push(Permission::Context(ContextPermission::List(
+                    ResourceScope::Global,
+                )));
             }
             (HttpMethod::GET, Some(&id), None) => {
                 permissions.push(Permission::Context(ContextPermission::List(
-                    ResourceScope::Specific(vec![id.to_string()])
+                    ResourceScope::Specific(vec![id.to_string()]),
                 )));
             }
             (HttpMethod::POST, None, None) => {
-                permissions.push(Permission::Context(ContextPermission::Create(ResourceScope::Global)));
+                permissions.push(Permission::Context(ContextPermission::Create(
+                    ResourceScope::Global,
+                )));
             }
             (HttpMethod::DELETE, Some(&id), None) => {
                 permissions.push(Permission::Context(ContextPermission::Delete(
-                    ResourceScope::Specific(vec![id.to_string()])
+                    ResourceScope::Specific(vec![id.to_string()]),
                 )));
             }
             (HttpMethod::POST, Some(&id), Some(&"leave")) => {
                 permissions.push(Permission::Context(ContextPermission::Leave(
                     ResourceScope::Specific(vec![id.to_string()]),
-                    UserScope::Any
+                    UserScope::Any,
                 )));
             }
             (HttpMethod::POST, Some(&id), Some(&"invite")) => {
                 permissions.push(Permission::Context(ContextPermission::Invite(
                     ResourceScope::Specific(vec![id.to_string()]),
-                    UserScope::Any
+                    UserScope::Any,
                 )));
             }
             (HttpMethod::POST, Some(&id), Some(&"execute")) => {
                 permissions.push(Permission::Context(ContextPermission::Execute(
                     ResourceScope::Specific(vec![id.to_string()]),
                     UserScope::Any,
-                    None
+                    None,
                 )));
             }
             _ => {}
@@ -399,10 +417,10 @@ impl PermissionValidator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use axum::http::{Method, Request};
+
     use super::super::types::*;
-    use axum::http::Method;
-    use axum::http::Request;
+    use super::*;
 
     #[test]
     fn test_determine_required_permissions() {
@@ -461,19 +479,23 @@ mod tests {
 
         // Test master permission
         let user_perms = vec!["master".to_string()];
-        let required = vec![Permission::Application(ApplicationPermission::List(ResourceScope::Global))];
+        let required = vec![Permission::Application(ApplicationPermission::List(
+            ResourceScope::Global,
+        ))];
         assert!(validator.validate_permissions(&user_perms, &required));
 
         // Test specific permission
         let user_perms = vec!["application:list[app1,app2]".to_string()];
         let required = vec![Permission::Application(ApplicationPermission::List(
-            ResourceScope::Specific(vec!["app1".to_string()])
+            ResourceScope::Specific(vec!["app1".to_string()]),
         ))];
         assert!(validator.validate_permissions(&user_perms, &required));
 
         // Test permission denied
         let user_perms = vec!["blob:add".to_string()];
-        let required = vec![Permission::Application(ApplicationPermission::List(ResourceScope::Global))];
+        let required = vec![Permission::Application(ApplicationPermission::List(
+            ResourceScope::Global,
+        ))];
         assert!(!validator.validate_permissions(&user_perms, &required));
     }
 
@@ -538,26 +560,34 @@ mod tests {
 
         // Test permission validation
         let validator = PermissionValidator::new();
-        
+
         // Test that global add permission satisfies specific add permission
         let held = vec!["blob:add".to_string()];
-        let required = vec![Permission::Blob(BlobPermission::Add(AddBlobPermission::Stream))];
+        let required = vec![Permission::Blob(BlobPermission::Add(
+            AddBlobPermission::Stream,
+        ))];
         assert!(validator.validate_permissions(&held, &required));
 
         // Test that specific add permission satisfies only that type
         let held = vec!["blob:add:stream".to_string()];
-        let required = vec![Permission::Blob(BlobPermission::Add(AddBlobPermission::Stream))];
+        let required = vec![Permission::Blob(BlobPermission::Add(
+            AddBlobPermission::Stream,
+        ))];
         assert!(validator.validate_permissions(&held, &required));
-        
-        let required = vec![Permission::Blob(BlobPermission::Add(AddBlobPermission::File))];
+
+        let required = vec![Permission::Blob(BlobPermission::Add(
+            AddBlobPermission::File,
+        ))];
         assert!(!validator.validate_permissions(&held, &required));
 
         // Test that global blob permission satisfies everything
         let held = vec!["blob".to_string()];
         let required = vec![
             Permission::Blob(BlobPermission::Add(AddBlobPermission::Stream)),
-            Permission::Blob(BlobPermission::Remove(ResourceScope::Specific(vec!["123".to_string()])))
+            Permission::Blob(BlobPermission::Remove(ResourceScope::Specific(vec![
+                "123".to_string()
+            ]))),
         ];
         assert!(validator.validate_permissions(&held, &required));
     }
-} 
+}

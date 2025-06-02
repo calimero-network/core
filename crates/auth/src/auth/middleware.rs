@@ -7,11 +7,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 use crate::auth::permissions::{
-    Permission,
-    PermissionValidator,
-    ContextPermission,
-    ResourceScope,
-    UserScope,
+    ContextPermission, Permission, PermissionValidator, ResourceScope, UserScope,
 };
 use crate::server::AppState;
 
@@ -74,7 +70,10 @@ pub async fn forward_auth_middleware(
 
             // For JSON-RPC requests, ensure execute permission
             if path.starts_with("/jsonrpc") {
-                if !required_permissions.iter().any(|p| matches!(p, Permission::Context(ContextPermission::Execute(_, _, _)))) {
+                if !required_permissions
+                    .iter()
+                    .any(|p| matches!(p, Permission::Context(ContextPermission::Execute(_, _, _))))
+                {
                     required_permissions.push(Permission::Context(ContextPermission::Execute(
                         ResourceScope::Global,
                         UserScope::Any,
@@ -84,7 +83,8 @@ pub async fn forward_auth_middleware(
             }
 
             // Validate user's permissions
-            let has_permission = validator.validate_permissions(&auth_response.permissions, &required_permissions);
+            let has_permission =
+                validator.validate_permissions(&auth_response.permissions, &required_permissions);
 
             if !has_permission {
                 tracing::warn!(
