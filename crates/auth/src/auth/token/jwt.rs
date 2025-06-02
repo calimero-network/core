@@ -1,20 +1,18 @@
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
-use base64;
 use base64::Engine;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use serde::{Deserialize, Serialize};
-use uuid;
-use rand;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
+use {base64, rand, uuid};
 
+use crate::api::handlers::auth::ChallengeResponse;
 use crate::config::JwtConfig;
 use crate::secrets::SecretManager;
 use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
-use crate::api::handlers::auth::ChallengeResponse;
 
 /// Token type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,9 +307,9 @@ impl TokenManager {
 
         // Generate a secure random nonce
         let mut nonce_bytes = [0u8; 32];
-        rand::thread_rng()
-            .try_fill(&mut nonce_bytes)
-            .map_err(|e| AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {}", e)))?;
+        rand::thread_rng().try_fill(&mut nonce_bytes).map_err(|e| {
+            AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {}", e))
+        })?;
         let nonce = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
 
         let claims = ChallengeClaims {

@@ -29,7 +29,6 @@ use crate::storage::models::Key;
 use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthError, AuthResponse};
 
-
 /// Represents the payload structure that contains a message, nonce, recipient, and optional callback URL.
 ///
 /// # Fields
@@ -59,7 +58,7 @@ pub struct NearWalletAuthData {
     /// Signature of the message
     pub signature: String,
     /// Recipient app name
-    pub recipient: String
+    pub recipient: String,
 }
 
 /// NEAR wallet auth data type
@@ -405,7 +404,9 @@ impl NearWalletProvider {
             .await?;
 
         if !signature_valid {
-            return Err(AuthError::AuthenticationFailed("Signature verification failed".to_string()));
+            return Err(AuthError::AuthenticationFailed(
+                "Signature verification failed".to_string(),
+            ));
         }
         debug!("Signature verification successful");
 
@@ -496,18 +497,18 @@ pub struct NearWalletRequest {
     /// Account ID of the NEAR wallet
     #[validate(length(min = 1, message = "Wallet address is required"))]
     pub wallet_address: String,
-    
+
     /// Message that was signed (the challenge token)
     #[validate(length(min = 1, message = "Message is required"))]
     pub message: String,
-    
+
     /// Signature of the message
     #[validate(length(min = 1, message = "Signature is required"))]
     pub signature: String,
-    
+
     /// Recipient app name
     pub recipient: Option<String>,
-    
+
     /// Callback URL
     pub callback_url: Option<String>,
 }
@@ -543,8 +544,10 @@ impl AuthProvider for NearWalletProvider {
 
     fn prepare_auth_data(&self, token_request: &TokenRequest) -> Result<Value, AuthError> {
         // Parse the provider-specific data into our request type
-        let near_data: NearWalletRequest = serde_json::from_value(token_request.provider_data.clone())
-            .map_err(|e| AuthError::InvalidRequest(format!("Invalid NEAR wallet data: {}", e)))?;
+        let near_data: NearWalletRequest =
+            serde_json::from_value(token_request.provider_data.clone()).map_err(|e| {
+                AuthError::InvalidRequest(format!("Invalid NEAR wallet data: {}", e))
+            })?;
 
         // Create NEAR-specific auth data JSON
         Ok(serde_json::json!({
@@ -629,7 +632,7 @@ impl AuthProvider for NearWalletProvider {
             public_key,
             message,
             signature,
-            recipient: String::new()
+            recipient: String::new(),
         };
 
         // Create verifier

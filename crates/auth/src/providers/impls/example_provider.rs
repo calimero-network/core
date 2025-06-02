@@ -74,7 +74,6 @@ impl AuthProvider for ExampleProvider {
     }
 
     fn prepare_auth_data(&self, token_request: &TokenRequest) -> Result<Value, AuthError> {
-
         // Parse the provider-specific data into our request type
         // let example_data: ExampleRequest = serde_json::from_value(token_request.provider_data.clone())
         //     .map_err(|e| AuthError::InvalidRequest(format!("Invalid example data: {}", e)))?;
