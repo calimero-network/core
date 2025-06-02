@@ -6,6 +6,31 @@ export interface Provider {
   config?: Record<string, any>;
 }
 
+// Base token request interface
+export interface BaseTokenRequest {
+  auth_method: string;
+  public_key: string;
+  client_name: string;
+  timestamp: number;
+  permissions?: string[];
+  provider_data: any; // This will be typed based on the auth method
+}
+
+// NEAR wallet specific request data
+export interface NearWalletProviderData {
+  wallet_address: string;
+  message: string;
+  signature: string;
+  nonce: string;
+  recipient: string;
+  callback_url: string;
+}
+
+// Token request with NEAR wallet provider data
+export interface NearWalletTokenRequest extends BaseTokenRequest {
+  provider_data: NearWalletProviderData;
+}
+
 export interface TokenResponse {
   access_token: string;
   refresh_token: string;
@@ -34,6 +59,7 @@ export interface ChallengeRequest {
 
 export interface ChallengeResponse {
   challenge: string;
+  nonce: string;  // Base64 encoded nonce from server
 }
 
 export interface SignedMessage {

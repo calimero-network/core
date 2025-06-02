@@ -5,7 +5,10 @@ use axum::extract::{Extension, Query};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
+use base64::Engine;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::{debug, error, info, warn};
 use validator::Validate;
 
@@ -80,9 +83,9 @@ pub async fn login_handler(
     )
 }
 
-/// Token request TODO check how to do this better (additional fields)
+/// Base token request with common fields
 #[derive(Debug, Deserialize, Validate)]
-pub struct TokenRequest {
+pub struct BaseTokenRequest {
     /// Authentication method
     #[validate(length(min = 1, message = "Authentication method is required"))]
     pub auth_method: String,
@@ -90,9 +93,6 @@ pub struct TokenRequest {
     /// Public key
     #[validate(length(min = 1, message = "Public key is required"))]
     pub public_key: String,
-
-    /// Wallet address (if applicable)
-    pub wallet_address: Option<String>,
 
     /// Client name
     #[validate(length(min = 1, message = "Client name is required"))]
@@ -104,22 +104,12 @@ pub struct TokenRequest {
     /// Timestamp
     pub timestamp: u64,
 
-    /// Signature
-    #[validate(length(min = 1, message = "Signature is required"))]
-    pub signature: String,
-
-    /// Message that was signed (only for NEAR wallet)
-    pub message: Option<String>,
-
-    /// Nonce used in NEAR wallet signature (base64 encoded)
-    pub nonce: Option<String>,
-
-    /// Recipient app name for NEAR wallet signature
-    pub recipient: Option<String>,
-
-    /// Callback URL for NEAR wallet signature
-    pub callback_url: Option<String>,
+    /// Provider-specific data as raw JSON
+    pub provider_data: Value,
 }
+
+/// Token request that includes provider-specific data
+pub type TokenRequest = BaseTokenRequest;
 
 /// Token response
 #[derive(Debug, Serialize)]
@@ -388,6 +378,8 @@ pub async fn callback_handler(_state: Extension<Arc<AppState>>) -> impl IntoResp
 pub struct ChallengeResponse {
     /// Challenge token to be signed
     pub challenge: String,
+    /// Server-generated nonce (base64 encoded)
+    pub nonce: String,
 }
 
 /// Challenge handler
@@ -402,19 +394,13 @@ pub struct ChallengeResponse {
 ///
 /// * `impl IntoResponse` - The response containing the challenge token
 pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
-    // Generate the challenge token
-    let challenge = match state.0.token_generator.generate_challenge().await {
-        Ok(token) => token,
+    match state.0.token_generator.generate_challenge().await {
+        Ok(response) => success_response(response),
         Err(err) => {
             error!("Failed to generate challenge: {}", err);
-            return internal_error_response("Failed to generate challenge");
+            internal_error_response("Failed to generate challenge")
         }
-    };
-
-    // Create the response
-    let response = ChallengeResponse { challenge };
-
-    success_response(response)
+    }
 }
 
 /// Revoke token request

@@ -74,24 +74,15 @@ impl AuthProvider for ExampleProvider {
     }
 
     fn prepare_auth_data(&self, token_request: &TokenRequest) -> Result<Value, AuthError> {
-        // Example provider has simpler validation requirements
-        // Just check that we have a public key and signature
-        if token_request.public_key.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Public key is required for example authentication".to_string(),
-            ));
-        }
 
-        if token_request.signature.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Signature is required for example authentication".to_string(),
-            ));
-        }
+        // Parse the provider-specific data into our request type
+        // let example_data: ExampleRequest = serde_json::from_value(token_request.provider_data.clone())
+        //     .map_err(|e| AuthError::InvalidRequest(format!("Invalid example data: {}", e)))?;
 
         // Create a simple JSON structure with just what this provider needs
         Ok(serde_json::json!({
             "public_key": token_request.public_key,
-            "signature": token_request.signature,
+            // "signature": token_request.signature,
             "timestamp": token_request.timestamp,
             "client_name": token_request.client_name
         }))

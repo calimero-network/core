@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
 use axum::http::HeaderMap;
+use base64;
+use base64::Engine;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid;
+use rand;
+use rand::Rng;
 
 use crate::config::JwtConfig;
 use crate::secrets::SecretManager;
 use crate::storage::{KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
+use crate::api::handlers::auth::ChallengeResponse;
 
 /// Token type enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +53,8 @@ pub struct ChallengeClaims {
     pub iat: u64,
     /// Expiration time of the challenge
     pub exp: u64,
+    /// Nonce
+    pub nonce: String,
 }
 
 /// JWT Token Manager
@@ -294,17 +301,25 @@ impl TokenManager {
     ///
     /// # Returns
     ///
-    /// * `Result<String, AuthError>` - The generated challenge token
-    pub async fn generate_challenge(&self) -> Result<String, AuthError> {
+    /// * `Result<ChallengeResponse, AuthError>` - The generated challenge token and nonce
+    pub async fn generate_challenge(&self) -> Result<ChallengeResponse, AuthError> {
         let now = Utc::now();
         // Challenges should be short-lived, using a 5-minute expiry
         let exp = now + Duration::minutes(5);
+
+        // Generate a secure random nonce
+        let mut nonce_bytes = [0u8; 32];
+        rand::thread_rng()
+            .try_fill(&mut nonce_bytes)
+            .map_err(|e| AuthError::TokenGenerationFailed(format!("Failed to generate nonce: {}", e)))?;
+        let nonce = base64::engine::general_purpose::STANDARD.encode(nonce_bytes);
 
         let claims = ChallengeClaims {
             iss: self.config.issuer.clone(),
             jti: uuid::Uuid::new_v4().to_string(),
             iat: now.timestamp() as u64,
             exp: exp.timestamp() as u64,
+            nonce: nonce.clone(),
         };
 
         let secret = self
@@ -314,12 +329,14 @@ impl TokenManager {
             .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
 
         let header = Header::new(Algorithm::HS256);
-        encode(
+        let challenge = encode(
             &header,
             &claims,
             &EncodingKey::from_secret(secret.as_bytes()),
         )
-        .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
+        .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))?;
+
+        Ok(ChallengeResponse { challenge, nonce })
     }
 
     /// Verify a challenge token

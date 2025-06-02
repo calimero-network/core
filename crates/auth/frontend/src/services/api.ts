@@ -1,4 +1,4 @@
-import { ChallengeRequest, Provider, TokenResponse, ChallengeResponse } from '../types/auth';
+import { ChallengeRequest, Provider, TokenResponse, ChallengeResponse, BaseTokenRequest } from '../types/auth';
 
 // API URL is relative by default
 const API_URL = '';
@@ -38,7 +38,7 @@ export async function getProviders(): Promise<Provider[]> {
 }
 
 // Request authentication token
-export async function requestToken(requestBody: any): Promise<TokenResponse> {
+export async function requestToken(requestBody: BaseTokenRequest): Promise<TokenResponse> {
   return fetchWithAuth('/auth/token', {
     method: 'POST',
     headers: {

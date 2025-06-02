@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Extension, Request};
-use axum::http::{Method, StatusCode};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 

@@ -7,7 +7,7 @@ import { AuthStorage } from '../../services/authStorage';
 import { Container, Button, ButtonGroup, ErrorMessage, SessionPrompt } from '../auth/styles';
 import ProviderSelector from './ProviderSelector';
 import { ContextSelector } from '../ContextSelector';
-import { setupWalletSelector } from '@near-wallet-selector/core';
+import { setupWalletSelector, verifySignature } from '@near-wallet-selector/core';
 import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
 import { Buffer } from 'buffer';
 
@@ -81,12 +81,6 @@ const LoginView: React.FC = () => {
         const challengeResponse = await api.getChallenge();
         console.log('Challenge response:', challengeResponse);
         
-        // Generate nonce
-        const nonceArray = new Uint8Array(32);
-        window.crypto.getRandomValues(nonceArray);
-        const nonceBuffer = Buffer.from(nonceArray);
-        const nonceString = nonceBuffer.toString('base64');
-
         // Setup NEAR wallet
         const selector = await setupWalletSelector({
           network: 'testnet',
@@ -98,25 +92,39 @@ const LoginView: React.FC = () => {
         // Sign the challenge
         const signature = await wallet.signMessage({
           message: challengeResponse.challenge,
-          nonce: nonceBuffer,
+          nonce: Buffer.from(challengeResponse.nonce, 'base64'),
           recipient: 'calimero',
           callbackUrl: window.location.href
         }) as SignedMessage;
 
         console.log('Signature:', signature);
+        
+        const verifyMessage = verifySignature({
+          publicKey: signature.publicKey,
+          signature: signature.signature,
+          message: challengeResponse.challenge,
+          nonce: Buffer.from(challengeResponse.nonce, 'base64'),
+          recipient: 'calimero',
+        });
 
-        // Create token request
+        console.log('Verify message:', verifyMessage);
+
+        // Create token request with separated provider-specific data
         const tokenPayload = {
+          // Common fields
           auth_method: 'near_wallet',
           public_key: signature.publicKey,
-          wallet_address: signature.accountId,
           client_name: 'NEAR Wallet',
-          message: challengeResponse.challenge,
-          signature: signature.signature,
           timestamp: Date.now(),
-          nonce: nonceString,
-          recipient: 'calimero',
-          callback_url: window.location.href
+          permissions: [], // Optional permissions array
+          
+          // Provider-specific data
+          provider_data: {
+            wallet_address: signature.accountId,
+            message: challengeResponse.challenge,
+            signature: signature.signature,
+            recipient: 'calimero'
+          }
         };
 
         console.log('Token request payload:', tokenPayload);
