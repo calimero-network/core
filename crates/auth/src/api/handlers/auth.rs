@@ -32,13 +32,6 @@ pub fn internal_error_response(message: &str) -> ApiResponse {
     )
 }
 
-fn bad_request_response(message: &str) -> ApiResponse {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({ "error": message })),
-    )
-}
-
 pub fn success_response<T: Serialize>(data: T) -> ApiResponse {
     (StatusCode::OK, Json(serde_json::json!(data)))
 }
