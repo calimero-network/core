@@ -17,7 +17,7 @@ pub const CONFIG_FILE: &str = "config.toml";
 #[non_exhaustive]
 pub struct ConfigFile {
     #[serde(
-        with = "serde_identity",
+        with = "serde_identity", 
         default = "default_identity"
     )]
     pub identity: libp2p_identity::Keypair,
@@ -52,9 +52,12 @@ pub struct SyncConfig {
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub swarm: SwarmConfig,
+
     pub server: ServerConfig,
+
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
+
     #[serde(default)]
     pub discovery: DiscoveryConfig,
 }
@@ -80,10 +83,13 @@ impl NetworkConfig {
 #[non_exhaustive]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
+
     #[serde(default)]
     pub admin: Option<AdminConfig>,
+
     #[serde(default)]
     pub jsonrpc: Option<JsonRpcConfig>,
+    
     #[serde(default)]
     pub websocket: Option<WsConfig>,
 }
@@ -185,6 +191,7 @@ impl ConfigFile {
 
 mod serde_duration {
     use core::time::Duration;
+
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
@@ -204,6 +211,7 @@ mod serde_duration {
 
 pub mod serde_identity {
     use core::fmt::{self, Formatter};
+
     use libp2p_identity::Keypair;
     use serde::de::{self, MapAccess};
     use serde::ser::{self, SerializeMap};
