@@ -1,7 +1,9 @@
 use std::io;
 use std::sync::Arc;
 
-use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
+use calimero_primitives::application::{
+    Application, ApplicationBlob, ApplicationId, ApplicationSource,
+};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
@@ -29,7 +31,10 @@ impl NodeClient {
 
         let application = Application::new(
             *application_id,
-            application.blob.blob_id(),
+            ApplicationBlob::new(
+                application.blob.blob_id(),
+                application.precompiled_blob.blob_id(),
+            ),
             application.size,
             application.source.parse()?,
             application.metadata.into_vec(),
@@ -81,9 +86,18 @@ impl NodeClient {
             size,
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
+            key::BlobMeta::new(BlobId::from([0; 32])),
         );
 
-        let application_id = ApplicationId::from(*Hash::hash_borsh(&application)?);
+        let application_id = {
+            let components = (
+                application.blob,
+                application.size,
+                &application.source,
+                &application.metadata,
+            );
+            ApplicationId::from(*Hash::hash_borsh(&components)?)
+        };
 
         let mut handle = self.datastore.handle();
 
@@ -163,7 +177,7 @@ impl NodeClient {
             let (id, app) = (id?, app?);
             applications.push(Application::new(
                 id.application_id(),
-                app.blob.blob_id(),
+                ApplicationBlob::new(app.blob.blob_id(), app.precompiled_blob.blob_id()),
                 app.size,
                 app.source.parse()?,
                 app.metadata.to_vec(),
@@ -171,5 +185,25 @@ impl NodeClient {
         }
 
         Ok(applications)
+    }
+
+    pub fn update_precompiled_blob(
+        &self,
+        application_id: &ApplicationId,
+        blob_id: &BlobId,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.handle();
+
+        let key = key::ApplicationMeta::new(*application_id);
+
+        let Some(mut application) = handle.get(&key)? else {
+            bail!("Application not found");
+        };
+
+        application.precompiled_blob = key::BlobMeta::new(*blob_id);
+
+        handle.put(&key, &application)?;
+
+        Ok(())
     }
 }

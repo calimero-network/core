@@ -9,6 +9,7 @@ use actix::Actor;
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::application::ApplicationBlob;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
@@ -21,7 +22,8 @@ pub mod handlers;
 #[derive(Debug)]
 struct ContextMeta {
     meta: Context,
-    blob: BlobId,
+    bytecode: BlobId,
+    compiled: BlobId,
     lock: Arc<Mutex<ContextId>>,
 }
 
@@ -40,7 +42,7 @@ pub struct ContextManager {
     // todo! potentially make this a dashmap::DashMap
     // todo! use cached::TimedSizedCache with a gc task
     contexts: BTreeMap<ContextId, ContextMeta>,
-    //
+    modules: BTreeMap<BlobId, ApplicationBlob>,
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
     // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
@@ -61,6 +63,7 @@ impl ContextManager {
             external_config,
 
             contexts: BTreeMap::new(),
+            modules: BTreeMap::new(),
         }
     }
 }
@@ -105,9 +108,15 @@ impl ContextManager {
 
                 let lock = Arc::new(Mutex::new(*context_id));
 
+                let _ = self
+                    .modules
+                    .entry(application.blob.bytecode)
+                    .or_insert(application.blob);
+
                 let item = vacant.insert(ContextMeta {
                     meta: context,
-                    blob: application.blob,
+                    bytecode: application.blob.bytecode,
+                    compiled: application.blob.compiled,
                     lock,
                 });
 
@@ -115,6 +124,32 @@ impl ContextManager {
             }
         }
     }
+}
+
+async fn get_module(
+    node_client: &NodeClient,
+    runtime_engine: &calimero_runtime::Engine,
+    modules: &BTreeMap<BlobId, ApplicationBlob>,
+    blob_id: &BlobId,
+) -> eyre::Result<calimero_runtime::Module> {
+    if let Some(app_blob) = modules.values().find(|ab| ab.bytecode == *blob_id) {
+        if app_blob.compiled != BlobId::from([0; 32]) {
+            if let Ok(Some(precompiled_bytes)) =
+                node_client.get_blob_bytes(&app_blob.compiled).await
+            {
+                if let Ok(module) = unsafe { runtime_engine.from_precompiled(&precompiled_bytes) } {
+                    return Ok(module);
+                }
+            }
+        }
+    }
+
+    let Some(bytecode) = node_client.get_blob_bytes(blob_id).await? else {
+        eyre::bail!("Blob not found: {}", blob_id);
+    };
+
+    let module = runtime_engine.compile(&bytecode)?;
+    Ok(module)
 }
 
 // objectives:
