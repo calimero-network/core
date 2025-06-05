@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::btree_map;
-use std::fmt::Write;
 
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
