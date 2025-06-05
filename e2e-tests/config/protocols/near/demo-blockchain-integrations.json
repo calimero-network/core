@@ -1,5 +1,4 @@
 {
-  "protocol": "near",
   "steps": [
     {
       "applicationInstall": {
@@ -61,7 +60,7 @@
           "limit": 10
         },
         "description": [
-            "get current proposals and extract the ID of the first one"
+          "get current proposals and extract the ID of the first one"
         ]
       }
     },
@@ -71,11 +70,11 @@
         "argsJson": {
           "proposal_id": "${proposal_id}",
           "message": {
-              "id": "msg1",
-              "author": "inviter",
-              "text": "This is a test message for the proposal",
-              "created_at": "2023-11-24T12:34:56Z",
-              "proposal_id": "${proposal_id}"
+            "id": "msg1",
+            "author": "inviter",
+            "text": "This is a test message for the proposal",
+            "created_at": "2023-11-24T12:34:56Z",
+            "proposal_id": "${proposal_id}"
           }
         },
         "expectedResultJson": null,
@@ -86,7 +85,9 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": ["wait exactly 5s for the broadcast to propagate"]
+        "description": [
+          "wait exactly 5s for the broadcast to propagate"
+        ]
       }
     },
     {

@@ -12,8 +12,6 @@ on:
       - 'e2e-tests/**'
   pull_request:
     types: [opened, synchronize, reopened]
-    branches:
-      - master
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -186,7 +184,7 @@ jobs:
             --output-dir ./e2e-tests/corpus \
             --merod-binary ./target/debug/merod \
             --meroctl-binary ./target/debug/meroctl \
-            --scenarios ${{ matrix.protocol }}
+            --protocols ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
         if: ${{ !cancelled() }}
