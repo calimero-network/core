@@ -312,19 +312,9 @@ fn handle_alias_command(
                 c2 = "Identity",
                 c3 = "Alias",
             );
-            let context_id = match context {
-                Some(ctx) => node_client
-                    .resolve_alias(ctx, None)?
-                    .ok_or_eyre("unable to resolve context alias")?,
-
-                None => {
-                    let default_alias: Alias<ContextId> =
-                        "default".parse().expect("'default' is a valid alias name");
-                    node_client
-                        .lookup_alias(default_alias, None)?
-                        .ok_or_eyre("unable to resolve default context")?
-                }
-            };
+            let context_id = node_client
+                .resolve_alias(context, None)?
+                .ok_or_eyre("unable to resolve context alias")?;
 
             for (alias, identity, scope) in
                 node_client.list_aliases::<PublicKey>(Some(context_id))?
