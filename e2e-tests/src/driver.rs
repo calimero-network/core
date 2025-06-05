@@ -97,6 +97,9 @@ impl Driver {
 
         // Run scenarios directory by directory
         let scenarios_dir = self.environment.input_dir.join("scenarios");
+        if !scenarios_dir.exists() {
+            bail!("Scenarios directory does not exist at: {}", scenarios_dir);
+        }
         let mut entries = read_dir(scenarios_dir).await?;
 
         while let Some(entry) = entries.next_entry().await? {
