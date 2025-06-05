@@ -9,8 +9,7 @@ use actix::Actor;
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::application::ApplicationBlob;
-use calimero_primitives::blobs::BlobId;
+use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
@@ -22,8 +21,6 @@ pub mod handlers;
 #[derive(Debug)]
 struct ContextMeta {
     meta: Context,
-    bytecode: BlobId,
-    compiled: BlobId,
     lock: Arc<Mutex<ContextId>>,
 }
 
@@ -38,11 +35,15 @@ pub struct ContextManager {
 
     external_config: ExternalClientConfig,
 
-    // -- contexts --
     // todo! potentially make this a dashmap::DashMap
     // todo! use cached::TimedSizedCache with a gc task
     contexts: BTreeMap<ContextId, ContextMeta>,
-    modules: BTreeMap<BlobId, ApplicationBlob>,
+    // even when 2 applications point to the same bytecode,
+    // the application's metadata may include information
+    // that might be relevant in the compilation process,
+    // so we cannot blindly reuse compiled blobs across apps.
+    applications: BTreeMap<ApplicationId, Application>,
+    //
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
     // runtimes: TimedSizedCache<Exclusive<calimero_runtime::Engine>>,
@@ -63,7 +64,7 @@ impl ContextManager {
             external_config,
 
             contexts: BTreeMap::new(),
-            modules: BTreeMap::new(),
+            applications: BTreeMap::new(),
         }
     }
 }
@@ -92,64 +93,23 @@ impl ContextManager {
         let entry = self.contexts.entry(*context_id);
 
         match entry {
-            btree_map::Entry::Occupied(occupied) => return Ok(Some(occupied.into_mut())),
+            btree_map::Entry::Occupied(occupied) => Ok(Some(occupied.into_mut())),
             btree_map::Entry::Vacant(vacant) => {
                 let Some(context) = self.context_client.get_context(context_id)? else {
                     return Ok(None);
                 };
 
-                let Some(application) =
-                    self.node_client.get_application(&context.application_id)?
-                else {
-                    // todo! should we error here?
-
-                    return Ok(None);
-                };
-
                 let lock = Arc::new(Mutex::new(*context_id));
-
-                let _ = self
-                    .modules
-                    .entry(application.blob.bytecode)
-                    .or_insert(application.blob);
 
                 let item = vacant.insert(ContextMeta {
                     meta: context,
-                    bytecode: application.blob.bytecode,
-                    compiled: application.blob.compiled,
                     lock,
                 });
 
-                return Ok(Some(item));
+                Ok(Some(item))
             }
         }
     }
-}
-
-async fn get_module(
-    node_client: &NodeClient,
-    runtime_engine: &calimero_runtime::Engine,
-    modules: &BTreeMap<BlobId, ApplicationBlob>,
-    blob_id: &BlobId,
-) -> eyre::Result<calimero_runtime::Module> {
-    if let Some(app_blob) = modules.values().find(|ab| ab.bytecode == *blob_id) {
-        if app_blob.compiled != BlobId::from([0; 32]) {
-            if let Ok(Some(precompiled_bytes)) =
-                node_client.get_blob_bytes(&app_blob.compiled).await
-            {
-                if let Ok(module) = unsafe { runtime_engine.from_precompiled(&precompiled_bytes) } {
-                    return Ok(module);
-                }
-            }
-        }
-    }
-
-    let Some(bytecode) = node_client.get_blob_bytes(blob_id).await? else {
-        eyre::bail!("Blob not found: {}", blob_id);
-    };
-
-    let module = runtime_engine.compile(&bytecode)?;
-    Ok(module)
 }
 
 // objectives:

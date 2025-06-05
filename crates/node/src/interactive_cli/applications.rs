@@ -94,7 +94,7 @@ impl ApplicationCommand {
                 println!(
                     "{ind} {c1:44} | {c2:44} | Installed | Source",
                     c1 = "Application ID",
-                    c2 = "Bytecode Blob ID",
+                    c2 = "Blob ID",
                 );
                 for application in node_client.list_applications()? {
                     let entry = format!(
@@ -121,8 +121,7 @@ impl ApplicationCommand {
 
                 if let Some(application) = node_client.get_application(&application_id)? {
                     println!("{ind} Application ID: {}", application.id);
-                    println!("{ind} Bytecode Blob ID: {}", application.blob.bytecode);
-                    println!("{ind} Compiled Blob ID: {}", application.blob.compiled);
+                    println!("{ind} Blob ID: {}", application.blob.bytecode);
                     println!("{ind} Source: {}", application.source);
                     println!("{ind} Metadata: {:?}", application.metadata);
                 } else {

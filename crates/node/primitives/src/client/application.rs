@@ -31,10 +31,10 @@ impl NodeClient {
 
         let application = Application::new(
             *application_id,
-            ApplicationBlob::new(
-                application.blob.blob_id(),
-                application.precompiled_blob.blob_id(),
-            ),
+            ApplicationBlob {
+                bytecode: application.bytecode.blob_id(),
+                compiled: application.compiled.blob_id(),
+            },
             application.size,
             application.source.parse()?,
             application.metadata.into_vec(),
@@ -55,7 +55,7 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let Some(bytes) = self.get_blob_bytes(&application.blob.blob_id()).await? else {
+        let Some(bytes) = self.get_blob_bytes(&application.bytecode.blob_id()).await? else {
             bail!("fatal: application points to dangling blob");
         };
 
@@ -68,7 +68,7 @@ impl NodeClient {
         let key = key::ApplicationMeta::new(*application_id);
 
         if let Some(application) = handle.get(&key)? {
-            return self.has_blob(&application.blob.blob_id());
+            return self.has_blob(&application.bytecode.blob_id());
         }
 
         Ok(false)
@@ -91,11 +91,12 @@ impl NodeClient {
 
         let application_id = {
             let components = (
-                application.blob,
+                application.bytecode,
                 application.size,
                 &application.source,
                 &application.metadata,
             );
+
             ApplicationId::from(*Hash::hash_borsh(&components)?)
         };
 
@@ -127,7 +128,7 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_application(&blob_id, size, &(uri.as_str().parse()?), metadata)
+        self.install_application(&blob_id, size, &uri.as_str().parse()?, metadata)
     }
 
     pub async fn install_application_from_url(
@@ -156,10 +157,10 @@ impl NodeClient {
         self.install_application(&blob_id, size, &uri, metadata)
     }
 
-    pub fn uninstall_application(&self, application_id: ApplicationId) -> eyre::Result<()> {
+    pub fn uninstall_application(&self, application_id: &ApplicationId) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
 
-        let key = key::ApplicationMeta::new(application_id);
+        let key = key::ApplicationMeta::new(*application_id);
 
         handle.delete(&key)?;
 
@@ -177,7 +178,10 @@ impl NodeClient {
             let (id, app) = (id?, app?);
             applications.push(Application::new(
                 id.application_id(),
-                ApplicationBlob::new(app.blob.blob_id(), app.precompiled_blob.blob_id()),
+                ApplicationBlob {
+                    bytecode: app.bytecode.blob_id(),
+                    compiled: app.compiled.blob_id(),
+                },
                 app.size,
                 app.source.parse()?,
                 app.metadata.to_vec(),
@@ -187,20 +191,20 @@ impl NodeClient {
         Ok(applications)
     }
 
-    pub fn update_precompiled_blob(
+    pub fn update_compiled_app(
         &self,
         application_id: &ApplicationId,
-        blob_id: &BlobId,
+        compiled_blob_id: &BlobId,
     ) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
 
         let key = key::ApplicationMeta::new(*application_id);
 
         let Some(mut application) = handle.get(&key)? else {
-            bail!("Application not found");
+            bail!("application not found");
         };
 
-        application.precompiled_blob = key::BlobMeta::new(*blob_id);
+        application.compiled = key::BlobMeta::new(*compiled_blob_id);
 
         handle.put(&key, &application)?;
 

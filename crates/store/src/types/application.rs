@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::Borsh;
-use crate::key::{ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey};
+use crate::key;
 use crate::types::PredefinedEntry;
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
@@ -9,33 +9,33 @@ use crate::types::PredefinedEntry;
 pub struct ApplicationMeta {
     // todo! impl proper entry reference count
     // pub refs: usize,
-    pub blob: BlobMetaKey,
+    pub bytecode: key::BlobMeta,
     pub size: u64,
     pub source: Box<str>,
     pub metadata: Box<[u8]>,
-    pub precompiled_blob: BlobMetaKey,
+    pub compiled: key::BlobMeta,
 }
 
 impl ApplicationMeta {
     #[must_use]
     pub const fn new(
-        blob: BlobMetaKey,
+        bytecode: key::BlobMeta,
         size: u64,
         source: Box<str>,
         metadata: Box<[u8]>,
-        precompiled_blob: BlobMetaKey,
+        compiled: key::BlobMeta,
     ) -> Self {
         Self {
-            blob,
+            bytecode,
             size,
             source,
             metadata,
-            precompiled_blob,
+            compiled,
         }
     }
 }
 
-impl PredefinedEntry for ApplicationMetaKey {
+impl PredefinedEntry for key::ApplicationMeta {
     type Codec = Borsh;
     type DataType<'a> = ApplicationMeta;
 }

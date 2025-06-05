@@ -355,7 +355,10 @@ impl ExternalConfigClient<'_> {
 
         let application = Application::new(
             application.id.as_bytes().into(),
-            ApplicationBlob::new(application.blob.as_bytes().into(), BlobId::from([0; 32])),
+            ApplicationBlob {
+                bytecode: application.blob.as_bytes().into(),
+                compiled: BlobId::from([0; 32]),
+            },
             application.size,
             application.source.0.parse()?,
             application.metadata.0.into_inner().into_owned(),
