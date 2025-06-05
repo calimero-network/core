@@ -740,7 +740,7 @@ async fn handle_proposals_command(
 
             if let Some(proposal) = proposal {
                 let approvers = proxy_client.get_proposal_approvers(&proposal_id).await?;
-
+                let approvers_vec: Vec<_> = approvers.into_iter().collect();
                 let num_approvals = proxy_client.proposal_approvals(&proposal_id).await?;
 
                 println!("{ind} Proposal ID: {}", format!("{:?}", proposal.id).cyan());
@@ -752,11 +752,15 @@ async fn handle_proposals_command(
                     println!("{ind}   {}. {:?}", i + 1, action);
                 }
 
-                println!("{ind} Approvers: ({}/{})", approvers.len(), num_approvals);
-                if approvers.is_empty() {
+                println!(
+                    "{ind} Approvers: ({}/{})",
+                    approvers_vec.len(),
+                    num_approvals
+                );
+                if approvers_vec.is_empty() {
                     println!("{ind}   None");
                 } else {
-                    for approver in approvers {
+                    for approver in approvers_vec {
                         println!("{ind}   {}", format!("{:?}", approver).cyan());
                     }
                 }
