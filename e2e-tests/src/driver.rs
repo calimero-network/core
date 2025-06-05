@@ -24,7 +24,7 @@ use crate::protocol::near::NearSandboxEnvironment;
 use crate::protocol::stellar::StellarSandboxEnvironment;
 use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
-use crate::TestEnvironment;
+use crate::{Protocol, TestEnvironment};
 
 pub struct TestContext<'a> {
     pub inviter: String,
@@ -34,7 +34,7 @@ pub struct TestContext<'a> {
     pub context_id: Option<String>,
     pub inviter_public_key: Option<String>,
     pub invitees_public_keys: HashMap<String, String>,
-    pub protocol_name: &'a str,
+    pub protocol_name: &'a Protocol,
     pub protocol: &'a ProtocolSandboxEnvironment,
     pub output_writer: OutputWriter,
     pub context_alias: Option<String>,
@@ -52,7 +52,7 @@ impl<'a> TestContext<'a> {
         invitees: Vec<String>,
         meroctl: &'a Meroctl,
         output_writer: OutputWriter,
-        protocol_name: &'a str,
+        protocol_name: &'a Protocol,
         proposal_id: Option<String>,
         protocol: &'a ProtocolSandboxEnvironment,
     ) -> Self {
@@ -95,133 +95,124 @@ impl Driver {
         self.environment.init().await?;
 
         let mut report = TestRunReport::new();
-        let mut initialized_protocols: HashMap<String, ProtocolSandboxEnvironment> = HashMap::new();
+        let mut initialized_protocols: HashMap<Protocol, ProtocolSandboxEnvironment> =
+            HashMap::new();
 
-        // Run scenarios directory by directory
-        let scenarios_dir = self.environment.input_dir.join("scenarios");
-        let mut entries = read_dir(scenarios_dir).await?;
+        let protocols_dir = self.environment.input_dir.join("protocols");
 
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.is_dir() {
-                let test_file_path = path.join("test.json");
-                if test_file_path.exists() {
-                    let test_content = read(&test_file_path).await?;
-                    let test_json: serde_json::Value = from_slice(&test_content)?;
-
-                    if let Some(protocol_name) = test_json.get("protocol").and_then(|p| p.as_str())
-                    {
-                        // Skip if this isn't one of the requested scenarios/protocols
-                        if !self
-                            .environment
-                            .scenarios
-                            .iter()
-                            .any(|s| s.to_string().to_lowercase() == protocol_name)
-                        {
-                            continue;
-                        }
-
-                        // Initialize protocol if not already done
-                        if !initialized_protocols.contains_key(protocol_name) {
-                            // Find and initialize the protocol sandbox
-                            for protocol_sandbox in &self.config.protocol_sandboxes {
-                                let config_protocol_name = match protocol_sandbox {
-                                    ProtocolSandboxConfig::Stellar(_) => "stellar",
-                                    ProtocolSandboxConfig::Near(_) => "near",
-                                    ProtocolSandboxConfig::Icp(_) => "icp",
-                                    ProtocolSandboxConfig::Ethereum(_) => "ethereum",
-                                };
-
-                                if config_protocol_name == protocol_name {
-                                    let sandbox_env = match protocol_sandbox {
-                                        ProtocolSandboxConfig::Stellar(config) => {
-                                            ProtocolSandboxEnvironment::Stellar(
-                                                StellarSandboxEnvironment::init(config.clone())?,
-                                            )
-                                        }
-                                        ProtocolSandboxConfig::Near(config) => {
-                                            ProtocolSandboxEnvironment::Near(
-                                                NearSandboxEnvironment::init(config.clone())
-                                                    .await?,
-                                            )
-                                        }
-                                        ProtocolSandboxConfig::Icp(config) => {
-                                            ProtocolSandboxEnvironment::Icp(
-                                                IcpSandboxEnvironment::init(config.clone())?,
-                                            )
-                                        }
-                                        ProtocolSandboxConfig::Ethereum(config) => {
-                                            ProtocolSandboxEnvironment::Ethereum(
-                                                EthereumSandboxEnvironment::init(config.clone())?,
-                                            )
-                                        }
-                                    };
-                                    if initialized_protocols
-                                        .insert(protocol_name.to_owned(), sandbox_env)
-                                        .is_some()
-                                    {
-                                        self.environment.output_writer.write_str(&format!(
-                                            "Warning: Overwriting existing protocol {}",
-                                            protocol_name
-                                        ));
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-
-                        // If we have the protocol initialized, run the scenario
-                        if let Some(sandbox) = initialized_protocols.get(protocol_name) {
-                            let mero = self.setup_mero(&vec![sandbox.clone()]).await?;
-
-                            let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
-                                bail!("Not enough nodes to run the test")
-                            };
-
-                            self.environment
-                                .output_writer
-                                .write_str(&format!("Picked inviter: {inviter}"));
-                            self.environment
-                                .output_writer
-                                .write_str(&format!("Picked invitees: {invitees:?}"));
-
-                            let mut ctx = TestContext::new(
-                                inviter,
-                                invitees,
-                                &mero.ctl,
-                                self.environment.output_writer,
-                                protocol_name,
-                                None,
-                                sandbox,
-                            );
-
-                            // Parse the scenario from already loaded test_content
-                            let scenario: TestScenario = from_slice(&test_content)?;
-
-                            self.environment
-                                .output_writer
-                                .write_header(&format!("Running protocol {}", sandbox.name()), 1);
-
-                            report = self
-                                .run_scenarios(
-                                    &mut ctx,
-                                    report,
-                                    protocol_name,
-                                    scenario,
-                                    &test_file_path,
-                                )
-                                .await?;
-
-                            self.environment
-                                .output_writer
-                                .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
-
-                            // Stop mero after running scenarios
-                            self.stop_merods(&mero.ds).await;
-                        }
-                    }
-                }
+        for protocol in &self.environment.protocols {
+            if initialized_protocols.contains_key(protocol) {
+                continue;
             }
+
+            for sandbox_cfg in &self.config.protocol_sandboxes {
+                let config_protocol = match sandbox_cfg {
+                    ProtocolSandboxConfig::Stellar(_) => Protocol::Stellar,
+                    ProtocolSandboxConfig::Near(_) => Protocol::Near,
+                    ProtocolSandboxConfig::Icp(_) => Protocol::Icp,
+                    ProtocolSandboxConfig::Ethereum(_) => Protocol::Ethereum,
+                };
+
+                if &config_protocol != protocol {
+                    continue;
+                }
+
+                let sandbox_env = match sandbox_cfg {
+                    ProtocolSandboxConfig::Stellar(config) => ProtocolSandboxEnvironment::Stellar(
+                        StellarSandboxEnvironment::init(config.clone())?,
+                    ),
+                    ProtocolSandboxConfig::Near(config) => ProtocolSandboxEnvironment::Near(
+                        NearSandboxEnvironment::init(config.clone()).await?,
+                    ),
+                    ProtocolSandboxConfig::Icp(config) => ProtocolSandboxEnvironment::Icp(
+                        IcpSandboxEnvironment::init(config.clone())?,
+                    ),
+                    ProtocolSandboxConfig::Ethereum(config) => {
+                        ProtocolSandboxEnvironment::Ethereum(EthereumSandboxEnvironment::init(
+                            config.clone(),
+                        )?)
+                    }
+                };
+
+                initialized_protocols.insert(*protocol, sandbox_env);
+                break;
+            }
+        }
+
+        for protocol_name in &self.environment.protocols {
+            let protocol_path = protocols_dir.join(protocol_name.as_str());
+
+            if !protocol_path.is_dir() {
+                self.environment.output_writer.write_str(&format!(
+                    "No directory for protocol: {}",
+                    protocol_name.as_str()
+                ));
+                continue;
+            }
+
+            let Some(sandbox) = initialized_protocols.get(&protocol_name) else {
+                bail!(
+                    "Sandbox not initialized for protocol: {}",
+                    protocol_name.as_str()
+                );
+            };
+
+            let mero = self.setup_mero(&sandbox.clone()).await?;
+
+            let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
+                bail!(
+                    "Not enough nodes to run test for protocol {}",
+                    protocol_name.as_str()
+                )
+            };
+
+            self.environment
+                .output_writer
+                .write_str(&format!("Picked inviter: {inviter}"));
+            self.environment
+                .output_writer
+                .write_str(&format!("Picked invitees: {invitees:?}"));
+
+            let mut applications = read_dir(&protocol_path).await?;
+            while let Some(app) = applications.next_entry().await? {
+                if !app.file_type().await?.is_file() {
+                    continue;
+                }
+                let mut ctx = TestContext::new(
+                    inviter.clone(),
+                    invitees.clone(),
+                    &mero.ctl,
+                    self.environment.output_writer,
+                    protocol_name,
+                    None,
+                    sandbox,
+                );
+                let test_file_path = app.path();
+
+                let Some(app_name) = test_file_path.file_stem().and_then(|s| s.to_str()) else {
+                    bail!("No application name found");
+                };
+
+                if !test_file_path.is_file() {
+                    continue;
+                }
+                let test_content = read(&test_file_path).await?;
+                let scenario: TestScenario = from_slice(&test_content)?;
+
+                self.environment
+                    .output_writer
+                    .write_header(&format!("Running protocol {}", sandbox.name()), 1);
+
+                report = self
+                    .run_scenarios(&mut ctx, report, app_name, scenario, &test_file_path)
+                    .await?;
+
+                self.environment
+                    .output_writer
+                    .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
+            }
+
+            self.stop_merods(&mero.ds).await;
         }
 
         if let Err(e) = report.result() {
@@ -241,10 +232,7 @@ impl Driver {
         report.result()
     }
 
-    async fn setup_mero(
-        &self,
-        sandbox_environments: &Vec<ProtocolSandboxEnvironment>,
-    ) -> EyreResult<Mero> {
+    async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
@@ -265,11 +253,7 @@ impl Driver {
                     self.environment.test_id
                 )];
 
-                let mut node_args = vec![];
-                for sandbox in sandbox_environments {
-                    node_args = sandbox.node_args(&node_name).await?;
-                }
-
+                let node_args = sandbox.node_args(&node_name).await?;
                 let config_args = config_args.iter().chain(node_args.iter());
 
                 let merod = Merod::new(
@@ -342,20 +326,20 @@ impl Driver {
         &self,
         ctx: &mut TestContext<'_>,
         mut report: TestRunReport,
-        scenario_name: &str,
+        app_name: &str,
         scenario: TestScenario,
         file_path: &PathBuf,
     ) -> EyreResult<TestRunReport> {
         let scenario_report = self
-            .run_scenario(ctx, scenario_name, scenario, file_path)
+            .run_scenario(ctx, app_name, scenario, file_path)
             .await?;
 
         drop(
             report
                 .scenario_matrix
-                .entry(scenario_report.scenario_name.clone())
+                .entry(ctx.protocol_name.as_str().to_owned())
                 .or_default()
-                .insert(ctx.protocol_name.to_owned(), scenario_report),
+                .insert(app_name.to_owned(), scenario_report),
         );
 
         Ok(report)
@@ -364,7 +348,7 @@ impl Driver {
     async fn run_scenario(
         &self,
         ctx: &mut TestContext<'_>,
-        scenario_name: &str,
+        app_name: &str,
         scenario: TestScenario,
         file_path: &PathBuf,
     ) -> EyreResult<TestScenarioReport> {
@@ -379,7 +363,7 @@ impl Driver {
             .output_writer
             .write_str(&format!("Steps count: {}", scenario.steps.len()));
 
-        let mut report = TestScenarioReport::new(scenario_name.to_owned());
+        let mut report = TestScenarioReport::new(app_name.to_owned());
 
         let mut scenario_failed = false;
         for (i, step) in scenario.steps.iter().enumerate() {
@@ -515,54 +499,46 @@ impl TestRunReport {
 
     fn to_markdown(&self) -> EyreResult<String> {
         let mut markdown = String::new();
-
         writeln!(&mut markdown, "## E2E tests report")?;
 
-        for (scenario, protocols) in &self.scenario_matrix {
-            writeln!(&mut markdown, "### Scenario: {scenario}")?;
+        for (protocol, applications) in &self.scenario_matrix {
+            writeln!(&mut markdown, "### Protocol: {protocol}")?;
 
-            // Collecting all step names
-            let mut step_names = vec![];
-            for report in protocols.values() {
+            for (app_name, report) in applications {
+                let mut step_names = vec![];
                 for step in &report.steps {
                     if !step_names.contains(&step.step_name) {
                         step_names.push(step.step_name.clone());
                     }
                 }
-            }
 
-            // Write table header
-            write!(&mut markdown, "| Protocol/Step |")?;
-            for step_name in &step_names {
-                write!(&mut markdown, " {step_name} |")?;
-            }
-            writeln!(&mut markdown)?;
-
-            // Write table header separator
-            write!(&mut markdown, "| :--- |")?;
-            for _ in &step_names {
-                write!(&mut markdown, " :---: |")?;
-            }
-            writeln!(&mut markdown)?;
-
-            // Write table rows
-            for (protocol, report) in protocols {
-                write!(&mut markdown, "| {protocol} |")?;
+                // Write table header
+                write!(&mut markdown, "| Application/Step |")?;
+                for step_name in &step_names {
+                    write!(&mut markdown, " {step_name} |")?;
+                }
+                writeln!(&mut markdown)?;
+                // Write table header separator
+                write!(&mut markdown, "| :--- |")?;
+                for _ in &step_names {
+                    write!(&mut markdown, " :---: |")?;
+                }
+                writeln!(&mut markdown)?;
+                write!(&mut markdown, "| {app_name} |")?;
+                // Results row
                 for step_name in &step_names {
                     let result = report.steps.iter().find_map(|step| {
                         (&step.step_name == step_name).then_some(step.result.as_ref())
                     });
-
                     let result = match result {
                         None => "-",
                         Some(None) => ":fast_forward:",
                         Some(Some(Ok(_))) => ":white_check_mark:",
                         Some(Some(Err(_))) => ":x:",
                     };
-
                     write!(&mut markdown, " {result} |")?;
                 }
-                writeln!(&mut markdown)?;
+                writeln!(&mut markdown, "\n")?;
             }
             writeln!(&mut markdown)?;
         }
