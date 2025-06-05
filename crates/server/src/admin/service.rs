@@ -37,9 +37,8 @@ use crate::admin::handlers::applications::{
 };
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
-    create_context, delete_context, get_context, get_context_aliases, get_context_client_keys,
-    get_context_identities, get_context_storage, get_contexts, invite_to_context, join_context,
-    update_context_application,
+    create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
+    get_context_storage, get_contexts, invite_to_context, join_context, update_context_application,
 };
 use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::identity::generate_context_identity;
@@ -136,10 +135,6 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/identities-owned",
             get(get_context_identities::handler),
-        )
-        .route(
-            "/contexts/:context_id/aliases",
-            get(get_context_aliases::handler),
         )
         .route(
             "/contexts/:context_id/capabilities/grant",
@@ -247,10 +242,6 @@ pub(crate) fn setup(
         .route(
             "/dev/contexts/:context_id/identities-owned",
             get(get_context_identities::handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/aliases",
-            get(get_context_aliases::handler),
         )
         .route("/dev/contexts/:context_id", delete(delete_context::handler))
         .route(

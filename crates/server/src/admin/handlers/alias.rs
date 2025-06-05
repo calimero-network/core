@@ -1,10 +1,11 @@
-use axum::routing::{post, Router};
+use axum::routing::{get, post, Router};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 
 mod create_alias;
 mod delete_alias;
+mod list_alias;
 mod lookup_alias;
 
 pub fn service() -> Router {
@@ -38,8 +39,14 @@ pub fn service() -> Router {
             post(delete_alias::handler::<PublicKey>),
         );
 
+    let list_routes = Router::new()
+        .route("/context", get(list_alias::handler::<ContextId>))
+        .route("/application", get(list_alias::handler::<ApplicationId>))
+        .route("/identity/:context", get(list_alias::handler::<PublicKey>));
+
     Router::new()
         .nest("/create", create_routes)
         .nest("/lookup", lookup_routes)
         .nest("/delete", delete_routes)
+        .nest("/list", list_routes)
 }

@@ -2,7 +2,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    GetContextAliasesResponse, GetContextIdentitiesResponse, GetContextsResponse,
+    AliasRecord, GetContextIdentitiesResponse, ListAliasesResponse,
 };
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
@@ -90,7 +90,7 @@ pub enum ContextIdentityAliasSubcommand {
         context: Alias<ContextId>,
     },
 
-    #[command(about = "List all the aliases under the context",alias='ls')]
+    #[command(about = "List all the aliases under the context", alias = "ls")]
     List {
         #[arg(help = "The context whose aliases need to be listed")]
         #[arg(long, short, default_value = "default")]
@@ -194,61 +194,46 @@ impl ContextIdentityAliasCommand {
 
                 environment.output.write(&res);
             }
-            ContextIdentityAliasSubcommand::List { context, all } => {
+
+            ContextIdentityAliasSubcommand::List { context } => {
                 let client = Client::new();
-                let mut context_ids = vec![];
 
-                if all {
-                    let response: GetContextsResponse = do_request(
-                        &client,
-                        multiaddr_to_url(multiaddr, "/admin-api/dev/contexts")?,
-                        None::<()>,
-                        &config.identity,
-                        RequestType::Get,
-                    )
-                    .await?;
+                let resolve_response =
+                    resolve_alias(multiaddr, &config.identity, context, None).await?;
+                let context_id = resolve_response
+                    .value()
+                    .cloned()
+                    .ok_or_eyre("Failed to resolve context: no value found")?;
 
-                    for ctx in response.data.contexts {
-                        context_ids.push(ctx.id);
-                    }
-                } else {
-                    let resolve_response =
-                        resolve_alias(multiaddr, &config.identity, context, None).await?;
-                    let context_id = resolve_response
-                        .value()
-                        .cloned()
-                        .ok_or_eyre("Failed to resolve context: no value found")?;
-                    context_ids.push(context_id);
-                }
-                for ctx_id in context_ids {
-                    let ctx_response: GetContextAliasesResponse = do_request(
-                        &client,
-                        multiaddr_to_url(
-                            multiaddr,
-                            &format!("/admin-api/dev/contexts/{ctx_id}/aliases"),
-                        )?,
-                        None::<()>,
-                        &config.identity,
-                        RequestType::Get,
-                    )
-                    .await?;
-                    environment.output.write(&ErrorLine(&format!(
-                        "{c1:44} : {c2:44}",
-                        c1 = "Context ID",
-                        c2 = ctx_id,
-                    )));
+                let ctx_response: ListAliasesResponse<PublicKey> = do_request(
+                    &client,
+                    multiaddr_to_url(
+                        multiaddr,
+                        &format!("/admin-api/dev/aliases/identity/{context_id}"),
+                    )?,
+                    None::<()>,
+                    &config.identity,
+                    RequestType::Get,
+                )
+                .await?;
+
+                environment.output.write(&ErrorLine(&format!(
+                    "{c1:44} : {c2:44}",
+                    c1 = "Context ID",
+                    c2 = context_id,
+                )));
+                environment.output.write(&ErrorLine(&format!(
+                    "{c1:44} | {c2}",
+                    c1 = "Identity",
+                    c2 = "Alias",
+                )));
+
+                for AliasRecord { alias, value } in ctx_response.data {
                     environment.output.write(&ErrorLine(&format!(
                         "{c1:44} | {c2}",
-                        c1 = "Identity",
-                        c2 = "Alias",
+                        c1 = value,
+                        c2 = alias,
                     )));
-                    for aliases in ctx_response.data.aliases {
-                        environment.output.write(&ErrorLine(&format!(
-                            "{c1:44} | {c2}",
-                            c1 = aliases.identity,
-                            c2 = aliases.alias,
-                        )));
-                    }
                 }
             }
         }

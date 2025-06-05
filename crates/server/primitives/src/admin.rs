@@ -253,30 +253,22 @@ impl GetContextIdentitiesResponse {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ContextAlias {
-    pub alias: Alias<PublicKey>,
-    pub identity: PublicKey,
+pub struct AliasRecord<T> {
+    pub alias: Alias<T>,
+    pub value: T,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ContextAliasesResponseData {
-    pub aliases: Vec<ContextAlias>,
+pub struct ListAliasesResponse<T> {
+    pub data: Vec<AliasRecord<T>>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetContextAliasesResponse {
-    pub data: ContextAliasesResponseData,
-}
-
-impl GetContextAliasesResponse {
-    pub const fn new(aliases: Vec<ContextAlias>) -> Self {
-        Self {
-            data: ContextAliasesResponseData { aliases },
-        }
+impl<T> ListAliasesResponse<T> {
+    pub fn new(aliases: Vec<AliasRecord<T>>) -> Self {
+        Self { data: aliases }
     }
 }
 
