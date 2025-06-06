@@ -61,7 +61,7 @@ impl RevokePermissionCommand {
         let request: Vec<(PublicKey, ConfigCapability)> =
             vec![(revokee_id, self.capability.into())];
 
-        let _ = make_request::<_, RevokePermissionResponse>(
+        make_request::<_, RevokePermissionResponse>(
             environment,
             &client,
             url,
