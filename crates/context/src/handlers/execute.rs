@@ -52,8 +52,8 @@ impl Handler<ExecuteRequest> for ContextManager {
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         debug!(
-            context = %context_id,
-            executor = %executor,
+            %context_id,
+            %executor,
             method,
             aliases = ?aliases,
             payload_len = payload.len(),
