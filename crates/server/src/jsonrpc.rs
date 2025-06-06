@@ -10,7 +10,7 @@ use calimero_server_primitives::jsonrpc::{
 };
 use calimero_store::Store;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::config::ServerConfig;
 use crate::middleware::dev_auth::dev_mode_auth;
@@ -103,7 +103,7 @@ async fn handle_request(
     };
 
     if let ResponseBody::Error(err) = &body {
-        debug!(id=?request.id, %err, "request handling failed");
+        debug!(id=?request.id, ?err, "request handling failed");
     }
 
     PrimitiveResponse::new(request.jsonrpc, request.id, body).into()
