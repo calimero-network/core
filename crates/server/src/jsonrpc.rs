@@ -102,6 +102,10 @@ async fn handle_request(
         }
     };
 
+    if let ResponseBody::Error(err) = &body {
+        error!(id=?request.id, %err, "jsonrpc request handling failed");
+    }
+
     PrimitiveResponse::new(request.jsonrpc, request.id, body).into()
 }
 
