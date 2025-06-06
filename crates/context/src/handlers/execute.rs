@@ -149,11 +149,6 @@ impl Handler<ExecuteRequest> for ContextManager {
         let module_task = context_task.and_then(move |(guard, context), act, _ctx| {
             act.get_module(context.application_id)
                 .map_ok(move |module, _act, _ctx| (guard, context, module))
-                .map_err(|err, _act, _ctx| {
-                    error!(?err, "failed to initialize module for execution");
-
-                    err
-                })
         });
 
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
@@ -342,15 +337,21 @@ impl ContextManager {
             .into_actor(act)
         });
 
-        module_task.map_ok(move |(module, blob), act, _ctx| {
-            if let Some(blob) = blob {
-                if let Some(app) = act.applications.get_mut(&application_id) {
-                    app.blob = blob;
+        module_task
+            .map_ok(move |(module, blob), act, _ctx| {
+                if let Some(blob) = blob {
+                    if let Some(app) = act.applications.get_mut(&application_id) {
+                        app.blob = blob;
+                    }
                 }
-            }
 
-            module
-        })
+                module
+            })
+            .map_err(|err, _act, _ctx| {
+                error!(?err, "failed to initialize module for execution");
+
+                err
+            })
     }
 }
 
