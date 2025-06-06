@@ -185,11 +185,6 @@ impl Handler<ExecuteRequest> for ContextManager {
 
                 Ok((guard, context, outcome))
             }
-            .map_err(|err| {
-                error!(?err, "failed to execute request");
-
-                err
-            })
             .into_actor(act)
         });
 
@@ -248,8 +243,10 @@ impl Handler<ExecuteRequest> for ContextManager {
 
         let task = external_task
             .map_err(|err, _act, _ctx| {
-                err.downcast::<ExecuteError>()
-                    .unwrap_or_else(|_| ExecuteError::InternalError)
+                err.downcast::<ExecuteError>().unwrap_or_else(|err| {
+                    debug!(?err, "an error occurred while executing request");
+                    ExecuteError::InternalError
+                })
             })
             .map_ok(
                 move |(guard, root_hash, outcome), _act, _ctx| ExecuteResponse {

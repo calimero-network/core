@@ -87,7 +87,7 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
-    debug!(?request, "Received request");
+    debug!(id=?request.id, payload=%request.payload, "Received request");
 
     let body = match serde_json::from_value(request.payload) {
         Ok(payload) => match payload {
