@@ -306,7 +306,8 @@ impl ContextManager {
                         Err(err) => {
                             debug!(
                                 ?err,
-                                blob_id=?blob.compiled,
+                                %application_id,
+                                blob_id=%blob.compiled,
                                 "failed to load precompiled module, recompiling.."
                             );
                         }
@@ -314,8 +315,9 @@ impl ContextManager {
                 }
 
                 debug!(
-                    blob_id=?blob.compiled,
-                    "compiled blob not found, recompiling.."
+                    %application_id,
+                    blob_id=%blob.compiled,
+                    "no usable precompiled module found, compiling.."
                 );
 
                 let Some(bytecode) = node_client.get_blob_bytes(&blob.bytecode).await? else {
