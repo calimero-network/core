@@ -94,7 +94,7 @@ async fn handle_request(
             RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),
         },
         Err(err) => {
-            error!(%err, "Failed to deserialize RequestPayload");
+            debug!(%err, "Failed to deserialize RequestPayload");
 
             ResponseBody::Error(ResponseBodyError::ServerError(
                 ServerResponseError::ParseError(err.to_string()),
@@ -103,7 +103,7 @@ async fn handle_request(
     };
 
     if let ResponseBody::Error(err) = &body {
-        error!(id=?request.id, %err, "jsonrpc request handling failed");
+        debug!(id=?request.id, %err, "request handling failed");
     }
 
     PrimitiveResponse::new(request.jsonrpc, request.id, body).into()
