@@ -35,20 +35,31 @@ pub struct GrantPermissionCommand {
 
 impl GrantPermissionCommand {
     pub async fn run(self, environment: &Environment) -> eyre::Result<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let config = load_config(
+            &environment.args.home,
+            &environment.args.node.as_deref().unwrap_or("default"),
+        )
+        .await?;
         let multiaddr = fetch_multiaddr(&config)?;
+        let base_url = multiaddr_to_url(multiaddr, "")?;
+
         let client = Client::new();
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
+        let context_id = resolve_alias(&base_url, Some(&config.identity), self.context, None)
             .await?
             .value()
             .cloned()
             .ok_or_eyre("unable to resolve context")?;
-        let grantee_id = resolve_alias(multiaddr, &config.identity, self.grantee, Some(context_id))
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve grantee identity")?;
+        let grantee_id = resolve_alias(
+            &base_url,
+            Some(&config.identity),
+            self.grantee,
+            Some(context_id),
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve grantee identity")?;
 
         let endpoint = format!("admin-api/dev/contexts/{}/capabilities/grant", context_id);
         let url = multiaddr_to_url(multiaddr, &endpoint)?;
@@ -61,7 +72,7 @@ impl GrantPermissionCommand {
             &client,
             url,
             Some(request),
-            &config.identity,
+            Some(&config.identity),
             RequestType::Post,
         )
         .await
