@@ -1,8 +1,9 @@
+use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use reqwest::Client;
 
@@ -14,6 +15,26 @@ use crate::output::ErrorLine;
 
 mod alias;
 mod generate;
+mod grant;
+mod revoke;
+
+#[derive(Debug, Clone, ValueEnum, Copy)]
+#[clap(rename_all = "PascalCase")]
+pub enum Capability {
+    ManageApplication,
+    ManageMembers,
+    Proxy,
+}
+
+impl From<Capability> for ConfigCapability {
+    fn from(value: Capability) -> Self {
+        match value {
+            Capability::ManageApplication => ConfigCapability::ManageApplication,
+            Capability::ManageMembers => ConfigCapability::ManageMembers,
+            Capability::Proxy => ConfigCapability::Proxy,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context identities")]
@@ -46,6 +67,8 @@ pub enum ContextIdentitySubcommand {
         #[arg(long, short, help = "Force overwrite if alias already exists")]
         force: bool,
     },
+    Grant(grant::GrantPermissionCommand),
+    Revoke(revoke::RevokePermissionCommand),
 }
 
 impl ContextIdentityCommand {
@@ -133,6 +156,8 @@ impl ContextIdentityCommand {
 
                 Ok(())
             }
+            ContextIdentitySubcommand::Grant(grant) => grant.run(environment).await,
+            ContextIdentitySubcommand::Revoke(revoke) => revoke.run(environment).await,
         }
     }
 }
