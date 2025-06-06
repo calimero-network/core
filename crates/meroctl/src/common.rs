@@ -80,7 +80,10 @@ where
     if !response.status().is_success() {
         bail!(ApiError {
             status_code: response.status().as_u16(),
-            message: response.text().await?,
+            message: response
+                .text()
+                .await
+                .map_err(|e| eyre!("Failed to get response text: {e}"))?,
         });
     }
 

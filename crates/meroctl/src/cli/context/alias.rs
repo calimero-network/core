@@ -9,7 +9,7 @@ use crate::cli::{ApiError, ConnectionInfo, Environment};
 use crate::common::{
     create_alias, delete_alias, do_request, lookup_alias, resolve_alias, RequestType,
 };
-use crate::output::{ErrorLine, WarnLine};
+use crate::output::{ErrorLine, InfoLine, WarnLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context aliases")]
@@ -107,7 +107,8 @@ impl ContextAliasCommand {
                     None,
                     context_id,
                 )
-                .await?;
+                .await
+                .map_err(|e| eyre!("Failed to create alias: {}", e))?;
                 environment.output.write(&res);
             }
 
@@ -131,7 +132,18 @@ impl ContextAliasCommand {
                 )
                 .await?;
 
-                environment.output.write(&res);
+                let response_str = match serde_json::to_string(&res) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        environment.output.write(&ErrorLine(&format!(
+                            "Failed to serialize alias lookup response: {}",
+                            e
+                        )));
+                        return Ok(());
+                    }
+                };
+
+                environment.output.write(&InfoLine(&response_str));
             }
         }
 
