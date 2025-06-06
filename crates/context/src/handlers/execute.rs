@@ -211,7 +211,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                     return Ok((guard, context.root_hash, outcome));
                 }
 
-                if !is_state_op {
+                if !(is_state_op || outcome.artifact.is_empty()) {
                     node_client
                         .broadcast(&context, &executor, &sender_key, outcome.artifact.clone())
                         .await?;
