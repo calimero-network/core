@@ -38,6 +38,7 @@ pub struct NodeManager {
     // todo! potentially make this a dashmap::DashMap
     // todo! use cached::TimedSizedCache with a gc task
     blob_cache: BTreeMap<BlobId, Arc<Mutex<Option<Arc<[u8]>>>>>,
+    // fixme! this should be opaque, so we can permit mmapping blobs
 }
 
 impl NodeManager {

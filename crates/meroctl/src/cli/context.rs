@@ -40,6 +40,12 @@ pub const EXAMPLES: &str = r"
 
   # Create a new context in dev mode
   $ meroctl --  --node-name node1 context create --watch <path> -c <contextId>
+
+  # Grant permission to manage applications
+  $ meroctl context identity grant bob ManageApplication --as alice
+  
+  # Revoke permission to manage members
+  $ meroctl context identity revoke bob ManageMembers --as alice
 ";
 
 #[derive(Debug, Parser)]
