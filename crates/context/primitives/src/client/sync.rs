@@ -99,7 +99,7 @@ impl ContextClient {
             if !self.node_client.has_application(&application.id)? {
                 let source: Url = application.source.into();
 
-                let metadata = application.metadata.to_vec();
+                let metadata = application.metadata;
 
                 let derived_application_id = match source.scheme() {
                     "http" | "https" => {
@@ -108,6 +108,7 @@ impl ContextClient {
                             .await?
                     }
                     _ => {
+                        // fixme! we shouldn't assume both nodes run on the same machine
                         self.node_client
                             .install_application_from_path(source.path().into(), metadata)
                             .await?
