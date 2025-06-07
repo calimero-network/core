@@ -253,6 +253,44 @@ impl GetContextIdentitiesResponse {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AliasRecord<T> {
+    pub alias: Alias<T>,
+    pub value: T,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAliasesResponse<T> {
+    pub data: Vec<AliasRecord<T>>,
+}
+
+impl<T> ListAliasesResponse<T> {
+    pub fn new(aliases: Vec<AliasRecord<T>>) -> Self {
+        Self { data: aliases }
+    }
+}
+
+pub trait Report {
+    fn report(&self) -> String;
+}
+
+impl Report for ListAliasesResponse<PublicKey> {
+    fn report(&self) -> String {
+        use std::fmt::Write;
+        let mut output = String::new();
+
+        writeln!(output, "{c1:44} | {c2}", c1 = "Identity", c2 = "Alias").unwrap();
+
+        for AliasRecord { alias, value } in &self.data {
+            writeln!(output, "{c1:44} | {c2}", c1 = value, c2 = alias).unwrap();
+        }
+
+        output
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetContextClientKeysResponseData {

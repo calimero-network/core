@@ -131,7 +131,8 @@ enum ContextIdentityAliasSubcommands {
     #[command(about = "List context identity aliases", alias = "ls")]
     List {
         /// The context whose aliases we're listing
-        context: Option<Alias<ContextId>>,
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
     },
 }
 
@@ -415,17 +416,10 @@ fn handle_alias_command(
                 c2 = "Identity",
                 c3 = "Alias",
             );
-            let context_id = if let Some(ctx) = context {
-                node_client
-                    .resolve_alias(ctx, None)?
-                    .ok_or_eyre("unable to resolve context alias")?
-            } else {
-                let default_alias: Alias<ContextId> =
-                    "default".parse().expect("'default' is a valid alias name");
-                node_client
-                    .lookup_alias(default_alias, None)?
-                    .ok_or_eyre("unable to resolve default context")?
-            };
+            let context_id = node_client
+                .resolve_alias(context, None)?
+                .ok_or_eyre("unable to resolve context alias")?;
+
             for (alias, identity, scope) in
                 node_client.list_aliases::<PublicKey>(Some(context_id))?
             {

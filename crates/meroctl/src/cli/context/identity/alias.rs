@@ -1,7 +1,9 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::GetContextIdentitiesResponse;
+use calimero_server_primitives::admin::{
+    AliasRecord, GetContextIdentitiesResponse, ListAliasesResponse, Report,
+};
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
@@ -10,8 +12,8 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{
-    create_alias, delete_alias, fetch_multiaddr, load_config, lookup_alias, multiaddr_to_url,
-    resolve_alias,
+    create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
+    multiaddr_to_url, resolve_alias, RequestType,
 };
 use crate::output::ErrorLine;
 
@@ -84,6 +86,13 @@ pub enum ContextIdentityAliasSubcommand {
         identity: Alias<PublicKey>,
 
         #[arg(help = "The context that the identity is a member of")]
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+    },
+
+    #[command(about = "List all the aliases under the context", alias = "ls")]
+    List {
+        #[arg(help = "The context whose aliases need to be listed")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
@@ -184,6 +193,37 @@ impl ContextIdentityAliasCommand {
                     lookup_alias(multiaddr, &config.identity, identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
+            }
+
+            ContextIdentityAliasSubcommand::List { context } => {
+                let client = Client::new();
+
+                let resolve_response =
+                    resolve_alias(multiaddr, &config.identity, context, None).await?;
+                let context_id = resolve_response
+                    .value()
+                    .cloned()
+                    .ok_or_eyre("Failed to resolve context: no value found")?;
+
+                let ctx_response: ListAliasesResponse<PublicKey> = do_request(
+                    &client,
+                    multiaddr_to_url(
+                        multiaddr,
+                        &format!("/admin-api/dev/aliases/identity/{context_id}"),
+                    )?,
+                    None::<()>,
+                    &config.identity,
+                    RequestType::Get,
+                )
+                .await?;
+
+                environment.output.write(&ErrorLine(&format!(
+                    "{c1:44} : {c2:44}",
+                    c1 = "Context ID",
+                    c2 = context_id,
+                )));
+
+                environment.output.write(&ErrorLine(&ctx_response.report()));
             }
         }
 
