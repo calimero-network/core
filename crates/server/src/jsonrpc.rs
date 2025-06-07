@@ -10,7 +10,7 @@ use calimero_server_primitives::jsonrpc::{
 };
 use calimero_store::Store;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::config::ServerConfig;
 use crate::middleware::dev_auth::dev_mode_auth;
@@ -87,20 +87,24 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     Json(request): Json<PrimitiveRequest<serde_json::Value>>,
 ) -> Json<PrimitiveResponse> {
-    debug!(?request, "Received request");
+    debug!(id=?request.id, payload=%request.payload, "Received request");
 
     let body = match serde_json::from_value(request.payload) {
         Ok(payload) => match payload {
             RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),
         },
         Err(err) => {
-            error!(%err, "Failed to deserialize RequestPayload");
+            debug!(%err, "Failed to deserialize RequestPayload");
 
             ResponseBody::Error(ResponseBodyError::ServerError(
                 ServerResponseError::ParseError(err.to_string()),
             ))
         }
     };
+
+    if let ResponseBody::Error(err) = &body {
+        debug!(id=?request.id, ?err, "request handling failed");
+    }
 
     PrimitiveResponse::new(request.jsonrpc, request.id, body).into()
 }

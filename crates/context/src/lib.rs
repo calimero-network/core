@@ -9,7 +9,7 @@ use actix::Actor;
 use calimero_context_config::client::config::ClientConfig as ExternalClientConfig;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::blobs::BlobId;
+use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 use either::Either;
@@ -21,7 +21,6 @@ pub mod handlers;
 #[derive(Debug)]
 struct ContextMeta {
     meta: Context,
-    blob: BlobId,
     lock: Arc<Mutex<ContextId>>,
 }
 
@@ -36,10 +35,14 @@ pub struct ContextManager {
 
     external_config: ExternalClientConfig,
 
-    // -- contexts --
     // todo! potentially make this a dashmap::DashMap
     // todo! use cached::TimedSizedCache with a gc task
     contexts: BTreeMap<ContextId, ContextMeta>,
+    // even when 2 applications point to the same bytecode,
+    // the application's metadata may include information
+    // that might be relevant in the compilation process,
+    // so we cannot blindly reuse compiled blobs across apps.
+    applications: BTreeMap<ApplicationId, Application>,
     //
     // todo! when runtime let's us compile blobs separate from its
     // todo! execution, we can introduce a cached::TimedSizedCache
@@ -61,6 +64,7 @@ impl ContextManager {
             external_config,
 
             contexts: BTreeMap::new(),
+            applications: BTreeMap::new(),
         }
     }
 }
@@ -89,17 +93,9 @@ impl ContextManager {
         let entry = self.contexts.entry(*context_id);
 
         match entry {
-            btree_map::Entry::Occupied(occupied) => return Ok(Some(occupied.into_mut())),
+            btree_map::Entry::Occupied(occupied) => Ok(Some(occupied.into_mut())),
             btree_map::Entry::Vacant(vacant) => {
                 let Some(context) = self.context_client.get_context(context_id)? else {
-                    return Ok(None);
-                };
-
-                let Some(application) =
-                    self.node_client.get_application(&context.application_id)?
-                else {
-                    // todo! should we error here?
-
                     return Ok(None);
                 };
 
@@ -107,11 +103,10 @@ impl ContextManager {
 
                 let item = vacant.insert(ContextMeta {
                     meta: context,
-                    blob: application.blob,
                     lock,
                 });
 
-                return Ok(Some(item));
+                Ok(Some(item))
             }
         }
     }
