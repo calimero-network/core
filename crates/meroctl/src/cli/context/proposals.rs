@@ -2,7 +2,6 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
-    GetNumberOfActiveProposalsResponse, GetNumberOfProposalApprovalsResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
 use clap::{Parser, Subcommand};
@@ -92,21 +91,6 @@ impl Report for GetProposalResponse {
         }
 
         println!("\n{actions_table}");
-    }
-}
-
-impl Report for GetNumberOfProposalApprovalsResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        table.load_preset(comfy_table::presets::UTF8_FULL);
-        table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
-
-        let _ = table.set_header(vec![Cell::new("Approval Count").fg(Color::Blue)]);
-        let _ = table.add_row(vec![format!(
-            "Number of Approvals: {}",
-            self.data.num_approvals
-        )]);
-        println!("{table}");
     }
 }
 
@@ -201,27 +185,15 @@ impl ProposalsCommand {
                     .cloned()
                     .ok_or_eyre("unable to resolve context")?;
 
-                if let Err(e) = self
-                    .get_proposal(
-                        environment,
-                        multiaddr,
-                        &client,
-                        &config.identity,
-                        context_id,
-                        proposal_id,
-                    )
-                    .await
-                {
-                    if let Some(reqwest_error) = e.downcast_ref::<reqwest::Error>() {
-                        if let Some(status) = reqwest_error.status() {
-                            if status == reqwest::StatusCode::NOT_FOUND {
-                                println!("Proposal not found");
-                                return Ok(());
-                            }
-                        }
-                    }
-                    return Err(e);
-                }
+                self.get_proposal(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    context_id,
+                    proposal_id,
+                )
+                .await?;
 
                 self.get_proposal_approvers(
                     environment,
