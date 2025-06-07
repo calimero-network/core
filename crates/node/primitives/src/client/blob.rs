@@ -12,6 +12,10 @@ use crate::messages::get_blob_bytes::GetBlobBytesRequest;
 use crate::messages::NodeMessage;
 
 impl NodeClient {
+    // todo! maybe this should be an actor method?
+    // todo! so we can cache the blob in case it's
+    // todo! to be immediately used? might require
+    // todo! refactoring the blobstore API
     pub async fn add_blob<S: AsyncRead>(
         &self,
         stream: S,
@@ -43,6 +47,10 @@ impl NodeClient {
     }
 
     pub async fn get_blob_bytes(&self, blob_id: &BlobId) -> eyre::Result<Option<Arc<[u8]>>> {
+        if **blob_id == [0; 32] {
+            return Ok(None);
+        }
+
         let (tx, rx) = oneshot::channel();
 
         self.node_manager

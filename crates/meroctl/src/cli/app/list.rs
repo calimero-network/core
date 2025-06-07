@@ -27,7 +27,7 @@ impl Report for ListApplicationsResponse {
                 app.id.to_string(),
                 app.source.to_string(),
                 format!("{} bytes", app.size),
-                app.blob.to_string(),
+                app.blob.bytecode.to_string(),
             ]);
         }
         println!("{table}");
