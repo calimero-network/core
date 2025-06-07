@@ -201,7 +201,7 @@ impl ProposalsCommand {
                     .cloned()
                     .ok_or_eyre("unable to resolve context")?;
 
-                match self
+                if let Err(e) = self
                     .get_proposal(
                         environment,
                         multiaddr,
@@ -212,71 +212,30 @@ impl ProposalsCommand {
                     )
                     .await
                 {
-                    Ok(_) => {
-                        self.get_proposal_approvers(
-                            environment,
-                            multiaddr,
-                            &client,
-                            &config.identity,
-                            context_id,
-                            proposal_id,
-                        )
-                        .await?;
-
-                        self.get_number_of_proposal_approvals(
-                            environment,
-                            multiaddr,
-                            &client,
-                            &config.identity,
-                            context_id,
-                            proposal_id,
-                        )
-                        .await?;
-
-                        Ok(())
-                    }
-                    Err(e) => {
-                        if let Some(reqwest_error) = e.downcast_ref::<reqwest::Error>() {
-                            if let Some(status) = reqwest_error.status() {
-                                if status == reqwest::StatusCode::NOT_FOUND {
-                                    println!("Proposal not found");
-                                    return Ok(());
-                                }
+                    if let Some(reqwest_error) = e.downcast_ref::<reqwest::Error>() {
+                        if let Some(status) = reqwest_error.status() {
+                            if status == reqwest::StatusCode::NOT_FOUND {
+                                println!("Proposal not found");
+                                return Ok(());
                             }
                         }
-
-                        Err(e)
                     }
+                    return Err(e);
                 }
+
+                self.get_proposal_approvers(
+                    environment,
+                    multiaddr,
+                    &client,
+                    &config.identity,
+                    context_id,
+                    proposal_id,
+                )
+                .await?;
+
+                Ok(())
             }
         }
-    }
-
-    async fn get_number_of_proposal_approvals(
-        &self,
-        environment: &Environment,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-        context_id: ContextId,
-        proposal_id: &Hash,
-    ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!(
-                "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
-                context_id, proposal_id
-            ),
-        )?;
-        make_request::<_, GetNumberOfProposalApprovalsResponse>(
-            environment,
-            client,
-            url,
-            None::<()>,
-            keypair,
-            RequestType::Get,
-        )
-        .await
     }
 
     async fn get_proposal_approvers(
