@@ -272,6 +272,24 @@ impl<T> ListAliasesResponse<T> {
     }
 }
 
+pub trait Report {
+    fn report(&self) -> String;
+}
+
+impl Report for ListAliasesResponse<PublicKey> {
+    fn report(&self) -> String {
+        let mut output = String::new();
+
+        output.push_str(&format!("{c1:44} | {c2}\n", c1 = "Identity", c2 = "Alias",));
+
+        for AliasRecord { alias, value } in &self.data {
+            output.push_str(&format!("{c1:44} | {c2}\n", c1 = value, c2 = alias,));
+        }
+
+        output
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetContextClientKeysResponseData {

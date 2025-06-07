@@ -5,7 +5,7 @@ use calimero_primitives::identity::PublicKey;
 
 mod create_alias;
 mod delete_alias;
-mod list_alias;
+mod list_aliases;
 mod lookup_alias;
 
 pub fn service() -> Router {
@@ -40,9 +40,12 @@ pub fn service() -> Router {
         );
 
     let list_routes = Router::new()
-        .route("/context", get(list_alias::handler::<ContextId>))
-        .route("/application", get(list_alias::handler::<ApplicationId>))
-        .route("/identity/:context", get(list_alias::handler::<PublicKey>));
+        .route("/context", get(list_aliases::handler::<ContextId>))
+        .route("/application", get(list_aliases::handler::<ApplicationId>))
+        .route(
+            "/identity/:context",
+            get(list_aliases::handler::<PublicKey>),
+        );
 
     Router::new()
         .nest("/create", create_routes)

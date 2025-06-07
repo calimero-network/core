@@ -2,7 +2,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    AliasRecord, GetContextIdentitiesResponse, ListAliasesResponse,
+    AliasRecord, GetContextIdentitiesResponse, ListAliasesResponse, Report,
 };
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
@@ -222,19 +222,8 @@ impl ContextIdentityAliasCommand {
                     c1 = "Context ID",
                     c2 = context_id,
                 )));
-                environment.output.write(&ErrorLine(&format!(
-                    "{c1:44} | {c2}",
-                    c1 = "Identity",
-                    c2 = "Alias",
-                )));
 
-                for AliasRecord { alias, value } in ctx_response.data {
-                    environment.output.write(&ErrorLine(&format!(
-                        "{c1:44} | {c2}",
-                        c1 = value,
-                        c2 = alias,
-                    )));
-                }
+                environment.output.write(&ErrorLine(&ctx_response.report()));
             }
         }
 
