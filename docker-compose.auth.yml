@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # Reverse proxy that handles authentication
+  proxy:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--accesslog=true"
+    ports:
+      - "80:80"
+      - "8080:8080" # Traefik Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      - "traefik.enable=true"
+
+  # Authentication service
+  auth:
+    image: calimero/auth:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.auth
+    environment:
+      - AUTH_NODE_URL=http://node:3000
+      - AUTH_LISTEN_ADDR=0.0.0.0:3001
+      - AUTH_STORAGE__TYPE=rocksdb
+      - AUTH_STORAGE__PATH=/data/auth_db
+    volumes:
+      - auth_data:/data
+    labels:
+      # Route all /auth/* paths to the auth service
+      - "traefik.http.routers.auth.rule=PathPrefix(`/auth`)"
+      - "traefik.http.routers.auth.entrypoints=web"
+      - "traefik.http.services.auth.loadbalancer.server.port=3001"
+      # Forward auth middleware for all other paths
+      - "traefik.http.middlewares.auth-forward.forwardauth.address=http://auth:3001/auth/validate"
+      - "traefik.http.middlewares.auth-forward.forwardauth.authResponseHeaders=X-Auth-User,X-Auth-Permissions"
+    
+  # Calimero node 
+  node:
+    image: calimero/merod:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: --node-name node1 run --auth-mode forward
+    volumes:
+      - node_data:/data
+    labels:
+      # Route all non-auth paths to the node, with auth middleware
+      - "traefik.http.routers.node.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.node.entrypoints=web"
+      - "traefik.http.routers.node.middlewares=auth-forward@docker"
+      - "traefik.http.services.node.loadbalancer.server.port=3000"
+
+volumes:
+  auth_data:
+  node_data: 
