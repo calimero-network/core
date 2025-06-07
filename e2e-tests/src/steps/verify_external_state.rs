@@ -50,7 +50,8 @@ impl Test for VerifyExternalStateStep {
     async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         ctx.output_writer.write_str(&format!(
             "Verifying external contract state in {} protocol for contract: {}",
-            ctx.protocol_name, self.contract_id
+            ctx.protocol_name.as_str(),
+            self.contract_id
         ));
 
         let max_retries = self.retries.unwrap_or(1);
