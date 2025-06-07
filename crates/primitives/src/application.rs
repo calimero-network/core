@@ -9,7 +9,7 @@ use url::{ParseError, Url};
 use crate::blobs::BlobId;
 use crate::hash::{Hash, HashError};
 
-#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, Ord, PartialOrd)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
@@ -104,11 +104,21 @@ impl Display for ApplicationSource {
     }
 }
 
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
+pub struct ApplicationBlob {
+    pub bytecode: BlobId,
+    pub compiled: BlobId,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Application {
     pub id: ApplicationId,
-    pub blob: BlobId,
+    pub blob: ApplicationBlob,
     pub size: u64,
     pub source: ApplicationSource,
     pub metadata: Vec<u8>,
@@ -118,7 +128,7 @@ impl Application {
     #[must_use]
     pub const fn new(
         id: ApplicationId,
-        blob: BlobId,
+        blob: ApplicationBlob,
         size: u64,
         source: ApplicationSource,
         metadata: Vec<u8>,

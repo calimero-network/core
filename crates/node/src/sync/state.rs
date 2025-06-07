@@ -197,7 +197,7 @@ impl SyncManager {
             .get_application(&context.application_id)?
             .ok_or_eyre("fatal: the application (even if just a sparse reference) should exist")?;
 
-        if !self.node_client.has_blob(&application.blob)? {
+        if !self.node_client.has_blob(&application.blob.bytecode)? {
             debug!(
                 context_id=%context.id,
                 application_id=%context.application_id,
@@ -207,7 +207,7 @@ impl SyncManager {
             self.initiate_blob_share_process(
                 &context,
                 our_identity,
-                application.blob,
+                application.blob.bytecode,
                 application.size,
                 stream,
             )
