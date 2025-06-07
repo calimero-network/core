@@ -4,23 +4,19 @@ use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
+use mero_devnet::output::{OutputFormat, OutputWriter};
+use mero_devnet::Config;
 use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-mod config;
 mod driver;
 mod meroctl;
-mod merod;
-mod output;
-mod protocol;
 mod steps;
 
-use config::Config;
 use driver::{Driver, TestRunReport};
-use output::{OutputFormat, OutputWriter};
 
 pub const EXAMPLES: &str = r"
   # Run from the repository root with debug binaries
@@ -142,7 +138,7 @@ impl From<RootArgs> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            protocols: val.protocols,
+            protocols: val.protocols.clone(),
         }
     }
 }

@@ -35,6 +35,7 @@ calimero-config.workspace = true
 calimero-context-config.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
+mero-devnet.workspace = true
 
 [lints]
 workspace = true

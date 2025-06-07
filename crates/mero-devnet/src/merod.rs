@@ -9,10 +9,11 @@ use tokio::process::{Child, Command};
 
 use crate::output::OutputWriter;
 
+#[derive(Default)]
 pub struct Merod {
     pub name: String,
     process: RefCell<Option<Child>>,
-    home_dir: Utf8PathBuf,
+    pub home_dir: Utf8PathBuf,
     log_dir: Utf8PathBuf,
     binary: Utf8PathBuf,
     output_writer: OutputWriter,
@@ -44,6 +45,7 @@ impl Merod {
         server_port: u16,
         args: impl IntoIterator<Item = &'a str>,
     ) -> EyreResult<()> {
+        create_dir_all(&self.home_dir).await?;
         create_dir_all(&self.log_dir).await?;
 
         let mut child = self
@@ -67,15 +69,7 @@ impl Merod {
             bail!("Failed to initialize node '{}'", self.name);
         }
 
-        let config_args = [
-            "config",
-            "sync.timeout_ms=120000", // tolerable for now
-            "sync.interval_ms=0",     // sync on every frequency tick
-            "sync.frequency_ms=10000",
-            "bootstrap.nodes=[]",
-        ]
-        .into_iter()
-        .chain(args);
+        let config_args = ["config"].into_iter().chain(args);
 
         let mut child = self.run_cmd(config_args, "config").await?;
         let result = child.wait().await?;

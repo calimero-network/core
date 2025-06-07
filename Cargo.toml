@@ -13,6 +13,7 @@ members = [
     "./crates/context/config",
     "./crates/context/primitives",
     "./crates/crypto",
+    "./crates/mero-devnet",
     "./crates/meroctl",
     "./crates/merod",
     "./crates/network",
@@ -35,7 +36,7 @@ members = [
 
     "./apps/kv-store",
 
-    "./e2e-tests",
+    "./e2e-tests", 
 ]
 
 [workspace.dependencies]
@@ -91,6 +92,7 @@ near-jsonrpc-primitives = "0.27.0"
 near-primitives = "0.27.0"
 near-sdk = "5.5.0"
 near-workspaces = "0.15.0"
+nix = { version = "0.29.0", features = ["signal"] }
 notify = "6.1.1"
 ouroboros = "0.18.5"
 owo-colors = "3.5.0"
@@ -149,6 +151,7 @@ calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config" }
 calimero-context-primitives = { path = "./crates/context/primitives" }
 calimero-crypto = { path = "./crates/crypto" }
+mero-devnet = { path = "./crates/mero-devnet" }
 meroctl = { path = "./crates/meroctl" }
 merod = { path = "./crates/merod" }
 calimero-network = { path = "./crates/network" }

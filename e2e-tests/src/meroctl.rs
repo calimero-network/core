@@ -4,9 +4,8 @@ use std::process::Stdio;
 
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
+use mero_devnet::output::OutputWriter;
 use tokio::process::Command;
-
-use crate::output::OutputWriter;
 
 pub struct Meroctl {
     home_dir: Utf8PathBuf,

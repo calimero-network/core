@@ -2,7 +2,7 @@ use clap::ValueEnum;
 use eyre::{Ok, Result as EyreResult};
 use serde::Serialize;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct OutputWriter {
     format: OutputFormat,
 }
