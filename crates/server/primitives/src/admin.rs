@@ -278,12 +278,13 @@ pub trait Report {
 
 impl Report for ListAliasesResponse<PublicKey> {
     fn report(&self) -> String {
+        use std::fmt::Write;
         let mut output = String::new();
 
-        output.push_str(&format!("{c1:44} | {c2}\n", c1 = "Identity", c2 = "Alias",));
+        writeln!(output, "{c1:44} | {c2}", c1 = "Identity", c2 = "Alias").unwrap();
 
         for AliasRecord { alias, value } in &self.data {
-            output.push_str(&format!("{c1:44} | {c2}\n", c1 = value, c2 = alias,));
+            writeln!(output, "{c1:44} | {c2}", c1 = value, c2 = alias).unwrap();
         }
 
         output
