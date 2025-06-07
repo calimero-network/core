@@ -33,13 +33,17 @@ impl Report for GetContextsResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let config = load_config(
+            &environment.args.home,
+            environment.args.node.as_deref().unwrap_or_default(),
+        )
+        .await?;
 
         let response: GetContextsResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts")?,
             None::<()>,
-            &config.identity,
+            Some(&config.identity),
             RequestType::Get,
         )
         .await?;
