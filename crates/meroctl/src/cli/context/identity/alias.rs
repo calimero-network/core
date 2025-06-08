@@ -1,9 +1,7 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{
-    AliasRecord, GetContextIdentitiesResponse, ListAliasesResponse, Report,
-};
+use calimero_server_primitives::admin::{GetContextIdentitiesResponse, ListAliasesResponse};
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
@@ -13,7 +11,7 @@ use reqwest::Client;
 use crate::cli::Environment;
 use crate::common::{
     create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
-    multiaddr_to_url, resolve_alias, RequestType,
+    make_request, multiaddr_to_url, resolve_alias, RequestType,
 };
 use crate::output::ErrorLine;
 
@@ -205,7 +203,8 @@ impl ContextIdentityAliasCommand {
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
 
-                let ctx_response: ListAliasesResponse<PublicKey> = do_request(
+                make_request::<(), ListAliasesResponse<PublicKey>>(
+                    &environment,
                     &client,
                     multiaddr_to_url(
                         multiaddr,
@@ -216,14 +215,6 @@ impl ContextIdentityAliasCommand {
                     RequestType::Get,
                 )
                 .await?;
-
-                environment.output.write(&ErrorLine(&format!(
-                    "{c1:44} : {c2:44}",
-                    c1 = "Context ID",
-                    c2 = context_id,
-                )));
-
-                environment.output.write(&ErrorLine(&ctx_response.report()));
             }
         }
 

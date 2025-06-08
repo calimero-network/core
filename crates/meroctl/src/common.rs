@@ -8,7 +8,8 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias,
-    CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, LookupAliasResponse,
+    CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, ListAliasesResponse,
+    LookupAliasResponse,
 };
 use camino::Utf8Path;
 use chrono::Utc;
@@ -428,4 +429,23 @@ where
         .map(ResolveResponseValue::Parsed);
 
     Ok(ResolveResponse { alias, value })
+}
+
+impl<T: fmt::Display + ScopedAlias + Eq> Report for ListAliasesResponse<T> {
+    fn report(&self) -> () {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Value").fg(Color::Blue),
+            Cell::new("Alias").fg(Color::Blue),
+        ]);
+
+        for (alias, value) in &self.data {
+            let _ = table.add_row(vec![
+                Cell::new(&value.to_string()),
+                Cell::new(alias.as_str()),
+            ]);
+        }
+
+        table.to_string();
+    }
 }

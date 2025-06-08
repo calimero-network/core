@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
 use calimero_context_config::{Proposal, ProposalWithApprovals};
-use calimero_primitives::alias::Alias;
+use calimero_primitives::alias::{Alias, ScopedAlias};
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
@@ -255,39 +257,19 @@ impl GetContextIdentitiesResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AliasRecord<T> {
-    pub alias: Alias<T>,
-    pub value: T,
+pub struct ListAliasesResponse<T>
+where
+    T: ScopedAlias + Eq,
+{
+    pub data: HashMap<Alias<T>, T>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ListAliasesResponse<T> {
-    pub data: Vec<AliasRecord<T>>,
-}
-
-impl<T> ListAliasesResponse<T> {
-    pub fn new(aliases: Vec<AliasRecord<T>>) -> Self {
-        Self { data: aliases }
-    }
-}
-
-pub trait Report {
-    fn report(&self) -> String;
-}
-
-impl Report for ListAliasesResponse<PublicKey> {
-    fn report(&self) -> String {
-        use std::fmt::Write;
-        let mut output = String::new();
-
-        writeln!(output, "{c1:44} | {c2}", c1 = "Identity", c2 = "Alias").unwrap();
-
-        for AliasRecord { alias, value } in &self.data {
-            writeln!(output, "{c1:44} | {c2}", c1 = value, c2 = alias).unwrap();
-        }
-
-        output
+impl<T> ListAliasesResponse<T>
+where
+    T: ScopedAlias + Eq,
+{
+    pub fn new(data: HashMap<Alias<T>, T>) -> Self {
+        Self { data }
     }
 }
 

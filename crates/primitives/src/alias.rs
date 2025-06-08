@@ -3,6 +3,7 @@
 mod tests;
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::str::FromStr;
 
@@ -144,5 +145,11 @@ impl<'de, T> Deserialize<'de> for Alias<T> {
         }
 
         deserializer.deserialize_str(AliasVisitor(PhantomData))
+    }
+}
+
+impl<T> Hash for Alias<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
     }
 }
