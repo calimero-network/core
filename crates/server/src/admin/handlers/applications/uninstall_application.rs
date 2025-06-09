@@ -14,7 +14,7 @@ pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<UninstallApplicationRequest>,
 ) -> impl IntoResponse {
-    match state.ctx_manager.uninstall_application(req.application_id) {
+    match state.node_client.uninstall_application(&req.application_id) {
         Ok(()) => ApiResponse {
             payload: UninstallApplicationResponse::new(req.application_id),
         }

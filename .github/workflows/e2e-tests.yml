@@ -12,8 +12,6 @@ on:
       - 'e2e-tests/**'
   pull_request:
     types: [opened, synchronize, reopened]
-    branches:
-      - master
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -67,6 +65,7 @@ jobs:
     strategy:
       matrix:
         protocol: [near, icp, stellar, ethereum]
+      fail-fast: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -170,7 +169,10 @@ jobs:
       - name: Run e2e Tests
         id: e2e-tests
         env:
-          NO_COLOR: '1'
+          NO_COLOR: 1
+          RUST_LOG: calimero_=debug
+          CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS: 1
+
         run: |
           echo "Running e2e tests for ${{ matrix.protocol }}"
 
@@ -182,7 +184,7 @@ jobs:
             --output-dir ./e2e-tests/corpus \
             --merod-binary ./target/debug/merod \
             --meroctl-binary ./target/debug/meroctl \
-            --scenarios ${{ matrix.protocol }}
+            --protocols ${{ matrix.protocol }}
 
       - name: Upload Test Artifacts
         if: ${{ !cancelled() }}

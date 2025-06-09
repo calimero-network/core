@@ -6,6 +6,9 @@ use const_format::concatcp;
 use eyre::Result as EyreResult;
 use rand::Rng;
 use tokio::fs::{create_dir_all, read_to_string, remove_dir_all};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 mod config;
 mod driver;
@@ -24,7 +27,7 @@ pub const EXAMPLES: &str = r"
   $ e2e-tests --input-dir ./e2e-tests/config
     --output-dir ./e2e-tests/corpus
     --merod-binary ./target/debug/merod
-    --meroctl-binary ./target/debug/meroctl 
+    --meroctl-binary ./target/debug/meroctl
 ";
 
 #[derive(Debug, Parser)]
@@ -57,13 +60,8 @@ pub enum Commands {
 }
 
 #[derive(Debug, Args)]
-#[command(author, version, about, long_about = None)]
-#[command(after_help = concatcp!(
-    "Examples:",
-    EXAMPLES
-))]
 pub struct RootArgs {
-    /// Directory containing the test configuration and test scenarios.
+    /// Directory containing the test configuration and test protocols.
     /// In root directory, there should be a `config.json` file. This file
     /// contains the configuration for the test run. Refer to the `Config`
     /// struct for more information.
@@ -92,26 +90,26 @@ pub struct RootArgs {
     #[arg(env = "E2E_OUTPUT_FORMAT", hide_env_values = true)]
     pub output_format: OutputFormat,
 
-    /// Scenarios to run
-    #[arg(long, value_name = "SCENARIO", value_enum, num_args = 1.., value_delimiter = ',')]
-    pub scenarios: Vec<Scenario>,
+    /// Protocols to run
+    #[arg(long, value_name = "PROTOCOL", value_enum, num_args = 1.., value_delimiter = ',')]
+    pub protocols: Vec<Protocol>,
 }
 
-#[derive(Debug, Clone, clap::ValueEnum, Copy)]
-pub enum Scenario {
+#[derive(Debug, Hash, Clone, clap::ValueEnum, Copy, PartialEq, Eq)]
+pub enum Protocol {
     Ethereum,
     Near,
     Stellar,
     Icp,
 }
 
-impl std::fmt::Display for Scenario {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Protocol {
+    fn as_str(&self) -> &'static str {
         match self {
-            Scenario::Ethereum => write!(f, "ethereum"),
-            Scenario::Near => write!(f, "near"),
-            Scenario::Stellar => write!(f, "stellar"),
-            Scenario::Icp => write!(f, "icp"),
+            Protocol::Ethereum => "ethereum",
+            Protocol::Near => "near",
+            Protocol::Stellar => "stellar",
+            Protocol::Icp => "icp",
         }
     }
 }
@@ -127,7 +125,7 @@ pub struct TestEnvironment {
     pub logs_dir: Utf8PathBuf,
     pub icp_dir: Utf8PathBuf,
     pub output_writer: OutputWriter,
-    pub scenarios: Vec<Scenario>,
+    pub protocols: Vec<Protocol>,
 }
 
 impl From<RootArgs> for TestEnvironment {
@@ -144,7 +142,7 @@ impl From<RootArgs> for TestEnvironment {
             logs_dir: val.output_dir.join("logs"),
             icp_dir: val.output_dir.join("icp"),
             output_writer: OutputWriter::new(val.output_format),
-            scenarios: val.scenarios,
+            protocols: val.protocols,
         }
     }
 }
@@ -169,6 +167,11 @@ impl TestEnvironment {
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .try_init()?;
+
     let args = Command::parse();
 
     if let Some(args) = args.args {

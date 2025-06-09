@@ -16,7 +16,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let context = state
-        .ctx_manager
+        .ctx_client
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 

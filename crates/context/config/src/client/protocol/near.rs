@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::{time, vec};
+use std::{env, time, vec};
 
 pub use near_crypto::SecretKey;
 use near_crypto::{InMemorySigner, PublicKey, Signer};
@@ -137,7 +137,15 @@ impl<'a> NearTransport<'a> {
         let mut networks = BTreeMap::new();
 
         for (network_id, network_config) in &config.networks {
-            let client = JsonRpcClient::connect(network_config.rpc_url.clone());
+            let mut client = JsonRpcClient::connect(network_config.rpc_url.clone());
+
+            if env::var("CALIMERO_TRANSPORT_NEAR_UNIQUE_CONNECTIONS")
+                .map_or(false, |v| matches!(&*v, "1" | "true" | "yes"))
+            {
+                client = client
+                    .header(("connection", "close"))
+                    .expect("this is a valid header value");
+            }
 
             let _ignored = networks.insert(
                 network_id.clone(),

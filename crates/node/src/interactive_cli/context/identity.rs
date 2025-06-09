@@ -1,12 +1,15 @@
+use std::pin::pin;
+
+use calimero_context_config::types::Capability as ConfigCapability;
+use calimero_context_primitives::client::ContextClient;
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_store::key::ContextIdentity as ContextIdentityKey;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
+use futures_util::TryStreamExt;
 use owo_colors::OwoColorize;
-
-use crate::Node;
 
 /// Manage context identities
 #[derive(Debug, Parser)]
@@ -47,6 +50,46 @@ enum ContextIdentitySubcommands {
         )]
         force: bool,
     },
+    #[command(about = "Grant permissions to a member")]
+    Grant {
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+        #[arg(long = "as", default_value = "default")]
+        granter: Alias<PublicKey>,
+        #[arg(help = "The member to grant permissions to")]
+        grantee: Alias<PublicKey>,
+        #[arg(help = "The capability to grant")]
+        capability: Capability,
+    },
+    #[command(about = "Revoke permissions from a member")]
+    Revoke {
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+        #[arg(long = "as", default_value = "default")]
+        revoker: Alias<PublicKey>,
+        #[arg(help = "The member to revoke permissions from")]
+        revokee: Alias<PublicKey>,
+        #[arg(help = "The capability to revoke")]
+        capability: Capability,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum, Copy)]
+#[clap(rename_all = "PascalCase")]
+pub enum Capability {
+    ManageApplication,
+    ManageMembers,
+    Proxy,
+}
+
+impl From<Capability> for ConfigCapability {
+    fn from(value: Capability) -> Self {
+        match value {
+            Capability::ManageApplication => ConfigCapability::ManageApplication,
+            Capability::ManageMembers => ConfigCapability::ManageMembers,
+            Capability::Proxy => ConfigCapability::Proxy,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -79,9 +122,10 @@ enum ContextIdentityAliasSubcommands {
     #[command(about = "Resolve the alias to a context identity")]
     Get {
         /// Name of the alias to look up
+        #[arg(default_value = "default")]
         identity: Alias<PublicKey>,
         /// The context that the identity is a member of
-        #[arg(long, short)]
+        #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
     #[command(about = "List context identity aliases", alias = "ls")]
@@ -92,18 +136,18 @@ enum ContextIdentityAliasSubcommands {
 }
 
 impl ContextIdentityCommand {
-    pub fn run(self, node: &Node) -> EyreResult<()> {
+    pub async fn run(self, node_client: &NodeClient, ctx_client: &ContextClient) -> EyreResult<()> {
         let ind = ">>".blue();
 
         match self.subcommand {
             ContextIdentitySubcommands::List { context } => {
-                list_identities(node, Some(context), &ind.to_string())?;
+                list_identities(node_client, ctx_client, Some(context), &ind.to_string()).await?;
             }
             ContextIdentitySubcommands::Generate => {
-                generate_new_identity(node, &ind.to_string());
+                generate_new_identity(ctx_client, &ind.to_string());
             }
             ContextIdentitySubcommands::Alias { command } => {
-                handle_alias_command(node, command, &ind.to_string())?;
+                handle_alias_command(node_client, ctx_client, command, &ind.to_string())?;
             }
 
             ContextIdentitySubcommands::Use {
@@ -111,27 +155,24 @@ impl ContextIdentityCommand {
                 context,
                 force,
             } => {
-                let context_id = node
-                    .ctx_manager
+                let context_id = node_client
                     .resolve_alias(context, None)?
                     .ok_or_eyre("unable to resolve context")?;
 
-                let identity_id = node
-                    .ctx_manager
-                    .lookup_alias(identity, Some(context_id))?
+                let identity_id = node_client
+                    .resolve_alias(identity, Some(context_id))?
                     .ok_or_eyre("unable to resolve identity")?;
 
                 let default_alias: Alias<PublicKey> = "default"
                     .parse()
                     .wrap_err("'default' is a valid alias name")?;
 
-                if let Some(existing_identity) = node
-                    .ctx_manager
-                    .lookup_alias(default_alias, Some(context_id))?
+                if let Some(existing_identity) =
+                    node_client.lookup_alias(default_alias, Some(context_id))?
                 {
                     if existing_identity == identity_id {
                         println!(
-                            "{} Default identity already set to: {} for context {}",
+                            "{} Default identity already set to: '{}' for context '{}'",
                             ind,
                             identity.cyan(),
                             context_id.cyan()
@@ -152,16 +193,80 @@ impl ContextIdentityCommand {
                         existing_identity.cyan(),
                         identity_id.cyan()
                     );
-                    node.ctx_manager
-                        .delete_alias(default_alias, Some(context_id))?;
+                    node_client.delete_alias(default_alias, Some(context_id))?;
                 }
 
+                node_client.create_alias(default_alias, Some(context_id), identity_id)?;
+
                 println!(
-                    "{} Default identity set to: {} for context {}",
+                    "{} Default identity set to: '{}' for context '{}'",
                     ind,
                     identity.cyan(),
                     context_id.cyan()
                 );
+            }
+
+            ContextIdentitySubcommands::Grant {
+                context,
+                granter,
+                grantee,
+                capability,
+            } => {
+                let context_id = node_client
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                let granter_id = node_client
+                    .resolve_alias(granter, Some(context_id))?
+                    .ok_or_eyre("unable to resolve granter identity")?;
+
+                let grantee_id = node_client
+                    .resolve_alias(grantee, Some(context_id))?
+                    .ok_or_eyre("unable to resolve revokee identity")?;
+
+                let config_client = ctx_client
+                    .context_config(&context_id)?
+                    .ok_or_else(|| eyre::eyre!("context '{}' does not exist", context_id))?;
+
+                let external_client = ctx_client.external_client(&context_id, &config_client)?;
+
+                external_client
+                    .config()
+                    .grant(&granter_id, &[(grantee_id, capability.into())])
+                    .await?;
+
+                println!("{ind} Permission granted successfully");
+            }
+            ContextIdentitySubcommands::Revoke {
+                context,
+                revoker,
+                revokee,
+                capability,
+            } => {
+                let context_id = node_client
+                    .resolve_alias(context, None)?
+                    .ok_or_eyre("unable to resolve context")?;
+
+                let revoker_id = node_client
+                    .resolve_alias(revoker, Some(context_id))?
+                    .ok_or_eyre("unable to resolve revoker identity")?;
+
+                let revokee_id = node_client
+                    .resolve_alias(revokee, Some(context_id))?
+                    .ok_or_eyre("unable to resolve revokee identity")?;
+
+                let config_client = ctx_client
+                    .context_config(&context_id)?
+                    .ok_or_else(|| eyre::eyre!("context '{}' does not exist", context_id))?;
+
+                let external_client = ctx_client.external_client(&context_id, &config_client)?;
+
+                external_client
+                    .config()
+                    .revoke(&revoker_id, &[(revokee_id, capability.into())])
+                    .await?;
+
+                println!("{ind} Permission revoked successfully");
             }
         }
 
@@ -169,10 +274,15 @@ impl ContextIdentityCommand {
     }
 }
 
-fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) -> EyreResult<()> {
+async fn list_identities(
+    node_client: &NodeClient,
+    ctx_client: &ContextClient,
+    context: Option<Alias<ContextId>>,
+    ind: &str,
+) -> EyreResult<()> {
     let context_id = if let Some(ctx) = context {
         // User specified a context - resolve it
-        match node.ctx_manager.resolve_alias(ctx, None)? {
+        match node_client.resolve_alias(ctx, None)? {
             Some(id) => id,
             None => {
                 println!("Error: Unable to resolve context '{}'. Please verify the context ID exists or setup default context.", ctx.cyan());
@@ -184,39 +294,20 @@ fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) ->
         let default_alias: Alias<ContextId> =
             "default".parse().expect("'default' is a valid alias name");
 
-        node.ctx_manager
+        node_client
             .lookup_alias(default_alias, None)?
             .ok_or_eyre("unable to resolve default context")?
     };
 
-    let handle = node.store.handle();
-    let mut iter = handle.iter::<ContextIdentityKey>()?;
-
-    let first = 'first: {
-        let Some(k) = iter
-            .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
-            .transpose()
-        else {
-            break 'first None;
-        };
-
-        Some((k, iter.read()))
-    };
-
     println!("{ind} {:44} | {}", "Identity", "Owned");
 
-    for (k, v) in first.into_iter().chain(iter.entries()) {
-        let (k, v) = (k?, v?);
+    let members = ctx_client.context_members(&context_id, None);
 
-        if k.context_id() != context_id {
-            break;
-        }
+    let mut members = pin!(members);
 
-        let entry = format!(
-            "{:44} | {}",
-            k.public_key(),
-            if v.private_key.is_some() { "Yes" } else { "No" }
-        );
+    while let Some((identity, is_owned)) = members.try_next().await? {
+        let entry = format!("{:44} | {}", identity, if is_owned { "Yes" } else { "No" });
+
         for line in entry.lines() {
             println!("{ind} {}", line.cyan());
         }
@@ -225,14 +316,15 @@ fn list_identities(node: &Node, context: Option<Alias<ContextId>>, ind: &str) ->
     Ok(())
 }
 
-fn generate_new_identity(node: &Node, ind: &str) {
-    let identity = node.ctx_manager.new_private_key();
+fn generate_new_identity(ctx_client: &ContextClient, ind: &str) {
+    let identity = ctx_client.new_private_key();
     println!("{ind} Private Key: {}", identity.cyan());
     println!("{ind} Public Key: {}", identity.public_key().cyan());
 }
 
 fn handle_alias_command(
-    node: &Node,
+    node_client: &NodeClient,
+    ctx_client: &ContextClient,
     command: ContextIdentityAliasSubcommands,
     ind: &str,
 ) -> EyreResult<()> {
@@ -244,15 +336,11 @@ fn handle_alias_command(
 
             force,
         } => {
-            let context_id = node
-                .ctx_manager
+            let context_id = node_client
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve context alias")?;
 
-            if !node
-                .ctx_manager
-                .has_context_identity(context_id, identity)?
-            {
+            if !ctx_client.has_member(&context_id, &identity)? {
                 println!(
                     "{ind} Error: Identity '{}' does not exist in context '{}'.",
                     identity.cyan(),
@@ -261,9 +349,7 @@ fn handle_alias_command(
                 return Ok(());
             }
 
-            if let Some(existing_identity) =
-                node.ctx_manager.lookup_alias(name, Some(context_id))?
-            {
+            if let Some(existing_identity) = node_client.lookup_alias(name, Some(context_id))? {
                 if existing_identity == identity {
                     println!(
                         "{ind} Alias '{}' already points to '{}'. Doing nothing.",
@@ -289,32 +375,28 @@ fn handle_alias_command(
                     identity.cyan()
                 );
 
-                node.ctx_manager.delete_alias(name, Some(context_id))?;
+                node_client.delete_alias(name, Some(context_id))?;
             }
 
-            node.ctx_manager
-                .create_alias(name, Some(context_id), identity)?;
+            node_client.create_alias(name, Some(context_id), identity)?;
 
             println!("{ind} Successfully created alias '{}'", name.cyan());
         }
         ContextIdentityAliasSubcommands::Remove { identity, context } => {
-            let context_id = node
-                .ctx_manager
+            let context_id = node_client
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve context alias")?;
 
-            node.ctx_manager.delete_alias(identity, Some(context_id))?;
+            node_client.delete_alias(identity, Some(context_id))?;
 
             println!("{ind} Successfully removed alias '{}'", identity.cyan());
         }
         ContextIdentityAliasSubcommands::Get { identity, context } => {
-            let context_id = node
-                .ctx_manager
+            let context_id = node_client
                 .resolve_alias(context, None)?
                 .ok_or_eyre("unable to resolve context alias")?;
 
-            let Some(identity_id) = node.ctx_manager.lookup_alias(identity, Some(context_id))?
-            else {
+            let Some(identity_id) = node_client.lookup_alias(identity, Some(context_id))? else {
                 println!("{ind} Alias '{}' not found", identity.cyan());
 
                 return Ok(());
@@ -334,19 +416,18 @@ fn handle_alias_command(
                 c3 = "Alias",
             );
             let context_id = if let Some(ctx) = context {
-                node.ctx_manager
+                node_client
                     .resolve_alias(ctx, None)?
                     .ok_or_eyre("unable to resolve context alias")?
             } else {
                 let default_alias: Alias<ContextId> =
                     "default".parse().expect("'default' is a valid alias name");
-                node.ctx_manager
+                node_client
                     .lookup_alias(default_alias, None)?
                     .ok_or_eyre("unable to resolve default context")?
             };
-            for (alias, identity, scope) in node
-                .ctx_manager
-                .list_aliases::<PublicKey>(Some(context_id))?
+            for (alias, identity, scope) in
+                node_client.list_aliases::<PublicKey>(Some(context_id))?
             {
                 let context = scope.as_ref().map_or("---", |s| s.as_str());
                 println!(
