@@ -45,8 +45,8 @@ calimero-network-primitives.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
 calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
-calimero-version.workspace = true
 calimero-utils-actix.workspace = true
+calimero-version.workspace = true
 
 [lints]
 workspace = true
