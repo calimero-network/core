@@ -9,14 +9,11 @@ use clap::{Parser, ValueEnum};
 use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::cli::Environment;
-use crate::common::{
-    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
-};
+use crate::cli::{ConnectionInfo, Environment};
+use crate::common::{make_request, resolve_alias, RequestType};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -114,23 +111,31 @@ impl Report for GetProposalResponse {
 
 impl GetCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
+
         let client = Client::new();
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let context_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref(),
+            self.context,
+            None,
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
         match &self.method {
             GetRequest::NumProposalApprovals => {
                 self.get_number_of_proposal_approvals(
                     environment,
-                    multiaddr,
+                    connection,
                     &client,
-                    &config.identity,
+                    connection.auth_key.as_ref(),
                     context_id,
                 )
                 .await
@@ -138,9 +143,9 @@ impl GetCommand {
             GetRequest::NumActiveProposals => {
                 self.get_number_of_active_proposals(
                     environment,
-                    multiaddr,
+                    connection,
                     &client,
-                    &config.identity,
+                    connection.auth_key.as_ref(),
                     context_id,
                 )
                 .await
@@ -148,9 +153,9 @@ impl GetCommand {
             GetRequest::Proposal => {
                 self.get_proposal(
                     environment,
-                    multiaddr,
+                    connection,
                     &client,
-                    &config.identity,
+                    connection.auth_key.as_ref(),
                     context_id,
                 )
                 .await
@@ -158,9 +163,9 @@ impl GetCommand {
             GetRequest::Proposals => {
                 self.get_proposals(
                     environment,
-                    multiaddr,
+                    connection,
                     &client,
-                    &config.identity,
+                    connection.auth_key.as_ref(),
                     context_id,
                 )
                 .await
@@ -168,9 +173,9 @@ impl GetCommand {
             GetRequest::ProposalApprovers => {
                 self.get_proposal_approvers(
                     environment,
-                    multiaddr,
+                    connection,
                     &client,
-                    &config.identity,
+                    connection.auth_key.as_ref(),
                     context_id,
                 )
                 .await
@@ -181,19 +186,17 @@ impl GetCommand {
     async fn get_number_of_proposal_approvals(
         &self,
         environment: &Environment,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
         context_id: ContextId,
     ) -> EyreResult<()> {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!(
-                "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
-                context_id, proposal_id
-            ),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!(
+            "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
+            context_id, proposal_id
+        ));
         make_request::<_, GetNumberOfProposalApprovalsResponse>(
             environment,
             client,
@@ -208,15 +211,17 @@ impl GetCommand {
     async fn get_number_of_active_proposals(
         &self,
         environment: &Environment,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}/proposals/count", context_id),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!(
+            "admin-api/dev/contexts/{}/proposals/count",
+            context_id,
+        ));
         make_request::<_, GetNumberOfActiveProposalsResponse>(
             environment,
             client,
@@ -231,19 +236,18 @@ impl GetCommand {
     async fn get_proposal_approvers(
         &self,
         environment: &Environment,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!(
-                "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
-                context_id, proposal_id
-            ),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!(
+            "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
+            context_id, proposal_id
+        ));
         make_request::<_, GetProposalApproversResponse>(
             environment,
             client,
@@ -258,15 +262,14 @@ impl GetCommand {
     async fn get_proposals(
         &self,
         environment: &Environment,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}/proposals", context_id),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!("admin-api/dev/contexts/{}/proposals", context_id,));
 
         let params = self.args.clone().ok_or_eyre("arguments are required")?;
 
@@ -284,19 +287,18 @@ impl GetCommand {
     async fn get_proposal(
         &self,
         environment: &Environment,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
+        keypair: Option<&Keypair>,
+
         context_id: ContextId,
     ) -> EyreResult<()> {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!(
-                "admin-api/dev/contexts/{}/proposals/{}",
-                context_id, proposal_id
-            ),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!(
+            "admin-api/dev/contexts/{}/proposals/{}",
+            context_id, proposal_id
+        ));
         make_request::<_, GetProposalResponse>(
             environment,
             client,
