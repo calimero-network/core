@@ -1,11 +1,11 @@
 use calimero_server_primitives::admin::GenerateContextIdentityResponse;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{do_request, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -23,15 +23,19 @@ impl Report for GenerateContextIdentityResponse {
 
 impl GenerateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
-        let url = multiaddr_to_url(multiaddr, "admin-api/dev/identity/context")?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
+
+        let mut url = connection.api_url.clone();
+        url.set_path("admin-api/dev/identity/context");
 
         let response: GenerateContextIdentityResponse = do_request(
             &Client::new(),
             url,
             None::<()>,
-            &config.identity,
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await?;
