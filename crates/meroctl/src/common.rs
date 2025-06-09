@@ -265,7 +265,7 @@ where
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
     let mut url = base_url.clone();
-    url.set_path(&format!("{prefix}/{kind}/{scope}{alias}"));
+    url.set_path(&format!("{prefix}/{kind}{scope}"));
 
     let body = CreateAliasRequest {
         alias,
