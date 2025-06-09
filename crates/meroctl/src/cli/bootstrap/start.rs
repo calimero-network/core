@@ -7,7 +7,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use reqwest::Client;
 use tokio::fs::{create_dir_all, File};
 use tokio::io::copy;
@@ -19,7 +19,6 @@ use crate::cli::context::create::create_context;
 use crate::cli::context::invite::InviteCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::{Environment, RootArgs};
-use crate::common::{fetch_multiaddr, load_config};
 use crate::output::Output;
 
 #[derive(Parser, Debug)]
@@ -59,23 +58,25 @@ impl StartBootstrapCommand {
             bail!("Protocol is required for this operation");
         }
 
+        let node1_name = "node1";
         let node1_log_dir: Utf8PathBuf = "output/node_1_output".into();
-        let node1_name = "node1".to_owned();
         let node1_server_port: u32 = 2428;
-        let node1_environment = &Environment::new(
+        let node1_environment = Environment::new(
             RootArgs::new(
                 nodes_dir.clone(),
-                node1_name.to_owned(),
+                None,
+                Some(node1_name.to_owned()),
                 crate::output::Format::Json,
             ),
             Output::new(crate::output::Format::Json),
+            None,
         );
 
         let node1_process = self
             .initialize_and_start_node(
                 nodes_dir.to_owned(),
                 node1_log_dir.to_owned(),
-                &node1_name,
+                node1_name,
                 2528,
                 node1_server_port,
             )
@@ -84,26 +85,28 @@ impl StartBootstrapCommand {
 
         println!("Creating context in {:?}", node1_name);
         let (context_id, public_key, application_id) = self
-            .create_context_in_bootstrap(node1_environment, self.protocol.clone())
+            .create_context_in_bootstrap(&node1_environment, self.protocol.clone())
             .await?;
 
-        let node2_name = "node2".to_owned();
+        let node2_name = "node2";
         let node2_log_dir: Utf8PathBuf = "output/node_2_output".into();
         let node2_server_port: u32 = 2429;
-        let node2_environment = &Environment::new(
+        let node2_environment = Environment::new(
             RootArgs::new(
                 nodes_dir.clone(),
-                node2_name.to_owned(),
+                None,
+                Some(node2_name.to_owned()),
                 crate::output::Format::Json,
             ),
             Output::new(crate::output::Format::Json),
+            None,
         );
 
         let node2_process = self
             .initialize_and_start_node(
                 nodes_dir.to_owned(),
                 node2_log_dir.to_owned(),
-                &node2_name,
+                node2_name,
                 2529,
                 node2_server_port,
             )
@@ -137,11 +140,11 @@ impl StartBootstrapCommand {
 
             println!(
                 "Node {:?} url is http://localhost:{}",
-                node1_environment.args.node_name, node1_server_port
+                node1_environment.args.node, node1_server_port
             );
             println!(
                 "Node {:?} url is http://localhost:{}",
-                node1_environment.args.node_name, node2_server_port
+                node1_environment.args.node, node2_server_port
             );
         }
         println!("************************************************");
@@ -191,7 +194,7 @@ impl StartBootstrapCommand {
     ) -> EyreResult<()> {
         println!(
             "Inviting node {:?} to context {:?}",
-            invitee_environment.args.node_name,
+            invitee_environment.args.node,
             context_id.to_string()
         );
 
@@ -205,12 +208,12 @@ impl StartBootstrapCommand {
 
         println!(
             "Node {:?} successfully invited.",
-            invitee_environment.args.node_name
+            invitee_environment.args.node
         );
 
         println!(
             "Joining node {:?} to context.",
-            invitee_environment.args.node_name
+            invitee_environment.args.node
         );
 
         let join_command = JoinCommand {
@@ -221,7 +224,7 @@ impl StartBootstrapCommand {
         join_command.run(invitee_environment).await?;
         println!(
             "Node {:?} joined successfully.",
-            invitee_environment.args.node_name
+            invitee_environment.args.node
         );
 
         Ok(())
@@ -285,8 +288,11 @@ impl StartBootstrapCommand {
         environment: &Environment,
         protocol: String,
     ) -> EyreResult<(ContextId, PublicKey, ApplicationId)> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
+
         let client = Client::new();
 
         let install_command = InstallCommand {
@@ -302,11 +308,11 @@ impl StartBootstrapCommand {
         let (context_id, public_key) = create_context(
             environment,
             &client,
-            multiaddr,
+            connection,
             None,
             application_id,
             None,
-            &config.identity,
+            connection.auth_key.as_ref(),
             protocol,
             None,
             None,
@@ -374,7 +380,7 @@ impl StartBootstrapCommand {
             .get(url)
             .send()
             .await
-            .map_err(|e| eyre::eyre!("Request failed: {}", e))?;
+            .map_err(|e| eyre!("Request failed: {}", e))?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status());
@@ -382,11 +388,11 @@ impl StartBootstrapCommand {
 
         let mut file = File::create(&output_path)
             .await
-            .map_err(|e| eyre::eyre!("Failed to create file: {}", e))?;
+            .map_err(|e| eyre!("Failed to create file: {}", e))?;
 
         let _ = copy(&mut response.bytes().await?.as_ref(), &mut file)
             .await
-            .map_err(|e| eyre::eyre!("Failed to copy response bytes: {}", e))?;
+            .map_err(|e| eyre!("Failed to copy response bytes: {}", e))?;
 
         println!("Demo app downloaded successfully.");
         Ok(())
