@@ -35,7 +35,6 @@ impl ScopedAlias for ApplicationId {
     type Scope = ();
 }
 
-#[derive(Eq, PartialEq)]
 pub struct Alias<T> {
     str: [u8; MAX_LENGTH],
     len: u8,
@@ -99,6 +98,26 @@ impl<T> fmt::Display for Alias<T> {
 impl<T> fmt::Debug for Alias<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Alias").field(&self.as_str()).finish()
+    }
+}
+
+impl<T> Eq for Alias<T> {}
+
+impl<T> PartialEq for Alias<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.str == other.str
+    }
+}
+
+impl<T> Ord for Alias<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.str.cmp(&other.str)
+    }
+}
+
+impl<T> PartialOrd for Alias<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 

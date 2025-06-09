@@ -255,7 +255,7 @@ pub(crate) async fn create_alias<T>(
     value: T,
 ) -> EyreResult<CreateAliasResponse>
 where
-    T: ScopedAlias + UrlFragment + Serialize,
+    T: UrlFragment + Serialize,
     T::Value: Serialize,
 {
     let prefix = "admin-api/dev/alias/create";
@@ -295,7 +295,7 @@ pub(crate) async fn delete_alias<T>(
     scope: Option<T::Scope>,
 ) -> EyreResult<DeleteAliasResponse>
 where
-    T: ScopedAlias + UrlFragment,
+    T: UrlFragment,
 {
     let prefix = "admin-api/dev/alias/delete";
 
@@ -313,7 +313,7 @@ where
     Ok(response)
 }
 
-impl<T: fmt::Display + ScopedAlias + Eq> Report for ListAliasesResponse<T> {
+impl<T: fmt::Display> Report for ListAliasesResponse<T> {
     fn report(&self) -> () {
         let mut table = Table::new();
         let _ = table.set_header(vec![
@@ -338,7 +338,7 @@ pub(crate) async fn list_aliases<T>(
     scope: Option<T::Scope>,
 ) -> EyreResult<ListAliasesResponse<T>>
 where
-    T: Ord + ScopedAlias + UrlFragment + DeserializeOwned,
+    T: Ord + UrlFragment + DeserializeOwned,
 {
     let prefix = "admin-api/dev/alias/list";
 
@@ -363,7 +363,7 @@ pub(crate) async fn lookup_alias<T>(
     scope: Option<T::Scope>,
 ) -> EyreResult<LookupAliasResponse<T>>
 where
-    T: ScopedAlias + UrlFragment + DeserializeOwned,
+    T: UrlFragment + DeserializeOwned,
 {
     let prefix = "admin-api/dev/alias/lookup";
 
@@ -450,7 +450,7 @@ pub(crate) async fn resolve_alias<T>(
     scope: Option<T::Scope>,
 ) -> EyreResult<ResolveResponse<T>>
 where
-    T: ScopedAlias + UrlFragment + FromStr + DeserializeOwned,
+    T: UrlFragment + FromStr + DeserializeOwned,
 {
     let value = lookup_alias(base_url, keypair, alias, scope).await?;
 

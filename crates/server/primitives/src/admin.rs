@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
 use calimero_context_config::{Proposal, ProposalWithApprovals};
-use calimero_primitives::alias::{Alias, ScopedAlias};
+use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
@@ -257,18 +257,13 @@ impl GetContextIdentitiesResponse {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ListAliasesResponse<T>
-where
-    T: ScopedAlias + Eq,
-{
-    pub data: HashMap<Alias<T>, T>,
+pub struct ListAliasesResponse<T> {
+    #[serde(bound(deserialize = "T: Ord + Deserialize<'de>"))]
+    pub data: BTreeMap<Alias<T>, T>,
 }
 
-impl<T> ListAliasesResponse<T>
-where
-    T: ScopedAlias + Eq,
-{
-    pub fn new(data: HashMap<Alias<T>, T>) -> Self {
+impl<T> ListAliasesResponse<T> {
+    pub fn new(data: BTreeMap<Alias<T>, T>) -> Self {
         Self { data }
     }
 }
