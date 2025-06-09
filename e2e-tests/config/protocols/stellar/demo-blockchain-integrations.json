@@ -52,13 +52,6 @@
     },
     {
       "getProposals": {
-        "target": "inviter",
-        "retries": 20,
-        "intervalMs": 5000,
-        "argsJson": {
-          "offset": 0,
-          "limit": 10
-        },
         "description": [
           "get current proposals and extract the ID of the first one"
         ]
@@ -86,9 +79,7 @@
       "verifyExternalState": {
         "contractId": "CDT6O4UMQBAY6PZTGRCBXDYHTFSL55NE4CZ3COCGPE5UEHRAODIZKDEJ",
         "methodName": "get_value",
-        "args": [
-          "someKey"
-        ],
+        "args": ["someKey"],
         "expectedValue": "someValue"
       }
     },
@@ -120,13 +111,6 @@
     },
     {
       "getProposals": {
-        "target": "inviter",
-        "retries": 20,
-        "intervalMs": 5000,
-        "argsJson": {
-          "offset": 0,
-          "limit": 10
-        },
         "description": [
           "get current proposals and extract the ID of the first one"
         ]
@@ -153,9 +137,7 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": [
-          "wait exactly 5s for the broadcast to propagate"
-        ]
+        "description": ["wait exactly 5s for the broadcast to propagate"]
       }
     },
     {
