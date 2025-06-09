@@ -9,7 +9,10 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(JoinContextRequest { public_key, invitation_payload }): Json<JoinContextRequest>,
+    Json(JoinContextRequest {
+        public_key,
+        invitation_payload,
+    }): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let result = state
         .ctx_client

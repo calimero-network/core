@@ -232,7 +232,7 @@ impl ContextCommand {
                 identity,
             } => {
                 let public_key = ctx_client.new_identity()?;
-                
+
                 let response = ctx_client
                     .join_context(public_key, invitation_payload)
                     .await?;

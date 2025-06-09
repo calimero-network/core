@@ -7,8 +7,8 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::{key, Store};
 use calimero_store::types::ContextIdentity;
+use calimero_store::{key, Store};
 use calimero_utils_actix::LazyRecipient;
 use eyre::ContextCompat;
 use futures_util::Stream;
@@ -110,17 +110,17 @@ impl ContextClient {
         invitation_payload: ContextInvitationPayload,
     ) -> eyre::Result<JoinContextResponse> {
         let placeholder_context_id = ContextId::from([0u8; 32]);
-        
+
         let stored_identity = self
             .get_identity_value(placeholder_context_id, public_key)?
             .with_context(|| format!("Missing identity for public key: {}", public_key))?;
-        
+
         let private_key = stored_identity
             .private_key
             .context("Stored identity value is missing private key")?;
-        
+
         let identity_secret = PrivateKey::from(private_key);
-        
+
         self.delete_identity_value(placeholder_context_id, public_key)?;
 
         let (sender, receiver) = oneshot::channel();

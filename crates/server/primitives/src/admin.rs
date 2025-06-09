@@ -352,7 +352,10 @@ pub struct JoinContextRequest {
 
 impl JoinContextRequest {
     pub const fn new(public_key: PublicKey, invitation_payload: ContextInvitationPayload) -> Self {
-        Self { public_key, invitation_payload }
+        Self {
+            public_key,
+            invitation_payload,
+        }
     }
 }
 
