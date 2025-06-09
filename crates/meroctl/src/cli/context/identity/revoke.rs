@@ -9,9 +9,7 @@ use reqwest::Client;
 
 use super::Capability;
 use crate::cli::Environment;
-use crate::common::{
-    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
-};
+use crate::common::{make_request, resolve_alias, RequestType};
 use crate::output::Report;
 
 impl Report for RevokePermissionResponse {
@@ -39,24 +37,25 @@ pub struct RevokePermissionCommand {
 
 impl RevokePermissionCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(
-            &environment.args.home,
-            &environment.args.node.as_deref().unwrap_or("default"),
-        )
-        .await?;
-        let multiaddr = fetch_multiaddr(&config)?;
-        let base_url = multiaddr_to_url(multiaddr, "")?;
-        let client = Client::new();
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
 
-        let context_id = resolve_alias(&base_url, Some(&config.identity), self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve context")?;
+        let context_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref(),
+            self.context,
+            None,
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve context")?;
 
         let revokee_id = resolve_alias(
-            &base_url,
-            Some(&config.identity),
+            &connection.api_url,
+            connection.auth_key.as_ref(),
             self.revokee,
             Some(context_id),
         )
@@ -65,18 +64,22 @@ impl RevokePermissionCommand {
         .cloned()
         .ok_or_eyre("unable to resolve grantee identity")?;
 
-        let endpoint = format!("admin-api/dev/contexts/{}/capabilities/revoke", context_id);
-        let url = multiaddr_to_url(multiaddr, &endpoint)?;
+        let mut url = connection.api_url.clone();
+
+        url.set_path(&format!(
+            "admin-api/dev/contexts/{}/capabilities/revoke",
+            context_id
+        ));
 
         let request: Vec<(PublicKey, ConfigCapability)> =
             vec![(revokee_id, self.capability.into())];
 
         make_request::<_, RevokePermissionResponse>(
             environment,
-            &client,
+            &Client::new(),
             url,
             Some(request),
-            Some(&config.identity),
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await?;
