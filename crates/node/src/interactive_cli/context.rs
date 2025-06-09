@@ -231,11 +231,7 @@ impl ContextCommand {
                 context,
                 identity,
             } => {
-                let public_key = ctx_client.new_identity()?;
-
-                let response = ctx_client
-                    .join_context(public_key, invitation_payload)
-                    .await?;
+                let response = ctx_client.join_context(invitation_payload).await?;
 
                 if let Some(context) = context {
                     if let Err(e) = node_client.create_alias(context, None, response.context_id) {

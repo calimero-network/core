@@ -1,9 +1,7 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{
-    GenerateContextIdentityResponse, JoinContextRequest, JoinContextResponse,
-};
+use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
@@ -52,27 +50,13 @@ impl JoinCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let mut identity_url = connection.api_url.clone();
-        identity_url.set_path("admin-api/dev/identity/context");
-
-        let identity_response: GenerateContextIdentityResponse = do_request(
-            &Client::new(),
-            identity_url,
-            None::<()>,
-            connection.auth_key.as_ref(),
-            RequestType::Post,
-        )
-        .await?;
-
-        let public_key = identity_response.data.public_key;
-
         let mut url = connection.api_url.clone();
         url.set_path("admin-api/dev/contexts/join");
 
         let response: JoinContextResponse = do_request(
             &Client::new(),
             url,
-            Some(JoinContextRequest::new(public_key, self.invitation_payload)),
+            Some(JoinContextRequest::new(self.invitation_payload)),
             connection.auth_key.as_ref(),
             RequestType::Post,
         )
