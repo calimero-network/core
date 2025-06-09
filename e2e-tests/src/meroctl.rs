@@ -166,25 +166,29 @@ impl Meroctl {
         &self,
         node_name: &str,
         context_id: &str,
-        args: &serde_json::Value,
-    ) -> EyreResult<serde_json::Value> {
-        let args_json = serde_json::to_string(args)?;
+        offset: &str,
+        limit: &str,
+    ) -> EyreResult<Vec<serde_json::Value>> {
         let json = self
             .run_cmd(
                 node_name,
                 [
-                    "proxy",
-                    "get",
+                    "context",
                     "proposals",
+                    "list",
                     "--context",
                     context_id,
-                    "--args",
-                    &args_json,
+                    "--offset",
+                    offset,
+                    "--limit",
+                    limit,
                 ],
             )
             .await?;
 
-        Ok(json)
+        let proposals = json["data"].as_array().cloned().unwrap_or_default();
+
+        Ok(proposals)
     }
 
     pub fn json_rpc_execute(
