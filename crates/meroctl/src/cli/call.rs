@@ -7,7 +7,7 @@ use calimero_server_primitives::jsonrpc::{
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{eyre, OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
@@ -84,7 +84,7 @@ impl CallCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         let resolve_response = resolve_alias(
             &connection.api_url,

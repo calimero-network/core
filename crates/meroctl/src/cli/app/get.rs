@@ -1,7 +1,7 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
-use eyre::{eyre, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::Environment;
@@ -34,7 +34,7 @@ impl GetCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         let mut url = connection.api_url.clone();
         url.set_path(&format!("admin-api/dev/applications/{}", self.app_id));

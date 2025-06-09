@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
-use eyre::{eyre, OptionExt, Result as EyreResult, WrapErr};
+use eyre::{OptionExt, Result as EyreResult, WrapErr};
 use reqwest::Client;
 
 use crate::cli::{ConnectionInfo, Environment};
@@ -98,7 +98,7 @@ impl ContextIdentityAliasCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         match self.command {
             ContextIdentityAliasSubcommand::Add {

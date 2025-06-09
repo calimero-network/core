@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::ws::{Request, RequestPayload, Response, SubscribeRequest};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{eyre, OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use tokio::process::Command;
 use tokio_tungstenite::connect_async;
@@ -63,7 +63,7 @@ impl WatchCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         let resolve_response = resolve_alias(
             &connection.api_url,

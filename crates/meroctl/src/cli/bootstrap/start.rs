@@ -7,7 +7,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use reqwest::Client;
 use tokio::fs::{create_dir_all, File};
 use tokio::io::copy;
@@ -292,12 +292,8 @@ impl StartBootstrapCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
-        let auth_key = connection
-            .auth_key
-            .as_ref()
-            .ok_or_else(|| eyre!("No authentication key configured"))?;
         let client = Client::new();
 
         let install_command = InstallCommand {
@@ -317,7 +313,7 @@ impl StartBootstrapCommand {
             None,
             application_id,
             None,
-            Some(auth_key),
+            connection.auth_key.as_ref(),
             protocol,
             None,
             None,
@@ -385,7 +381,7 @@ impl StartBootstrapCommand {
             .get(url)
             .send()
             .await
-            .map_err(|e| eyre::eyre!("Request failed: {}", e))?;
+            .map_err(|e| eyre!("Request failed: {}", e))?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status());
@@ -393,11 +389,11 @@ impl StartBootstrapCommand {
 
         let mut file = File::create(&output_path)
             .await
-            .map_err(|e| eyre::eyre!("Failed to create file: {}", e))?;
+            .map_err(|e| eyre!("Failed to create file: {}", e))?;
 
         let _ = copy(&mut response.bytes().await?.as_ref(), &mut file)
             .await
-            .map_err(|e| eyre::eyre!("Failed to copy response bytes: {}", e))?;
+            .map_err(|e| eyre!("Failed to copy response bytes: {}", e))?;
 
         println!("Demo app downloaded successfully.");
         Ok(())

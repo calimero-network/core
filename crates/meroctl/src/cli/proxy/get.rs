@@ -7,7 +7,7 @@ use calimero_server_primitives::admin::{
 };
 use clap::{Parser, ValueEnum};
 use comfy_table::{Cell, Color, Table};
-use eyre::{eyre, OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use reqwest::Client;
 use serde_json::Value;
@@ -114,7 +114,7 @@ impl GetCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         let client = Client::new();
 

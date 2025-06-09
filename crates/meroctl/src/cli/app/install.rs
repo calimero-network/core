@@ -6,7 +6,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8PathBuf;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, OptionExt, Result as EyreResult};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use reqwest::Client;
@@ -62,14 +62,14 @@ impl InstallCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         let mut url = connection.api_url.clone();
-        url.set_path(if self.path.is_some() {
-            "admin-api/dev/install-dev-application"
+        if self.path.is_some() {
+            url.set_path("admin-api/dev/install-dev-application");
         } else {
-            "admin-api/dev/install-application"
-        });
+            url.set_path("admin-api/dev/install-application");
+        }
 
         let metadata = self
             .metadata

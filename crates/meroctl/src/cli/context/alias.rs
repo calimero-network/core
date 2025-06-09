@@ -50,7 +50,7 @@ impl ContextAliasCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         match self.command {
             ContextAliasSubcommand::Add {
@@ -156,7 +156,7 @@ impl UseCommand {
         let connection = environment
             .connection
             .as_ref()
-            .ok_or_else(|| eyre!("No connection configured"))?;
+            .ok_or_eyre("No connection configured")?;
 
         let default_alias: Alias<ContextId> = "default"
             .parse()
