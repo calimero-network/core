@@ -10,13 +10,31 @@ use eyre::{OptionExt, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::cli::Environment;
 use crate::common::{
-    fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias, RequestType,
+    do_request, fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias,
+    RequestType,
 };
 use crate::output::Report;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalDetailsResponse {
+    pub proposal: GetProposalResponse,
+    pub approvers: GetProposalApproversResponse,
+}
+
+impl Report for ProposalDetailsResponse {
+    fn report(&self) {
+        self.proposal.report();
+
+        println!("\nApprovers:");
+        self.approvers.report();
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Manage proposals within a context")]
@@ -64,8 +82,8 @@ pub enum ProposalsSubcommand {
 impl Report for GetProposalResponse {
     fn report(&self) {
         let mut table = Table::new();
-        table.load_preset(comfy_table::presets::UTF8_FULL);
-        table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         let _ = table.set_header(vec![Cell::new("Proposal Details").fg(Color::Blue)]);
         let _ = table.add_row(vec![format!("ID: {}", self.data.id)]);
@@ -73,8 +91,8 @@ impl Report for GetProposalResponse {
         println!("{table}");
 
         let mut actions_table = Table::new();
-        actions_table.load_preset(comfy_table::presets::UTF8_FULL);
-        actions_table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        let _ = actions_table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = actions_table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         let _ = actions_table.set_header(vec![
             Cell::new("#").fg(Color::Blue),
@@ -97,8 +115,8 @@ impl Report for GetProposalResponse {
 impl Report for GetProposalApproversResponse {
     fn report(&self) {
         let mut table = Table::new();
-        table.load_preset(comfy_table::presets::UTF8_FULL);
-        table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         let _ = table.set_header(vec![Cell::new("Approver ID").fg(Color::Blue)]);
 
@@ -117,8 +135,8 @@ impl Report for GetProposalApproversResponse {
 impl Report for GetProposalsResponse {
     fn report(&self) {
         let mut table = Table::new();
-        table.load_preset(comfy_table::presets::UTF8_FULL);
-        table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
+        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         let _ = table.set_header(vec![
             Cell::new("ID").fg(Color::Blue),
@@ -185,40 +203,45 @@ impl ProposalsCommand {
                     .cloned()
                     .ok_or_eyre("unable to resolve context")?;
 
-                self.get_proposal(
-                    environment,
-                    multiaddr,
-                    &client,
-                    &config.identity,
-                    context_id,
-                    proposal_id,
-                )
-                .await?;
+                let proposal_response = self
+                    .get_proposal(
+                        multiaddr,
+                        &client,
+                        &config.identity,
+                        context_id,
+                        proposal_id,
+                    )
+                    .await?;
 
-                self.get_proposal_approvers(
-                    environment,
-                    multiaddr,
-                    &client,
-                    &config.identity,
-                    context_id,
-                    proposal_id,
-                )
-                .await?;
+                let approvers_response = self
+                    .get_proposal_approvers_data(
+                        multiaddr,
+                        &client,
+                        &config.identity,
+                        context_id,
+                        proposal_id,
+                    )
+                    .await?;
 
+                let combined_response = ProposalDetailsResponse {
+                    proposal: proposal_response,
+                    approvers: approvers_response,
+                };
+
+                environment.output.write(&combined_response);
                 Ok(())
             }
         }
     }
 
-    async fn get_proposal_approvers(
+    async fn get_proposal_approvers_data(
         &self,
-        environment: &Environment,
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
         context_id: ContextId,
         proposal_id: &Hash,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<GetProposalApproversResponse> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
@@ -226,15 +249,17 @@ impl ProposalsCommand {
                 context_id, proposal_id
             ),
         )?;
-        make_request::<_, GetProposalApproversResponse>(
-            environment,
+
+        let response = do_request::<(), GetProposalApproversResponse>(
             client,
             url,
             None::<()>,
             keypair,
             RequestType::Get,
         )
-        .await
+        .await?;
+
+        Ok(response)
     }
 
     async fn list_proposals(
@@ -264,13 +289,12 @@ impl ProposalsCommand {
 
     async fn get_proposal(
         &self,
-        environment: &Environment,
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
         context_id: ContextId,
         proposal_id: &Hash,
-    ) -> EyreResult<()> {
+    ) -> EyreResult<GetProposalResponse> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!(
@@ -278,14 +302,16 @@ impl ProposalsCommand {
                 context_id, proposal_id
             ),
         )?;
-        make_request::<_, GetProposalResponse>(
-            environment,
+
+        let response = do_request::<(), GetProposalResponse>(
             client,
             url,
             None::<()>,
             keypair,
             RequestType::Get,
         )
-        .await
+        .await?;
+
+        Ok(response)
     }
 }
