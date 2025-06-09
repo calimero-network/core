@@ -2,7 +2,9 @@
 name = "calimero-version"
 version = "0.1.0"
 authors.workspace = true
-build = "build.rs"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [build-dependencies]
 rustc_version = "0.4"

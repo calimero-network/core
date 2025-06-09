@@ -22,8 +22,8 @@ pub struct CalimeroVersion<'a> {
     pub rustc: Cow<'a, str>,
 }
 
-impl CalimeroVersion<'_> {
-    pub fn current() -> CalimeroVersion<'static> {
+impl CalimeroVersion<'static> {
+    pub fn current() -> Self {
         CURRENT.clone()
     }
 
@@ -40,8 +40,4 @@ impl fmt::Display for CalimeroVersion<'_> {
             self.release, self.build, self.commit, self.rustc,
         )
     }
-}
-
-pub fn current_str() -> &'static str {
-    CalimeroVersion::current_str()
 }

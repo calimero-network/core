@@ -1,7 +1,6 @@
 use std::process::Command;
 
 use eyre::{eyre, Result as EyreResult};
-use rustc_version;
 
 fn main() {
     if let Err(err) = try_main() {
