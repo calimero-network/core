@@ -345,7 +345,7 @@ where
     let kind = T::KIND;
 
     let scope =
-        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
     let mut url = base_url.clone();
     url.set_path(&format!("{prefix}/{kind}{scope}"));
