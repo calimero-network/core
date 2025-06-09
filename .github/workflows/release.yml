@@ -58,7 +58,7 @@ jobs:
           
           version_candidate=""
           for binary in $(echo '${{ steps.setup_matrix.outputs.binary_matrix }}' | jq -r '.[]'); do
-            binary_version=$(cargo metadata --format-version 1 --no-deps | jq -r --arg binary "$binary" '.packages[] | select(.name == $binary) | .version')
+            binary_version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
             
             if [ -z "$version_candidate" ]; then
               version_candidate="$binary_version"
