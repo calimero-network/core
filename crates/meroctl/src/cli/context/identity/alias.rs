@@ -157,7 +157,7 @@ impl ContextIdentityAliasCommand {
                         "Overwriting existing alias '{}' from '{}' to '{}'",
                         name, existing_identity, identity
                     )));
-                    let _ = delete_alias(
+                    let _ignored = delete_alias(
                         &connection.api_url,
                         connection.auth_key.as_ref(),
                         name,

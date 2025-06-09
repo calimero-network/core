@@ -9,7 +9,7 @@ use crate::cli::{ApiError, ConnectionInfo, Environment};
 use crate::common::{
     create_alias, delete_alias, do_request, lookup_alias, resolve_alias, RequestType,
 };
-use crate::output::{ErrorLine, InfoLine, WarnLine};
+use crate::output::{ErrorLine, WarnLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage context aliases")]
@@ -90,7 +90,7 @@ impl ContextAliasCommand {
                         "Overwriting existing alias '{alias}' from '{existing_context}' to '{context_id}'"
                     )));
 
-                    let _ = delete_alias(
+                    let _ignored = delete_alias(
                         &connection.api_url,
                         connection.auth_key.as_ref(),
                         alias,
@@ -132,18 +132,7 @@ impl ContextAliasCommand {
                 )
                 .await?;
 
-                let response_str = match serde_json::to_string(&res) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        environment.output.write(&ErrorLine(&format!(
-                            "Failed to serialize alias lookup response: {}",
-                            e
-                        )));
-                        return Ok(());
-                    }
-                };
-
-                environment.output.write(&InfoLine(&response_str));
+                environment.output.write(&res);
             }
         }
 
@@ -212,7 +201,7 @@ impl UseCommand {
             environment.output.write(&WarnLine(&format!(
                 "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
             )));
-            let _ = delete_alias(
+            let _ignored = delete_alias(
                 &connection.api_url,
                 connection.auth_key.as_ref(),
                 default_alias,
