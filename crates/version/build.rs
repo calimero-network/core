@@ -1,4 +1,5 @@
 use std::process::Command;
+
 use eyre::{eyre, Result as EyreResult};
 
 fn main() {
