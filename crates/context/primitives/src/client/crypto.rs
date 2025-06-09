@@ -5,7 +5,7 @@ use eyre::bail;
 
 use super::ContextClient;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Debug)]
 pub struct ContextIdentity {
     pub public_key: PublicKey,
     pub private_key: Option<PrivateKey>,
@@ -13,8 +13,8 @@ pub struct ContextIdentity {
 }
 
 impl ContextIdentity {
-    pub fn private_key(&self) -> eyre::Result<PrivateKey> {
-        let Some(private_key) = self.private_key else {
+    pub fn private_key(&self) -> eyre::Result<&PrivateKey> {
+        let Some(private_key) = &self.private_key else {
             bail!(
                 "the identity '{}' is not managed by this node",
                 self.public_key

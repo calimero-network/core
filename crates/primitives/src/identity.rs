@@ -10,12 +10,21 @@ use thiserror::Error;
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
-#[derive(Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[expect(
+    missing_copy_implementations,
+    reason = "PrivateKey must not be copied, cloned, viewed or serialized"
+)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
 )]
 pub struct PrivateKey(Hash);
+
+impl fmt::Debug for PrivateKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad("PrivateKey")
+    }
+}
 
 impl From<[u8; 32]> for PrivateKey {
     fn from(id: [u8; 32]) -> Self {
@@ -53,41 +62,6 @@ impl PrivateKey {
         csprng.fill_bytes(&mut secret);
 
         Self::from(secret)
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl fmt::Display for PrivateKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(self.as_str())
-    }
-}
-
-impl From<PrivateKey> for String {
-    fn from(id: PrivateKey) -> Self {
-        id.as_str().to_owned()
-    }
-}
-
-impl From<&PrivateKey> for String {
-    fn from(id: &PrivateKey) -> Self {
-        id.as_str().to_owned()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Error)]
-#[error(transparent)]
-pub struct InvalidPrivateKey(HashError);
-
-impl FromStr for PrivateKey {
-    type Err = InvalidPrivateKey;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.parse().map_err(InvalidPrivateKey)?))
     }
 }
 
