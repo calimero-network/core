@@ -6,7 +6,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
@@ -231,8 +231,10 @@ impl ContextCommand {
                 context,
                 identity,
             } => {
+                let public_key = ctx_client.new_identity()?;
+                
                 let response = ctx_client
-                    .join_context(private_key, invitation_payload)
+                    .join_context(public_key, invitation_payload)
                     .await?;
 
                 if let Some(context) = context {

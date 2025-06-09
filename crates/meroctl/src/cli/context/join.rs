@@ -1,7 +1,7 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
+use calimero_server_primitives::admin::{GenerateContextIdentityResponse, JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
@@ -50,10 +50,21 @@ impl JoinCommand {
         let config = load_config(&environment.args.home, &environment.args.node_name).await?;
         let multiaddr = fetch_multiaddr(&config)?;
 
+        let identity_response: GenerateContextIdentityResponse = do_request(
+            &Client::new(),
+            multiaddr_to_url(multiaddr, "admin-api/dev/identities/generate-context-identity")?,
+            None::<()>,
+            &config.identity,
+            RequestType::Post,
+        )
+        .await?;
+
+        let public_key = identity_response.data.public_key;
+
         let response: JoinContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(multiaddr, "admin-api/dev/contexts/join")?,
-            Some(JoinContextRequest::new(self.invitation_payload)),
+            Some(JoinContextRequest::new(public_key, self.invitation_payload)),
             &config.identity,
             RequestType::Post,
         )

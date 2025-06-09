@@ -346,12 +346,13 @@ impl InviteToContextResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextRequest {
+    pub public_key: PublicKey,
     pub invitation_payload: ContextInvitationPayload,
 }
 
 impl JoinContextRequest {
-    pub const fn new(invitation_payload: ContextInvitationPayload) -> Self {
-        Self { invitation_payload }
+    pub const fn new(public_key: PublicKey, invitation_payload: ContextInvitationPayload) -> Self {
+        Self { public_key, invitation_payload }
     }
 }
 

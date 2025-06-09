@@ -8,7 +8,9 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::{key, Store};
+use calimero_store::types::ContextIdentity;
 use calimero_utils_actix::LazyRecipient;
+use eyre::ContextCompat;
 use futures_util::Stream;
 use tokio::sync::oneshot;
 
@@ -104,9 +106,23 @@ impl ContextClient {
 
     pub async fn join_context(
         &self,
-        identity_secret: PrivateKey,
+        public_key: PublicKey,
         invitation_payload: ContextInvitationPayload,
     ) -> eyre::Result<JoinContextResponse> {
+        let placeholder_context_id = ContextId::from([0u8; 32]);
+        
+        let stored_identity = self
+            .get_identity_value(placeholder_context_id, public_key)?
+            .with_context(|| format!("Missing identity for public key: {}", public_key))?;
+        
+        let private_key = stored_identity
+            .private_key
+            .context("Stored identity value is missing private key")?;
+        
+        let identity_secret = PrivateKey::from(private_key);
+        
+        self.delete_identity_value(placeholder_context_id, public_key)?;
+
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
@@ -280,5 +296,52 @@ impl ContextClient {
             .expect("Mailbox not to be dropped");
 
         receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    fn store_identity_value(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+        value: ContextIdentity,
+    ) -> eyre::Result<()> {
+        let key = key::ContextIdentity::new(context_id, public_key);
+        let mut handle = self.datastore.handle();
+        handle.put(&key, &value)?;
+        Ok(())
+    }
+
+    fn get_identity_value(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> eyre::Result<Option<ContextIdentity>> {
+        let key = key::ContextIdentity::new(context_id, public_key);
+        let handle = self.datastore.handle();
+        handle.get(&key).map_err(eyre::Report::from)
+    }
+
+    fn delete_identity_value(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> eyre::Result<()> {
+        let key = key::ContextIdentity::new(context_id, public_key);
+        let mut handle = self.datastore.handle();
+        handle.delete(&key)?;
+        Ok(())
+    }
+
+    pub fn new_identity(&self) -> eyre::Result<PublicKey> {
+        let main_private_key = self.new_private_key();
+        let public_key = main_private_key.public_key();
+
+        let placeholder_context_id = ContextId::from([0u8; 32]);
+        let value = ContextIdentity {
+            private_key: Some(*main_private_key),
+            sender_key: None,
+        };
+
+        self.store_identity_value(placeholder_context_id, public_key, value)?;
+        Ok(public_key)
     }
 }
