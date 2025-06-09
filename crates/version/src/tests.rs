@@ -1,4 +1,4 @@
-use crate::current_str;
+use crate::CalimeroVersion::current_str;
 
 #[test]
 fn version_info_contains_crate_version() {

@@ -21,6 +21,7 @@ mod proxy;
 
 use app::AppCommand;
 use call::CallCommand;
+use calimero_version::CalimeroVersion;
 use context::ContextCommand;
 use peers::PeersCommand;
 use proxy::ProxyCommand;
