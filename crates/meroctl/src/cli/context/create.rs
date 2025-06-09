@@ -336,7 +336,7 @@ async fn update_context_application(
     member_public_key: PublicKey,
 ) -> EyreResult<()> {
     let mut url = connection.api_url.clone();
-    url.set_path(&format!("admin-api/dev/contexts/{}", context_id));
+    url.set_path(&format!("admin-api/dev/contexts/{context_id}/application"));
 
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 

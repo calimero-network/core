@@ -245,7 +245,7 @@ impl GetCommand {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let mut url = connection.api_url.clone();
         url.set_path(&format!(
-            "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
+            "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
             context_id, proposal_id
         ));
         make_request::<_, GetProposalApproversResponse>(
@@ -296,7 +296,7 @@ impl GetCommand {
         let proposal_id = self.proposal_id.ok_or_eyre("proposal_id is required")?;
         let mut url = connection.api_url.clone();
         url.set_path(&format!(
-            "admin-api/dev/contexts/{}/proposals/{}/approvals/count",
+            "admin-api/dev/contexts/{}/proposals/{}",
             context_id, proposal_id
         ));
         make_request::<_, GetProposalResponse>(

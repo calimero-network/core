@@ -9,7 +9,7 @@ use reqwest::Client;
 
 use crate::cli::Environment;
 use crate::common::{create_alias, do_request, resolve_alias, RequestType};
-use crate::output::{InfoLine, Report};
+use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Create invitation to a context")]
@@ -121,21 +121,16 @@ impl InviteCommand {
             .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
 
         if let Some(name) = self.name {
-            if let Some(auth_key) = connection.auth_key.as_ref() {
-                let res = create_alias(
-                    &connection.api_url,
-                    Some(auth_key),
-                    name,
-                    Some(context_id),
-                    self.invitee_id,
-                )
-                .await?;
-                environment.output.write(&res);
-            } else {
-                environment.output.write(&InfoLine(
-                    "Skipping alias creation - no authentication key provided",
-                ));
-            }
+            let res = create_alias(
+                &connection.api_url,
+                connection.auth_key.as_ref(),
+                name,
+                Some(context_id),
+                self.invitee_id,
+            )
+            .await?;
+
+            environment.output.write(&res);
         }
 
         Ok(invitation_payload)
