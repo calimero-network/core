@@ -2235,6 +2235,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-version"
+version = "0.6.0"
+dependencies = [
+ "eyre",
+ "rustc_version 0.4.1",
+]
+
+[[package]]
 name = "camino"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5991,12 +5999,14 @@ dependencies = [
 
 [[package]]
 name = "meroctl"
-version = "0.6.0"
+version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
  "calimero-config",
+ "calimero-context-config",
  "calimero-primitives",
  "calimero-server-primitives",
+ "calimero-version",
  "camino",
  "chrono",
  "clap",
@@ -6021,7 +6031,7 @@ dependencies = [
 
 [[package]]
 name = "merod"
-version = "0.6.0"
+version = "0.1.0"
 dependencies = [
  "alloy",
  "axum",
@@ -6035,6 +6045,7 @@ dependencies = [
  "calimero-store",
  "calimero-store-rocksdb",
  "calimero-utils-actix",
+ "calimero-version",
  "camino",
  "clap",
  "color-eyre",

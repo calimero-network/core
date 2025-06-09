@@ -24,16 +24,11 @@ fn try_main() -> EyreResult<()> {
 
     let git_commit = run_command("git", &["rev-parse", "--short", "HEAD"])?;
 
-    let rustc_version = rustc_version::version()
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let rustc_version = rustc_version::version()?.to_string();
 
     println!("cargo:rustc-env=CALIMERO_BUILD={}", git_describe.trim());
     println!("cargo:rustc-env=CALIMERO_COMMIT={}", git_commit.trim());
-    println!(
-        "cargo:rustc-env=CALIMERO_RUSTC_VERSION={}",
-        rustc_version.trim()
-    );
+    println!("cargo:rustc-env=CALIMERO_RUSTC_VERSION={}", rustc_version);
 
     Ok(())
 }

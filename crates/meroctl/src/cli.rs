@@ -1,6 +1,5 @@
 use std::process::ExitCode;
 
-use bootstrap::BootstrapCommand;
 use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -21,6 +20,7 @@ mod peers;
 mod proxy;
 
 use app::AppCommand;
+use bootstrap::BootstrapCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use peers::PeersCommand;
