@@ -1,6 +1,6 @@
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::key;
+use calimero_store::{key, types};
 use eyre::bail;
 
 use super::ContextClient;
@@ -26,9 +26,21 @@ impl ContextIdentity {
 }
 
 impl ContextClient {
-    // fixme! refactor as part of #1066
-    pub fn new_private_key(&self) -> PrivateKey {
-        PrivateKey::random(&mut rand::thread_rng())
+    pub fn new_identity(&self) -> eyre::Result<PublicKey> {
+        let mut handle = self.datastore.handle();
+
+        let private_key = PrivateKey::random(&mut rand::thread_rng());
+        let public_key = private_key.public_key();
+
+        handle.put(
+            &key::ContextIdentity::new(ContextId::from([0u8; 32]), public_key),
+            &types::ContextIdentity {
+                private_key: Some(*private_key),
+                sender_key: None,
+            },
+        )?;
+
+        Ok(public_key)
     }
 
     pub fn get_identity(
@@ -74,6 +86,20 @@ impl ContextClient {
         identity.private_key = new_identity.private_key.as_deref().copied();
 
         handle.put(&key, &identity)?;
+
+        Ok(())
+    }
+
+    pub fn delete_identity(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.handle();
+
+        let key = key::ContextIdentity::new(*context_id, *public_key);
+
+        handle.delete(&key)?;
 
         Ok(())
     }

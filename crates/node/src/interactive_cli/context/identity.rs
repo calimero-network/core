@@ -144,7 +144,8 @@ impl ContextIdentityCommand {
                 list_identities(node_client, ctx_client, Some(context), &ind.to_string()).await?;
             }
             ContextIdentitySubcommands::Generate => {
-                generate_new_identity(ctx_client, &ind.to_string());
+                let identity = ctx_client.new_identity()?;
+                println!("{ind} Public Key: {}", identity.cyan());
             }
             ContextIdentitySubcommands::Alias { command } => {
                 handle_alias_command(node_client, ctx_client, command, &ind.to_string())?;
@@ -314,12 +315,6 @@ async fn list_identities(
     }
 
     Ok(())
-}
-
-fn generate_new_identity(ctx_client: &ContextClient, ind: &str) {
-    let identity = ctx_client.new_private_key();
-    println!("{ind} Private Key: {}", identity.cyan());
-    println!("{ind} Public Key: {}", identity.public_key().cyan());
 }
 
 fn handle_alias_command(
