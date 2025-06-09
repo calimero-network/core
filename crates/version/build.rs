@@ -1,5 +1,4 @@
 use std::process::Command;
-
 use eyre::{eyre, Result as EyreResult};
 
 fn main() {
@@ -24,7 +23,7 @@ fn try_main() -> EyreResult<()> {
 
     let git_commit = run_command("git", &["rev-parse", "--short", "HEAD"])?;
 
-    let calimero_rustc_version = rustc_version::version()
+    let rustc_version = rustc_version::version()
         .map(|v| v.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
@@ -32,7 +31,7 @@ fn try_main() -> EyreResult<()> {
     println!("cargo:rustc-env=CALIMERO_COMMIT={}", git_commit.trim());
     println!(
         "cargo:rustc-env=CALIMERO_RUSTC_VERSION={}",
-        calimero_rustc_version.trim()
+        rustc_version.trim()
     );
 
     Ok(())

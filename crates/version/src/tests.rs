@@ -1,8 +1,8 @@
-use crate::CalimeroVersion::current_str;
+use crate::CalimeroVersion;
 
 #[test]
 fn version_info_contains_crate_version() {
-    let info = current_str();
+    let info = CalimeroVersion::current_str();
     let expected = env!("CARGO_PKG_VERSION");
     assert!(
         info.contains(expected),
@@ -14,7 +14,7 @@ fn version_info_contains_crate_version() {
 
 #[test]
 fn version_info_contains_commit_hash() {
-    let info = current_str();
+    let info = CalimeroVersion::current_str();
     let expected = env!("CALIMERO_COMMIT");
     assert!(
         info.contains(expected),
@@ -26,7 +26,7 @@ fn version_info_contains_commit_hash() {
 
 #[test]
 fn version_info_contains_rustc_version() {
-    let info = current_str();
+    let info = CalimeroVersion::current_str();
     let expected = env!("CALIMERO_RUSTC_VERSION");
     assert!(
         info.contains(expected),
@@ -38,7 +38,7 @@ fn version_info_contains_rustc_version() {
 
 #[test]
 fn version_info_has_no_unknown_values() {
-    let info = current_str();
+    let info = CalimeroVersion::current_str();
     assert!(
         !info.contains("unknown"),
         "version_info contains 'unknown': {}",

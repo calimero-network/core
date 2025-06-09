@@ -2,8 +2,8 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
+use calimero_version::CalimeroVersion;
 
-use crate::cli::run::RunCommand;
 use crate::defaults;
 
 mod config;
@@ -11,10 +11,10 @@ mod init;
 mod relay;
 mod run;
 
-use calimero_version::CalimeroVersion;
 use config::ConfigCommand;
 use init::InitCommand;
 use relay::RelayCommand;
+use run::RunCommand;
 
 pub const EXAMPLES: &str = r"
   # Initialize node
