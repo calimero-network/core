@@ -7,17 +7,12 @@ use calimero_server_primitives::admin::{
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
-use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cli::Environment;
-use crate::common::{
-    do_request, fetch_multiaddr, load_config, make_request, multiaddr_to_url, resolve_alias,
-    RequestType,
-};
+use crate::cli::{ConnectionInfo, Environment};
+use crate::common::{do_request, make_request, resolve_alias, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -162,8 +157,11 @@ impl Report for GetProposalsResponse {
 
 impl ProposalsCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
+
         let client = Client::new();
 
         match &self.command {
@@ -172,55 +170,46 @@ impl ProposalsCommand {
                 offset,
                 limit,
             } => {
-                let context_id = resolve_alias(multiaddr, &config.identity, *context, None)
-                    .await?
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("unable to resolve context")?;
+                let context_id = resolve_alias(
+                    &connection.api_url,
+                    connection.auth_key.as_ref(),
+                    *context,
+                    None,
+                )
+                .await?
+                .value()
+                .cloned()
+                .ok_or_eyre("unable to resolve context")?;
 
                 let args = serde_json::json!({
                     "offset": offset,
                     "limit": limit
                 });
 
-                self.list_proposals(
-                    environment,
-                    multiaddr,
-                    &client,
-                    &config.identity,
-                    context_id,
-                    args,
-                )
-                .await
+                self.list_proposals(environment, connection, &client, context_id, args)
+                    .await
             }
             ProposalsSubcommand::View {
                 proposal_id,
                 context,
             } => {
-                let context_id = resolve_alias(multiaddr, &config.identity, *context, None)
-                    .await?
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("unable to resolve context")?;
+                let context_id = resolve_alias(
+                    &connection.api_url,
+                    connection.auth_key.as_ref(),
+                    *context,
+                    None,
+                )
+                .await?
+                .value()
+                .cloned()
+                .ok_or_eyre("unable to resolve context")?;
 
                 let proposal_response = self
-                    .get_proposal(
-                        multiaddr,
-                        &client,
-                        &config.identity,
-                        context_id,
-                        proposal_id,
-                    )
+                    .get_proposal(connection, &client, context_id, proposal_id)
                     .await?;
 
                 let approvers_response = self
-                    .get_proposal_approvers_data(
-                        multiaddr,
-                        &client,
-                        &config.identity,
-                        context_id,
-                        proposal_id,
-                    )
+                    .get_proposal_approvers_data(connection, &client, context_id, proposal_id)
                     .await?;
 
                 let combined_response = ProposalDetailsResponse {
@@ -236,25 +225,22 @@ impl ProposalsCommand {
 
     async fn get_proposal_approvers_data(
         &self,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
         context_id: ContextId,
         proposal_id: &Hash,
     ) -> EyreResult<GetProposalApproversResponse> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!(
-                "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
-                context_id, proposal_id
-            ),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!(
+            "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
+            context_id, proposal_id
+        ));
 
         let response = do_request::<(), GetProposalApproversResponse>(
             client,
             url,
             None::<()>,
-            keypair,
+            connection.auth_key.as_ref(),
             RequestType::Get,
         )
         .await?;
@@ -265,23 +251,20 @@ impl ProposalsCommand {
     async fn list_proposals(
         &self,
         environment: &Environment,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
         context_id: ContextId,
         args: Value,
     ) -> EyreResult<()> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!("admin-api/dev/contexts/{}/proposals", context_id),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!("admin-api/dev/contexts/{context_id}/proposals"));
 
         make_request::<_, GetProposalsResponse>(
             environment,
             client,
             url,
             Some(args),
-            keypair,
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await
@@ -289,25 +272,22 @@ impl ProposalsCommand {
 
     async fn get_proposal(
         &self,
-        multiaddr: &Multiaddr,
+        connection: &ConnectionInfo,
         client: &Client,
-        keypair: &Keypair,
         context_id: ContextId,
         proposal_id: &Hash,
     ) -> EyreResult<GetProposalResponse> {
-        let url = multiaddr_to_url(
-            multiaddr,
-            &format!(
-                "admin-api/dev/contexts/{}/proposals/{}",
-                context_id, proposal_id
-            ),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!(
+            "admin-api/dev/contexts/{}/proposals/{}",
+            context_id, proposal_id
+        ));
 
         let response = do_request::<(), GetProposalResponse>(
             client,
             url,
             None::<()>,
-            keypair,
+            connection.auth_key.as_ref(),
             RequestType::Get,
         )
         .await?;
