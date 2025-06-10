@@ -161,7 +161,7 @@ impl RootCommand {
     }
 
     async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
-        Ok(match (&self.args.node, &self.args.api) {
+        let connection = match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
                 let config = Config::load().await?;
 
@@ -192,7 +192,8 @@ impl RootCommand {
                 ConnectionInfo::new(api_url.clone(), auth_key).await
             }
             _ => bail!("expected one of `--node` or `--api` to be set"),
-        })
+        };
+        Ok(connection)
     }
 }
 
