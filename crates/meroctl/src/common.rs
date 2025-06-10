@@ -285,7 +285,7 @@ where
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
     connection
-        .post(&format!("{prefix}/{kind}{scope}{alias}"), None::<()>)
+        .post(&format!("{prefix}/{kind}/{scope}{alias}"), None::<()>)
         .await
 }
 
