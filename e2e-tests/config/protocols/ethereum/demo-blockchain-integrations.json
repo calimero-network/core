@@ -112,7 +112,13 @@
         },
         "expectedResultJson": null,
         "target": "invitees",
-        "genericInput": "proposal_id"
+        "genericInput": "proposal_id",
+        "retries": 20,
+        "intervalMs": 10000,
+        "description": [
+          "if a node still hasn't received the broadcast",
+          "try 20 more times every 10 seconds, but no more"
+        ]
       }
     },
     {
