@@ -230,7 +230,7 @@ where
     let prefix = "admin-api/dev/alias/delete";
     let kind = T::KIND;
     let scope =
-        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
     connection
         .post(&format!("{prefix}/{kind}{scope}{alias}"), None::<()>)
