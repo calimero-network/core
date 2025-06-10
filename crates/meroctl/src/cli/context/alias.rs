@@ -6,6 +6,7 @@ use eyre::{eyre, OptionExt, Result as EyreResult, WrapErr};
 
 use crate::cli::{ApiError, ConnectionInfo, Environment};
 use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
+
 use crate::output::{ErrorLine, WarnLine};
 
 #[derive(Debug, Parser)]
@@ -40,6 +41,9 @@ pub enum ContextAliasSubcommand {
         #[arg(help = "Name of the alias to look up", default_value = "default")]
         alias: Alias<ContextId>,
     },
+
+    #[command(about = "List all context aliases", alias = "ls")]
+    List,
 }
 
 impl ContextAliasCommand {
@@ -100,6 +104,16 @@ impl ContextAliasCommand {
             }
             ContextAliasSubcommand::Get { alias } => {
                 let res = lookup_alias(connection, alias, None).await?;
+
+                environment.output.write(&res);
+            }
+            ContextAliasSubcommand::List => {
+                let res = list_aliases::<ContextId>(
+                    &connection.api_url,
+                    connection.auth_key.as_ref(),
+                    None,
+                )
+                .await?;
 
                 environment.output.write(&res);
             }

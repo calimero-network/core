@@ -8,8 +8,8 @@ mod config;
 mod defaults;
 mod output;
 mod version;
+
 use cli::RootCommand;
-use version::check_for_update;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -18,11 +18,7 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if rand::random::<u8>() % 10 == 0 {
-        if let Err(err) = check_for_update().await {
-            eprintln!("Version check failed: {}", err);
-        }
-    }
+    version::check_for_update().await;
 
     let command = RootCommand::parse();
     match command.run().await {

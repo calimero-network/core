@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -45,7 +46,7 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = CalimeroVersion::current_str(), about, long_about = None)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
     "  CALIMERO_HOME    Directory for config and data\n\n",

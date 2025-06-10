@@ -7,6 +7,7 @@ use eyre::{OptionExt, Result as EyreResult, WrapErr};
 
 use crate::cli::{ConnectionInfo, Environment};
 use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
+
 use crate::output::ErrorLine;
 
 // Helper function needed by the Add subcommand implementation
@@ -71,6 +72,13 @@ pub enum ContextIdentityAliasSubcommand {
         identity: Alias<PublicKey>,
 
         #[arg(help = "The context that the identity is a member of")]
+        #[arg(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+    },
+
+    #[command(about = "List all the aliases under the context", alias = "ls")]
+    List {
+        #[arg(help = "The context whose aliases need to be listed")]
         #[arg(long, short, default_value = "default")]
         context: Alias<ContextId>,
     },
@@ -156,6 +164,30 @@ impl ContextIdentityAliasCommand {
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
                 let res = lookup_alias(connection, identity, Some(context_id)).await?;
+
+                environment.output.write(&res);
+            }
+
+            ContextIdentityAliasSubcommand::List { context } => {
+                let resolve_response = resolve_alias(
+                    &connection.api_url,
+                    connection.auth_key.as_ref(),
+                    context,
+                    None,
+                )
+                .await?;
+
+                let context_id = resolve_response
+                    .value()
+                    .cloned()
+                    .ok_or_eyre("Failed to resolve context: no value found")?;
+
+                let res = list_aliases::<PublicKey>(
+                    &connection.api_url,
+                    connection.auth_key.as_ref(),
+                    Some(context_id),
+                )
+                .await?;
 
                 environment.output.write(&res);
             }

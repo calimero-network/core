@@ -3,6 +3,7 @@
 mod tests;
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::str::FromStr;
 
@@ -34,7 +35,6 @@ impl ScopedAlias for ApplicationId {
     type Scope = ();
 }
 
-#[derive(Eq, PartialEq)]
 pub struct Alias<T> {
     str: [u8; MAX_LENGTH],
     len: u8,
@@ -101,6 +101,26 @@ impl<T> fmt::Debug for Alias<T> {
     }
 }
 
+impl<T> Eq for Alias<T> {}
+
+impl<T> PartialEq for Alias<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.str == other.str
+    }
+}
+
+impl<T> Ord for Alias<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.str.cmp(&other.str)
+    }
+}
+
+impl<T> PartialOrd for Alias<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl<T> Serialize for Alias<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -144,5 +164,11 @@ impl<'de, T> Deserialize<'de> for Alias<T> {
         }
 
         deserializer.deserialize_str(AliasVisitor(PhantomData))
+    }
+}
+
+impl<T> Hash for Alias<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
     }
 }

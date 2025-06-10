@@ -1,10 +1,9 @@
 use actix::Message;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 
 #[derive(Debug)]
 pub struct JoinContextRequest {
-    pub identity_secret: PrivateKey,
     pub invitation_payload: ContextInvitationPayload,
 }
 

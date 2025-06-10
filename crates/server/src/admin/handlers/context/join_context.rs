@@ -9,14 +9,11 @@ use crate::AdminState;
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(JoinContextRequest {
-        private_key,
-        invitation_payload,
-    }): Json<JoinContextRequest>,
+    Json(JoinContextRequest { invitation_payload }): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let result = state
         .ctx_client
-        .join_context(private_key, invitation_payload)
+        .join_context(invitation_payload)
         .await
         .map_err(parse_api_error);
 
