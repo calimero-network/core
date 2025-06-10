@@ -8,8 +8,14 @@ use crate::driver::{Test, TestContext};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsStep {
-    /// JSON arguments to pass to the get proposals request
-    pub args_json: serde_json::Value,
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+fn default_limit() -> usize {
+    10
 }
 
 impl Test for GetProposalsStep {
@@ -33,18 +39,22 @@ impl Test for GetProposalsStep {
 
         let proposals = ctx
             .meroctl
-            .get_proposals(&ctx.inviter, context_id, &self.args_json)
+            .get_proposals(
+                &ctx.inviter,
+                context_id,
+                &self.offset.to_string(),
+                &self.limit.to_string(),
+            )
             .await?;
 
         let mut proposal_id = None;
-        if let Some(proposals) = proposals["data"].as_array() {
-            for proposal in proposals {
-                if let Some(id) = proposal["id"].as_str() {
-                    proposal_id = Some(id);
-                    break;
-                }
+        for proposal in &proposals {
+            if let Some(id) = proposal["id"].as_str() {
+                proposal_id = Some(id);
+                break;
             }
         }
+
         let Some(proposal_id) = proposal_id else {
             bail!("No proposal IDs found in response: {:?}", proposals);
         };

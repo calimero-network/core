@@ -8,10 +8,7 @@ use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{
-    create_alias, do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias,
-    RequestType,
-};
+use crate::common::{create_alias, do_request, resolve_alias, RequestType};
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -74,31 +71,45 @@ impl InviteCommand {
     }
 
     pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
 
-        let multiaddr = fetch_multiaddr(&config)?;
+        let context_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref(),
+            self.context,
+            None,
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
-        let context_id = resolve_alias(multiaddr, &config.identity, self.context, None)
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let inviter_id = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref(),
+            self.inviter,
+            Some(context_id),
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
-        let inviter_id = resolve_alias(multiaddr, &config.identity, self.inviter, Some(context_id))
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let mut url = connection.api_url.clone();
+        url.set_path("admin-api/dev/contexts/invite");
 
         let response: InviteToContextResponse = do_request(
             &Client::new(),
-            multiaddr_to_url(multiaddr, "admin-api/dev/contexts/invite")?,
+            url,
             Some(InviteToContextRequest {
                 context_id,
                 inviter_id,
                 invitee_id: self.invitee_id,
             }),
-            &config.identity,
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await?;
@@ -111,13 +122,14 @@ impl InviteCommand {
 
         if let Some(name) = self.name {
             let res = create_alias(
-                multiaddr,
-                &config.identity,
+                &connection.api_url,
+                connection.auth_key.as_ref(),
                 name,
                 Some(context_id),
                 self.invitee_id,
             )
             .await?;
+
             environment.output.write(&res);
         }
 

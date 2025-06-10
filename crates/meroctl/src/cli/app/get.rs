@@ -1,11 +1,11 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
-use eyre::Result as EyreResult;
+use eyre::{OptionExt, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::common::{do_request, RequestType};
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
@@ -31,24 +31,24 @@ impl Report for GetApplicationResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
 
-        let url = multiaddr_to_url(
-            fetch_multiaddr(&config)?,
-            &format!("admin-api/dev/applications/{}", self.app_id),
-        )?;
+        let mut url = connection.api_url.clone();
+        url.set_path(&format!("admin-api/dev/applications/{}", self.app_id));
 
         let response: GetApplicationResponse = do_request(
             &Client::new(),
             url,
             None::<()>,
-            &config.identity,
+            connection.auth_key.as_ref(),
             RequestType::Get,
         )
         .await?;
 
         environment.output.write(&response);
-
         Ok(())
     }
 }

@@ -11,14 +11,12 @@ use eyre::{OptionExt, Result as EyreResult};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
-use crate::common::{
-    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
-};
+use crate::common::{do_request, resolve_alias, RequestType};
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
   # Execute a RPC method call
-  $ meroctl -- --node-name node1 call <CONTEXT> <METHOD>
+  $ meroctl --node node1 call <CONTEXT> <METHOD>
 ";
 
 #[derive(Debug, Parser)]
@@ -81,26 +79,37 @@ impl Report for Response {
     }
 }
 
-#[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 impl CallCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let connection = environment
+            .connection
+            .as_ref()
+            .ok_or_eyre("No connection configured")?;
 
-        let multiaddr = fetch_multiaddr(&config)?;
-
-        let resolve_response =
-            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
+        let resolve_response = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref(),
+            self.context,
+            None,
+        )
+        .await?;
         let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
-        let executor = resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
-            .await?
-            .value()
-            .cloned()
-            .ok_or_eyre("unable to resolve")?;
+        let executor = resolve_alias(
+            &connection.api_url,
+            connection.auth_key.as_ref(),
+            self.executor,
+            Some(context_id),
+        )
+        .await?
+        .value()
+        .cloned()
+        .ok_or_eyre("unable to resolve")?;
 
-        let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
+        let mut url = connection.api_url.clone();
+        url.set_path("jsonrpc/dev");
 
         let payload = RequestPayload::Execute(ExecutionRequest::new(
             context_id,
@@ -121,7 +130,7 @@ impl CallCommand {
             &client,
             url,
             Some(request),
-            &config.identity,
+            connection.auth_key.as_ref(),
             RequestType::Post,
         )
         .await?;

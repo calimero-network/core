@@ -1,12 +1,13 @@
 use std::pin::pin;
 
+use calimero_context_config::repr::{ReprBytes, ReprTransmute};
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
@@ -86,8 +87,6 @@ enum Commands {
     },
     /// Join a context
     Join {
-        /// The private key of the user
-        private_key: PrivateKey,
         /// The invitation payload from the inviter
         invitation_payload: ContextInvitationPayload,
         /// Alias for the newly joined context
@@ -159,6 +158,47 @@ enum Commands {
     },
     /// Manage context identities
     Identity(identity::ContextIdentityCommand),
+    /// Manage proposals
+    Proposals {
+        #[command(subcommand)]
+        command: ProposalsCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProposalsCommands {
+    #[command(about = "List all proposals in a context", alias = "ls")]
+    List {
+        /// Context to list proposals for
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+
+        /// Offset for pagination
+        #[clap(
+            long,
+            help = "Starting position for pagination (skip this many proposals)",
+            default_value_t
+        )]
+        offset: usize,
+
+        /// Limit for pagination
+        #[clap(
+            long,
+            help = "Maximum number of proposals to display in results",
+            default_value = "20"
+        )]
+        limit: usize,
+    },
+    #[command(about = "View details of a specific proposal including approvers and actions")]
+    View {
+        /// Proposal ID to view
+        #[clap(help = "ID of the proposal to view")]
+        proposal_id: Hash,
+
+        /// Context the proposal belongs to
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -229,14 +269,11 @@ impl ContextCommand {
                 }
             }
             Commands::Join {
-                private_key,
                 invitation_payload,
                 context,
                 identity,
             } => {
-                let response = ctx_client
-                    .join_context(private_key, invitation_payload)
-                    .await?;
+                let response = ctx_client.join_context(invitation_payload).await?;
 
                 if let Some(context) = context {
                     if let Err(e) = node_client.create_alias(context, None, response.context_id) {
@@ -545,6 +582,9 @@ impl ContextCommand {
                 }
             }
             Commands::Identity(identity) => identity.run(node_client, ctx_client).await?,
+            Commands::Proposals { command } => {
+                handle_proposals_command(node_client, ctx_client, command, &ind.to_string()).await?
+            }
         }
         Ok(())
     }
@@ -627,6 +667,96 @@ fn handle_alias_command(
                     "{ind} {}",
                     format_args!("{c1:44} | {c2}", c1 = context.cyan(), c2 = alias.cyan())
                 );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_proposals_command(
+    node_client: &NodeClient,
+    ctx_client: &ContextClient,
+    command: ProposalsCommands,
+    ind: &str,
+) -> EyreResult<()> {
+    match command {
+        ProposalsCommands::List {
+            context,
+            offset,
+            limit,
+        } => {
+            let context_id = node_client
+                .resolve_alias(context, None)?
+                .ok_or_eyre("unable to resolve context")?;
+
+            let Some(external_config) = ctx_client.context_config(&context_id)? else {
+                println!("{ind} Context configuration not found for {context_id}");
+                return Ok(());
+            };
+
+            let external_client = ctx_client.external_client(&context_id, &external_config)?;
+            let proxy_client = external_client.proxy();
+
+            let proposals = proxy_client.get_proposals(offset, limit).await?;
+
+            if proposals.is_empty() {
+                println!("{ind} No proposals found for context '{}'", context_id);
+            } else {
+                println!("{ind} Proposals for context '{}':", context_id);
+                for proposal in proposals {
+                    println!(
+                        "{ind} - Proposal ID: {}, Author: {}",
+                        Hash::from(proposal.id.as_bytes()).cyan(),
+                        Hash::from(proposal.author_id.as_bytes()).cyan()
+                    );
+                }
+            }
+        }
+
+        ProposalsCommands::View {
+            proposal_id,
+            context,
+        } => {
+            let context_id = node_client
+                .resolve_alias(context, None)?
+                .ok_or_eyre("unable to resolve context")?;
+
+            let Some(external_config) = ctx_client.context_config(&context_id)? else {
+                println!("{ind} Context configuration not found for {context_id}");
+                return Ok(());
+            };
+
+            let external_client = ctx_client.external_client(&context_id, &external_config)?;
+            let proxy_client = external_client.proxy();
+
+            let proposal_id = proposal_id.rt()?;
+
+            let proposal = proxy_client.get_proposal(&proposal_id).await?;
+
+            if let Some(proposal) = proposal {
+                let approvers = proxy_client.get_proposal_approvers(&proposal_id).await?;
+                let approvers_vec: Vec<_> = approvers.into_iter().collect();
+
+                println!("{ind} Proposal ID: {}", format!("{:?}", proposal.id).cyan());
+                println!("{ind} Author: {}", proposal.author_id.cyan());
+                println!("{ind} Context ID: {}", context_id);
+
+                println!("{ind} Actions: ({} total)", proposal.actions.len());
+                for (i, action) in proposal.actions.iter().enumerate() {
+                    println!("{ind}   {}. {:?}", i + 1, action);
+                }
+
+                println!("{ind} Approvers: ({})", approvers_vec.len());
+                if approvers_vec.is_empty() {
+                    println!("{ind}   None");
+                } else {
+                    for approver in approvers_vec {
+                        println!("{ind}   {}", format!("{:?}", approver).cyan());
+                    }
+                }
+            } else {
+                println!("{ind} Proposal not found");
             }
         }
     }

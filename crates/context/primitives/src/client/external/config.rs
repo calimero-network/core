@@ -152,7 +152,7 @@ impl ExternalConfigClient<'_> {
                         )),
                     ),
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -191,7 +191,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &identities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -230,7 +230,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &identities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -269,7 +269,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &capabilities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -308,7 +308,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &capabilities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -334,7 +334,7 @@ impl ExternalConfigClient<'_> {
 
             client
                 .update_proxy_contract(self.client.context_id.rt().expect("infallible conversion"))
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;

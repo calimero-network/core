@@ -43,7 +43,7 @@ impl ExternalProxyClient<'_> {
 
         let _ignored = client
             .propose(*proposal_id, signer_id, actions)
-            .send(*private_key)
+            .send(**private_key)
             .await?;
 
         Ok(())
@@ -72,7 +72,7 @@ impl ExternalProxyClient<'_> {
 
         let _ignored = client
             .approve(signer_id, *proposal_id)
-            .send(*private_key)
+            .send(**private_key)
             .await?;
 
         Ok(())
