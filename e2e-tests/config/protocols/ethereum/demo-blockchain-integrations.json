@@ -117,7 +117,7 @@
         "intervalMs": 1000,
         "description": [
           "if a node still hasn't received the broadcast",
-          "try 20 more times every 10 seconds, but no more"
+          "try 20 more times every second, but no more"
         ]
       }
     },
