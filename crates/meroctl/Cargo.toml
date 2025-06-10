@@ -1,6 +1,6 @@
 [package]
 name = "meroctl"
-version = "0.6.0"
+version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -29,12 +29,14 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tokio-tungstenite.workspace = true
+toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 calimero-config.workspace = true
 calimero-context-config.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
+calimero-version.workspace = true
 
 [lints]
 workspace = true

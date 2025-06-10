@@ -104,17 +104,13 @@ impl ContextClient {
 
     pub async fn join_context(
         &self,
-        identity_secret: PrivateKey,
         invitation_payload: ContextInvitationPayload,
     ) -> eyre::Result<JoinContextResponse> {
         let (sender, receiver) = oneshot::channel();
 
         self.context_manager
             .send(ContextMessage::JoinContext {
-                request: JoinContextRequest {
-                    identity_secret,
-                    invitation_payload,
-                },
+                request: JoinContextRequest { invitation_payload },
                 outcome: sender,
             })
             .await
