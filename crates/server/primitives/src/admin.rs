@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
 use calimero_context_config::{Proposal, ProposalWithApprovals};
@@ -250,6 +252,19 @@ impl GetContextIdentitiesResponse {
         Self {
             data: ContextIdentitiesResponseData { identities },
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAliasesResponse<T> {
+    #[serde(bound(deserialize = "T: Ord + Deserialize<'de>"))]
+    pub data: BTreeMap<Alias<T>, T>,
+}
+
+impl<T> ListAliasesResponse<T> {
+    pub fn new(data: BTreeMap<Alias<T>, T>) -> Self {
+        Self { data }
     }
 }
 

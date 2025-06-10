@@ -91,7 +91,7 @@ impl FromStr for PrivateKey {
     }
 }
 
-#[derive(Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshDeserialize, borsh::BorshSerialize)
