@@ -69,10 +69,7 @@ impl Config {
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                ConnectionInfo {
-                    api_url: url,
-                    auth_key: Some(config.identity),
-                }
+                ConnectionInfo::new(url, Some(config.identity)).await
             }
             NodeConnection::Remote { url, auth } => {
                 let mut auth_key = None;
@@ -88,10 +85,7 @@ impl Config {
                     auth_key = Some(keypair);
                 };
 
-                ConnectionInfo {
-                    api_url: url.clone(),
-                    auth_key,
-                }
+                ConnectionInfo::new(url.clone(), auth_key).await
             }
         };
 
