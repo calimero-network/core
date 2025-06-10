@@ -52,10 +52,9 @@ impl JoinCommand {
         let response: JoinContextResponse = connection
             .post(
                 "admin-api/dev/contexts/join",
-                JoinContextRequest::new(self.private_key, self.invitation_payload),
+                JoinContextRequest::new(self.invitation_payload),
             )
             .await?;
-
 
         environment.output.write(&response);
 

@@ -5,8 +5,7 @@ use clap::Parser;
 use eyre::{eyre, OptionExt, Result as EyreResult, WrapErr};
 
 use crate::cli::{ApiError, ConnectionInfo, Environment};
-use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
-
+use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
 use crate::output::{ErrorLine, WarnLine};
 
 #[derive(Debug, Parser)]
@@ -108,12 +107,7 @@ impl ContextAliasCommand {
                 environment.output.write(&res);
             }
             ContextAliasSubcommand::List => {
-                let res = list_aliases::<ContextId>(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
-                    None,
-                )
-                .await?;
+                let res = list_aliases::<ContextId>(connection, None).await?;
 
                 environment.output.write(&res);
             }

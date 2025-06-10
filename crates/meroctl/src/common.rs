@@ -257,27 +257,18 @@ impl<T: fmt::Display> Report for ListAliasesResponse<T> {
 }
 
 pub(crate) async fn list_aliases<T>(
-    base_url: &Url,
-    keypair: Option<&Keypair>,
+    connection: &ConnectionInfo,
     scope: Option<T::Scope>,
 ) -> EyreResult<ListAliasesResponse<T>>
 where
     T: Ord + UrlFragment + DeserializeOwned,
 {
     let prefix = "admin-api/dev/alias/list";
-
     let kind = T::KIND;
-
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
-    let mut url = base_url.clone();
-    url.set_path(&format!("{prefix}/{kind}{scope}"));
-
-    let response: ListAliasesResponse<T> =
-        do_request(&Client::new(), url, None::<()>, keypair, RequestType::Get).await?;
-
-    Ok(response)
+    connection.get(&format!("{prefix}/{kind}{scope}")).await
 }
 
 pub(crate) async fn lookup_alias<T>(

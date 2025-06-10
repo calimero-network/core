@@ -275,13 +275,6 @@ impl ConnectionInfo {
         self.request(RequestType::Delete, path, None::<()>).await
     }
 
-    #[allow(dead_code)]
-    pub fn build_url(&self, path: &str) -> EyreResult<Url> {
-        let mut url = self.api_url.clone();
-        url.set_path(path);
-        Ok(url)
-    }
-
     async fn request<I, O>(
         &self,
         req_type: RequestType,

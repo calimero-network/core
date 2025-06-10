@@ -6,8 +6,7 @@ use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 
 use crate::cli::{ConnectionInfo, Environment};
-use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
-
+use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
 use crate::output::ErrorLine;
 
 // Helper function needed by the Add subcommand implementation
@@ -169,25 +168,14 @@ impl ContextIdentityAliasCommand {
             }
 
             ContextIdentityAliasSubcommand::List { context } => {
-                let resolve_response = resolve_alias(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
-                    context,
-                    None,
-                )
-                .await?;
+                let resolve_response = resolve_alias(connection, context, None).await?;
 
                 let context_id = resolve_response
                     .value()
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?;
 
-                let res = list_aliases::<PublicKey>(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
-                    Some(context_id),
-                )
-                .await?;
+                let res = list_aliases::<PublicKey>(connection, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
