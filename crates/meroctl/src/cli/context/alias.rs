@@ -1,11 +1,11 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-// use calimero_server_primitives::admin::GetContextResponse;
 use clap::Parser;
 use eyre::{eyre, OptionExt, Result as EyreResult, WrapErr};
 
-use crate::cli::{ApiError, ConnectionInfo, Environment};
+use crate::cli::{ApiError, Environment};
 use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
+use crate::connection::ConnectionInfo;
 use crate::output::{ErrorLine, WarnLine};
 
 #[derive(Debug, Parser)]

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use url::Url;
 
-use crate::cli::ConnectionInfo;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
+use crate::connection::ConnectionInfo;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {

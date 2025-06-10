@@ -10,8 +10,9 @@ use eyre::{OptionExt, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cli::{ConnectionInfo, Environment};
+use crate::cli::Environment;
 use crate::common::resolve_alias;
+use crate::connection::ConnectionInfo;
 use crate::output::Report;
 
 #[derive(Debug, Serialize, Deserialize)]

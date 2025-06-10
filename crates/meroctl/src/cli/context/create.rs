@@ -18,8 +18,9 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
-use crate::cli::{ConnectionInfo, Environment};
+use crate::cli::Environment;
 use crate::common::create_alias;
+use crate::connection::ConnectionInfo;
 use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]

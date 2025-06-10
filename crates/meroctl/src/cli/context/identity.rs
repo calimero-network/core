@@ -6,8 +6,9 @@ use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 
-use crate::cli::{ConnectionInfo, Environment};
+use crate::cli::Environment;
 use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
+use crate::connection::ConnectionInfo;
 use crate::output::ErrorLine;
 
 mod alias;

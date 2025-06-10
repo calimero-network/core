@@ -5,8 +5,9 @@ use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
 
-use crate::cli::{ConnectionInfo, Environment};
+use crate::cli::Environment;
 use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
+use crate::connection::ConnectionInfo;
 use crate::output::ErrorLine;
 
 // Helper function needed by the Add subcommand implementation

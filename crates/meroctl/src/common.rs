@@ -20,7 +20,7 @@ use reqwest::Url;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::cli::ConnectionInfo;
+use crate::connection::ConnectionInfo;
 use crate::output::Report;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
