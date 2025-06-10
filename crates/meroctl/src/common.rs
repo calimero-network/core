@@ -8,7 +8,8 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias,
-    CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, LookupAliasResponse,
+    CreateContextIdAlias, CreateContextIdentityAlias, DeleteAliasResponse, ListAliasesResponse,
+    LookupAliasResponse,
 };
 use camino::Utf8Path;
 use chrono::Utc;
@@ -254,7 +255,7 @@ pub(crate) async fn create_alias<T>(
     value: T,
 ) -> EyreResult<CreateAliasResponse>
 where
-    T: ScopedAlias + UrlFragment + Serialize,
+    T: UrlFragment + Serialize,
     T::Value: Serialize,
 {
     let prefix = "admin-api/dev/alias/create";
@@ -294,7 +295,7 @@ pub(crate) async fn delete_alias<T>(
     scope: Option<T::Scope>,
 ) -> EyreResult<DeleteAliasResponse>
 where
-    T: ScopedAlias + UrlFragment,
+    T: UrlFragment,
 {
     let prefix = "admin-api/dev/alias/delete";
 
@@ -312,6 +313,49 @@ where
     Ok(response)
 }
 
+impl<T: fmt::Display> Report for ListAliasesResponse<T> {
+    fn report(&self) -> () {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![
+            Cell::new("Value").fg(Color::Blue),
+            Cell::new("Alias").fg(Color::Blue),
+        ]);
+
+        for (alias, value) in &self.data {
+            let _ = table.add_row(vec![
+                Cell::new(&value.to_string()),
+                Cell::new(alias.as_str()),
+            ]);
+        }
+
+        println!("{table}");
+    }
+}
+
+pub(crate) async fn list_aliases<T>(
+    base_url: &Url,
+    keypair: Option<&Keypair>,
+    scope: Option<T::Scope>,
+) -> EyreResult<ListAliasesResponse<T>>
+where
+    T: Ord + UrlFragment + DeserializeOwned,
+{
+    let prefix = "admin-api/dev/alias/list";
+
+    let kind = T::KIND;
+
+    let scope =
+        T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+
+    let mut url = base_url.clone();
+    url.set_path(&format!("{prefix}/{kind}{scope}"));
+
+    let response: ListAliasesResponse<T> =
+        do_request(&Client::new(), url, None::<()>, keypair, RequestType::Get).await?;
+
+    Ok(response)
+}
+
 pub(crate) async fn lookup_alias<T>(
     base_url: &Url,
     keypair: Option<&Keypair>,
@@ -319,7 +363,7 @@ pub(crate) async fn lookup_alias<T>(
     scope: Option<T::Scope>,
 ) -> EyreResult<LookupAliasResponse<T>>
 where
-    T: ScopedAlias + UrlFragment + DeserializeOwned,
+    T: UrlFragment + DeserializeOwned,
 {
     let prefix = "admin-api/dev/alias/lookup";
 
@@ -406,7 +450,7 @@ pub(crate) async fn resolve_alias<T>(
     scope: Option<T::Scope>,
 ) -> EyreResult<ResolveResponse<T>>
 where
-    T: ScopedAlias + UrlFragment + FromStr + DeserializeOwned,
+    T: UrlFragment + FromStr + DeserializeOwned,
 {
     let value = lookup_alias(base_url, keypair, alias, scope).await?;
 

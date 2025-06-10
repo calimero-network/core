@@ -7,7 +7,7 @@ use reqwest::Client;
 
 use crate::cli::{ApiError, ConnectionInfo, Environment};
 use crate::common::{
-    create_alias, delete_alias, do_request, lookup_alias, resolve_alias, RequestType,
+    create_alias, delete_alias, do_request, list_aliases, lookup_alias, resolve_alias, RequestType,
 };
 use crate::output::{ErrorLine, WarnLine};
 
@@ -43,6 +43,9 @@ pub enum ContextAliasSubcommand {
         #[arg(help = "Name of the alias to look up", default_value = "default")]
         alias: Alias<ContextId>,
     },
+
+    #[command(about = "List all context aliases", alias = "ls")]
+    List,
 }
 
 impl ContextAliasCommand {
@@ -128,6 +131,16 @@ impl ContextAliasCommand {
                     &connection.api_url,
                     connection.auth_key.as_ref(),
                     alias,
+                    None,
+                )
+                .await?;
+
+                environment.output.write(&res);
+            }
+            ContextAliasSubcommand::List => {
+                let res = list_aliases::<ContextId>(
+                    &connection.api_url,
+                    connection.auth_key.as_ref(),
                     None,
                 )
                 .await?;

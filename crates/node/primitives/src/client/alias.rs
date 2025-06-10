@@ -104,12 +104,10 @@ impl NodeClient {
             let (k, v) = (k?, v?);
 
             if let Some(expected_scope) = &scope {
-                let Some(found_scope) = k.scope::<T>() else {
-                    bail!("scope mismatch: {:?}", k);
-                };
-
-                if found_scope != *expected_scope {
-                    break;
+                if let Some(found_scope) = k.scope::<T>() {
+                    if found_scope != *expected_scope {
+                        break;
+                    }
                 }
             }
 

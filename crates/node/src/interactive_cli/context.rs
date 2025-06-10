@@ -7,7 +7,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult};
@@ -87,8 +87,6 @@ enum Commands {
     },
     /// Join a context
     Join {
-        /// The private key of the user
-        private_key: PrivateKey,
         /// The invitation payload from the inviter
         invitation_payload: ContextInvitationPayload,
         /// Alias for the newly joined context
@@ -271,14 +269,11 @@ impl ContextCommand {
                 }
             }
             Commands::Join {
-                private_key,
                 invitation_payload,
                 context,
                 identity,
             } => {
-                let response = ctx_client
-                    .join_context(private_key, invitation_payload)
-                    .await?;
+                let response = ctx_client.join_context(invitation_payload).await?;
 
                 if let Some(context) = context {
                     if let Err(e) = node_client.create_alias(context, None, response.context_id) {
