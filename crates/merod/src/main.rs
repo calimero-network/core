@@ -12,7 +12,6 @@ mod defaults;
 mod version;
 
 use cli::RootCommand;
-use version::check_for_update;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
@@ -20,13 +19,7 @@ async fn main() -> EyreResult<()> {
 
     let command = RootCommand::parse();
 
-    if rand::random::<u8>() % 10 == 0 {
-        let _ignored = tokio::spawn(async move {
-            if let Err(err) = check_for_update().await {
-                eprintln!("Version check failed: {}", err);
-            }
-        });
-    }
+    version::check_for_update();
 
     command.run().await
 }

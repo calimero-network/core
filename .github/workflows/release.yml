@@ -56,19 +56,7 @@ jobs:
         run: |
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
 
-          version_candidate=""
-          for binary in $(echo '${{ steps.setup_matrix.outputs.binary_matrix }}' | jq -r '.[]'); do
-            binary_version=$(cargo metadata --format-version 1 --no-deps | jq -r --arg binary "$binary" '.packages[] | select(.name == $binary) | .version')
-
-            if [ -z "$version_candidate" ]; then
-              version_candidate="$binary_version"
-            elif [ "$version_candidate" != "$binary_version" ]; then
-              echo "::error::Version mismatch between binaries"
-              echo "::error::Make sure all binaries have the same version"
-              echo "::error::All binaries: '${{ steps.setup_matrix.outputs.binary_matrix }}'"
-              exit 1
-            fi
-          done
+          version_candidate=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
 
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
             version="$version_candidate"

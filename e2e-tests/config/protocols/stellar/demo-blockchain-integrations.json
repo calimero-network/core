@@ -1,5 +1,4 @@
 {
-  "protocol": "icp",
   "steps": [
     {
       "applicationInstall": {
@@ -32,9 +31,9 @@
           "request": {
             "action_type": "ExternalFunctionCall",
             "params": {
-              "receiver_id": "be2us-64aaa-aaaaa-qaabq-cai",
-              "method_name": "test_method_no_transfer",
-              "args": "{\"testKey\":\"testValue\"}",
+              "receiver_id": "CDT6O4UMQBAY6PZTGRCBXDYHTFSL55NE4CZ3COCGPE5UEHRAODIZKDEJ",
+              "method_name": "no_deposit",
+              "args": "[[\"string\",\"someKey\"], [\"string\",\"someValue\"]]",
               "deposit": "0"
             }
           }
@@ -53,15 +52,67 @@
     },
     {
       "getProposals": {
+        "description": [
+          "get current proposals and extract the ID of the first one"
+        ]
+      }
+    },
+    {
+      "call": {
+        "methodName": "approve_proposal",
+        "argsJson": {
+          "proposal_id": "${proposal_id}"
+        },
+        "expectedResultJson": null,
+        "target": "invitees",
+        "retries": 20,
+        "intervalMs": 5000,
+        "description": [
+          "if we don't reach consensus in the ideal case",
+          "wait 5 seconds for nodes that have not yet synced",
+          "in the worst case, wait 20 * 5s for nodes that uselessly",
+          "keep syncing with themselves without having the state"
+        ]
+      }
+    },
+    {
+      "verifyExternalState": {
+        "contractId": "CDT6O4UMQBAY6PZTGRCBXDYHTFSL55NE4CZ3COCGPE5UEHRAODIZKDEJ",
+        "methodName": "get_value",
+        "args": ["someKey"],
+        "expectedValue": "someValue"
+      }
+    },
+    {
+      "call": {
+        "methodName": "create_new_proposal",
+        "argsJson": {
+          "request": {
+            "action_type": "ExternalFunctionCall",
+            "params": {
+              "receiver_id": "CC5YECC24HXHX5D6G7YWGN2LII4LHFNLLCJMGXEENGFSXMNAUSLYTYNM",
+              "method_name": "no_deposit",
+              "args": "[[\"string\",\"someKey\"], [\"string\",\"someValue\"]]",
+              "deposit": "0"
+            }
+          }
+        },
+        "expectedResultJson": null,
         "target": "inviter",
         "retries": 20,
         "intervalMs": 5000,
-        "argsJson": {
-          "offset": 0,
-          "limit": 10
-        },
         "description": [
-            "get current proposals and extract the ID of the first one"
+          "if we don't reach consensus in the ideal case",
+          "wait 5 seconds for nodes that have not yet synced",
+          "in the worst case, wait 20 * 5s for nodes that uselessly",
+          "keep syncing with themselves without having the state"
+        ]
+      }
+    },
+    {
+      "getProposals": {
+        "description": [
+          "get current proposals and extract the ID of the first one"
         ]
       }
     },
@@ -71,11 +122,11 @@
         "argsJson": {
           "proposal_id": "${proposal_id}",
           "message": {
-              "id": "msg1",
-              "author": "inviter",
-              "text": "This is a test message for the proposal",
-              "created_at": "2023-11-24T12:34:56Z",
-              "proposal_id": "${proposal_id}"
+            "id": "msg1",
+            "author": "inviter",
+            "text": "This is a test message for the proposal",
+            "created_at": "2023-11-24T12:34:56Z",
+            "proposal_id": "${proposal_id}"
           }
         },
         "expectedResultJson": null,
@@ -104,31 +155,12 @@
           }
         ],
         "target": "invitees",
-        "retries": 20,
-        "intervalMs": 10000,
+        "retries": 5,
+        "intervalMs": 5000,
         "description": [
           "if a node still hasn't received the broadcast",
-          "try 20 more times every 10 seconds, but no more"
+          "try 5 more times in 5 seconds, but no more"
         ]
-      }
-    },
-    {
-      "call": {
-        "methodName": "approve_proposal",
-        "argsJson": {
-          "proposal_id": "${proposal_id}"
-        },
-        "expectedResultJson": null,
-        "target": "invitees",
-        "genericInput": "proposal_id"
-      }
-    },
-    {
-      "verifyExternalState": {
-        "contractId": "be2us-64aaa-aaaaa-qaabq-cai",
-        "methodName": "get_calls",
-        "args": [],
-        "expectedValue": "{\"testKey\":\"testValue\"}"
       }
     }
   ]

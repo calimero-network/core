@@ -43,6 +43,7 @@ impl Handler<CreateContextRequest> for ContextManager {
             &self.context_client,
             &self.external_config,
             &mut self.contexts,
+            &mut self.applications,
             protocol,
             seed,
             &application_id,
@@ -52,33 +53,48 @@ impl Handler<CreateContextRequest> for ContextManager {
             Err(err) => return ActorResponse::reply(Err(err)),
         };
 
-        let guard = prepared
-            .context
+        let Prepared {
+            external_config,
+            application,
+            context,
+            context_secret,
+            identity,
+            identity_secret,
+            sender_key,
+        } = prepared;
+
+        let guard = context
             .lock
             .clone()
             .try_lock_owned()
             .expect("logically exclusive");
 
-        let task = create_context(
-            self.datastore.clone(),
-            self.node_client.clone(),
-            self.context_client.clone(),
-            self.runtime_engine.clone(),
-            prepared.external_config,
-            prepared.context.meta,
-            prepared.context_secret,
-            prepared.application,
-            prepared.identity,
-            prepared.identity_secret,
-            prepared.sender_key,
-            init_params,
-            guard,
-        );
+        let context = context.meta;
+
+        let module_task = self.get_module(application_id);
 
         ActorResponse::r#async(
-            task.into_actor(self)
+            module_task
+                .and_then(move |module, act, _ctx| {
+                    create_context(
+                        act.datastore.clone(),
+                        act.node_client.clone(),
+                        act.context_client.clone(),
+                        module,
+                        external_config,
+                        context,
+                        context_secret,
+                        application,
+                        identity,
+                        identity_secret,
+                        sender_key,
+                        init_params,
+                        guard,
+                    )
+                    .into_actor(act)
+                })
                 .map_ok(move |root_hash, act, _ctx| {
-                    if let Some(meta) = act.contexts.get_mut(&prepared.context.meta.id) {
+                    if let Some(meta) = act.contexts.get_mut(&context.id) {
                         // this should almost always exist, but with an LruCache, it
                         // may not. And if it's been evicted, the next execution will
                         // re-create it with data from the store, so it's not a problem
@@ -87,12 +103,12 @@ impl Handler<CreateContextRequest> for ContextManager {
                     }
 
                     CreateContextResponse {
-                        context_id: prepared.context.meta.id,
-                        identity: prepared.identity,
+                        context_id: context.id,
+                        identity,
                     }
                 })
                 .map_err(move |err, act, _ctx| {
-                    let _ignored = act.contexts.remove(&prepared.context.meta.id);
+                    let _ignored = act.contexts.remove(&context.id);
 
                     err
                 }),
@@ -116,6 +132,7 @@ impl Prepared<'_> {
         context_client: &ContextClient,
         external_config: &ExternalClientConfig,
         contexts: &mut BTreeMap<ContextId, ContextMeta>,
+        applications: &mut BTreeMap<ApplicationId, Application>,
         protocol: String,
         seed: Option<[u8; 32]>,
         application_id: &ApplicationId,
@@ -185,23 +202,27 @@ impl Prepared<'_> {
             .flatten()
             .ok_or_eyre("failed to derive a context id after 5 tries")?;
 
-        let Some(application) = node_client.get_application(application_id)? else {
-            bail!("application not found");
-        };
+        let application = match applications.entry(*application_id) {
+            btree_map::Entry::Vacant(vacant) => {
+                let application = node_client
+                    .get_application(application_id)?
+                    .ok_or_eyre("application not found")?;
 
-        if !node_client.has_blob(&application.blob)? {
-            bail!("application points to dangling blob");
-        }
+                vacant.insert(application)
+            }
+            btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
+        };
 
         let identity = identity_secret.public_key();
 
-        let meta = Context::new(context_id, application.id, Hash::default());
+        let meta = Context::new(context_id, *application_id, Hash::default());
 
         let context = entry.insert(ContextMeta {
             meta,
-            blob: application.blob,
             lock: Arc::new(Mutex::new(context_id)),
         });
+
+        let application = application.clone();
 
         Ok(Self {
             external_config,
@@ -219,7 +240,7 @@ async fn create_context(
     datastore: Store,
     node_client: NodeClient,
     context_client: ContextClient,
-    engine: calimero_runtime::Engine,
+    module: calimero_runtime::Module,
     external_config: ContextConfigParams<'_>,
     mut context: Context,
     context_secret: PrivateKey,
@@ -230,22 +251,12 @@ async fn create_context(
     init_params: Vec<u8>,
     guard: OwnedMutexGuard<ContextId>,
 ) -> eyre::Result<Hash> {
-    let Some(blob) = node_client.get_blob_bytes(&application.blob).await? else {
-        bail!(
-            "missing blob `{}` for application `{}`",
-            application.blob,
-            application.id
-        );
-    };
-
     let storage = ContextStorage::from(datastore, context.id);
-
-    let module = engine.compile(&blob)?;
 
     let (outcome, storage) = execute(
         &guard,
-        identity,
         module,
+        identity,
         "init".into(),
         init_params.into(),
         storage,

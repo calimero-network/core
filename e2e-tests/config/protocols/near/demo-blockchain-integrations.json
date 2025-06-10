@@ -1,5 +1,4 @@
 {
-  "protocol": "near",
   "steps": [
     {
       "applicationInstall": {
@@ -53,15 +52,8 @@
     },
     {
       "getProposals": {
-        "target": "inviter",
-        "retries": 20,
-        "intervalMs": 5000,
-        "argsJson": {
-          "offset": 0,
-          "limit": 10
-        },
         "description": [
-            "get current proposals and extract the ID of the first one"
+          "get current proposals and extract the ID of the first one"
         ]
       }
     },
@@ -71,11 +63,11 @@
         "argsJson": {
           "proposal_id": "${proposal_id}",
           "message": {
-              "id": "msg1",
-              "author": "inviter",
-              "text": "This is a test message for the proposal",
-              "created_at": "2023-11-24T12:34:56Z",
-              "proposal_id": "${proposal_id}"
+            "id": "msg1",
+            "author": "inviter",
+            "text": "This is a test message for the proposal",
+            "created_at": "2023-11-24T12:34:56Z",
+            "proposal_id": "${proposal_id}"
           }
         },
         "expectedResultJson": null,

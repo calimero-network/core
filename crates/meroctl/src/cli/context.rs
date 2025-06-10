@@ -13,6 +13,7 @@ use crate::cli::context::identity::ContextIdentityCommand;
 use crate::cli::context::invite::InviteCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
+use crate::cli::context::proposals::ProposalsCommand;
 use crate::cli::context::update::UpdateCommand;
 use crate::cli::context::watch::WatchCommand;
 use crate::cli::Environment;
@@ -26,6 +27,7 @@ mod identity;
 pub mod invite;
 pub mod join;
 mod list;
+mod proposals;
 mod update;
 mod watch;
 
@@ -38,6 +40,12 @@ pub const EXAMPLES: &str = r"
 
   # Create a new context in dev mode
   $ meroctl --  --node-name node1 context create --watch <path> -c <contextId>
+
+  # Grant permission to manage applications
+  $ meroctl context identity grant bob ManageApplication --as alice
+  
+  # Revoke permission to manage members
+  $ meroctl context identity revoke bob ManageMembers --as alice
 ";
 
 #[derive(Debug, Parser)]
@@ -67,6 +75,7 @@ pub enum ContextSubCommands {
     Identity(ContextIdentityCommand),
     Alias(ContextAliasCommand),
     Use(UseCommand),
+    Proposals(ProposalsCommand),
 }
 
 impl Report for Context {
@@ -101,6 +110,7 @@ impl ContextCommand {
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
             ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
+            ContextSubCommands::Proposals(proposals) => proposals.run(environment).await,
         }
     }
 }
