@@ -60,20 +60,12 @@ jobs:
                 \"\(.id) \(.updated_at) \(.tags | join(\"\"))\" \
               " > images.txt
 
-            one_done=false
-
             echo "[$binary]"
             while read -r id updated_at tags; do
               updated_at=$(date -d "@$updated_at" -u +"%Y-%m-%dT%H:%M:%SZ")
-              echo " - id=$id, tags=$tags, updated_at=$updated_at"
+              echo "  - id=$id, tags=$tags, updated_at=$updated_at"
 
-              if [[ "$one_done" == false ]]; then
-                echo "Deleting the first image only"
-                one_done=true
-              else
-                continue
-              fi
-
+              continue
               gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/${binary}/versions/$id"
             done < images.txt
           done
