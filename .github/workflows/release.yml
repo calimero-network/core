@@ -109,7 +109,7 @@ jobs:
           shared-key: ${{ matrix.target }}
 
       - name: Update Bash
-        if: ${{ matrix.os == 'macos-13' }}
+        if: ${{ matrix.os == 'macos-13' || matrix.os == 'macos-latest' }}
         run: brew install bash
 
       - name: Build binaries
