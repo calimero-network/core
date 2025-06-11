@@ -72,8 +72,7 @@ impl AdminConfig {
 
 // Embed the contents of the admin-ui build directory into the binary
 #[derive(RustEmbed)]
-#[folder = "../../empty"]
-// #[folder = "$CALIMERO_WEBUI_PATH"]
+#[folder = "$CALIMERO_WEBUI_PATH"]
 struct NodeUiStaticFiles;
 
 #[expect(
