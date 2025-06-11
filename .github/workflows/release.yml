@@ -245,7 +245,7 @@ jobs:
             type=edge
             type=ref,prefix=pr-,event=pr
             type=sha,prefix=,format=short
-            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ needs.prepare.outputs.docker_release == 'true' }}
+            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' }}
           labels:
             org.opencontainers.image.description=${{ matrix.image.description }}
