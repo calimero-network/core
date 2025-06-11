@@ -1,0 +1,79 @@
+name: Tidy Docker
+
+# Every 2 days at 00:00 UTC
+# Remove all docker images from github registry that match;
+#
+# 1. <ref> where updated_at is older than 3 days
+# 2. <pr-NUMBER> where updated_at is older than 1 week
+# 3. anything that isn't `latest`, `edge` or a release tag
+# 4. that includes anything without a tag (we'll see if this is a problem)
+
+on:
+  schedule:
+    - cron: '0 0 */2 * *' # Every 2 days at 00:00 UTC
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - miraclx/cleanup-docker
+
+env:
+  BINARIES: |-
+    merod
+    meroctl
+
+jobs:
+  clean:
+    name: Clean Docker Images
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    permissions:
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Clean Docker Images
+        run: |
+          readarray -t binaries <<< "$BINARIES"
+
+          for binary in "${binaries[@]}"; do
+            echo "Cleaning images for $binary"
+            gh api --paginate "/orgs/${{ github.repository_owner }}/packages/container/${binary}/versions" \
+              --jq "\
+                now as \$now | \
+                (\$now - 259200) as \$_3_days_ago | \
+                (\$now - 604800) as \$_7_days_ago | \
+                .[] | { \
+                  id, \
+                  updated_at: .updated_at | strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime, \
+                  tags: .metadata.container.tags \
+                } | . + {
+                  is_pr: ([.tags[] | contains(\"pr-\")] | any),
+                  is_latest: ([.tags[] | test(\"latest|edge\")] | any),
+                  is_release: ([.tags[] | test(\"[0-9].[0-9].[0-9](-pre.[0-9])?\$\")] | any),
+                } | \
+                select( \
+                  (.is_pr and .updated_at > \$_7_days_ago or .is_latest or .is_release | not) \
+                    and .updated_at < \$_3_days_ago \
+                ) | \
+                \"\(.id) \(.updated_at) \(.tags | join(\"\"))\" \
+              " > images.txt
+
+            one_done=false
+
+            echo "[$binary]"
+            while read -r id updated_at tags; do
+              updated_at=$(date -d "@$updated_at" -u +"%Y-%m-%dT%H:%M:%SZ")
+              echo " - id=$id, tags=$tags, updated_at=$updated_at"
+
+              if [[ "$one_done" == false ]]; then
+                echo "Deleting the first image only"
+                one_done=true
+              else
+                echo "Skipping the first image"
+                continue
+              fi
+
+              gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/${binary}/versions/$id"
+            done < images.txt
