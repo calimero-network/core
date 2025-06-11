@@ -106,7 +106,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: rust-binaries
-          shared-key: ${{ matrix.target }}
 
       - name: Update Bash
         if: ${{ matrix.os == 'macos-13' || matrix.os == 'macos-latest' }}
