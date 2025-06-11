@@ -18,7 +18,6 @@ on:
       - 'crates/**'
       - '.github/workflows/release.yml'
 
-# Default permissions are read-only
 permissions:
   contents: read
 
@@ -26,16 +25,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  BINARIES: |-
+    merod
+    meroctl
+
 jobs:
   prepare:
     name: Prepare
     runs-on: ubuntu-latest
     outputs:
-      binary_matrix: ${{ steps.setup_matrix.outputs.binary_matrix }}
       version: ${{ steps.version_info.outputs.version }}
-      build_binaries: ${{ steps.version_info.outputs.build_binaries }}
-      release_required: ${{ steps.version_info.outputs.release_required }}
-      build_docker: ${{ steps.version_info.outputs.build_docker }}
+      binary_release: ${{ steps.version_info.outputs.binary_release }}
+      docker_release: ${{ steps.version_info.outputs.docker_release }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       overwrite_release: ${{ steps.version_info.outputs.overwrite_release }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
@@ -43,173 +45,86 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup matrix
-        id: setup_matrix
-        run: |
-          echo 'binary_matrix=["merod", "meroctl"]' >> "$GITHUB_OUTPUT"
-
       - name: Get version info
         id: version_info
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "target_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
 
-          version_candidate=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
+          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
 
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-            version="$version_candidate"
-            if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
-              echo "release_required=false" >> $GITHUB_OUTPUT
-              echo "build_docker=false" >> $GITHUB_OUTPUT
+            if [[ "$version" =~ "-pre.[0-9]+$" ]]; then
+              echo "prerelease=true" >> $GITHUB_OUTPUT
+              echo "overwrite_release=true" >> $GITHUB_OUTPUT
+            elif ! [[ "$version" =~ "-pre$" ]]; then
+              echo "prerelease=false" >> $GITHUB_OUTPUT
+              echo "overwrite_release=false" >> $GITHUB_OUTPUT
             else
-              echo "release_required=true" >> $GITHUB_OUTPUT
-              echo "build_docker=true" >> $GITHUB_OUTPUT
+              echo "\x1b[1;31mError\x1b[0m: Missing pre-release version suffix in the version string" > /dev/stderr
+              exit 1
             fi
-            echo "build_binaries=true" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-            echo "overwrite_release=false" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" == "pull_request" ] && [[ "${{ github.head_ref }}" == release/* ]]; then
-            version="prerelease-${{ github.event.number }}"
-            echo "build_binaries=true" >> $GITHUB_OUTPUT
-            echo "release_required=true" >> $GITHUB_OUTPUT
-            echo "build_docker=true" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-            echo "overwrite_release=true" >> $GITHUB_OUTPUT
+
+            if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
+              echo "binary_release=false" >> $GITHUB_OUTPUT
+              echo "docker_release=false" >> $GITHUB_OUTPUT
+            else
+              echo "binary_release=true" >> $GITHUB_OUTPUT
+              echo "docker_release=true" >> $GITHUB_OUTPUT
+            fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
-            version="pr-${{ github.event.number }}"
-            echo "build_binaries=true" >> $GITHUB_OUTPUT
-            echo "release_required=false" >> $GITHUB_OUTPUT
-            echo "build_docker=false" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-          else
-            version="dev-$(echo ${{ github.ref }} | sed 's|refs/heads/||')"
-            echo "build_binaries=false" >> $GITHUB_OUTPUT
-            echo "release_required=false" >> $GITHUB_OUTPUT
-            echo "build_docker=false" >> $GITHUB_OUTPUT
+            echo "binary_release=false" >> $GITHUB_OUTPUT
+            echo "docker_release=true" >> $GITHUB_OUTPUT
           fi
 
           echo "version=$version" >> $GITHUB_OUTPUT
 
   build-binaries:
     name: Build Binaries
-    if: needs.prepare.outputs.build_binaries == 'true'
     needs: prepare
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+      fail-fast: false
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Craft cargo arguments
-        id: cargo_args
-        run: |
-          binaries=$(echo '${{ needs.prepare.outputs.binary_matrix }}' | jq -r 'join(" ") | split(" ") | map("-p " + .) | join(" ")')
-          args="$binaries --release --target ${{ matrix.target }}"
-          echo "Cargo build arguments: $args"
-          echo args="$args" >> "$GITHUB_OUTPUT"
-
-      - name: Install rustup and Rust toolchain (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup toolchain install stable
-          rustup default stable
-
-      - name: Setup rust toolchain
-        run: rustup toolchain install stable --profile minimal
-
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: rust-binaries
-          shared-key: ${{ matrix.target }}
+          key: release
 
-      - name: Install target for ${{ matrix.target }}
-        run: rustup target add ${{ matrix.target }}
+      - name: Update Bash
+        if: ${{ matrix.os == 'macos-13' || matrix.os == 'macos-latest' }}
+        run: brew install bash
 
-      - name: Install dependencies for cross-compilation (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Build binaries
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-          libstdc++-11-dev-arm64-cross \
-          zlib1g-dev \
-          libsnappy-dev \
-          libbz2-dev \
-          liblz4-dev \
-          libzstd-dev \
-          clang \
-          libc6-dev-arm64-cross
+          readarray -t binaries <<< "$BINARIES"
 
-      - name: Download and set up OpenSSL for cross-compilation (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          wget https://www.openssl.org/source/openssl-1.1.1g.tar.gz
-          tar -xzf openssl-1.1.1g.tar.gz
-          cd openssl-1.1.1g
-          # More restrictive C99 flags and additional compiler options
-          export CROSS_COMPILE=""  # Clear CROSS_COMPILE to prevent double prefix
-          export CC="aarch64-linux-gnu-gcc"
-          export CXX="aarch64-linux-gnu-g++"
-          export CFLAGS="-std=gnu99 -O2 -fPIC -D_GNU_SOURCE -I/usr/aarch64-linux-gnu/include"
-          export LDFLAGS="-L/usr/aarch64-linux-gnu/lib"
-          ./Configure linux-aarch64 --prefix=$HOME/openssl-aarch64 \
-            no-asm \
-            no-shared \
-            no-async \
-            no-engine \
-            no-dso \
-            no-deprecated
-          make -j$(nproc) CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
-          make install_sw
-          cd ..
-          echo "OPENSSL_DIR=$HOME/openssl-aarch64" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$HOME/openssl-aarch64/lib" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$HOME/openssl-aarch64/include" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$HOME/openssl-aarch64/lib/pkgconfig" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
-      - name: Build binaries (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        env:
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
-          OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
-          OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
-          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
-          PKG_CONFIG_ALLOW_CROSS: ${{ env.PKG_CONFIG_ALLOW_CROSS }}
-          PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
-          OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
-        run: |
-          cargo build ${{ steps.cargo_args.outputs.args }}
-
-      - name: Build binaries (other targets)
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
-        run: cargo build ${{ steps.cargo_args.outputs.args }}
+          cargo build $binaries --release --target ${{ matrix.target }}
 
       - name: Compress artifacts using gzip
         run: |
           mkdir -p artifacts
-          echo '${{ needs.prepare.outputs.binary_matrix }}' | jq -r '.[]' | while read binary; do
+
+          readarray -t binaries <<< "$BINARIES"
+
+          for binary in "${binaries[@]}"; do
             tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
           done
 
@@ -222,10 +137,9 @@ jobs:
 
   release-binaries:
     name: Release Binaries
-    if: needs.prepare.outputs.release_required == 'true'
+    if: needs.prepare.outputs.binary_release == 'true'
     runs-on: ubuntu-latest
     needs: [prepare, build-binaries]
-    # Add write permissions for releases
     permissions:
       contents: write
     steps:
@@ -252,7 +166,6 @@ jobs:
 
   build-docker:
     name: Build Docker Images
-    if: needs.prepare.outputs.build_docker == 'true'
     needs: [prepare, build-binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -306,31 +219,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare Docker cache parameters
-        id: prep_cache
+      - name: Prepare Docker Cache parameters
+        id: prepare
         run: |
-          # Define cache configuration for Buildx
+          MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
+          DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
+
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-            # Use a master-specific cache for stable releases
-            MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
             echo "cache_from=type=gha,scope=${MASTER_SCOPE}" >> $GITHUB_OUTPUT
             echo "cache_to=type=gha,scope=${MASTER_SCOPE},mode=max" >> $GITHUB_OUTPUT
           else
-            # Use a feature branch cache for development
-            MASTER_SCOPE="${{ github.repository_owner }}-docker-master"
-            DEV_SCOPE="${{ github.repository_owner }}-docker-dev"
             echo "cache_from=type=gha,scope=${MASTER_SCOPE} type=gha,scope=${DEV_SCOPE}" >> $GITHUB_OUTPUT
             echo "cache_to=type=gha,scope=${DEV_SCOPE},mode=max" >> $GITHUB_OUTPUT
           fi
+
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Extract metadata for ${{ matrix.image.name }}
         id: metadata
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+          # todo! a cron job should delete <sha>, pr-N, <branch>, docker images after some time
           tags: |
-            type=raw,value=${{ needs.prepare.outputs.version }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=edge
+            type=ref,prefix=pr-,event=pr
+            type=sha,prefix=,format=short
+            type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' }}
+          annotations: |
+            org.opencontainers.image.description=${{ matrix.image.description }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
 
       - name: Build and push ${{ matrix.image.name }} image
         uses: docker/build-push-action@v5
@@ -343,25 +263,18 @@ jobs:
             BINARY_NAME=${{ matrix.image.name }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: ${{ steps.prep_cache.outputs.cache_from }}
-          cache-to: ${{ steps.prep_cache.outputs.cache_to }}
+          annotations: ${{ steps.metadata.outputs.annotations }}
+          cache-from: ${{ steps.prepare.outputs.cache_from }}
+          cache-to: ${{ steps.prepare.outputs.cache_to }}
           provenance: mode=max
           sbom: true
-          annotations: |
-            org.opencontainers.image.description=${{ matrix.image.description }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.licenses=MIT
 
   brew-update:
     name: Update Homebrew Tap
-    if: |
-      needs.prepare.outputs.release_required == 'true' &&
-      github.ref == 'refs/heads/master'
+    if: needs.prepare.outputs.binary_release == 'true'
     runs-on: ubuntu-latest
     needs: [prepare, release-binaries]
-    # Add write permissions for creating tokens
     permissions:
-      contents: read
       id-token: write
     steps:
       - name: Create GitHub App Token
@@ -403,7 +316,9 @@ jobs:
           git fetch origin "${target_branch}" || true
           git checkout "${target_branch}" || git checkout -b "${target_branch}"
 
-          for binary in $(echo '${{ needs.prepare.outputs.binary_matrix }}' | jq -r '.[]'); do
+          readarray -t binaries <<< "$BINARIES"
+
+          for binary in "${binaries[@]}"; do
             echo "Updating formula for ${binary}, version: ${version}"
             ./generate-formula.sh "${binary}" "${{ needs.prepare.outputs.version }}"
           done
