@@ -77,3 +77,4 @@ jobs:
 
               # gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/${binary}/versions/$id"
             done < images.txt
+          done
