@@ -25,6 +25,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: zsh
+
 env:
   BINARIES: |-
     merod
@@ -96,6 +100,7 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+      fail-fast: false
     runs-on: ${{ matrix.os }}
 
     steps:
