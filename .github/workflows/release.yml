@@ -81,6 +81,8 @@ jobs:
             echo "docker_release=true" >> $GITHUB_OUTPUT
           fi
 
+          echo "version=$version" >> $GITHUB_OUTPUT
+
   build-binaries:
     name: Build Binaries
     needs: prepare
