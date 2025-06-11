@@ -3,10 +3,8 @@ use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{OptionExt, Result as EyreResult};
-use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{do_request, RequestType};
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
@@ -38,17 +36,7 @@ impl PeersCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let mut url = connection.api_url.clone();
-        url.set_path("admin-api/dev/peers");
-
-        let response: GetPeersCountResponse = do_request(
-            &Client::new(),
-            url,
-            None::<()>,
-            connection.auth_key.as_ref(),
-            RequestType::Get,
-        )
-        .await?;
+        let response: GetPeersCountResponse = connection.get("admin-api/dev/peers").await?;
 
         environment.output.write(&response);
 

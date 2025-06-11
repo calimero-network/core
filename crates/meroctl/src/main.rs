@@ -5,6 +5,7 @@ use clap::Parser;
 mod cli;
 mod common;
 mod config;
+mod connection;
 mod defaults;
 mod output;
 mod version;
