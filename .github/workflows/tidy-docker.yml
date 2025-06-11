@@ -12,9 +12,6 @@ on:
   schedule:
     - cron: '0 0 */2 * *' # Every 2 days at 00:00 UTC
   workflow_dispatch:
-  pull_request:
-    branches:
-      - master
 
 env:
   BINARIES: |-
@@ -65,7 +62,6 @@ jobs:
               updated_at=$(date -d "@$updated_at" -u +"%Y-%m-%dT%H:%M:%SZ")
               echo "  - id=$id, tags=$tags, updated_at=$updated_at"
 
-              continue
               gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/${binary}/versions/$id"
             done < images.txt
           done
