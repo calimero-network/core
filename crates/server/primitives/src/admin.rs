@@ -7,7 +7,7 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{ClientKey, ContextUser, PrivateKey, PublicKey, WalletType};
+use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -361,19 +361,12 @@ impl InviteToContextResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextRequest {
-    pub private_key: PrivateKey,
     pub invitation_payload: ContextInvitationPayload,
 }
 
 impl JoinContextRequest {
-    pub const fn new(
-        private_key: PrivateKey,
-        invitation_payload: ContextInvitationPayload,
-    ) -> Self {
-        Self {
-            private_key,
-            invitation_payload,
-        }
+    pub const fn new(invitation_payload: ContextInvitationPayload) -> Self {
+        Self { invitation_payload }
     }
 }
 
@@ -434,7 +427,6 @@ impl UpdateContextApplicationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GenerateContextIdentityResponseData {
     pub public_key: PublicKey,
-    pub private_key: PrivateKey,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -444,12 +436,9 @@ pub struct GenerateContextIdentityResponse {
 }
 
 impl GenerateContextIdentityResponse {
-    pub const fn new(public_key: PublicKey, private_key: PrivateKey) -> Self {
+    pub const fn new(public_key: PublicKey) -> Self {
         Self {
-            data: GenerateContextIdentityResponseData {
-                public_key,
-                private_key,
-            },
+            data: GenerateContextIdentityResponseData { public_key },
         }
     }
 }

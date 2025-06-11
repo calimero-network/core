@@ -217,7 +217,6 @@ impl StartBootstrapCommand {
         );
 
         let join_command = JoinCommand {
-            private_key: invitee_private_key,
             invitation_payload,
             context: None,
             identity: None,
@@ -294,8 +293,6 @@ impl StartBootstrapCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let client = Client::new();
-
         let install_command = InstallCommand {
             path: self.app_path.clone(),
             url: Some("".to_owned()),
@@ -308,12 +305,10 @@ impl StartBootstrapCommand {
 
         let (context_id, public_key) = create_context(
             environment,
-            &client,
             connection,
             None,
             application_id,
             None,
-            connection.auth_key.as_ref(),
             protocol,
             None,
             None,

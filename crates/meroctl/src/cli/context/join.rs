@@ -1,24 +1,18 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result as EyreResult};
-use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{create_alias, do_request, RequestType};
+use crate::common::create_alias;
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Join an application context")]
 pub struct JoinCommand {
-    #[clap(
-        value_name = "PRIVATE_KEY",
-        help = "The private key for signing the join context request"
-    )]
-    pub private_key: PrivateKey,
     #[clap(
         value_name = "INVITE",
         help = "The invitation payload for joining the context"
@@ -55,46 +49,26 @@ impl JoinCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let mut url = connection.api_url.clone();
-        url.set_path("admin-api/dev/contexts/join");
-
-        let response: JoinContextResponse = do_request(
-            &Client::new(),
-            url,
-            Some(JoinContextRequest::new(
-                self.private_key,
-                self.invitation_payload,
-            )),
-            connection.auth_key.as_ref(),
-            RequestType::Post,
-        )
-        .await?;
+        let response: JoinContextResponse = connection
+            .post(
+                "admin-api/dev/contexts/join",
+                JoinContextRequest::new(self.invitation_payload),
+            )
+            .await?;
 
         environment.output.write(&response);
 
         if let Some(ref payload) = response.data {
             if let Some(context) = self.context {
-                let context_id = payload.context_id;
-                let res = create_alias(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
-                    context,
-                    None,
-                    context_id,
-                )
-                .await?;
+                let res = create_alias(connection, context, None, payload.context_id).await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {
-                let context_id = payload.context_id;
-                let public_key = payload.member_public_key;
-
                 let res = create_alias(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
+                    connection,
                     identity,
-                    Some(context_id),
-                    public_key,
+                    Some(payload.context_id),
+                    payload.member_public_key,
                 )
                 .await?;
                 environment.output.write(&res);
