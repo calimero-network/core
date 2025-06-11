@@ -25,10 +25,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    shell: /bin/zsh {0}
-
 env:
   BINARIES: |-
     merod
@@ -51,7 +47,6 @@ jobs:
 
       - name: Get version info
         id: version_info
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -115,6 +110,8 @@ jobs:
 
       - name: Build binaries
         run: |
+          brew install bash
+
           readarray -t binaries <<< "$BINARIES"
 
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
@@ -314,6 +311,8 @@ jobs:
           target_branch="chore/bump-formulas-version"
           git fetch origin "${target_branch}" || true
           git checkout "${target_branch}" || git checkout -b "${target_branch}"
+
+          brew install bash
 
           readarray -t binaries <<< "$BINARIES"
 
