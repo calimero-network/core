@@ -48,10 +48,10 @@ jobs:
                   id, \
                   updated_at: .updated_at | strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime, \
                   tags: .metadata.container.tags \
-                } | . + {
-                  is_pr: ([.tags[] | contains(\"pr-\")] | any),
-                  is_latest: ([.tags[] | test(\"latest|edge\")] | any),
-                  is_release: ([.tags[] | test(\"[0-9].[0-9].[0-9](-pre.[0-9])?\$\")] | any),
+                } | . + { \
+                  is_pr: ([.tags[] | contains(\"pr-\")] | any), \
+                  is_latest: ([.tags[] | test(\"latest|edge\")] | any), \
+                  is_release: ([.tags[] | test(\"[0-9].[0-9].[0-9](-pre.[0-9])?\$\")] | any), \
                 } | \
                 select( \
                   (.is_pr and .updated_at > \$_7_days_ago or .is_latest or .is_release | not) \
