@@ -247,7 +247,7 @@ jobs:
             type=sha,prefix=,format=short
             type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' }}
-          labels:
+          annotations: |
             org.opencontainers.image.description=${{ matrix.image.description }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
@@ -263,6 +263,7 @@ jobs:
             BINARY_NAME=${{ matrix.image.name }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          annotations: ${{ steps.metadata.outputs.annotations }}
           cache-from: ${{ steps.prepare.outputs.cache_from }}
           cache-to: ${{ steps.prepare.outputs.cache_to }}
           provenance: mode=max
