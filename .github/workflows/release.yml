@@ -108,10 +108,12 @@ jobs:
           prefix-key: rust-binaries
           shared-key: ${{ matrix.target }}
 
+      - name: Update Bash
+        if: ${{ matrix.os == 'macos-13' }}
+        run: brew install bash
+
       - name: Build binaries
         run: |
-          brew install bash
-
           readarray -t binaries <<< "$BINARIES"
 
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
@@ -311,8 +313,6 @@ jobs:
           target_branch="chore/bump-formulas-version"
           git fetch origin "${target_branch}" || true
           git checkout "${target_branch}" || git checkout -b "${target_branch}"
-
-          brew install bash
 
           readarray -t binaries <<< "$BINARIES"
 
