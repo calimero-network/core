@@ -39,8 +39,7 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          cache-on-failure: true
-          cache-all-crates: true
+          key: e2e-tests
 
       - name: Build Apps & Binaries
         run: |
