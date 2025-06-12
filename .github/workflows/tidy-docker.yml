@@ -36,6 +36,7 @@ jobs:
       - uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           dry-run: true
+          package: merod
           exclude-tags: ^edge|latest|(\d+\.\d+\.\d+(-pre\.\d+)?)|pr-\d+$
           older-than: 2 days
           delete-orphaned-images: true
@@ -50,6 +51,7 @@ jobs:
       - uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           dry-run: true
+          package: merod
           delete-tags: ^pr-\d+$
           exclude-tags: ${{ steps.prepare.outputs.active_prs }}
           older-than: 4 days
