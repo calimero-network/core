@@ -144,9 +144,9 @@ impl DevnetLoader for Devnet {
         Ok(Devnet::new(DevnetConfig::new(
             0,
             vec![],
-            "127.0.0.1".to_string(),
+            "127.0.0.1".to_owned(),
             0,
-            "127.0.0.1".to_string(),
+            "127.0.0.1".to_owned(),
             0,
             home_dir,
             "devnet".into(),
