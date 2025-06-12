@@ -238,7 +238,7 @@ impl Driver {
         // Create devnet config
         let devnet_config = DevnetConfig {
             node_count: self.config.network.node_count,
-            protocols: vec![sandbox.name().to_string()],
+            protocols: vec![sandbox.name().to_owned()],
             swarm_host: self.config.network.swarm_host.to_string(),
             start_swarm_port: self.config.network.start_swarm_port,
             server_host: self.config.network.server_host.to_string(),
