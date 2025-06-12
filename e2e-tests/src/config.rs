@@ -1,11 +1,10 @@
 use std::net::IpAddr;
 
+use calimero_sandbox::protocol::ethereum::EthereumProtocolConfig;
+use calimero_sandbox::protocol::icp::IcpProtocolConfig;
+use calimero_sandbox::protocol::near::NearProtocolConfig;
+use calimero_sandbox::protocol::stellar::StellarProtocolConfig;
 use serde::{Deserialize, Serialize};
-
-use crate::protocol::ethereum::EthereumProtocolConfig;
-use crate::protocol::icp::IcpProtocolConfig;
-use crate::protocol::near::NearProtocolConfig;
-use crate::protocol::stellar::StellarProtocolConfig;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

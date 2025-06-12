@@ -8,6 +8,7 @@ license-file = "LICENSE.md"
 [workspace]
 resolver = "2"
 members = [
+    "./crates/calimero-sandbox",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
@@ -45,6 +46,7 @@ alloy = { version = "0.11.1", features = ["full"] }
 alloy-sol-types = "0.8.22"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
+async-trait = "0.1.77"
 axum = "0.7.4"
 base64 = "0.22.0"
 bincode = "1.3.3"
@@ -145,6 +147,7 @@ webbrowser = "1.0.4"
 web3 = "0.19.0"
 x509-parser = "0.16.0"
 
+calimero-sandbox = { path = "./crates/calimero-sandbox" }
 calimero-config = { path = "./crates/config" }
 calimero-context = { path = "./crates/context" }
 calimero-context-config = { path = "./crates/context/config" }

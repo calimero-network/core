@@ -1,28 +1,26 @@
 use core::fmt::Write;
 use std::collections::btree_map::{BTreeMap, Entry as BTreeMapEntry};
-use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
-use std::net::{IpAddr, SocketAddr};
+use std::collections::hash_map::HashMap;
 use std::path::PathBuf;
 
+use calimero_sandbox::config::DevnetConfig;
+use calimero_sandbox::protocol::ethereum::EthereumSandboxEnvironment;
+use calimero_sandbox::protocol::icp::IcpSandboxEnvironment;
+use calimero_sandbox::protocol::near::NearSandboxEnvironment;
+use calimero_sandbox::protocol::stellar::StellarSandboxEnvironment;
+use calimero_sandbox::protocol::ProtocolSandboxEnvironment;
+use calimero_sandbox::Devnet;
 use camino::Utf8Path;
 use eyre::{bail, Result as EyreResult};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
 use tokio::fs::{read, read_dir, write};
-use tokio::net::{TcpListener, TcpSocket};
-use tokio::time::{sleep, Duration};
-use tokio::try_join;
 
 use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
 use crate::merod::Merod;
 use crate::output::OutputWriter;
-use crate::protocol::ethereum::EthereumSandboxEnvironment;
-use crate::protocol::icp::IcpSandboxEnvironment;
-use crate::protocol::near::NearSandboxEnvironment;
-use crate::protocol::stellar::StellarSandboxEnvironment;
-use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
 use crate::{Protocol, TestEnvironment};
 
@@ -237,71 +235,34 @@ impl Driver {
             .output_writer
             .write_header("Starting merod nodes", 2);
 
+        // Create devnet config
+        let devnet_config = DevnetConfig {
+            node_count: self.config.network.node_count,
+            protocols: vec![sandbox.name().to_string()],
+            swarm_host: self.config.network.swarm_host.to_string(),
+            start_swarm_port: self.config.network.start_swarm_port,
+            server_host: self.config.network.server_host.to_string(),
+            start_server_port: self.config.network.start_server_port,
+            home_dir: self.environment.nodes_dir.clone(),
+            node_name: "devnet".into(),
+        };
+
+        // Initialize and run devnet
+        let mut devnet = Devnet::new(devnet_config);
+        devnet.run().await?;
+
+        // Get nodes from devnet
         let mut merods = HashMap::new();
+        for (name, _node) in devnet.nodes {
+            let merod = Merod::new(
+                name.clone(),
+                self.environment.nodes_dir.clone(),
+                &self.environment.logs_dir,
+                self.environment.merod_binary.clone(),
+                self.environment.output_writer,
+            );
 
-        let swarm_host = self.config.network.swarm_host.to_string();
-        let mut swarm_port = self.config.network.start_swarm_port;
-
-        let server_host = self.config.network.server_host.to_string();
-        let mut server_port = self.config.network.start_server_port;
-
-        for i in 0..self.config.network.node_count {
-            let node_name = format!("node{}", i + 1);
-            if let HashMapEntry::Vacant(e) = merods.entry(node_name.clone()) {
-                let config_args = [format!(
-                    "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
-                    self.environment.test_id
-                )];
-
-                let node_args = sandbox.node_args(&node_name).await?;
-                let config_args = config_args.iter().chain(node_args.iter());
-
-                let merod = Merod::new(
-                    node_name,
-                    self.environment.nodes_dir.clone(),
-                    &self.environment.logs_dir,
-                    self.environment.merod_binary.clone(),
-                    self.environment.output_writer,
-                );
-
-                let swarm_port =
-                    PortBinding::next_available(self.config.network.swarm_host, &mut swarm_port)
-                        .await?;
-
-                let server_port =
-                    PortBinding::next_available(self.config.network.server_host, &mut server_port)
-                        .await?;
-
-                merod
-                    .init(
-                        &swarm_host,
-                        &server_host,
-                        swarm_port.port(),
-                        server_port.port(),
-                        config_args.map(String::as_str),
-                    )
-                    .await?;
-
-                let swarm_addr = swarm_port.into_socket_addr();
-                let server_addr = server_port.into_socket_addr();
-
-                merod.run().await?;
-
-                let merod = e.insert(merod);
-
-                while let Err(_) = try_join!(
-                    TcpSocket::new_v4()?.connect(swarm_addr),
-                    TcpSocket::new_v4()?.connect(server_addr)
-                ) {
-                    if let Some(exit_code) = merod.try_wait().await? {
-                        bail!(
-                            "merod process exited with code {} before becoming ready",
-                            exit_code
-                        );
-                    }
-                    sleep(Duration::from_secs(1)).await;
-                }
-            }
+            merods.insert(name, merod);
         }
 
         Ok(Mero {
@@ -603,49 +564,12 @@ mod serde_eyre {
     }
 }
 
-struct PortBinding {
-    address: SocketAddr,
-    listener: TcpListener,
-}
-
-impl PortBinding {
-    async fn next_available(host: IpAddr, port: &mut u16) -> EyreResult<PortBinding> {
-        for _ in 0..100 {
-            let address = (host, *port).into();
-
-            let res = TcpListener::bind(address).await;
-
-            *port += 1;
-
-            if let Ok(listener) = res {
-                return Ok(PortBinding { address, listener });
-            }
-        }
-
-        bail!(
-            "unable to select a port in range {}..={}",
-            *port - 100,
-            *port - 1
-        );
-    }
-
-    fn port(&self) -> u16 {
-        self.address.port()
-    }
-
-    /// Drop the binding, returning the bound address.
-    fn into_socket_addr(self) -> SocketAddr {
-        drop(self.listener);
-        self.address
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::env;
     use std::net::IpAddr;
 
-    use super::PortBinding;
+    use calimero_sandbox::port_binding::PortBinding;
 
     #[tokio::test]
     async fn test_ports() -> eyre::Result<()> {

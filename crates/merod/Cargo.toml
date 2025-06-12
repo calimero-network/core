@@ -10,6 +10,7 @@ license.workspace = true
 
 [dependencies]
 alloy.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
@@ -43,6 +44,7 @@ calimero-context-config = { workspace = true, features = ["client"] }
 calimero-node.workspace = true
 calimero-network-primitives.workspace = true
 calimero-server = { workspace = true, features = ["jsonrpc", "websocket", "admin"] }
+calimero-sandbox.workspace = true
 calimero-store.workspace = true
 calimero-store-rocksdb.workspace = true
 calimero-utils-actix.workspace = true

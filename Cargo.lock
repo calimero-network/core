@@ -2067,6 +2067,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-sandbox"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "base64 0.22.1",
+ "camino",
+ "candid",
+ "clap",
+ "eyre",
+ "ic-agent",
+ "near-workspaces",
+ "reqwest 0.12.9",
+ "serde",
+ "serde_json",
+ "soroban-client",
+ "soroban-sdk",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "calimero-sdk"
 version = "0.1.0"
 dependencies = [
@@ -3192,28 +3214,21 @@ checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 name = "e2e-tests"
 version = "0.1.0"
 dependencies = [
- "alloy",
  "async-compression",
- "base64 0.22.1",
+ "calimero-sandbox",
  "camino",
- "candid",
  "clap",
  "const_format",
  "eyre",
  "futures-util",
- "ic-agent",
- "near-workspaces",
  "nix 0.29.0",
  "rand 0.8.5",
  "reqwest 0.12.9",
  "serde",
  "serde_json",
- "soroban-client",
- "soroban-sdk",
  "tokio",
  "tokio-util",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -6035,6 +6050,7 @@ name = "merod"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "async-trait",
  "axum",
  "calimero-blobstore",
  "calimero-config",
@@ -6042,6 +6058,7 @@ dependencies = [
  "calimero-context-config",
  "calimero-network-primitives",
  "calimero-node",
+ "calimero-sandbox",
  "calimero-server",
  "calimero-store",
  "calimero-store-rocksdb",

@@ -15,7 +15,6 @@ clap = { workspace = true, features = ["env", "derive"] }
 const_format.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
-near-workspaces.workspace = true
 nix = { version = "0.29.0", features = ["signal"] }
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -24,19 +23,15 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "r
 reqwest.workspace = true
 tokio-util.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-url.workspace = true
 
 # Add ICP dependencies from workspace
-ic-agent.workspace = true
-candid.workspace = true
 
 # Add Ethereum dependencies from workspace
-alloy.workspace = true
 
 # Add Stellar dependencies from workspace
-soroban-client.workspace = true
-soroban-sdk.workspace = true
-base64.workspace = true
+
+calimero-sandbox.workspace = true
+
 
 [lints]
 workspace = true
