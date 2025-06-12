@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  rust-build:
-    name: Rust Build
+  rust:
+    name: Rust
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
