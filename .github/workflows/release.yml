@@ -265,8 +265,8 @@ jobs:
           annotations: ${{ steps.metadata.outputs.annotations }}
           cache-from: ${{ steps.prepare.outputs.cache_from }}
           cache-to: ${{ steps.prepare.outputs.cache_to }}
-          provenance: mode=max
-          sbom: true
+          provenance: false
+          sbom: false
 
   brew-update:
     name: Update Homebrew Tap
