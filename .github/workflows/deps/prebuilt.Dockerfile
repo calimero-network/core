@@ -25,7 +25,6 @@ ARG BINARY_NAME
 COPY \
     bin/${TARGETARCH}/merod \
     bin/${TARGETARCH}/meroctl \
-    .github/workflows/deps/entrypoint.sh \
     /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/{merod,meroctl}
