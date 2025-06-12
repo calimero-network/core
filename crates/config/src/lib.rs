@@ -17,8 +17,8 @@ pub const CONFIG_FILE: &str = "config.toml";
 #[non_exhaustive]
 pub struct ConfigFile {
     #[serde(
-        with = "serde_identity",
-        default = "libp2p_identity::Keypair::generate_ed25519"
+        with = "serde_identity", 
+        default = "default_identity"
     )]
     pub identity: libp2p_identity::Keypair,
 
@@ -32,6 +32,10 @@ pub struct ConfigFile {
     pub blobstore: BlobStoreConfig,
 
     pub context: ContextConfig,
+}
+
+fn default_identity() -> libp2p_identity::Keypair {
+    libp2p_identity::Keypair::generate_ed25519()
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -85,7 +89,7 @@ pub struct ServerConfig {
 
     #[serde(default)]
     pub jsonrpc: Option<JsonRpcConfig>,
-
+    
     #[serde(default)]
     pub websocket: Option<WsConfig>,
 }
