@@ -1,0 +1,38 @@
+FROM rust:1.77-slim-bookworm as builder
+
+WORKDIR /usr/src/calimero
+COPY . .
+
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    cmake \
+    build-essential \
+    ca-certificates \
+    git \
+    libssl-dev \
+    pkg-config
+
+# Build the auth server
+RUN cargo build --bin calimero-auth --release
+
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the binary
+COPY --from=builder /usr/src/calimero/target/release/calimero-auth /usr/local/bin/calimero-auth
+
+VOLUME ["/data"]
+
+EXPOSE 3001
+
+ENTRYPOINT ["calimero-auth"]
+CMD ["--verbose"] 
