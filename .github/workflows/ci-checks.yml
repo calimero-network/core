@@ -8,6 +8,9 @@ on:
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+permissions:
+  contents: read
+
 jobs:
   rust-build:
     name: Rust Build
