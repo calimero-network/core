@@ -22,25 +22,12 @@ jobs:
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-checks
+          key: ci-checks
 
       - name: Build
         run: |
           ./scripts/build-all-apps.sh
           cargo build --workspace --all-targets --tests
-
-  rust-tests:
-    name: Rust Tests
-    runs-on: ubuntu-latest
-    needs: rust-build
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-checks
 
       - name: Cargo format
         run: |
