@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
   pull_request:
     branches:
-      - miraclx/pull-node-ui-on-build
+      - master
 
 env:
   # IMAGES: |-
