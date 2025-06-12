@@ -27,7 +27,7 @@ COPY \
     bin/${TARGETARCH}/meroctl \
     /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/{merod,meroctl}
+RUN chmod +x /usr/local/bin/merod /usr/local/bin/meroctl
 
 USER user
 WORKDIR /data
