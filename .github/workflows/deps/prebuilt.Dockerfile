@@ -2,42 +2,37 @@
 
 # Dockerfile for prebuilt binaries
 
-FROM ubuntu:24.04
+FROM debian:bookworm-slim
 
-# Install only the essential runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
-    adduser \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a non-privileged user for running the app
 ARG UID=10001
 RUN adduser \
     --disabled-password \
     --gecos "" \
-    --home "/nonexistent" \
+    --home "/user" \
     --shell "/sbin/nologin" \
-    --no-create-home \
     --uid "${UID}" \
-    appuser
+    user
 
-# Set architecture-specific path for multi-platform builds
 ARG TARGETARCH
 ARG BINARY_NAME
 
 # Copy the prebuilt binary from the CI workflow artifacts
-WORKDIR /
-COPY bin/${TARGETARCH}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
-RUN chmod +x /usr/local/bin/${BINARY_NAME}
+COPY \
+    bin/${TARGETARCH}/merod \
+    bin/${TARGETARCH}/meroctl \
+    .github/workflows/deps/entrypoint.sh \
+    /usr/local/bin/
 
-# Create app directory and set permissions
-RUN mkdir -p /app && chown appuser:appuser /app
+RUN chmod +x /usr/local/bin/{merod,meroctl}
 
-# Change to non-root user
-USER appuser
-WORKDIR /app
+USER user
+WORKDIR /data
+ENV CALIMERO_HOME=/data
 
-# Set the entrypoint using the binary name
-ENTRYPOINT ["/usr/local/bin/${BINARY_NAME}"]
+ENTRYPOINT ["/usr/local/bin/merod"]
 CMD ["--help"]
