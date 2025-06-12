@@ -242,6 +242,7 @@ jobs:
             org.opencontainers.image.licenses=MIT OR Apache-2.0
             org.opencontainers.image.authors=Calimero Limited <info@calimero.network>
             org.opencontainers.image.url=https://calimero.network
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ghcr.io/${{ github.repository_owner }}/merod
           tags: |
