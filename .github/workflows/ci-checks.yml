@@ -2,70 +2,47 @@ name: CI
 
 on:
   push:
-    branches: ['master']
+    branches: ["master"]
   pull_request:
 
 env:
-  CARGO_TERM_COLOR: always
-  CARGO_HOME: ''
-  RUSTUP_HOME: ''
-  ALT_HOME: ''
-  STAGE_DIR: ''
+  CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  rust:
-    name: Rust
+  rust-build:
+    name: Rust Build
     runs-on: ubuntu-latest
     steps:
-      - name: Prepare
-        run: |
-          export STAGE_DIR="$(dirname $GITHUB_WORKSPACE)"
-          echo "STAGE_DIR=$STAGE_DIR" >> $GITHUB_ENV
-          export ALT_HOME="$STAGE_DIR/.home"
-          echo "ALT_HOME=$ALT_HOME" >> $GITHUB_ENV
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@v10
-        with:
-          build-mount-path: ${{ env.STAGE_DIR }}
-          root-reserve-mb: 8192
-
-      - name: Relocate environment
-        run: |
-          echo "CARGO_HOME=$ALT_HOME/.cargo" >> $GITHUB_ENV
-          echo "RUSTUP_HOME=$ALT_HOME/.rustup" >> $GITHUB_ENV
-          mkdir $ALT_HOME
-          mv ~/.cargo $ALT_HOME
-          mv ~/.rustup $ALT_HOME
-          echo "$ALT_HOME/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
-
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Setup rust toolchain
-        run: rustup toolchain install stable --profile minimal
 
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ci-checks
+          shared-key: ci-checks
 
       - name: Build
-        env:
-          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./scripts/build-all-apps.sh
-          cargo build --all-targets --tests
+          cargo build --workspace --all-targets --tests
+
+  rust-tests:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-checks
 
       - name: Cargo format
         run: |
-          rustup toolchain install nightly
-          rustup component add rustfmt --toolchain nightly
+          rustup toolchain install nightly --component rustfmt
 
           cargo +nightly fmt -- --check
 
       - name: Cargo clippy
-        run: |
-          cargo clippy -- -A warnings
+        run: cargo clippy -- -A warnings
 
       - name: Cargo test
         run: |
