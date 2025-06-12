@@ -23,6 +23,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ci-checks
+          cache-on-failure: true
 
       - name: Build
         run: |
