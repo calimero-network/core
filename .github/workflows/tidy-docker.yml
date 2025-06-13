@@ -10,9 +10,17 @@ on:
   schedule:
     - cron: "0 0 */2 * *" # Every 2 days at 00:00 UTC
   workflow_dispatch:
-  push:
-    branches:
-      - miraclx/pull-node-ui-on-build
+    inputs:
+      dry-run:
+        description: "Perform a dry run without deleting images"
+        required: false
+        default: true
+        type: boolean
+      force:
+        description: "Remove all non-persistent images NOW (i.e not latest, edge, a release tag or one from an open PR)"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: tidy-docker
@@ -29,14 +37,18 @@ jobs:
     name: Clean Docker Images
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - uses: dataaxiom/ghcr-cleanup-action@v1
         with:
+          dry-run: true
           package: merod
           use-regex: true
           exclude-tags: ${{ env.PERSIST }}|^pr-\d+$
           keep-n-tagged: 0
           delete-untagged: true
-          older-than: 2 days
+          older-than: ${{ github.event.inputs.force && '0 days' || '2 days'}}
           delete-orphaned-images: true
           delete-partial-images: true
           validate: true
@@ -56,8 +68,9 @@ jobs:
 
       - uses: dataaxiom/ghcr-cleanup-action@v1
         with:
+          dry-run: true
           package: merod
           use-regex: true
           delete-tags: pr-\d+
           exclude-tags: ^pr-(${{ steps.prepare.outputs.active_prs }})$
-          older-than: 5 days
+          older-than: ${{ github.event.inputs.force && '0 days' || '5 days'}}
