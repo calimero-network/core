@@ -2,43 +2,59 @@
 
 ## [Unreleased]
 
-- Add suport for public address advertisement.
-- Refine AutoNAT protocol integration.
-- Remove support for TLS server due to bug in (axum dual protocol).[https://github.com/daxpedda/axum-server-dual-protocol]
+## [0.7.0] - 2025-06-13
 
-## [0.6.0] - 2025-05-5
+- Massive rework of the core to the actor model. ([#1263], [#1132], [#1158],
+  [#1232], [#1246], [#1238], [#1251])
+  - The node can now handle requests to multiple contexts in parallel.
+  - Node sync is now much more robust.
+- Applications now compile once on first use, and are cached for subsequent
+  invocations. ([#1291], [#1280]; thanks [@onyedikachi-david])
+  - This leads to a x10±8 performance improvement in request execution.
+- `meroctl` now supports remote node management. ([#1237]; thanks [@Nathy-bajo])
+- Introduce alias listing to `meroctl`. ([#1276]; thanks [@cy4n1d3-p1x3l])
+- Constrain `PrivateKey` exposure, protect it from being printed in logs, copied
+  or sent over the wire. ([#1256]; thanks [@onyedikachi-david])
+  - This also means context join no longer requires a private key, just the
+    invitation payload.
+- Introduce context config permission management to the API, web ui and CLI.
+  ([#1233]; thanks [@onyedikachi-david], [#1240]; thanks [@Nathy-bajo])
+- The CLIs now report when there is an available version update. ([#1226];
+  thanks [@cy4n1d3-p1x3l])
+- Introduce context proxy proposal management to the CLIs. ([#1285]; thanks
+  [@rtb-12])
+- `--version` output in `meroctl` and `merod` now includes some build info like
+  git status and rustc version. ([#1257]; thanks [@dotandev])
+- Nodes now advertise their public address, and TLS has been removed from the
+  server. ([#1254])
+- Replace all blocking operations with async equivalents. ([#1266]; thanks
+  [@dotandev])
+- Decouple rocksdb from calimero-store ([#1245]; thanks [@dotandev])
+- Simplify `meroctl` connection handling significantly which makes it more
+  robust and maintainable. ([#1293]; thanks [@Nathy-bajo])
+- Fixed `context identity ls` crash when no default context is set. ([#1241])
+- Remove only-peers, visited and gen-ext apps ([#1261], [#1270])
+- Fix all docker image issues. ([#1294], [#1295], [#1296], [#1297])
 
-- Added alias substitution and use command for streamlined context interactions
-  ( [#1223](https://github.com/calimero-network/core/pull/1223) - thanks
-  [@Nathy-bajo](https://github.com/Nathy-bajo),
-  [#1171](https://github.com/calimero-network/core/pull/1171) - thanks
-  [@rtb-12](https://github.com/rtb-12) )
-- Added support for alias on context invitation and join command (
-  [#1181](https://github.com/calimero-network/core/pull/1181) - thanks
-  [@cy4n1d3-p1x3l](https://github.com/cy4n1d3-p1x3l),
-  [#1151](https://github.com/calimero-network/core/pull/1151) - thanks
-  [@iamgoeldhruv](https://github.com/iamgoeldhruv) )
-- Introduced event-triggered command execution with context watch (
-  [#1224](https://github.com/calimero-network/core/pull/1224) - thanks
-  [@Nathy-bajo](https://github.com/Nathy-bajo) )
-- Added support for no-auth mode for node (
-  [#1174](https://github.com/calimero-network/core/pull/1174) )
-- Enabled forced alias creation and validation for safer configuration (
-  [#1227](https://github.com/calimero-network/core/pull/1227) - thanks
-  [@rtb-12](https://github.com/rtb-12),
-  [#1180](https://github.com/calimero-network/core/pull/1180) - thanks
-  [@rtb-12](https://github.com/rtb-12) )
-- Improved Dockerfile, login popup, and admin dashboard experience (
-  [#1214](https://github.com/calimero-network/core/pull/1214),
-  [#1209](https://github.com/calimero-network/core/pull/1209),
-  [#1205](https://github.com/calimero-network/core/pull/1205) - thanks
-  [@iamgoeldhruv](https://github.com/iamgoeldhruv) )
-- Optimized CI/CD, e2e test reliability, and removed redundant config fields (
-  [#1235](https://github.com/calimero-network/core/pull/1235),
-  [#1218](https://github.com/calimero-network/core/pull/1218) - thanks
-  [@Nathy-bajo](https://github.com/Nathy-bajo),
-  [#1206](https://github.com/calimero-network/core/pull/1206) - thanks
-  [@Nathy-bajo](https://github.com/Nathy-bajo) )
+## [0.6.0] - 2025-05-05
+
+- Introduced default alias selection with the `use` command for contexts and
+  identities. ([#1171]; thanks [@rtb-12])
+- Introduced alias substitution in call arguments. ([#1223]; thanks
+  [@Nathy-bajo])
+- Support alias creation on context invitation and joining. ([#1181], [#1151];
+  thanks [@cy4n1d3-p1x3l], [@iamgoeldhruv])
+- Introduced event-triggered command execution with context watch. ([#1224];
+  thanks [@Nathy-bajo])
+- Permit running nodes without server authentication. ([#1174])
+- Enabled forced alias creation and validation for safer configuration.
+  ([#1227], [#1180]; thanks [@rtb-12])
+- Introduced Dockerfile for meroctl. ([#1214])
+- Improve the login experience in the webui. ([#1209])
+- Added a way to launch the webui from the interactive CLI. ([#1205]; thanks
+  [@iamgoeldhruv])
+- Remove a redundant config field from the merod config. ([#1206]; thanks
+  [@Nathy-bajo])
 
 ## [0.5.0] - 2025-03-27
 
@@ -105,7 +121,10 @@ Integrations:
 - Starknet: reached feature parity with the NEAR implementation, allowing
   contexts to be created in association with the Starknet protocol.
 
-[unreleased]: https://github.com/calimero-network/core/compare/0.6.0...HEAD
+<!-- versions -->
+
+[unreleased]: https://github.com/calimero-network/core/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/calimero-network/core/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/calimero-network/core/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/calimero-network/core/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/calimero-network/core/compare/merod-0.3.1...0.4.0
@@ -114,3 +133,51 @@ Integrations:
 [0.3.0]:
   https://github.com/calimero-network/core/compare/merod-0.2.0...merod-0.3.0
 [0.2.0]: https://github.com/calimero-network/core/releases/tag/merod-0.2.0
+
+<!-- contributors -->
+
+[@rtb-12]: https://github.com/rtb-12
+[@cy4n1d3-p1x3l]: https://github.com/cy4n1d3-p1x3l
+[@iamgoeldhruv]: https://github.com/iamgoeldhruv
+[@Nathy-bajo]: https://github.com/Nathy-bajo
+[@dotandev]: https://github.com/dotandev
+[@onyedikachi-david]: https://github.com/onyedikachi-david
+
+<!-- patches -->
+
+[#1171]: https://github.com/calimero-network/core/pull/1171
+[#1223]: https://github.com/calimero-network/core/pull/1223
+[#1181]: https://github.com/calimero-network/core/pull/1181
+[#1151]: https://github.com/calimero-network/core/pull/1151
+[#1224]: https://github.com/calimero-network/core/pull/1224
+[#1174]: https://github.com/calimero-network/core/pull/1174
+[#1227]: https://github.com/calimero-network/core/pull/1227
+[#1180]: https://github.com/calimero-network/core/pull/1180
+[#1214]: https://github.com/calimero-network/core/pull/1214
+[#1209]: https://github.com/calimero-network/core/pull/1209
+[#1205]: https://github.com/calimero-network/core/pull/1205
+[#1206]: https://github.com/calimero-network/core/pull/1206
+[#1263]: https://github.com/calimero-network/core/pull/1263
+[#1132]: https://github.com/calimero-network/core/pull/1132
+[#1158]: https://github.com/calimero-network/core/pull/1158
+[#1232]: https://github.com/calimero-network/core/pull/1232
+[#1246]: https://github.com/calimero-network/core/pull/1246
+[#1238]: https://github.com/calimero-network/core/pull/1238
+[#1251]: https://github.com/calimero-network/core/pull/1251
+[#1291]: https://github.com/calimero-network/core/pull/1291
+[#1280]: https://github.com/calimero-network/core/pull/1280
+[#1237]: https://github.com/calimero-network/core/pull/1237
+[#1241]: https://github.com/calimero-network/core/pull/1241
+[#1233]: https://github.com/calimero-network/core/pull/1233
+[#1240]: https://github.com/calimero-network/core/pull/1240
+[#1254]: https://github.com/calimero-network/core/pull/1254
+[#1261]: https://github.com/calimero-network/core/pull/1261
+[#1270]: https://github.com/calimero-network/core/pull/1270
+[#1266]: https://github.com/calimero-network/core/pull/1266
+[#1245]: https://github.com/calimero-network/core/pull/1245
+[#1226]: https://github.com/calimero-network/core/pull/1226
+[#1285]: https://github.com/calimero-network/core/pull/1285
+[#1257]: https://github.com/calimero-network/core/pull/1257
+[#1276]: https://github.com/calimero-network/core/pull/1276
+[#1256]: https://github.com/calimero-network/core/pull/1256
+[#1293]: https://github.com/calimero-network/core/pull/1293
