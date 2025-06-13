@@ -3,22 +3,6 @@
 ARG RUST_VERSION=1.85.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
-ARG NODE_VERSION=20
-
-################################################################################
-# Create a stage for building the node-ui application
-FROM node:${NODE_VERSION}-slim AS builder-nodejs
-WORKDIR /app
-
-# Copy node-ui directory
-COPY node-ui ./node-ui
-WORKDIR /app/node-ui
-
-# Install pnpm and build the UI
-RUN npm install -g pnpm && \
-    pnpm install --no-frozen-lockfile && \
-    pnpm run build
-
 ################################################################################
 FROM rust:${RUST_VERSION}-slim AS builder-rust
 
@@ -42,8 +26,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY apps ./apps
 COPY e2e-tests ./e2e-tests
-
-COPY --from=builder-nodejs /app/node-ui ./node-ui
 
 RUN --mount=type=cache,target=/app/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
