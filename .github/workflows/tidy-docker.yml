@@ -1,67 +1,76 @@
 name: Tidy Docker
 
-# Every 2 days at 00:00 UTC
-# Remove all docker images from github registry that match;
+# Remove all docker images from the github registry that match;
 #
-# 1. <ref> where updated_at is older than 3 days
-# 2. <pr-NUMBER> where updated_at is older than 1 week
+# 1. <sha> or <untagged> older than 2 days
+# 2. pr-<NUMBER> older than 5 days
 # 3. anything that isn't `latest`, `edge` or a release tag
-# 4. that includes anything without a tag (we'll see if this is a problem)
 
 on:
   schedule:
     - cron: '0 0 */2 * *' # Every 2 days at 00:00 UTC
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Perform a dry run without deleting images
+        required: false
+        default: false
+        type: boolean
+      force:
+        description: Remove all non-persistent images NOW (i.e not latest, edge, a release tag or one from an open PR)
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: tidy-docker
+  cancel-in-progress: true
+
+permissions:
+  packages: write
 
 env:
-  BINARIES: |-
-    merod
-    meroctl
+  PERSIST: ^edge|latest|(\d+\.\d+\.\d+(-[a-z]+(\.\d+)?)?)$
 
 jobs:
   clean:
     name: Clean Docker Images
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    permissions:
-      packages: write
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Clean Docker Images
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          dry-run: ${{ github.event.inputs.dry-run }}
+          package: merod
+          use-regex: true
+          exclude-tags: ${{ env.PERSIST }}|^pr-\d+$
+          keep-n-tagged: 0
+          delete-untagged: true
+          older-than: ${{ github.event.inputs.force && '0 days' || '2 days'}}
+          delete-orphaned-images: true
+          delete-partial-images: true
+          validate: true
+
+      - name: Get open PRs
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          readarray -t binaries <<< "$BINARIES"
+          prs=( $(gh pr list --state open --json number -q '.[].number') )
 
-          for binary in "${binaries[@]}"; do
-            echo "Cleaning images for $binary"
-            gh api --paginate "/orgs/${{ github.repository_owner }}/packages/container/${binary}/versions" \
-              --jq "\
-                now as \$now | \
-                (\$now - 259200) as \$_3_days_ago | \
-                (\$now - 604800) as \$_7_days_ago | \
-                .[] | { \
-                  id, \
-                  updated_at: .updated_at | strptime(\"%Y-%m-%dT%H:%M:%SZ\") | mktime, \
-                  tags: .metadata.container.tags \
-                } | . + { \
-                  is_pr: ([.tags[] | contains(\"pr-\")] | any), \
-                  is_latest: ([.tags[] | test(\"latest|edge\")] | any), \
-                  is_release: ([.tags[] | test(\"[0-9].[0-9].[0-9](-pre.[0-9])?\$\")] | any), \
-                } | \
-                select( \
-                  (.is_pr and .updated_at > \$_7_days_ago or .is_latest or .is_release | not) \
-                    and .updated_at < \$_3_days_ago \
-                ) | \
-                \"\(.id) \(.updated_at) \(.tags | join(\"\"))\" \
-              " > images.txt
+          echo "Found open PRs: ${prs[@]}"
+          expr="$(IFS='|'; echo "${prs[*]}")"
 
-            echo "[$binary]"
-            while read -r id updated_at tags; do
-              updated_at=$(date -d "@$updated_at" -u +"%Y-%m-%dT%H:%M:%SZ")
-              echo "  - id=$id, tags=$tags, updated_at=$updated_at"
+          echo "Regex for PRs: $expr"
+          echo "active_prs=$expr" >> $GITHUB_OUTPUT
 
-              gh api -X DELETE "/orgs/${{ github.repository_owner }}/packages/container/${binary}/versions/$id"
-            done < images.txt
-          done
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          dry-run: ${{ github.event.inputs.dry-run }}
+          package: merod
+          use-regex: true
+          delete-tags: pr-\d+
+          exclude-tags: ^pr-(${{ steps.prepare.outputs.active_prs }})$
+          older-than: ${{ github.event.inputs.force && '0 days' || '5 days'}}
