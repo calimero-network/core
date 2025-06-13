@@ -40,7 +40,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: dataaxiom/ghcr-cleanup-action@v1
+      - name: Cleanup non-persistent images, except open PRs
+        uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           dry-run: ${{ github.event.inputs.dry-run }}
           package: merod
@@ -48,7 +49,7 @@ jobs:
           exclude-tags: ${{ env.PERSIST }}|^pr-\d+$
           keep-n-tagged: 0
           delete-untagged: true
-          older-than: ${{ github.event.inputs.force && '0 days' || '2 days'}}
+          older-than: ${{ github.event.inputs.force == 'true' && '0 days' || '2 days'}}
           delete-orphaned-images: true
           delete-partial-images: true
           validate: true
@@ -66,11 +67,12 @@ jobs:
           echo "Regex for PRs: $expr"
           echo "active_prs=$expr" >> $GITHUB_OUTPUT
 
-      - uses: dataaxiom/ghcr-cleanup-action@v1
+      - name: Cleanup closed PR images
+        uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           dry-run: ${{ github.event.inputs.dry-run }}
           package: merod
           use-regex: true
           delete-tags: pr-\d+
           exclude-tags: ^pr-(${{ steps.prepare.outputs.active_prs }})$
-          older-than: ${{ github.event.inputs.force && '0 days' || '5 days'}}
+          older-than: ${{ github.event.inputs.force == 'true' && '0 days' || '5 days'}}
