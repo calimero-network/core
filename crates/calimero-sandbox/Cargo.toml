@@ -1,0 +1,26 @@
+[package]
+name = "calimero-sandbox"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+license-file.workspace = true
+
+[dependencies]
+alloy.workspace = true
+base64.workspace = true
+camino.workspace = true
+candid.workspace = true
+clap.workspace = true
+eyre.workspace = true
+ic-agent.workspace = true
+near-workspaces.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+soroban-client.workspace = true
+soroban-sdk.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
