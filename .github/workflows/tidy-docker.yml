@@ -8,7 +8,7 @@ name: Tidy Docker
 
 on:
   schedule:
-    - cron: '0 0 */2 * *' # Every 2 days at 00:00 UTC
+    - cron: "0 0 */2 * *" # Every 2 days at 00:00 UTC
   workflow_dispatch:
     inputs:
       dry-run:

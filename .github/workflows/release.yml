@@ -7,7 +7,7 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
+      - "crates/**"
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
@@ -15,7 +15,7 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
+      - "crates/**"
 
 permissions:
   contents: read
@@ -92,6 +92,9 @@ jobs:
             target: aarch64-apple-darwin
       fail-fast: false
     runs-on: ${{ matrix.os }}
+
+    env:
+      CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout code

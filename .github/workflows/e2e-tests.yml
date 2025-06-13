@@ -42,6 +42,8 @@ jobs:
           key: e2e-tests
 
       - name: Build Apps & Binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./apps/kv-store/build.sh
           cargo build -p meroctl -p merod -p e2e-tests
