@@ -1,5 +1,4 @@
 #!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
 
 echo "Running pre-commit hook..."
 
@@ -13,10 +12,4 @@ fi
 if git diff --cached --name-only | grep -qE '\.rs$'; then
   echo "Running checks for the Rust code..."
   cargo +nightly fmt
-fi
-
-# Check for changes in the 'node-ui' directory (Next.js app)
-if git diff --cached --name-only | grep -q '^node-ui/'; then
-  echo "Running checks for the node-ui (Next.js app)..."
-  (cd node-ui && pnpm prettier && pnpm lint:fix)
 fi

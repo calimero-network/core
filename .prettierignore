@@ -1,6 +1,0 @@
-# Ignore artifacts:
-data
-build
-target
-coverage
-node_modules

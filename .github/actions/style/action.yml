@@ -46,24 +46,3 @@ runs:
             exit 1  # Exit with a non-zero status code if formatting fails
           fi
         fi
-
-    # Check for changes in the 'node-ui' directory and run formatting/linting
-    - name: Check for changes in node-ui
-      shell: bash
-      env:
-        ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-      run: |
-        echo "Checking for changes in node-ui files"
-        if echo "$ALL_CHANGED_FILES" | grep -q '^node-ui/'; then
-          echo "Running checks for the node-ui..."
-          cd node-ui
-          if ! pnpm prettier:check .; then
-            echo "Prettier found unformatted files in node-ui."
-            exit 1  # Fail if Prettier detects issues
-          fi
-          # TODO: Uncomment after fixing linting issues
-          # if ! pnpm lint; then
-          #   echo "Linting issues found in node-ui."
-          #   exit 1  # Fail if linter detects issues
-          # fi
-        fi

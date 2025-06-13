@@ -1,5 +1,6 @@
 [toolchain]
 channel = "1.85.0"
+# ^~~ keep this in sync with Dockerfile
 components = ["cargo", "clippy"]
 
 [profile.dev]
