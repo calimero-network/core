@@ -16,6 +16,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
+      - .github/workflows/release.yml
 
 permissions:
   contents: read
