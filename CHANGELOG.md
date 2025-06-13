@@ -34,6 +34,8 @@
   robust and maintainable. ([#1293]; thanks [@Nathy-bajo])
 - Fixed `context identity ls` crash when no default context is set. ([#1241])
 - Remove only-peers, visited and gen-ext apps ([#1261], [#1270])
+- Remove `node-ui` from the repo, fetching a pre-built release from it's own
+  repository. ([#1268])
 - Fix all docker image issues. ([#1294], [#1295], [#1296], [#1297])
 
 ## [0.6.0] - 2025-05-05
@@ -128,10 +130,8 @@ Integrations:
 [0.6.0]: https://github.com/calimero-network/core/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/calimero-network/core/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/calimero-network/core/compare/merod-0.3.1...0.4.0
-[0.3.1]:
-  https://github.com/calimero-network/core/compare/merod-0.3.0...merod-0.3.1
-[0.3.0]:
-  https://github.com/calimero-network/core/compare/merod-0.2.0...merod-0.3.0
+[0.3.1]: https://github.com/calimero-network/core/compare/merod-0.3.0...merod-0.3.1
+[0.3.0]: https://github.com/calimero-network/core/compare/merod-0.2.0...merod-0.3.0
 [0.2.0]: https://github.com/calimero-network/core/releases/tag/merod-0.2.0
 
 <!-- contributors -->
@@ -181,3 +181,4 @@ Integrations:
 [#1276]: https://github.com/calimero-network/core/pull/1276
 [#1256]: https://github.com/calimero-network/core/pull/1256
 [#1293]: https://github.com/calimero-network/core/pull/1293
+[#1268]: https://github.com/calimero-network/core/pull/1268
