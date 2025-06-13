@@ -16,7 +16,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
-      - ".github/workflows/release.yml"
 
 permissions:
   contents: read
@@ -55,15 +54,12 @@ jobs:
           version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
 
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-            if [[ "$version" =~ "-pre.[0-9]+$" ]]; then
+            if [[ "$version" =~ "-[a-z]+(\.[0-9]+)?$" ]]; then
               echo "prerelease=true" >> $GITHUB_OUTPUT
               echo "overwrite_release=true" >> $GITHUB_OUTPUT
-            elif ! [[ "$version" =~ "-pre$" ]]; then
+            else
               echo "prerelease=false" >> $GITHUB_OUTPUT
               echo "overwrite_release=false" >> $GITHUB_OUTPUT
-            else
-              echo "\x1b[1;31mError\x1b[0m: Missing pre-release version suffix in the version string" > /dev/stderr
-              exit 1
             fi
 
             if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then

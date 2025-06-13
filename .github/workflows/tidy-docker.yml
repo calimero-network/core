@@ -1,9 +1,9 @@
 name: Tidy Docker
 
-# Remove all docker images from github registry that match;
+# Remove all docker images from the github registry that match;
 #
 # 1. <sha> or <untagged> older than 2 days
-# 2. <pr-NUMBER> older than 5 days
+# 2. pr-<NUMBER> older than 5 days
 # 3. anything that isn't `latest`, `edge` or a release tag
 
 on:
@@ -12,12 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       dry-run:
-        description: "Perform a dry run without deleting images"
+        description: Perform a dry run without deleting images
         required: false
-        default: true
+        default: false
         type: boolean
       force:
-        description: "Remove all non-persistent images NOW (i.e not latest, edge, a release tag or one from an open PR)"
+        description: Remove all non-persistent images NOW (i.e not latest, edge, a release tag or one from an open PR)
         required: false
         default: false
         type: boolean
@@ -30,7 +30,9 @@ permissions:
   packages: write
 
 env:
-  PERSIST: ^edge|latest|(\d+\.\d+\.\d+(-pre\.\d+)?)$
+  PERSIST: ^edge|latest|(\d+\.\d+\.\d+(-[a-z]+(\.\d+)?)?)$
+  PACKAGES: merod
+  # ^~~ comma separated list of packages to clean
 
 jobs:
   clean:
@@ -40,15 +42,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: dataaxiom/ghcr-cleanup-action@v1
+      - name: Cleanup non-persistent images, except open PRs
+        uses: dataaxiom/ghcr-cleanup-action@v1
         with:
-          dry-run: true
-          package: merod
+          dry-run: ${{ github.event.inputs.dry-run }}
+          package: ${{ env.PACKAGES }}
           use-regex: true
           exclude-tags: ${{ env.PERSIST }}|^pr-\d+$
           keep-n-tagged: 0
           delete-untagged: true
-          older-than: ${{ github.event.inputs.force && '0 days' || '2 days'}}
+          older-than: ${{ github.event.inputs.force == 'true' && '0 days' || '2 days'}}
           delete-orphaned-images: true
           delete-partial-images: true
           validate: true
@@ -66,11 +69,12 @@ jobs:
           echo "Regex for PRs: $expr"
           echo "active_prs=$expr" >> $GITHUB_OUTPUT
 
-      - uses: dataaxiom/ghcr-cleanup-action@v1
+      - name: Cleanup closed PR images
+        uses: dataaxiom/ghcr-cleanup-action@v1
         with:
-          dry-run: true
-          package: merod
+          dry-run: ${{ github.event.inputs.dry-run }}
+          package: ${{ env.PACKAGES }}
           use-regex: true
           delete-tags: pr-\d+
           exclude-tags: ^pr-(${{ steps.prepare.outputs.active_prs }})$
-          older-than: ${{ github.event.inputs.force && '0 days' || '5 days'}}
+          older-than: ${{ github.event.inputs.force == 'true' && '0 days' || '5 days'}}
