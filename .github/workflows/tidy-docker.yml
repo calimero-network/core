@@ -31,6 +31,8 @@ permissions:
 
 env:
   PERSIST: ^edge|latest|(\d+\.\d+\.\d+(-[a-z]+(\.\d+)?)?)$
+  PACKAGES: merod
+  # ^~~ comma separated list of packages to clean
 
 jobs:
   clean:
@@ -44,7 +46,7 @@ jobs:
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           dry-run: ${{ github.event.inputs.dry-run }}
-          package: merod
+          package: ${{ env.PACKAGES }}
           use-regex: true
           exclude-tags: ${{ env.PERSIST }}|^pr-\d+$
           keep-n-tagged: 0
@@ -71,7 +73,7 @@ jobs:
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           dry-run: ${{ github.event.inputs.dry-run }}
-          package: merod
+          package: ${{ env.PACKAGES }}
           use-regex: true
           delete-tags: pr-\d+
           exclude-tags: ^pr-(${{ steps.prepare.outputs.active_prs }})$
