@@ -6,14 +6,14 @@ use eyre::{OptionExt, Result as EyreResult};
 use crate::cli::Environment;
 use crate::output::Report;
 
-#[derive(Parser, Debug)]
+#[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Fetch application details")]
 pub struct GetCommand {
     #[arg(value_name = "APP_ID", help = "application_id of the application")]
     pub app_id: ApplicationId,
 }
 
-#[derive(ValueEnum, Debug, Clone)]
+#[derive(Copy, ValueEnum, Debug, Clone)]
 pub enum GetValues {
     Details,
 }

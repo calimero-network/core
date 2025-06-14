@@ -31,14 +31,14 @@ impl Report for ProposalDetailsResponse {
     }
 }
 
-#[derive(Parser, Debug)]
+#[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Manage proposals within a context")]
 pub struct ProposalsCommand {
     #[command(subcommand)]
     pub command: ProposalsSubcommand,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Copy, Clone, Debug, Subcommand)]
 pub enum ProposalsSubcommand {
     #[command(about = "List all proposals in a context", alias = "ls")]
     List {

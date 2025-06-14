@@ -31,14 +31,14 @@ pub struct CreateCommand {
         short = 'a',
         help = "The application ID to attach to the context"
     )]
-    application_id: Option<ApplicationId>,
+    pub application_id: Option<ApplicationId>,
 
     #[clap(
         long,
         short = 'p',
         help = "The parameters to pass to the application initialization function"
     )]
-    params: Option<String>,
+    pub params: Option<String>,
 
     #[clap(
         long,
@@ -46,29 +46,29 @@ pub struct CreateCommand {
         conflicts_with = "application_id",
         help = "Path to the application file to watch and install locally"
     )]
-    watch: Option<Utf8PathBuf>,
+    pub watch: Option<Utf8PathBuf>,
 
     #[clap(
         requires = "watch",
         help = "Metadata needed for the application installation"
     )]
-    metadata: Option<String>,
+    pub metadata: Option<String>,
 
     #[clap(
         short = 's',
         long = "seed",
         help = "The seed for the random generation of the context id"
     )]
-    context_seed: Option<Hash>,
+    pub context_seed: Option<Hash>,
 
     #[clap(long, value_name = "PROTOCOL")]
-    protocol: String,
+    pub protocol: String,
 
     #[clap(long = "as", help = "Create an alias for the context identity")]
-    identity: Option<Alias<PublicKey>>,
+    pub identity: Option<Alias<PublicKey>>,
 
     #[clap(long = "name", help = "Create an alias for the context")]
-    context: Option<Alias<ContextId>>,
+    pub context: Option<Alias<ContextId>>,
 }
 
 impl Report for CreateContextResponse {
