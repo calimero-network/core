@@ -4,10 +4,9 @@ use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
 use comfy_table::{Cell, Table};
 use eyre::{OptionExt, Result as EyreResult};
-use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{do_request, resolve_alias, RequestType};
+use crate::common::resolve_alias;
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -39,28 +38,15 @@ impl DeleteCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let context_id = resolve_alias(
-            &connection.api_url,
-            connection.auth_key.as_ref(),
-            self.context,
-            None,
-        )
-        .await?
-        .value()
-        .cloned()
-        .ok_or_eyre("unable to resolve")?;
+        let context_id = resolve_alias(connection, self.context, None)
+            .await?
+            .value()
+            .cloned()
+            .ok_or_eyre("unable to resolve")?;
 
-        let mut url = connection.api_url.clone();
-        url.set_path(&format!("admin-api/dev/contexts/{}", context_id));
-
-        let response: DeleteContextResponse = do_request(
-            &Client::new(),
-            url,
-            None::<()>,
-            connection.auth_key.as_ref(),
-            RequestType::Delete,
-        )
-        .await?;
+        let response: DeleteContextResponse = connection
+            .delete(&format!("admin-api/dev/contexts/{}", context_id))
+            .await?;
 
         environment.output.write(&response);
 

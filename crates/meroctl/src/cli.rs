@@ -13,6 +13,7 @@ use url::Url;
 
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
+use crate::connection::ConnectionInfo;
 use crate::defaults;
 use crate::output::{Format, Output, Report};
 
@@ -170,10 +171,7 @@ impl RootCommand {
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                ConnectionInfo {
-                    api_url: url,
-                    auth_key: Some(config.identity),
-                }
+                ConnectionInfo::new(url, Some(config.identity)).await
             }
             (None, Some(api_url)) => {
                 let mut auth_key = None;
@@ -189,14 +187,10 @@ impl RootCommand {
                     auth_key = Some(node_key);
                 }
 
-                ConnectionInfo {
-                    api_url: api_url.clone(),
-                    auth_key,
-                }
+                ConnectionInfo::new(api_url.clone(), auth_key).await
             }
             _ => bail!("expected one of `--node` or `--api` to be set"),
         };
-
         Ok(connection)
     }
 }
@@ -247,9 +241,4 @@ where
     S: Serializer,
 {
     serializer.collect_seq(report.chain().map(|e| e.to_string()))
-}
-
-pub struct ConnectionInfo {
-    pub api_url: Url,
-    pub auth_key: Option<Keypair>,
 }

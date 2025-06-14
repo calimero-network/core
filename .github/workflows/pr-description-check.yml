@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  REQUIRED_SECTIONS: |
+  REQUIRED_SECTIONS: |-
     ## Description
     ## Test Plan
     ## Documentation Update

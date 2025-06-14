@@ -5,12 +5,10 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result as EyreResult, WrapErr};
-use reqwest::Client;
 
-use crate::cli::{ConnectionInfo, Environment};
-use crate::common::{
-    create_alias, delete_alias, lookup_alias, make_request, resolve_alias, RequestType,
-};
+use crate::cli::Environment;
+use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
+use crate::connection::ConnectionInfo;
 use crate::output::ErrorLine;
 
 mod alias;
@@ -90,13 +88,7 @@ impl ContextIdentityCommand {
                 context,
                 force,
             } => {
-                let resolve_response = resolve_alias(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
-                    context,
-                    None,
-                )
-                .await?;
+                let resolve_response = resolve_alias(connection, context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -105,13 +97,8 @@ impl ContextIdentityCommand {
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
 
-                let lookup_result = lookup_alias(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
-                    default_alias,
-                    Some(context_id),
-                )
-                .await?;
+                let lookup_result =
+                    lookup_alias(connection, default_alias, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -133,24 +120,13 @@ impl ContextIdentityCommand {
                         "Overwriting existing default alias from '{}' to '{}'",
                         existing_identity, identity
                     )));
-                    let _ = delete_alias(
-                        &connection.api_url,
-                        connection.auth_key.as_ref(),
-                        default_alias,
-                        Some(context_id),
-                    )
-                    .await
-                    .wrap_err("Failed to delete existing default alias")?;
+                    let _ = delete_alias(connection, default_alias, Some(context_id))
+                        .await
+                        .wrap_err("Failed to delete existing default alias")?;
                 }
 
-                let res = create_alias(
-                    &connection.api_url,
-                    connection.auth_key.as_ref(),
-                    default_alias,
-                    Some(context_id),
-                    identity,
-                )
-                .await?;
+                let res =
+                    create_alias(connection, default_alias, Some(context_id), identity).await?;
 
                 environment.output.write(&res);
 
@@ -169,8 +145,7 @@ async fn list_identities(
     owned: bool,
 ) -> EyreResult<()> {
     let resolve_response = resolve_alias(
-        &connection.api_url,
-        connection.auth_key.as_ref(),
+        connection,
         context.unwrap_or_else(|| "default".parse().expect("valid alias")),
         None,
     )
@@ -193,15 +168,8 @@ async fn list_identities(
         format!("admin-api/dev/contexts/{}/identities", context_id)
     };
 
-    let mut url = connection.api_url.clone();
-    url.set_path(&endpoint);
-    make_request::<_, GetContextIdentitiesResponse>(
-        environment,
-        &Client::new(),
-        url,
-        None::<()>,
-        connection.auth_key.as_ref(),
-        RequestType::Get,
-    )
-    .await
+    let response: GetContextIdentitiesResponse = connection.get(&endpoint).await?;
+
+    environment.output.write(&response);
+    Ok(())
 }
