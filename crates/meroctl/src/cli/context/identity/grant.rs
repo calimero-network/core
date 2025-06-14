@@ -11,7 +11,7 @@ use crate::cli::Environment;
 use crate::common::resolve_alias;
 use crate::output::Report;
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Grant permissions to a member in a context")]
 pub struct GrantPermissionCommand {
     #[arg(help = "The context ID")]

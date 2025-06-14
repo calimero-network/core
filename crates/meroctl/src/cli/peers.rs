@@ -8,11 +8,10 @@ use crate::cli::Environment;
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
-  #
   $ meroctl --node node1 peers
 ";
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Return the number of connected peers")]
 #[command(after_help = concatcp!(
     "Examples:",

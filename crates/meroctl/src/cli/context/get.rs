@@ -12,7 +12,7 @@ use crate::cli::Environment;
 use crate::common::resolve_alias;
 use crate::output::Report;
 
-#[derive(Parser, Debug)]
+#[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Fetch details about the context")]
 pub struct GetCommand {
     #[command(subcommand)]
@@ -26,7 +26,7 @@ pub struct GetCommand {
     pub context: Alias<ContextId>,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub enum GetSubcommand {
     #[command(about = "Get context information")]
     Info,
