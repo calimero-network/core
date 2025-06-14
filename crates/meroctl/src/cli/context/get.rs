@@ -107,10 +107,7 @@ impl Report for GetContextIdentitiesResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;
 

@@ -1,7 +1,7 @@
 use calimero_server_primitives::admin::ListApplicationsResponse;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::Result as EyreResult;
 
 use crate::cli::Environment;
 use crate::output::Report;
@@ -48,10 +48,7 @@ impl Report for ListApplicationsResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let response: ListApplicationsResponse =
             connection.get("admin-api/dev/applications").await?;

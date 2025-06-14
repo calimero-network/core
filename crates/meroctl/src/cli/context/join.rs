@@ -4,7 +4,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::Result as EyreResult;
 
 use crate::cli::Environment;
 use crate::common::create_alias;
@@ -44,10 +44,7 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let response: JoinContextResponse = connection
             .post(
