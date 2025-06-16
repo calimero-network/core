@@ -50,7 +50,9 @@ export default function ContextsPage() {
         const tempContextObjects: ContextObject[] = await Promise.all(
           contexts.map(async (app: Context) => {
             const metadata = (
-              await apiClient.node().getInstalledApplicationDetails(app.applicationId)
+              await apiClient
+                .node()
+                .getInstalledApplicationDetails(app.applicationId)
             ).data?.metadata;
             let packageData = null;
             if (metadata) {
@@ -111,7 +113,9 @@ export default function ContextsPage() {
 
   const deleteNodeContext = async () => {
     if (!selectedContextId) return;
-    const deleteContextResponse = await apiClient.node().deleteContext(selectedContextId);
+    const deleteContextResponse = await apiClient
+      .node()
+      .deleteContext(selectedContextId);
     if (deleteContextResponse.error) {
       setDeleteStatus({
         title: 'Error',

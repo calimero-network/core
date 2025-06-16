@@ -1,5 +1,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { NetworkId, setupWalletSelector, BrowserWallet } from '@near-wallet-selector/core';
+import {
+  NetworkId,
+  setupWalletSelector,
+  BrowserWallet,
+} from '@near-wallet-selector/core';
 import { setupMyNearWallet } from '@near-wallet-selector/my-near-wallet';
 import { apiClient } from '@calimero-network/calimero-client';
 import { styled } from 'styled-components';
@@ -60,7 +64,7 @@ export function NearWalletProvider({ provider }: NearWalletProviderProps) {
 
     if (accountId && publicKey) {
       addRootKey(publicKey, accountId);
-    }else {
+    } else {
       connectWallet();
     }
   }, []);
@@ -72,12 +76,12 @@ export function NearWalletProvider({ provider }: NearWalletProviderProps) {
       const network = provider.config?.network || 'testnet';
       const walletSelector = await setupWalletSelector({
         network: network as NetworkId,
-        modules: [
-          setupMyNearWallet()
-        ],
+        modules: [setupMyNearWallet()],
       });
 
-      const wallet = await walletSelector?.wallet('my-near-wallet') as BrowserWallet;
+      const wallet = (await walletSelector?.wallet(
+        'my-near-wallet',
+      )) as BrowserWallet;
       if (!wallet) {
         throw new Error('No wallet selected');
       }
@@ -89,51 +93,52 @@ export function NearWalletProvider({ provider }: NearWalletProviderProps) {
 
       await wallet.signIn({
         contractId: '',
-        failureUrl: window.location.origin + '/admin-dashboard/identity/root-key/',
+        failureUrl:
+          window.location.origin + '/admin-dashboard/identity/root-key/',
       });
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect wallet');
       console.error('Failed to connect wallet:', err);
     }
   }, [provider]);
 
-  const addRootKey = useCallback(async (publicKey: string, accountId: string) => {
-    try {
-      const response = await apiClient.admin().addRootKey({
-        public_key: publicKey,
-        auth_method: 'near_wallet',
-        provider_data: {
-          account_id: accountId,
-        },
-      });
+  const addRootKey = useCallback(
+    async (publicKey: string, accountId: string) => {
+      try {
+        const response = await apiClient.admin().addRootKey({
+          public_key: publicKey,
+          auth_method: 'near_wallet',
+          provider_data: {
+            account_id: accountId,
+          },
+        });
 
-      if (response.error) {
-        throw new Error(response.error.message);
+        if (response.error) {
+          throw new Error(response.error.message);
+        }
+
+        console.log('response', response);
+
+        setError(null);
+        setMessage(response.data?.message);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to add root key');
+        throw err;
       }
-
-      console.log('response', response);
-
-      setError(null);
-      setMessage(response.data?.message);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add root key');
-      throw err;
-    }
-  }, []);
+    },
+    [],
+  );
 
   return (
     <Wrapper>
       <h2>Connect {provider.name}</h2>
       {error && <ErrorMessage>{error}</ErrorMessage>}
       {message && <SuccessMessage>{message}</SuccessMessage>}
-      {
-        isLoading ? (
-          <Loading />
-        ) : (
-          <Button onClick={() => navigate('/identity')} text="Back" />
-        )
-      }
+      {isLoading ? (
+        <Loading />
+      ) : (
+        <Button onClick={() => navigate('/identity')} text="Back" />
+      )}
     </Wrapper>
   );
-} 
+}

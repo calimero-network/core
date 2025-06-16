@@ -142,10 +142,11 @@ pub async fn asset_handler(Path(path): Path<String>) -> impl IntoResponse {
 /// Serves embedded static files or falls back to `index.html` for SPA routing.
 async fn serve_embedded_file(path: &str) -> impl IntoResponse {
     let path_to_serve = path.trim_start_matches('/');
-    
+
     // Add assets/ prefix for JS and CSS files if not already present
-    let path_to_serve = if (path_to_serve.ends_with(".js") || path_to_serve.ends_with(".css")) 
-        && !path_to_serve.starts_with("assets/") {
+    let path_to_serve = if (path_to_serve.ends_with(".js") || path_to_serve.ends_with(".css"))
+        && !path_to_serve.starts_with("assets/")
+    {
         format!("assets/{}", path_to_serve)
     } else {
         path_to_serve.to_string()

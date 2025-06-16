@@ -57,7 +57,7 @@ export default function clientKeyRowItem(
   onRevokeClick?: (id: string) => void,
 ): JSX.Element {
   const menuOptions = [];
-  
+
   if (onCopyClick) {
     menuOptions.push({
       title: 'Copy ID',
@@ -75,9 +75,7 @@ export default function clientKeyRowItem(
   return (
     <RowItem key={item.client_id} $hasBorders={id === count}>
       <div className="row-item type">{item.name}</div>
-      <div className="row-item">
-        {formatTimestampToDate(item.created_at)}
-      </div>
+      <div className="row-item">{formatTimestampToDate(item.created_at)}</div>
       <div className="row-item pk">{truncateText(item.client_id)}</div>
       {menuOptions.length > 0 && (
         <div className="menu-dropdown">

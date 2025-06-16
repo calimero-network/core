@@ -165,7 +165,7 @@ export default function AddReleasePage() {
       // Check if transaction was successful
       const status = res?.status;
       const isSuccess = status && status !== 'Failure';
-      
+
       if (isSuccess) {
         setDeployStatus({
           title: 'Release added successfully',

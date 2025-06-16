@@ -48,15 +48,18 @@ impl KeyManager {
         // For client keys, validate permissions against root key
         if key.is_client_key() {
             if let Some(root_key_id) = key.root_key_id.as_ref() {
-                let root_key = self.get_key(root_key_id).await?
+                let root_key = self
+                    .get_key(root_key_id)
+                    .await?
                     .ok_or_else(|| StorageError::NotFound)?;
 
                 // Check each permission
                 for permission in &key.permissions {
                     if !root_key.has_permission(permission) {
-                        return Err(StorageError::ValidationError(
-                            format!("Root key does not have permission: {}", permission)
-                        ));
+                        return Err(StorageError::ValidationError(format!(
+                            "Root key does not have permission: {}",
+                            permission
+                        )));
                     }
                 }
             }
@@ -64,7 +67,7 @@ impl KeyManager {
 
         // Proceed with normal set operation
         let value = serialize(key)?;
-        
+
         // Check if key exists before the match
         let key_path = match key.key_type {
             KeyType::Root => format!("{}{}", prefixes::ROOT_KEY, key_id),
@@ -273,24 +276,24 @@ impl KeyManager {
     }
 
     /// Add a permission to a key, with validation against root key if it's a client key
-    pub async fn add_permission(
-        &self,
-        key_id: &str,
-        permission: &str,
-    ) -> Result<(), StorageError> {
-        let mut key = self.get_key(key_id).await?
+    pub async fn add_permission(&self, key_id: &str, permission: &str) -> Result<(), StorageError> {
+        let mut key = self
+            .get_key(key_id)
+            .await?
             .ok_or_else(|| StorageError::NotFound)?;
 
         // For client keys, verify against root key permissions
         if key.is_client_key() {
             if let Some(root_key_id) = key.root_key_id.as_ref() {
-                let root_key = self.get_key(root_key_id).await?
+                let root_key = self
+                    .get_key(root_key_id)
+                    .await?
                     .ok_or_else(|| StorageError::NotFound)?;
 
                 // Check if root key has this permission
                 if !root_key.has_permission(permission) {
                     return Err(StorageError::ValidationError(
-                        "Root key does not have this permission".to_string()
+                        "Root key does not have this permission".to_string(),
                     ));
                 }
             }
@@ -312,21 +315,26 @@ impl KeyManager {
         key_id: &str,
         permissions: Vec<String>,
     ) -> Result<(), StorageError> {
-        let mut key = self.get_key(key_id).await?
+        let mut key = self
+            .get_key(key_id)
+            .await?
             .ok_or_else(|| StorageError::NotFound)?;
 
         // For client keys, verify all permissions against root key
         if key.is_client_key() {
             if let Some(root_key_id) = key.root_key_id.as_ref() {
-                let root_key = self.get_key(root_key_id).await?
+                let root_key = self
+                    .get_key(root_key_id)
+                    .await?
                     .ok_or_else(|| StorageError::NotFound)?;
 
                 // Check each permission
                 for permission in &permissions {
                     if !root_key.has_permission(permission) {
-                        return Err(StorageError::ValidationError(
-                            format!("Root key does not have permission: {}", permission)
-                        ));
+                        return Err(StorageError::ValidationError(format!(
+                            "Root key does not have permission: {}",
+                            permission
+                        )));
                     }
                 }
             }
@@ -359,7 +367,11 @@ mod tests {
         let key_manager = KeyManager::new(storage);
 
         // Test root key operations
-        let root_key = Key::new_root_key_with_permissions("test_pub_key".to_string(), "near".to_string(), vec!["master".to_string()]);
+        let root_key = Key::new_root_key_with_permissions(
+            "test_pub_key".to_string(),
+            "near".to_string(),
+            vec!["master".to_string()],
+        );
 
         // Test set and get
         key_manager.set_key("test_key", &root_key).await.unwrap();

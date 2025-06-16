@@ -25,28 +25,37 @@ export default function App() {
         <Routes>
           {/* Redirect root to identity page */}
           <Route path="/" element={<Navigate to="/identity" replace />} />
-          
+
           {/* Identity routes */}
           <Route path="/identity" element={<Identity />} />
           <Route path="/identity/root-key" element={<AddRootKey />} />
-          <Route path="/identity/root-key/:providerId" element={<RootKeyProvidersWrapper />} />
-          
+          <Route
+            path="/identity/root-key/:providerId"
+            element={<RootKeyProvidersWrapper />}
+          />
+
           {/* Application routes */}
           <Route path="/applications" element={<ApplicationsPage />} />
-          <Route path="/applications/install" element={<InstallApplication />} />
+          <Route
+            path="/applications/install"
+            element={<InstallApplication />}
+          />
           <Route path="/applications/:id" element={<ApplicationDetails />} />
           <Route path="/publish-application" element={<PublishApplication />} />
-          <Route path="/applications/:id/add-release" element={<AddRelease />} />
-          
+          <Route
+            path="/applications/:id/add-release"
+            element={<AddRelease />}
+          />
+
           {/* Context routes */}
           <Route path="/contexts" element={<Contexts />} />
           <Route path="/contexts/start-context" element={<StartContext />} />
           <Route path="/contexts/join-context" element={<JoinContext />} />
           <Route path="/contexts/:id" element={<ContextDetails />} />
-          
+
           {/* Export route */}
           <Route path="/export" element={<Export />} />
-          
+
           {/* Catch all unknown routes and redirect to identity */}
           <Route path="*" element={<Navigate to="/identity" replace />} />
         </Routes>

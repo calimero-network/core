@@ -130,7 +130,9 @@ export default function ApplicationsPage() {
 
   const setApps = async () => {
     setErrorMessage('');
-    const fetchApplicationResponse = await apiClient.node().getInstalledApplications();
+    const fetchApplicationResponse = await apiClient
+      .node()
+      .getInstalledApplications();
 
     if (fetchApplicationResponse.error) {
       setErrorMessage(fetchApplicationResponse.error.message);

@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import Modal from 'react-bootstrap/Modal';
-import { RootKey, ClientKey, UpdateKeyPermissionsRequest } from '@calimero-network/calimero-client/lib/api/adminApi';
+import {
+  RootKey,
+  ClientKey,
+  UpdateKeyPermissionsRequest,
+} from '@calimero-network/calimero-client/lib/api/adminApi';
 import { apiClient } from '@calimero-network/calimero-client';
 import translations from '../../constants/en.global.json';
 import { ChevronDown, ChevronRight } from 'react-feather';
@@ -55,7 +59,7 @@ const SectionTitle = styled.div`
 `;
 
 const SectionContent = styled.div<{ $isOpen: boolean }>`
-  display: ${props => props.$isOpen ? 'block' : 'none'};
+  display: ${(props) => (props.$isOpen ? 'block' : 'none')};
   padding: 1rem;
   background-color: #282a2d;
 `;
@@ -66,7 +70,7 @@ const PermissionItem = styled.div`
   gap: 0.75rem;
   padding: 0.5rem;
 
-  input[type="checkbox"] {
+  input[type='checkbox'] {
     width: 1rem;
     height: 1rem;
     cursor: pointer;
@@ -92,8 +96,8 @@ const Button = styled.button<{ $primary?: boolean }>`
   border: none;
   font-size: 0.875rem;
   cursor: pointer;
-  background-color: ${props => props.$primary ? '#4cfafc' : '#2d3035'};
-  color: ${props => props.$primary ? '#000' : '#fff'};
+  background-color: ${(props) => (props.$primary ? '#4cfafc' : '#2d3035')};
+  color: ${(props) => (props.$primary ? '#000' : '#fff')};
 
   &:hover {
     opacity: 0.9;
@@ -142,8 +146,12 @@ const PERMISSION_GROUPS: PermissionGroup[] = [
     label: 'Admin Access',
     description: 'Full administrative access to all features',
     permissions: [
-      { id: 'admin', label: 'Do anything', description: 'Complete unrestricted access' }
-    ]
+      {
+        id: 'admin',
+        label: 'Do anything',
+        description: 'Complete unrestricted access',
+      },
+    ],
   },
   {
     id: 'application',
@@ -152,8 +160,8 @@ const PERMISSION_GROUPS: PermissionGroup[] = [
       { id: 'application', label: 'Full Application Access' },
       { id: 'application:list', label: 'List All Applications' },
       { id: 'application:install', label: 'Install Applications' },
-      { id: 'application:uninstall', label: 'Uninstall Applications' }
-    ]
+      { id: 'application:uninstall', label: 'Uninstall Applications' },
+    ],
   },
   {
     id: 'blob',
@@ -164,8 +172,8 @@ const PERMISSION_GROUPS: PermissionGroup[] = [
       { id: 'blob:add:stream', label: 'Add Blobs from Streams' },
       { id: 'blob:add:file', label: 'Add Blobs from Files' },
       { id: 'blob:add:url', label: 'Add Blobs from URLs' },
-      { id: 'blob:remove', label: 'Remove Blobs' }
-    ]
+      { id: 'blob:remove', label: 'Remove Blobs' },
+    ],
   },
   {
     id: 'context',
@@ -180,8 +188,8 @@ const PERMISSION_GROUPS: PermissionGroup[] = [
       { id: 'context:execute', label: 'Execute in Contexts' },
       { id: 'context:alias:create', label: 'Create Context Aliases' },
       { id: 'context:alias:delete', label: 'Delete Context Aliases' },
-      { id: 'context:alias:lookup', label: 'Lookup Context Aliases' }
-    ]
+      { id: 'context:alias:lookup', label: 'Lookup Context Aliases' },
+    ],
   },
   {
     id: 'keys',
@@ -190,9 +198,9 @@ const PERMISSION_GROUPS: PermissionGroup[] = [
       { id: 'keys', label: 'Full Key Access' },
       { id: 'keys:create', label: 'Create Keys' },
       { id: 'keys:list', label: 'List Keys' },
-      { id: 'keys:delete', label: 'Delete Keys' }
-    ]
-  }
+      { id: 'keys:delete', label: 'Delete Keys' },
+    ],
+  },
 ];
 
 const ContextPermissionSection = styled(PermissionSection)`
@@ -211,26 +219,30 @@ const ContextPermissionDetails = styled.div`
   color: #999;
 `;
 
-export default function PermissionsDialog({ 
-  show, 
-  onClose, 
-  selectedKey, 
-  onPermissionsUpdated 
+export default function PermissionsDialog({
+  show,
+  onClose,
+  selectedKey,
+  onPermissionsUpdated,
 }: PermissionsDialogProps) {
   const t = translations.keysTable;
   const [selectedPermissions, setSelectedPermissions] = useState<string[]>([]);
-  const [contextSpecificPermissions, setContextSpecificPermissions] = useState<ContextSpecificPermission[]>([]);
+  const [contextSpecificPermissions, setContextSpecificPermissions] = useState<
+    ContextSpecificPermission[]
+  >([]);
   const [error, setError] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   const [openSections, setOpenSections] = useState<string[]>([]);
 
-  const parseContextPermission = (permission: string): ContextSpecificPermission | null => {
+  const parseContextPermission = (
+    permission: string,
+  ): ContextSpecificPermission | null => {
     const match = permission.match(/^context\[([\w-]+),([\w-]+)\]$/);
     if (match && match[1] && match[2]) {
       return {
         contextId: match[1],
         userId: match[2],
-        fullPermission: permission
+        fullPermission: permission,
       };
     }
     return null;
@@ -240,51 +252,59 @@ export default function PermissionsDialog({
     if (selectedKey) {
       const key = selectedKey as unknown as KeyWithPermissions;
       const permissions = key.permissions || [];
-      
+
       // Separate context-specific permissions from regular permissions
-      const { contextPerms, regularPerms } = permissions.reduce((acc, permission) => {
-        const contextPerm = parseContextPermission(permission);
-        if (contextPerm) {
-          acc.contextPerms.push(contextPerm);
-        } else {
-          acc.regularPerms.push(permission);
-        }
-        return acc;
-      }, { contextPerms: [] as ContextSpecificPermission[], regularPerms: [] as string[] });
+      const { contextPerms, regularPerms } = permissions.reduce(
+        (acc, permission) => {
+          const contextPerm = parseContextPermission(permission);
+          if (contextPerm) {
+            acc.contextPerms.push(contextPerm);
+          } else {
+            acc.regularPerms.push(permission);
+          }
+          return acc;
+        },
+        {
+          contextPerms: [] as ContextSpecificPermission[],
+          regularPerms: [] as string[],
+        },
+      );
 
       setSelectedPermissions(regularPerms);
       setContextSpecificPermissions(contextPerms);
 
       // Open sections that have selected permissions
-      const sectionsToOpen = PERMISSION_GROUPS
-        .filter(group => 
-          regularPerms.some(p => p.startsWith(group.id)) || 
-          contextPerms.length > 0 && group.id === 'context'
-        )
-        .map(group => group.id);
+      const sectionsToOpen = PERMISSION_GROUPS.filter(
+        (group) =>
+          regularPerms.some((p) => p.startsWith(group.id)) ||
+          (contextPerms.length > 0 && group.id === 'context'),
+      ).map((group) => group.id);
       setOpenSections(sectionsToOpen);
     }
   }, [selectedKey]);
 
   const toggleSection = (sectionId: string) => {
-    setOpenSections(prev => 
+    setOpenSections((prev) =>
       prev.includes(sectionId)
-        ? prev.filter(id => id !== sectionId)
-        : [...prev, sectionId]
+        ? prev.filter((id) => id !== sectionId)
+        : [...prev, sectionId],
     );
   };
 
   const handlePermissionToggle = (permission: string) => {
-    setSelectedPermissions(prev => {
+    setSelectedPermissions((prev) => {
       const newPermissions = prev.includes(permission)
-        ? prev.filter(p => p !== permission)
+        ? prev.filter((p) => p !== permission)
         : [...prev, permission];
-      
-      if (newPermissions.length === 0 && contextSpecificPermissions.length === 0) {
+
+      if (
+        newPermissions.length === 0 &&
+        contextSpecificPermissions.length === 0
+      ) {
         setError(t.permissionsAtLeastOne);
         return prev;
       }
-      
+
       setError('');
       return newPermissions;
     });
@@ -292,36 +312,40 @@ export default function PermissionsDialog({
 
   const handleSave = async () => {
     if (!selectedKey) return;
-    
+
     setIsLoading(true);
     setError('');
 
     try {
       // Get the key_id from the selectedKey object
-      const keyId = (selectedKey as any).client_id || (selectedKey as any).key_id;
+      const keyId =
+        (selectedKey as any).client_id || (selectedKey as any).key_id;
       if (!keyId) {
         throw new Error('No key ID found');
       }
 
       const currentPermissions = (selectedKey as any).permissions || [];
-      
+
       // Combine regular and context-specific permissions
       const allSelectedPermissions = [
         ...selectedPermissions,
-        ...contextSpecificPermissions.map((p) => p.fullPermission)
+        ...contextSpecificPermissions.map((p) => p.fullPermission),
       ];
-      
-      const toAdd = allSelectedPermissions.filter((p: string) => !currentPermissions.includes(p));
-      const toRemove = currentPermissions.filter((p: string) => !allSelectedPermissions.includes(p));
-      
+
+      const toAdd = allSelectedPermissions.filter(
+        (p: string) => !currentPermissions.includes(p),
+      );
+      const toRemove = currentPermissions.filter(
+        (p: string) => !allSelectedPermissions.includes(p),
+      );
+
       const request: UpdateKeyPermissionsRequest = {};
       if (toAdd.length > 0) request.add = toAdd;
       if (toRemove.length > 0) request.remove = toRemove;
-      
-      const response = await apiClient.admin().setKeyPermissions(
-        keyId,
-        request
-      );
+
+      const response = await apiClient
+        .admin()
+        .setKeyPermissions(keyId, request);
 
       if (response.error) {
         setError(response.error.message);
@@ -342,11 +366,15 @@ export default function PermissionsDialog({
         <Title>{t.permissionsDialogTitle}</Title>
         {error && <ErrorMessage>{error}</ErrorMessage>}
         <PermissionList>
-          {PERMISSION_GROUPS.map(group => (
+          {PERMISSION_GROUPS.map((group) => (
             <PermissionSection key={group.id}>
               <SectionHeader onClick={() => toggleSection(group.id)}>
                 <SectionTitle>
-                  {openSections.includes(group.id) ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+                  {openSections.includes(group.id) ? (
+                    <ChevronDown size={20} />
+                  ) : (
+                    <ChevronRight size={20} />
+                  )}
                   <input
                     type="checkbox"
                     checked={selectedPermissions.includes(group.id)}
@@ -356,7 +384,7 @@ export default function PermissionsDialog({
                 </SectionTitle>
               </SectionHeader>
               <SectionContent $isOpen={openSections.includes(group.id)}>
-                {group.permissions.map(permission => (
+                {group.permissions.map((permission) => (
                   <PermissionItem key={permission.id}>
                     <input
                       type="checkbox"
@@ -381,11 +409,14 @@ export default function PermissionsDialog({
           {contextSpecificPermissions.length > 0 && (
             <ContextPermissionSection>
               <ContextPermissionHeader>
-                <h3 style={{ margin: 0, fontSize: '1rem' }}>Context-Specific Permissions</h3>
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>
+                  Context-Specific Permissions
+                </h3>
               </ContextPermissionHeader>
               {contextSpecificPermissions.map((permission, index) => (
                 <ContextPermissionDetails key={index}>
-                  Full access to context <strong>{permission.contextId}</strong> as user <strong>{permission.userId}</strong>
+                  Full access to context <strong>{permission.contextId}</strong>{' '}
+                  as user <strong>{permission.userId}</strong>
                 </ContextPermissionDetails>
               ))}
             </ContextPermissionSection>
@@ -400,4 +431,4 @@ export default function PermissionsDialog({
       </ModalWrapper>
     </Modal>
   );
-} 
+}

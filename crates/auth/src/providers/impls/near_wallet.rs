@@ -366,10 +366,10 @@ impl NearWalletProvider {
         // Note: We don't need to update last_used anymore since we removed that field
 
         // Save the updated key
-        let _ = self.key_manager
-            .set_key(key_id, &key)
-            .await
-            .map_err(|err| AuthError::StorageError(format!("Failed to update root key: {}", err)));
+        let _ =
+            self.key_manager.set_key(key_id, &key).await.map_err(|err| {
+                AuthError::StorageError(format!("Failed to update root key: {}", err))
+            });
 
         Ok(())
     }
@@ -433,7 +433,10 @@ impl NearWalletProvider {
         };
 
         let permissions = root_key.permissions.clone();
-        debug!("Returning permissions for key {}: {:?}", key_id, permissions);
+        debug!(
+            "Returning permissions for key {}: {:?}",
+            key_id, permissions
+        );
 
         Ok((key_id, permissions))
     }
@@ -685,7 +688,8 @@ impl AuthProvider for NearWalletProvider {
         );
 
         // Store the root key using KeyManager
-        let was_updated = self.key_manager
+        let was_updated = self
+            .key_manager
             .set_key(&key_id, &root_key)
             .await
             .map_err(|err| AuthError::StorageError(format!("Failed to store root key: {}", err)))?;

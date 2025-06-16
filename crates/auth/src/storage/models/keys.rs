@@ -1,8 +1,9 @@
+use axum::body::Body;
+use axum::http::Request;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+
 use crate::auth::permissions::{Permission, PermissionValidator};
-use axum::http::Request;
-use axum::body::Body;
 
 /// Type of key
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -58,11 +59,7 @@ impl Key {
     }
 
     /// Create a new client key
-    pub fn new_client_key(
-        root_key_id: String,
-        name: String,
-        permissions: Vec<String>,
-    ) -> Self {
+    pub fn new_client_key(root_key_id: String, name: String, permissions: Vec<String>) -> Self {
         Self {
             key_type: KeyType::Client,
             public_key: None,
@@ -164,10 +161,10 @@ impl Key {
     /// Validate permissions for a request
     pub fn validate_request_permissions(&self, request: &Request<Body>) -> bool {
         let validator = PermissionValidator::new();
-        
+
         // Get required permissions for this request
         let required_permissions = validator.determine_required_permissions(request);
-        
+
         // Validate against our permissions
         validator.validate_permissions(&self.permissions, &required_permissions)
     }

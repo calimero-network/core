@@ -56,7 +56,7 @@ export default function RootKeyProvidersWrapper() {
         }
 
         const foundProvider = response.data?.providers.find(
-          p => p.name.toLowerCase() === providerId?.toLowerCase()
+          (p) => p.name.toLowerCase() === providerId?.toLowerCase(),
         );
 
         if (!foundProvider) {
@@ -108,14 +108,12 @@ export default function RootKeyProvidersWrapper() {
   return (
     <ContentWrapper>
       <Wrapper>
-        {
-          provider.name === 'near_wallet' ? (
-            <NearWalletProvider provider={provider} />
-          ) : (
-            <div>Provider not supported</div>
-          )
-        }
+        {provider.name === 'near_wallet' ? (
+          <NearWalletProvider provider={provider} />
+        ) : (
+          <div>Provider not supported</div>
+        )}
       </Wrapper>
     </ContentWrapper>
   );
-} 
+}

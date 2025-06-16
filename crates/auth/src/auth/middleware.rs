@@ -5,12 +5,13 @@ use axum::extract::{Extension, Request};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
+use tracing::{debug, info, warn};
 
 use crate::auth::permissions::{
     ContextPermission, Permission, PermissionValidator, ResourceScope, UserScope,
 };
-use crate::{AuthError, server::AppState};
-use tracing::{debug, info, warn};
+use crate::server::AppState;
+use crate::AuthError;
 
 /// Forward authentication middleware for reverse proxy
 ///

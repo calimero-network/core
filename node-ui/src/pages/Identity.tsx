@@ -5,7 +5,10 @@ import { useNavigate } from 'react-router-dom';
 import PageContentWrapper from '../components/common/PageContentWrapper';
 import IdentityTable from '../components/identity/IdentityTable';
 import { apiClient } from '@calimero-network/calimero-client';
-import { ClientKey, RootKey } from '@calimero-network/calimero-client/lib/api/adminApi';
+import {
+  ClientKey,
+  RootKey,
+} from '@calimero-network/calimero-client/lib/api/adminApi';
 
 type KeyType = 'root' | 'client';
 type KeyStatus = 'active' | 'revoked';
@@ -48,17 +51,24 @@ export default function IdentityPage() {
     }
   }, [keyType, fetchRootKeys, fetchClientKeys]);
 
-  const activeRootKeys = rootKeys.filter(key => !key.revoked_at);
-  const revokedRootKeys = rootKeys.filter(key => key.revoked_at);
-  const activeClientKeys = clientKeys.filter(key => !key.revoked_at);
-  const revokedClientKeys = clientKeys.filter(key => key.revoked_at);
+  const activeRootKeys = rootKeys.filter((key) => !key.revoked_at);
+  const revokedRootKeys = rootKeys.filter((key) => key.revoked_at);
+  const activeClientKeys = clientKeys.filter((key) => !key.revoked_at);
+  const revokedClientKeys = clientKeys.filter((key) => key.revoked_at);
 
-  const currentKeys = keyType === 'root' 
-    ? (keyStatus === 'active' ? activeRootKeys : revokedRootKeys)
-    : (keyStatus === 'active' ? activeClientKeys : revokedClientKeys);
+  const currentKeys =
+    keyType === 'root'
+      ? keyStatus === 'active'
+        ? activeRootKeys
+        : revokedRootKeys
+      : keyStatus === 'active'
+        ? activeClientKeys
+        : revokedClientKeys;
 
-  const activeCount = keyType === 'root' ? activeRootKeys.length : activeClientKeys.length;
-  const revokedCount = keyType === 'root' ? revokedRootKeys.length : revokedClientKeys.length;
+  const activeCount =
+    keyType === 'root' ? activeRootKeys.length : activeClientKeys.length;
+  const revokedCount =
+    keyType === 'root' ? revokedRootKeys.length : revokedClientKeys.length;
 
   return (
     <FlexLayout>

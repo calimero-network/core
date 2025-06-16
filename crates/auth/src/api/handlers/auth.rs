@@ -24,18 +24,22 @@ pub fn success_response<T: Serialize>(data: T, headers: Option<HeaderMap>) -> Ap
         Json(serde_json::json!({
             "data": data,
             "error": null
-        }))
+        })),
     )
 }
 
-pub fn error_response(status: StatusCode, error: impl Into<String>, headers: Option<HeaderMap>) -> ApiResponse {
+pub fn error_response(
+    status: StatusCode,
+    error: impl Into<String>,
+    headers: Option<HeaderMap>,
+) -> ApiResponse {
     (
         status,
         headers.unwrap_or_default(),
         Json(serde_json::json!({
             "data": null,
             "error": error.into()
-        }))
+        })),
     )
 }
 
@@ -120,10 +124,7 @@ pub struct TokenResponse {
 
 impl TokenResponse {
     /// Create a new success token response
-    pub fn new(
-        access_token: String,
-        refresh_token: String,
-    ) -> Self {
+    pub fn new(access_token: String, refresh_token: String) -> Self {
         Self {
             access_token,
             refresh_token,
@@ -159,13 +160,21 @@ pub async fn token_handler(
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);
-            return error_response(StatusCode::UNAUTHORIZED, format!("Authentication failed: {}", err), None);
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("Authentication failed: {}", err),
+                None,
+            );
         }
     };
 
     // Ensure authentication was successful
     if !auth_response.is_valid {
-        return error_response(StatusCode::UNAUTHORIZED, "Authentication failed: Invalid credentials", None);
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "Authentication failed: Invalid credentials",
+            None,
+        );
     }
 
     let key_id = auth_response.key_id;
@@ -183,7 +192,11 @@ pub async fn token_handler(
         }
         Err(err) => {
             error!("Failed to generate tokens: {}", err);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate tokens", None)
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate tokens",
+                None,
+            )
         }
     }
 }
@@ -216,13 +229,22 @@ pub async fn refresh_token_handler(
     state: Extension<Arc<AppState>>,
     ValidatedJson(request): ValidatedJson<RefreshTokenRequest>,
 ) -> impl IntoResponse {
-    match state.0.token_generator.verify_token(&request.access_token).await {
+    match state
+        .0
+        .token_generator
+        .verify_token(&request.access_token)
+        .await
+    {
         Ok(_) => {
             return error_response(StatusCode::UNAUTHORIZED, "Access token still valid", None);
         }
         Err(err) => {
             if !err.to_string().contains("expired") {
-                return error_response(StatusCode::UNAUTHORIZED, format!("Invalid access token: {}", err), None);
+                return error_response(
+                    StatusCode::UNAUTHORIZED,
+                    format!("Invalid access token: {}", err),
+                    None,
+                );
             }
         }
     };
@@ -239,7 +261,11 @@ pub async fn refresh_token_handler(
         }
         Err(err) => {
             error!("Failed to refresh token: {}", err);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to refresh token: {}", err), None)
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to refresh token: {}", err),
+                None,
+            )
         }
     }
 }
@@ -270,11 +296,20 @@ pub async fn validate_handler(
     {
         let mut error_headers = HeaderMap::new();
         error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
-        return error_response(StatusCode::UNAUTHORIZED, "No Bearer token provided", Some(error_headers));
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "No Bearer token provided",
+            Some(error_headers),
+        );
     }
 
     // Validate the request using the headers
-    match state.0.auth_service.verify_token_from_headers(&headers).await {
+    match state
+        .0
+        .auth_service
+        .verify_token_from_headers(&headers)
+        .await
+    {
         Ok(auth_response) => {
             if !auth_response.is_valid {
                 return error_response(StatusCode::UNAUTHORIZED, "Unauthorized", None);
@@ -284,16 +319,13 @@ pub async fn validate_handler(
             let mut response_headers = HeaderMap::new();
 
             // Add user ID header
-            response_headers.insert(
-                "X-Auth-User",
-                auth_response.key_id.parse().unwrap()
-            );
+            response_headers.insert("X-Auth-User", auth_response.key_id.parse().unwrap());
 
             // Add permissions as a comma-separated list
             if !auth_response.permissions.is_empty() {
                 response_headers.insert(
                     "X-Auth-Permissions",
-                    auth_response.permissions.join(",").parse().unwrap()
+                    auth_response.permissions.join(",").parse().unwrap(),
                 );
             }
 
@@ -309,8 +341,12 @@ pub async fn validate_handler(
             } else {
                 error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
             }
-            
-            error_response(StatusCode::UNAUTHORIZED, format!("Invalid token: {}", err), Some(error_headers))
+
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("Invalid token: {}", err),
+                Some(error_headers),
+            )
         }
     }
 }
@@ -369,7 +405,11 @@ pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
         Ok(response) => success_response(response, None),
         Err(err) => {
             error!("Failed to generate challenge: {}", err);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate challenge", None)
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate challenge",
+                None,
+            )
         }
     }
 }
@@ -410,10 +450,13 @@ pub async fn revoke_token_handler(
                 request.client_id
             );
 
-            success_response(serde_json::json!({
-                    "success": true,
-                    "message": "Tokens revoked successfully"
-            }), None)
+            success_response(
+                serde_json::json!({
+                        "success": true,
+                        "message": "Tokens revoked successfully"
+                }),
+                None,
+            )
         }
         Err(err) => {
             error!(
@@ -421,7 +464,11 @@ pub async fn revoke_token_handler(
                 request.client_id, err
             );
 
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to revoke tokens: {}", err), None)
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to revoke tokens: {}", err),
+                None,
+            )
         }
     }
 }

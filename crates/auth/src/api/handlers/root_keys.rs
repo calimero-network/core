@@ -4,15 +4,14 @@ use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use serde::Deserialize;
-use tracing::error;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::error;
+use validator::Validate;
 
 use crate::api::handlers::auth::{error_response, success_response};
 use crate::server::AppState;
 use crate::storage::models::KeyType;
-use validator::Validate;
-use serde::Serialize;
 
 /// Key creation request
 #[derive(Debug, Deserialize, Validate)]
@@ -86,15 +85,29 @@ pub async fn create_key_handler(
         Some(provider) => provider,
         None => {
             error!("Failed to get provider: {}", request.auth_method);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Provider not found".to_string(), None);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Provider not found".to_string(),
+                None,
+            );
         }
     };
 
-    match provider.create_root_key(&request.public_key, &request.auth_method, request.provider_data).await {
-        Ok(was_updated) => success_response(serde_json::json!({
-            "status": true,
-            "message": if was_updated { "Key was updated" } else { "Key was created" }
-        }), None),
+    match provider
+        .create_root_key(
+            &request.public_key,
+            &request.auth_method,
+            request.provider_data,
+        )
+        .await
+    {
+        Ok(was_updated) => success_response(
+            serde_json::json!({
+                "status": true,
+                "message": if was_updated { "Key was updated" } else { "Key was created" }
+            }),
+            None,
+        ),
         Err(e) => {
             error!("Failed to create root key: {}", e);
             error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
@@ -121,22 +134,30 @@ pub async fn delete_key_handler(
     // First check if there's at least one active root key
     match state.0.key_manager.list_keys(KeyType::Root).await {
         Ok(keys) => {
-            let active_keys = keys.iter()
+            let active_keys = keys
+                .iter()
                 .filter(|(_, key)| key.is_root_key() && key.is_valid())
                 .count();
-            
+
             // If this is the last active key, prevent deletion
             if active_keys <= 1 {
                 error!("Cannot delete the last active root key");
-                return success_response(serde_json::json!({
-                    "status": false,
-                    "message": "Cannot delete the last active root key"
-                }), None)
+                return success_response(
+                    serde_json::json!({
+                        "status": false,
+                        "message": "Cannot delete the last active root key"
+                    }),
+                    None,
+                );
             }
         }
         Err(err) => {
             error!("Failed to list root keys: {}", err);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to check root keys".to_string(), None)
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to check root keys".to_string(),
+                None,
+            );
         }
     }
 
@@ -147,21 +168,36 @@ pub async fn delete_key_handler(
 
             // Store the updated key
             match state.0.key_manager.set_key(&key_id, &key).await {
-                Ok(_) => success_response(serde_json::json!({
-                    "key_id": key_id,
-                    "revoked_at": key.metadata.revoked_at,
-                }), None),
+                Ok(_) => success_response(
+                    serde_json::json!({
+                        "key_id": key_id,
+                        "revoked_at": key.metadata.revoked_at,
+                    }),
+                    None,
+                ),
                 Err(err) => {
                     error!("Failed to update root key: {}", err);
-                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to update root key".to_string(), None)
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to update root key".to_string(),
+                        None,
+                    )
                 }
             }
         }
         Ok(Some(_)) => error_response(StatusCode::BAD_REQUEST, "Not a root key".to_string(), None),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "Root key not found".to_string(), None),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            "Root key not found".to_string(),
+            None,
+        ),
         Err(err) => {
             error!("Failed to get root key: {}", err);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get root key".to_string(), None)
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get root key".to_string(),
+                None,
+            )
         }
     }
 }

@@ -118,7 +118,6 @@ impl ListApplicationsResponse {
     }
 }
 
-
 // TODO fix return so thats its without application key
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -10,7 +10,11 @@ import { useRPC } from '../hooks/useNear';
 import { TableOptions } from '../components/common/OptionsHeader';
 import { ContextDetails } from '../types/context';
 import { parseAppMetadata } from '../utils/metadata';
-import { Context, ContextClientKey, ContextStorage } from '@calimero-network/calimero-client/lib/api/nodeApi';
+import {
+  Context,
+  ContextClientKey,
+  ContextStorage,
+} from '@calimero-network/calimero-client/lib/api/nodeApi';
 import { User } from '@calimero-network/calimero-client/lib/api/contractApi';
 
 const initialOptions = [
@@ -38,7 +42,8 @@ export default function ContextDetailsPage() {
   const [contextDetailsError, setContextDetailsError] = useState<string | null>(
     null,
   );
-  const [contextClientKeys, setContextClientKeys] = useState<ContextClientKey[]>();
+  const [contextClientKeys, setContextClientKeys] =
+    useState<ContextClientKey[]>();
   const [contextClientKeysError, setContextClientKeysError] = useState<
     string | null
   >(null);
@@ -99,7 +104,9 @@ export default function ContextDetailsPage() {
 
         if (nodeContext.data) {
           const applicationMetadata = (
-            await apiClient.node().getInstalledApplicationDetails(nodeContext.data.applicationId)
+            await apiClient
+              .node()
+              .getInstalledApplicationDetails(nodeContext.data.applicationId)
           ).data?.metadata;
           const contextObject = await generateContextObjects(
             nodeContext.data,

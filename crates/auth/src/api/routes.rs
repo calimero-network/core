@@ -19,9 +19,7 @@ use crate::api::handlers::{
     asset_handler, health_handler, identity_handler, metrics_handler, providers_handler,
 };
 use crate::auth::middleware::forward_auth_middleware;
-use crate::auth::security::{
-    create_body_limit_layer, RateLimitLayer, create_security_headers,
-};
+use crate::auth::security::{create_body_limit_layer, create_security_headers, RateLimitLayer};
 use crate::config::AuthConfig;
 use crate::server::AppState;
 
@@ -64,9 +62,8 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
     let public_routes = Router::new()
         // Auth UI/Frontend
         .route("/login", get(login_handler))
-        .route("/assets/*path", get(asset_handler))  // Handle static assets
-        .route("/favicon.ico", get(asset_handler))   // Handle favicon explicitly
-        
+        .route("/assets/*path", get(asset_handler)) // Handle static assets
+        .route("/favicon.ico", get(asset_handler)) // Handle favicon explicitly
         // Public Auth API endpoints
         .route("/token", post(token_handler))
         .route("/challenge", get(challenge_handler))
@@ -80,12 +77,10 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
     let protected_routes = Router::new()
         // Token operations
         .route("/revoke", post(revoke_token_handler))
-        
         // Root key management
         .route("/keys", get(list_keys_handler))
         .route("/keys", post(create_key_handler))
         .route("/keys/:key_id", delete(delete_key_handler))
-        
         // Client key management
         .route("/keys/clients", get(list_clients_handler))
         .route("/client-key", post(generate_client_key_handler))
@@ -93,14 +88,11 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
             "/keys/:key_id/clients/:client_id",
             delete(delete_client_handler),
         )
-        
         // Permission management for both root and client keys
         .route(
             "/keys/:key_id/permissions",
-            get(get_key_permissions_handler)
-                .put(update_key_permissions_handler),
+            get(get_key_permissions_handler).put(update_key_permissions_handler),
         )
-        
         // Protected system endpoints
         .route("/identity", get(identity_handler))
         .route("/metrics", get(metrics_handler))
@@ -114,20 +106,20 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .layer(Extension(Arc::clone(&state)));
 
     // Add security layers from outermost to innermost
-    
+
     // 1. Add CORS layer first (outermost)
     router = router.layer(cors_layer);
-    
+
     // 2. Add security headers if enabled
     if config.security.headers.enabled {
         for header_layer in create_security_headers(&config.security.headers) {
             router = router.layer(header_layer);
         }
     }
-    
+
     // 3. Add rate limiting
     router = router.layer(RateLimitLayer::new(config.security.rate_limit.clone()));
-    
+
     // 4. Add body size limiting (innermost)
     router = router.layer(create_body_limit_layer(config.security.max_body_size));
 

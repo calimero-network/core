@@ -3,7 +3,10 @@ import styled from 'styled-components';
 import translations from '../../constants/en.global.json';
 import { ContentCard } from '../common/ContentCard';
 import ListTable from '../common/ListTable';
-import { RootKey, ClientKey } from '@calimero-network/calimero-client/lib/api/adminApi';
+import {
+  RootKey,
+  ClientKey,
+} from '@calimero-network/calimero-client/lib/api/adminApi';
 import ActionDialog from '../common/ActionDialog';
 import { apiClient } from '@calimero-network/calimero-client';
 import PermissionsDialog from './PermissionsDialog';
@@ -21,13 +24,13 @@ const TabsContainer = styled.div`
   display: flex;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  border-bottom: 1px solid #23262D;
+  border-bottom: 1px solid #23262d;
 `;
 
 const Tab = styled.button<{ $isActive: boolean }>`
   background: none;
   border: none;
-  color: ${props => props.$isActive ? '#4cfafc' : '#9c9da3'};
+  color: ${(props) => (props.$isActive ? '#4cfafc' : '#9c9da3')};
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
@@ -41,7 +44,8 @@ const Tab = styled.button<{ $isActive: boolean }>`
     left: 0;
     width: 100%;
     height: 2px;
-    background-color: ${props => props.$isActive ? '#4cfafc' : 'transparent'};
+    background-color: ${(props) =>
+      props.$isActive ? '#4cfafc' : 'transparent'};
   }
 
   &:hover {
@@ -57,7 +61,7 @@ const RowItem = styled.div`
   display: flex;
   align-items: center;
   padding: 0.75rem 1.5rem;
-  border-top: 1px solid #23262D;
+  border-top: 1px solid #23262d;
   font-size: 0.875rem;
   line-height: 1.25rem;
 
@@ -115,8 +119,12 @@ export default function IdentityTable({
   const t = translations.identityPage;
   const [showRevokeDialog, setShowRevokeDialog] = useState(false);
   const [showPermissionsDialog, setShowPermissionsDialog] = useState(false);
-  const [selectedKey, setSelectedKey] = useState<RootKey | ClientKey | null>(null);
-  const [revokeStatus, setRevokeStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [selectedKey, setSelectedKey] = useState<RootKey | ClientKey | null>(
+    null,
+  );
+  const [revokeStatus, setRevokeStatus] = useState<
+    'idle' | 'success' | 'error'
+  >('idle');
 
   const handleRevoke = async (key: RootKey | ClientKey) => {
     setSelectedKey(key);
@@ -127,10 +135,14 @@ export default function IdentityTable({
     if (!selectedKey) return;
 
     let response;
-    if ('public_key' in selectedKey) { // RootKey
+    if ('public_key' in selectedKey) {
+      // RootKey
       response = await apiClient.admin().revokeRootKey(selectedKey.key_id);
-    } else { // ClientKey
-      response = await apiClient.admin().revokeClientKey(selectedKey.root_key_id, selectedKey.client_id);
+    } else {
+      // ClientKey
+      response = await apiClient
+        .admin()
+        .revokeClientKey(selectedKey.root_key_id, selectedKey.client_id);
     }
 
     if (response.error) {
@@ -166,20 +178,20 @@ export default function IdentityTable({
     const options = [
       {
         title: 'Copy Key',
-        onClick: () => onCopyKeyClick(getKeyIdentifier(key))
-      }
+        onClick: () => onCopyKeyClick(getKeyIdentifier(key)),
+      },
     ];
 
     if (keyStatus === 'active') {
       options.push(
         {
           title: 'Manage Permissions',
-          onClick: () => handlePermissions(key)
+          onClick: () => handlePermissions(key),
         },
         {
           title: 'Revoke Key',
-          onClick: () => handleRevoke(key)
-        }
+          onClick: () => handleRevoke(key),
+        },
       );
     }
 
@@ -203,28 +215,28 @@ export default function IdentityTable({
       >
         <TableWrapper>
           <TabsContainer>
-            <Tab 
-              $isActive={keyType === 'root'} 
+            <Tab
+              $isActive={keyType === 'root'}
               onClick={() => onKeyTypeChange('root')}
             >
               Root Keys
             </Tab>
-            <Tab 
-              $isActive={keyType === 'client'} 
+            <Tab
+              $isActive={keyType === 'client'}
               onClick={() => onKeyTypeChange('client')}
             >
               Client Keys
             </Tab>
           </TabsContainer>
           <TabsContainer>
-            <Tab 
-              $isActive={keyStatus === 'active'} 
+            <Tab
+              $isActive={keyStatus === 'active'}
               onClick={() => onKeyStatusChange('active')}
             >
               Active ({activeKeysCount})
             </Tab>
-            <Tab 
-              $isActive={keyStatus === 'revoked'} 
+            <Tab
+              $isActive={keyStatus === 'revoked'}
               onClick={() => onKeyStatusChange('revoked')}
             >
               Revoked ({revokedKeysCount})
@@ -248,7 +260,9 @@ export default function IdentityTable({
                 </RowItem>
               )}
               roundTopItem={true}
-              noItemsText={keyStatus === 'active' ? 'No active keys' : 'No revoked keys'}
+              noItemsText={
+                keyStatus === 'active' ? 'No active keys' : 'No revoked keys'
+              }
               error={errorMessage}
             />
           </FlexWrapper>

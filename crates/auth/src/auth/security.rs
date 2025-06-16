@@ -1,19 +1,18 @@
-use std::time::Duration;
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::boxed::Box;
 use std::future::Future;
 use std::pin::Pin;
-use std::boxed::Box;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
-use axum::{
-    body::Body,
-    http::{Request, Response, header::HeaderValue},
-    response::Response as AxumResponse,
-};
-use tower::{Layer, Service};
+use axum::body::Body;
+use axum::http::header::HeaderValue;
+use axum::http::{Request, Response};
+use axum::response::Response as AxumResponse;
 use dashmap::DashMap;
+use tower::{Layer, Service};
 
-use crate::config::{SecurityHeadersConfig, RateLimitConfig};
+use crate::config::{RateLimitConfig, SecurityHeadersConfig};
 
 /// Rate limiting state shared between middleware instances
 #[derive(Clone)]
@@ -34,17 +33,20 @@ impl RateLimitState {
         let now = std::time::Instant::now();
         let mut is_limited = false;
 
-        self.counters.entry(key.to_string()).and_modify(|(count, last_reset)| {
-            // Reset counter if minute has elapsed
-            if now.duration_since(*last_reset) >= Duration::from_secs(60) {
-                *count = 1;
-                *last_reset = now;
-            } else if *count >= self.config.rate_limit_rpm {
-                is_limited = true;
-            } else {
-                *count += 1;
-            }
-        }).or_insert((1, now));
+        self.counters
+            .entry(key.to_string())
+            .and_modify(|(count, last_reset)| {
+                // Reset counter if minute has elapsed
+                if now.duration_since(*last_reset) >= Duration::from_secs(60) {
+                    *count = 1;
+                    *last_reset = now;
+                } else if *count >= self.config.rate_limit_rpm {
+                    is_limited = true;
+                } else {
+                    *count += 1;
+                }
+            })
+            .or_insert((1, now));
 
         is_limited
     }
@@ -88,7 +90,8 @@ where
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
@@ -104,7 +107,7 @@ where
             .to_string();
 
         let is_limited = self.state.is_rate_limited(&client_id);
-        
+
         if is_limited {
             return Box::pin(async {
                 Ok(AxumResponse::builder()
@@ -115,18 +118,18 @@ where
         }
 
         let future = self.inner.call(request);
-        Box::pin(async move {
-            future.await
-        })
+        Box::pin(async move { future.await })
     }
 }
 
 /// Creates security headers middleware based on configuration
-pub fn create_security_headers(config: &SecurityHeadersConfig) -> Vec<tower_http::set_header::SetResponseHeaderLayer<HeaderValue>> {
+pub fn create_security_headers(
+    config: &SecurityHeadersConfig,
+) -> Vec<tower_http::set_header::SetResponseHeaderLayer<HeaderValue>> {
     use axum::http::header;
-    
+
     let mut headers = Vec::new();
-    
+
     if !config.enabled {
         return headers;
     }
@@ -151,14 +154,14 @@ pub fn create_security_headers(config: &SecurityHeadersConfig) -> Vec<tower_http
             value,
         ));
     }
-    
+
     if let Ok(value) = HeaderValue::from_str(&config.content_type_options) {
         headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
             value,
         ));
     }
-    
+
     if let Ok(value) = HeaderValue::from_str(&config.referrer_policy) {
         headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::REFERRER_POLICY,
@@ -188,4 +191,4 @@ pub fn create_security_headers(config: &SecurityHeadersConfig) -> Vec<tower_http
 /// Creates request body size limiting middleware
 pub fn create_body_limit_layer(max_size: usize) -> tower_http::limit::RequestBodyLimitLayer {
     tower_http::limit::RequestBodyLimitLayer::new(max_size)
-} 
+}

@@ -133,7 +133,6 @@ export default function AddRootKeyPage() {
     fetchProviders();
   }, []);
 
-
   const handleProviderClick = async (provider: Provider) => {
     navigate(`/identity/root-key/${provider.name.toLowerCase()}`);
   };

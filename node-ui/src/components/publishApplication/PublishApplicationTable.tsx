@@ -3,7 +3,11 @@ import styled from 'styled-components';
 import translations from '../../constants/en.global.json';
 import { ContentCard } from '../common/ContentCard';
 import { Account } from '@near-wallet-selector/core';
-import { PackageInfo, ReleaseInfo, DeployStatus } from '../../pages/PublishApplication';
+import {
+  PackageInfo,
+  ReleaseInfo,
+  DeployStatus,
+} from '../../pages/PublishApplication';
 import { AddPackageForm } from './AddPackageForm';
 import { AddReleaseForm } from './AddReleaseForm';
 import { ConnectWalletAccountCard } from './ConnectWalletAccountCard';

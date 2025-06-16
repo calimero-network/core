@@ -47,9 +47,12 @@ pub async fn get_key_permissions_handler(
     match state.0.key_manager.get_key(&key_id).await {
         Ok(Some(key)) => {
             if key.is_valid() {
-                success_response(PermissionResponse {
-                    permissions: key.permissions,
-                }, None)
+                success_response(
+                    PermissionResponse {
+                        permissions: key.permissions,
+                    },
+                    None,
+                )
             } else {
                 error_response(StatusCode::NOT_FOUND, "Key is revoked", None)
             }
@@ -57,7 +60,11 @@ pub async fn get_key_permissions_handler(
         Ok(None) => error_response(StatusCode::NOT_FOUND, "Key not found", None),
         Err(err) => {
             error!("Failed to get key permissions: {}", err);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get key permissions", None)
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get key permissions",
+                None,
+            )
         }
     }
 }
@@ -83,7 +90,7 @@ pub async fn update_key_permissions_handler(
 ) -> impl IntoResponse {
     // Get current key
     let key_result = state.0.key_manager.get_key(&key_id).await;
-    
+
     match key_result {
         Ok(Some(mut key)) => {
             if !key.is_valid() {
@@ -112,7 +119,7 @@ pub async fn update_key_permissions_handler(
                 return error_response(
                     StatusCode::BAD_REQUEST,
                     "Key must have at least one permission",
-                    None
+                    None,
                 );
             }
 
@@ -134,7 +141,11 @@ pub async fn update_key_permissions_handler(
                     match key.add_permission(&perm) {
                         Ok(_) => updated = true,
                         Err(e) => {
-                            return error_response(StatusCode::BAD_REQUEST, format!("Invalid permission format: {}", e), None);
+                            return error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("Invalid permission format: {}", e),
+                                None,
+                            );
                         }
                     }
                 }
@@ -145,9 +156,12 @@ pub async fn update_key_permissions_handler(
                 match state.0.key_manager.set_key(&key_id, &key).await {
                     Ok(_) => {
                         info!("Updated permissions for key: {}", key_id);
-                        success_response(PermissionResponse {
-                            permissions: key.permissions,
-                        }, None)
+                        success_response(
+                            PermissionResponse {
+                                permissions: key.permissions,
+                            },
+                            None,
+                        )
                     }
                     Err(StorageError::ValidationError(msg)) => {
                         error!("Permission validation failed: {}", msg);
@@ -155,14 +169,21 @@ pub async fn update_key_permissions_handler(
                     }
                     Err(err) => {
                         error!("Failed to update key permissions: {}", err);
-                        error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to update key permissions", None)
+                        error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to update key permissions",
+                            None,
+                        )
                     }
                 }
             } else {
                 // No changes were made
-                success_response(PermissionResponse {
-                    permissions: key.permissions,
-                }, None)
+                success_response(
+                    PermissionResponse {
+                        permissions: key.permissions,
+                    },
+                    None,
+                )
             }
         }
         Ok(None) => error_response(StatusCode::NOT_FOUND, "Key not found", None),

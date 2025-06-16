@@ -6,14 +6,14 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use {base64, rand, uuid};
 use sha2::{Digest, Sha256};
-use hex;
+use {base64, hex, rand, uuid};
 
-use crate::{api::handlers::auth::ChallengeResponse, storage::{models::KeyType, Key}};
+use crate::api::handlers::auth::ChallengeResponse;
 use crate::config::JwtConfig;
 use crate::secrets::SecretManager;
-use crate::storage::{KeyManager, Storage};
+use crate::storage::models::KeyType;
+use crate::storage::{Key, KeyManager, Storage};
 use crate::{AuthError, AuthResponse};
 
 /// Token type enum
@@ -226,8 +226,7 @@ impl TokenManager {
             &validation,
         ) {
             Ok(token_data) => Ok(token_data.claims),
-            Err(err) => {
-              match err.kind() {
+            Err(err) => match err.kind() {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
                     Err(AuthError::InvalidToken("Token has expired".to_string()))
                 }
@@ -235,8 +234,7 @@ impl TokenManager {
                     Err(AuthError::InvalidToken(format!("Malformed token: {}", err)))
                 }
                 _ => Err(AuthError::InvalidToken(err.to_string())),
-              }
-            }
+            },
         }
     }
 
@@ -351,9 +349,7 @@ impl TokenManager {
 
         match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
-            KeyType::Root => {
-                self.generate_token_pair(claims.sub, key.permissions).await
-            },
+            KeyType::Root => self.generate_token_pair(claims.sub, key.permissions).await,
             // For client tokens, rotate the key ID
             KeyType::Client => {
                 // Generate new client ID
@@ -374,7 +370,8 @@ impl TokenManager {
                     .map_err(|e| AuthError::StorageError(e.to_string()))?;
 
                 // Generate new tokens with the new ID
-                self.generate_token_pair(new_client_id, key.permissions).await
+                self.generate_token_pair(new_client_id, key.permissions)
+                    .await
             }
         }
     }

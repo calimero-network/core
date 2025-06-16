@@ -2,8 +2,8 @@ mod types;
 mod validator;
 
 pub use types::{
-    AddBlobPermission, ApplicationPermission, BlobPermission, ContextPermission, HttpMethod,
-    KeyPermission, AdminPermission, Permission, ResourceScope, UserScope,
+    AddBlobPermission, AdminPermission, ApplicationPermission, BlobPermission, ContextPermission,
+    HttpMethod, KeyPermission, Permission, ResourceScope, UserScope,
 };
 pub use validator::PermissionValidator;
 

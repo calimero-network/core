@@ -25,7 +25,9 @@ export default function ApplicationDetailsPage() {
   useEffect(() => {
     const fetchApplicationData = async () => {
       if (id) {
-        const fetchApplicationDetailsResponse = await apiClient.node().getInstalledApplicationDetails(id);
+        const fetchApplicationDetailsResponse = await apiClient
+          .node()
+          .getInstalledApplicationDetails(id);
 
         let appMetadata: AppMetadata | null = null;
         if (fetchApplicationDetailsResponse.error) {

@@ -181,11 +181,11 @@ export default function PublishApplicationPage() {
           },
         ],
       });
-      
+
       // Check if transaction was successful
       const status = res?.status;
       const isSuccess = status && status !== 'Failure';
-      
+
       if (isSuccess) {
         setDeployStatus({
           title: 'Package added successfully',
@@ -242,7 +242,7 @@ export default function PublishApplicationPage() {
       // Check if transaction was successful
       const status = res?.status;
       const isSuccess = status && status !== 'Failure';
-      
+
       if (isSuccess) {
         setDeployStatus({
           title: 'Release added successfully',

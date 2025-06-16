@@ -314,7 +314,11 @@ fn default_csp_self() -> Vec<String> {
 }
 
 fn default_csp_script_src() -> Vec<String> {
-    vec!["'self'".to_string(), "'unsafe-inline'".to_string(), "'unsafe-eval'".to_string()]
+    vec![
+        "'self'".to_string(),
+        "'unsafe-inline'".to_string(),
+        "'unsafe-eval'".to_string(),
+    ]
 }
 
 fn default_csp_style_src() -> Vec<String> {

@@ -13,7 +13,7 @@ export const handleWalletRedirect = (): WalletRedirectParams => {
   // NEAR wallet parameters
   if (searchParams.has('account_id')) {
     params.accountId = searchParams.get('account_id') || undefined;
-    
+
     // Handle all_keys parameter which contains the public key
     const allKeys = searchParams.get('all_keys');
     if (allKeys) {
@@ -43,4 +43,4 @@ export const handleWalletRedirect = (): WalletRedirectParams => {
   // }
 
   return params;
-}; 
+};

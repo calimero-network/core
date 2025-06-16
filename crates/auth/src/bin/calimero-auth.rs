@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use calimero_auth::auth::token::TokenManager;
 use calimero_auth::config::{
-    load_config, AuthConfig, JwtConfig, NearWalletConfig, SecurityConfig, StorageConfig,
-    RateLimitConfig, SecurityHeadersConfig, ContentSecurityPolicyConfig,
+    load_config, AuthConfig, ContentSecurityPolicyConfig, JwtConfig, NearWalletConfig,
+    RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig,
 };
 use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
@@ -69,7 +69,11 @@ fn create_default_config() -> AuthConfig {
                 csp: ContentSecurityPolicyConfig {
                     enabled: true,
                     default_src: vec!["'self'".to_string()],
-                    script_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string(), "'unsafe-eval'".to_string()],
+                    script_src: vec![
+                        "'self'".to_string(),
+                        "'unsafe-inline'".to_string(),
+                        "'unsafe-eval'".to_string(),
+                    ],
                     style_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
                 },
             },

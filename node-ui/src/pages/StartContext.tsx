@@ -46,7 +46,9 @@ export default function StartContextPage() {
       setShowStatusModal(true);
       return;
     }
-    const startContextResponse = await apiClient.node().createContext(appId, protocol);
+    const startContextResponse = await apiClient
+      .node()
+      .createContext(appId, protocol);
     if (startContextResponse.error) {
       setStartContextStatus({
         title: t.startContextErrorTitle,
@@ -69,7 +71,8 @@ export default function StartContextPage() {
       return null;
     }
 
-    const response = await apiClient.node()
+    const response = await apiClient
+      .node()
       .installApplication(
         application.appId,
         application.version,
