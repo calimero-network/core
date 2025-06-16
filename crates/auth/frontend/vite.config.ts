@@ -4,7 +4,7 @@ import { resolve } from 'path';
 
 export default defineConfig({
   plugins: [react()],
-  base: '/auth/login/',
+  base: '/public/',
   build: {
     // Generate a single HTML file with inlined assets where possible
     assetsInlineLimit: 100000, // 100kb

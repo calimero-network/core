@@ -1,6 +1,6 @@
 import React from 'react';
 import styled from '@emotion/styled';
-import { Provider } from '../../types/auth';
+import { Provider } from '@calimero-network/calimero-client/lib/api/authApi';
 
 const Container = styled.div`
   width: 100%;

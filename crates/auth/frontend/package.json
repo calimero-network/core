@@ -13,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@calimero-network/calimero-client": "link:../../../../calimero-client-js",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
     "@near-wallet-selector/core": "^9.0.1",
