@@ -9,16 +9,16 @@ use tracing::info;
 use crate::config::AuthConfig;
 use crate::storage::{KeyManager, Storage};
 use crate::utils::AuthMetrics;
-// use crate::AuthService;
+use crate::AuthService;
 
 /// Application state
 pub struct AppState {
     /// Authentication service
-    // pub auth_service: AuthService,
+    pub auth_service: AuthService,
     /// Storage backend
     pub storage: Arc<dyn Storage>,
     /// Key manager for domain operations
-    // pub key_manager: KeyManager,
+    pub key_manager: KeyManager,
     /// Token generator
     // pub token_generator: TokenManager,
     /// Configuration
@@ -39,18 +39,18 @@ pub struct AppState {
 ///
 /// * `Result<(), eyre::Error>` - Success or error
 pub async fn start_server(
-    // auth_service: AuthService,
+    auth_service: AuthService,
     storage: Arc<dyn Storage>,
     config: AuthConfig,
 ) -> eyre::Result<()> {
     let metrics = AuthMetrics::new();
-    //let key_manager = KeyManager::new(Arc::clone(&storage));
+    let key_manager = KeyManager::new(Arc::clone(&storage));
 
     // Create the application state
     let state = Arc::new(AppState {
-        // auth_service: auth_service.clone(),
+        auth_service: auth_service.clone(),
         storage,
-        // key_manager,
+        key_manager,
         // token_generator: auth_service.get_token_manager().clone(),
         config: config.clone(),
         metrics,
