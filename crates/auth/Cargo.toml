@@ -1,0 +1,81 @@
+[package]
+name = "calimero-auth"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/calimero-network/core"
+description = "Forward Authentication Service for Calimero Network"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true, features = ["util", "limit"] }
+tower-http = { workspace = true, features = ["cors", "trace", "catch-panic", "limit", "set-header"] }
+axum = { workspace = true, features = ["macros"] }
+# hyper = { version = "1.1", features = ["full"] }
+tower-sessions.workspace = true
+
+# Static file embedding
+rust-embed = { workspace = true, features = ["mime-guess"] }
+
+# Database
+rocksdb = { workspace = true }
+# redis = { version = "0.24.0", features = ["tokio-comp", "connection-manager"], optional = true }
+# sqlx = { version = "0.7.3", features = ["runtime-tokio-rustls", "macros", "postgres", "sqlite", "any"], optional = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+borsh = { workspace = true }
+
+# Authentication & Cryptography
+jsonwebtoken = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+bs58 = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+hex = { workspace = true }
+aes-gcm = "0.10.3"
+validator = { version = "0.20.0", features = ["derive"] }
+axum-extra = { version = "0.10.1", features = ["cookie", "cookie-signed", "cookie-private"] }
+
+# Web3 & Wallet Authentication
+web3 = { workspace = true }
+near-primitives = { workspace = true }
+near-jsonrpc-client = { workspace = true }
+near-crypto = { workspace = true }
+starknet = { workspace = true }
+ic-agent = { workspace = true, optional = true }
+
+# Utilities
+ctor = "0.1"
+eyre.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+chrono = { workspace = true, features = ["serde"] }
+url = "2.4"
+config = { version = "0.13", features = ["yaml"] }
+lazy_static = "1.4"
+async-trait = "0.1.88"
+# derive_more = "0.99"
+clap = { workspace = true, features = ["derive", "env"] }
+parking_lot = { workspace = true }
+
+# Calimero dependencies
+calimero-primitives = { path = "../primitives" }
+calimero-store = { path = "../store" }
+
+toml = "0.8"
+
+# New dependencies
+regex = "1.10.2"
+dashmap = "5.5.3"  # Fast concurrent HashMap
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.11"
+tempfile = "3.8"
+reqwest = { workspace = true, features = ["json"] }
