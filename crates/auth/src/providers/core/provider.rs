@@ -6,8 +6,7 @@ use axum::http::Request;
 use eyre::Result;
 use serde_json::Value;
 
-// use crate::api::handlers::auth::TokenRequest;
-use crate::storage::models::Key;
+use crate::api::handlers::auth::TokenRequest;
 use crate::{AuthError, AuthResponse};
 
 /// Authentication provider trait
@@ -37,9 +36,7 @@ pub trait AuthProvider: Send + Sync {
     /// Convert a TokenRequest to provider-specific auth data JSON
     ///
     /// This method allows providers to extract and format data according to their needs
-    fn prepare_auth_data(&self, token_request: &str) -> Result<Value, AuthError> {
-        todo!()
-    }
+    fn prepare_auth_data(&self, token_request: &TokenRequest) -> Result<Value, AuthError>;
 
     /// Create a verifier from parsed auth data
     ///

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use axum::http::HeaderMap;
 use serde_json::Value;
 
-// use crate::api::handlers::auth::TokenRequest;
-// use crate::auth::token::TokenManager;
+use crate::api::handlers::auth::TokenRequest;
+use crate::auth::token::TokenManager;
 use crate::providers::core::provider_data_registry;
 use crate::{AuthError, AuthProvider, AuthResponse};
 
@@ -15,7 +15,7 @@ use crate::{AuthError, AuthProvider, AuthResponse};
 #[derive(Clone)]
 pub struct AuthService {
     providers: Arc<Vec<Box<dyn AuthProvider>>>,
-    // token_manager: TokenManager,
+    token_manager: TokenManager,
 }
 
 impl AuthService {
@@ -25,12 +25,11 @@ impl AuthService {
     ///
     /// * `providers` - The authentication providers to use
     /// * `token_manager` - The JWT token manager
-    pub fn new(providers: Vec<Box<dyn AuthProvider>>, token_manager: String) -> Self {
-        // Self {
-        //     providers: Arc::new(providers),
-        //     // token_manager,
-        // }
-        todo!()
+    pub fn new(providers: Vec<Box<dyn AuthProvider>>, token_manager: TokenManager) -> Self {
+        Self {
+            providers: Arc::new(providers),
+            token_manager,
+        }
     }
 
     /// Get the token manager
@@ -38,9 +37,9 @@ impl AuthService {
     /// # Returns
     ///
     /// * `&TokenManager` - Reference to the token manager
-    // pub fn get_token_manager(&self) -> &TokenManager {
-    //     &self.token_manager
-    // }
+    pub fn get_token_manager(&self) -> &TokenManager {
+        &self.token_manager
+    }
 
     /// Verify tokens from headers directly
     ///
@@ -57,9 +56,7 @@ impl AuthService {
         &self,
         headers: &HeaderMap,
     ) -> Result<AuthResponse, AuthError> {
-        // Use the token manager directly
-        // self.token_manager.verify_token_from_headers(headers).await
-        todo!()
+        self.token_manager.verify_token_from_headers(headers).await
     }
 
     /// Authenticate a token request
@@ -75,30 +72,29 @@ impl AuthService {
     /// * `Result<AuthResponse, AuthError>` - The result of the verification
     pub async fn authenticate_token_request(
         &self,
-        token_request: &str,
+        token_request: &TokenRequest,
     ) -> Result<AuthResponse, AuthError> {
-        // let auth_method = &token_request.auth_method;
+        let auth_method = &token_request.auth_method;
 
-        // // Find a provider that supports this auth method
-        // let provider = self
-        //     .providers
-        //     .iter()
-        //     .find(|p| p.supports_method(auth_method))
-        //     .ok_or_else(|| {
-        //         AuthError::InvalidRequest(format!(
-        //             "Unsupported authentication method: {}",
-        //             auth_method
-        //         ))
-        //     })?;
+        // Find a provider that supports this auth method
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.supports_method(auth_method))
+            .ok_or_else(|| {
+                AuthError::InvalidRequest(format!(
+                    "Unsupported authentication method: {}",
+                    auth_method
+                ))
+            })?;
 
-        // // The provider prepares the auth data based on the token request
-        // // Each provider implements its own logic for this, so we don't need special cases here
-        // let auth_data_json = provider.prepare_auth_data(token_request)?;
+        // The provider prepares the auth data based on the token request
+        // Each provider implements its own logic for this, so we don't need special cases here
+        let auth_data_json = provider.prepare_auth_data(token_request)?;
 
-        // // Use the auth data registry to parse auth data to the correct type
-        // self.authenticate_with_data(auth_method, auth_data_json)
-        //     .await
-        todo!()
+        // Use the auth data registry to parse auth data to the correct type
+        self.authenticate_with_data(auth_method, auth_data_json)
+            .await
     }
 
     /// Authenticate using parsed auth data

@@ -3,7 +3,7 @@ use axum::http::Request;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-// use crate::auth::permissions::{Permission, PermissionValidator};
+use crate::auth::permissions::{Permission, PermissionValidator};
 
 /// Type of key
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -103,50 +103,50 @@ impl Key {
             return false;
         }
 
-        // // Convert required permission string to Permission enum
-        // if let Some(required_perm) = Permission::from_str(required) {
-        //     println!("Required permission: {:?}", required_perm);
-        //     // Root keys have special handling
-        //     if self.is_root_key() {
-        //         println!("Root key");
-        //         // Root keys automatically get admin access
-        //         if required == "admin" || required.starts_with("admin:") {
-        //             return true;
-        //         }
-        //     }
+        // Convert required permission string to Permission enum
+        if let Some(required_perm) = Permission::from_str(required) {
+            println!("Required permission: {:?}", required_perm);
+            // Root keys have special handling
+            if self.is_root_key() {
+                println!("Root key");
+                // Root keys automatically get admin access
+                if required == "admin" || required.starts_with("admin:") {
+                    return true;
+                }
+            }
 
-        //     println!("Permissions: {:?}", self.permissions);
+            println!("Permissions: {:?}", self.permissions);
 
-        //     // Check if we have master permission
-        //     if self.permissions.iter().any(|p| p == "admin") {
-        //         return true;
-        //     }
+            // Check if we have master permission
+            if self.permissions.iter().any(|p| p == "admin") {
+                return true;
+            }
 
-        //     // Convert our permissions to Permission enums and check each
-        //     for perm_str in &self.permissions {
-        //         if let Some(held_perm) = Permission::from_str(perm_str) {
-        //             if held_perm.satisfies(&required_perm) {
-        //                 return true;
-        //             }
-        //         }
-        //     }
-        // }
+            // Convert our permissions to Permission enums and check each
+            for perm_str in &self.permissions {
+                if let Some(held_perm) = Permission::from_str(perm_str) {
+                    if held_perm.satisfies(&required_perm) {
+                        return true;
+                    }
+                }
+            }
+        }
         false
     }
 
     /// Add a permission to the key
     pub fn add_permission(&mut self, permission: &str) -> Result<(), String> {
-        // // Validate permission format
-        // if Permission::from_str(permission).is_none() {
-        //     return Err("Invalid permission format".to_string());
-        // }
+        // Validate permission format
+        if Permission::from_str(permission).is_none() {
+            return Err("Invalid permission format".to_string());
+        }
 
-        // // Check for duplicates
-        // if self.permissions.contains(&permission.to_string()) {
-        //     return Ok(());
-        // }
+        // Check for duplicates
+        if self.permissions.contains(&permission.to_string()) {
+            return Ok(());
+        }
 
-        // self.permissions.push(permission.to_string());
+        self.permissions.push(permission.to_string());
         Ok(())
     }
 
@@ -157,14 +157,13 @@ impl Key {
 
     /// Validate permissions for a request
     pub fn validate_request_permissions(&self, request: &Request<Body>) -> bool {
-        // let validator = PermissionValidator::new();
+        let validator = PermissionValidator::new();
 
-        // // Get required permissions for this request
-        // let required_permissions = validator.determine_required_permissions(request);
+        // Get required permissions for this request
+        let required_permissions = validator.determine_required_permissions(request);
 
-        // // Validate against our permissions
-        // validator.validate_permissions(&self.permissions, &required_permissions)
-        true
+        // Validate against our permissions
+        validator.validate_permissions(&self.permissions, &required_permissions)
     }
 
     /// Check if this key can grant a permission to another key
