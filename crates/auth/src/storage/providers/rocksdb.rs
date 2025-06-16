@@ -25,14 +25,38 @@ impl RocksDBStorage {
     ///
     /// * `Result<Self, StorageError>` - The new instance
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
+        // Ensure the directory exists
+        std::fs::create_dir_all(&path)
+            .map_err(|e| StorageError::StorageError(format!("Failed to create DB directory: {e}")))?;
+
         let mut options = rocksdb::Options::default();
         options.create_if_missing(true);
         options.create_missing_column_families(true);
+        
+        // Durability and performance options
+        options.set_use_fsync(true);  // Forces fsync on writes
+        options.set_atomic_flush(true);  // Ensures atomic flushes across column families
+        options.set_manual_wal_flush(false);  // Let RocksDB handle WAL flushing
+        options.set_keep_log_file_num(10);  // Keep more WAL files
+        options.set_write_buffer_size(64 * 1024 * 1024);  // 64MB write buffer
+        options.set_max_write_buffer_number(3);
+        
+        // Additional performance tuning
+        options.set_bytes_per_sync(1048576); // 1MB
+        options.set_wal_bytes_per_sync(524288); // 512KB
+        options.set_compaction_readahead_size(2 * 1024 * 1024); // 2MB
 
         let db = DB::open(&options, path)
             .map_err(|e| StorageError::StorageError(format!("Failed to open RocksDB: {e}")))?;
 
         Ok(Self { db })
+    }
+}
+
+impl Drop for RocksDBStorage {
+    fn drop(&mut self) {
+        // Ensure all writes are flushed before closing
+        let _ = self.db.flush();
     }
 }
 
@@ -106,8 +130,8 @@ impl StorageProvider for RocksDBProvider {
 
     fn create_storage(&self, config: &StorageConfig) -> Result<Arc<dyn Storage>, StorageError> {
         if let StorageConfig::RocksDB { path } = config {
-            let storage =
-                RocksDBStorage::new(path).map_err(|e| StorageError::StorageError(e.to_string()))?;
+            let storage = RocksDBStorage::new(path)
+                .map_err(|e| StorageError::StorageError(e.to_string()))?;
             Ok(Arc::new(storage))
         } else {
             Err(StorageError::StorageError(

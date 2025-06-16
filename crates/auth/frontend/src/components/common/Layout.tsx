@@ -1,36 +1,28 @@
 import React from 'react';
-import styled from '@emotion/styled';
+import styled from 'styled-components';
 
 const Container = styled.div`
   max-width: 600px;
   margin: 0 auto;
-  padding: 40px 20px;
+  padding: ${({ theme }) => theme.spacing.xl} ${({ theme }) => theme.spacing.lg};
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-`;
-
-const Header = styled.header`
-  text-align: center;
-  margin-bottom: 40px;
-`;
-
-const Title = styled.h1`
-  font-size: 24px;
-  font-weight: 600;
-  color: #333;
-  margin: 0;
+  background-color: ${({ theme }) => theme.colors.background.primary};
 `;
 
 const Content = styled.main`
   flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 `;
 
 const Footer = styled.footer`
-  margin-top: 40px;
+  margin-top: ${({ theme }) => theme.spacing.xl};
   text-align: center;
-  font-size: 14px;
-  color: #777;
+  font-size: ${({ theme }) => theme.typography.small.size};
+  color: ${({ theme }) => theme.colors.text.secondary};
 `;
 
 interface LayoutProps {
@@ -40,10 +32,6 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <Container>
-      <Header>
-        <Title>Calimero Authentication</Title>
-      </Header>
-      
       <Content>
         {children}
       </Content>

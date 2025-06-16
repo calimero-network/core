@@ -3,11 +3,11 @@ import styled from 'styled-components';
 import translations from '../../constants/en.global.json';
 import { ContentCard } from '../common/ContentCard';
 import { Account } from '@near-wallet-selector/core';
-import { PackageInfo, ReleaseInfo } from '../../pages/PublishApplication';
+import { PackageInfo, ReleaseInfo, DeployStatus } from '../../pages/PublishApplication';
 import { AddPackageForm } from './AddPackageForm';
 import { AddReleaseForm } from './AddReleaseForm';
 import { ConnectWalletAccountCard } from './ConnectWalletAccountCard';
-import StatusModal, { ModalContent } from '../common/StatusModal';
+import StatusModal from '../common/StatusModal';
 import Button from '../common/Button';
 
 const FlexWrapper = styled.div`
@@ -20,39 +20,34 @@ const FlexWrapper = styled.div`
 `;
 
 interface PublishApplicationTableProps {
-  addWalletAccount: () => void;
-  navigateToApplications: () => void;
-  deployerAccount: Account | undefined;
-  showStatusModal: boolean;
-  closeModal: () => void;
-  deployStatus: ModalContent;
   packageInfo: PackageInfo;
   setPackageInfo: React.Dispatch<React.SetStateAction<PackageInfo>>;
-  handleFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  ipfsPath: string;
-  fileHash: string;
-  packages: PackageInfo[];
   releaseInfo: ReleaseInfo;
   setReleaseInfo: React.Dispatch<React.SetStateAction<ReleaseInfo>>;
   fileInputRef: React.RefObject<HTMLInputElement>;
+  handleFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  deployerAccount: Account | undefined;
+  addWalletAccount: () => void;
   publishApplication: () => void;
+  showStatusModal: boolean;
+  closeStatusModal: () => void;
+  deployStatus: DeployStatus;
   isLoading: boolean;
 }
+
 export default function PublishApplicationTable({
-  addWalletAccount,
-  navigateToApplications,
-  deployerAccount,
-  showStatusModal,
-  closeModal,
-  deployStatus,
   packageInfo,
   setPackageInfo,
-  handleFileChange,
-  fileHash,
   releaseInfo,
   setReleaseInfo,
   fileInputRef,
+  handleFileChange,
+  deployerAccount,
+  addWalletAccount,
   publishApplication,
+  showStatusModal,
+  closeStatusModal,
+  deployStatus,
   isLoading,
 }: PublishApplicationTableProps) {
   const t = translations.applicationsPage.publishApplication;
@@ -60,11 +55,10 @@ export default function PublishApplicationTable({
   return (
     <ContentCard
       headerBackText={t.title}
-      headerOnBackClick={navigateToApplications}
-      isOverflow={true}
+      headerOnBackClick={() => window.history.back()}
     >
       <StatusModal
-        closeModal={closeModal}
+        closeModal={closeStatusModal}
         show={showStatusModal}
         modalContent={deployStatus}
       />
@@ -82,7 +76,7 @@ export default function PublishApplicationTable({
             />
             <AddReleaseForm
               handleFileChange={handleFileChange}
-              fileHash={fileHash}
+              fileHash={releaseInfo.hash}
               releaseInfo={releaseInfo}
               setReleaseInfo={setReleaseInfo}
               fileInputRef={fileInputRef}

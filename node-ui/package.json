@@ -16,6 +16,7 @@
     "prettier:check": "exec prettier . --check"
   },
   "dependencies": {
+    "@calimero-network/calimero-client": "link:../../../calimero-client-js",
     "@dfinity/identity": "^2.0.0",
     "@floating-ui/react-native": "^0.10.4",
     "@heroicons/react": "^2.1.3",
@@ -46,6 +47,7 @@
     "react-bootstrap": "^2.10.2",
     "react-copy-to-clipboard": "^5.1.0",
     "react-dom": "^18.3.0",
+    "react-feather": "^2.0.10",
     "react-router-dom": "^6.22.3",
     "react-tooltip": "^5.26.3",
     "starknet": "^6.11.0",

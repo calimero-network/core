@@ -1,7 +1,7 @@
 import React from 'react';
 import styled from 'styled-components';
 import { truncateHash } from '../../utils/displayFunctions';
-import { Application } from '../../api/dataSource/NodeDataSource';
+import { Application } from '../../pages/Applications';
 import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
 import MenuIconDropdown from '../common/MenuIconDropdown';
 

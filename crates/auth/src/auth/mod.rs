@@ -1,7 +1,7 @@
 pub mod middleware;
 pub mod service;
 pub mod token;
-// pub mod security;
+pub mod security;
 pub mod permissions;
 pub mod validation;
 

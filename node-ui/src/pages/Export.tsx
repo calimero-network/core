@@ -5,8 +5,7 @@ import styled from 'styled-components';
 import ExportCard from '../components/exportIdentity/ExportCard';
 import translations from '../constants/en.global.json';
 import { ModalContentItem } from '../components/common/StatusModalItem';
-import apiClient from '../api';
-import { useServerDown } from '../context/ServerDownContext';
+import { apiClient } from '@calimero-network/calimero-client';
 
 const ExportWrapper = styled.div`
   display: flex;
@@ -22,7 +21,6 @@ const ExportWrapper = styled.div`
 `;
 export default function ExportPage() {
   const t = translations.exportIdentityPage;
-  const { showServerDownPopup } = useServerDown();
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [exportStatus, setExportStatus] = useState<ModalContentItem>({
     title: '',
@@ -32,7 +30,7 @@ export default function ExportPage() {
 
   const exportIdentity = async () => {
     try {
-      const response = await apiClient(showServerDownPopup).node().getDidList();
+      const response = await apiClient.node().getDidList();
       const identity = JSON.stringify(response?.data?.did, null, 2);
       setExportStatus({
         title: t.exportSuccessTitle,

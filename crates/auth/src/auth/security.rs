@@ -3,32 +3,17 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::future::Future;
 use std::pin::Pin;
+use std::boxed::Box;
 
 use axum::{
     body::Body,
-    http::Request,
-    response::Response,
+    http::{Request, Response, header::HeaderValue},
+    response::Response as AxumResponse,
 };
 use tower::{Layer, Service};
-use tokio::sync::Mutex;
 use dashmap::DashMap;
-use futures::future::BoxFuture;
 
-/// Rate limit configuration
-#[derive(Clone)]
-pub struct RateLimitConfig {
-    pub requests_per_minute: u32,
-    pub burst_size: u32,
-}
-
-impl Default for RateLimitConfig {
-    fn default() -> Self {
-        Self {
-            requests_per_minute: 50,
-            burst_size: 5,
-        }
-    }
-}
+use crate::config::{SecurityHeadersConfig, RateLimitConfig};
 
 /// Rate limiting state shared between middleware instances
 #[derive(Clone)]
@@ -54,7 +39,7 @@ impl RateLimitState {
             if now.duration_since(*last_reset) >= Duration::from_secs(60) {
                 *count = 1;
                 *last_reset = now;
-            } else if *count >= self.config.requests_per_minute {
+            } else if *count >= self.config.rate_limit_rpm {
                 is_limited = true;
             } else {
                 *count += 1;
@@ -98,12 +83,12 @@ pub struct RateLimitService<S> {
 
 impl<S> Service<Request<Body>> for RateLimitService<S>
 where
-    S: Service<Request<Body>, Response = Response> + Send + 'static,
+    S: Service<Request<Body>, Response = AxumResponse<Body>> + Send + 'static,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
@@ -122,7 +107,7 @@ where
         
         if is_limited {
             return Box::pin(async {
-                Ok(Response::builder()
+                Ok(AxumResponse::builder()
                     .status(429)
                     .body(Body::from("Rate limit exceeded"))
                     .unwrap())
@@ -136,35 +121,71 @@ where
     }
 }
 
-/// Creates security headers middleware
-pub fn create_security_headers() -> Vec<tower_http::set_header::SetResponseHeaderLayer<&'static str>> {
+/// Creates security headers middleware based on configuration
+pub fn create_security_headers(config: &SecurityHeadersConfig) -> Vec<tower_http::set_header::SetResponseHeaderLayer<HeaderValue>> {
     use axum::http::header;
     
-    vec![
-        tower_http::set_header::SetResponseHeaderLayer::overriding(
+    let mut headers = Vec::new();
+    
+    if !config.enabled {
+        return headers;
+    }
+
+    // Add HSTS header
+    let hsts_value = if config.hsts_include_subdomains {
+        format!("max-age={}; includeSubDomains", config.hsts_max_age)
+    } else {
+        format!("max-age={}", config.hsts_max_age)
+    };
+    if let Ok(value) = HeaderValue::from_str(&hsts_value) {
+        headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::STRICT_TRANSPORT_SECURITY,
-            "max-age=31536000; includeSubDomains",
-        ),
-        tower_http::set_header::SetResponseHeaderLayer::overriding(
+            value,
+        ));
+    }
+
+    // Add other security headers
+    if let Ok(value) = HeaderValue::from_str(&config.frame_options) {
+        headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::X_FRAME_OPTIONS,
-            "DENY",
-        ),
-        tower_http::set_header::SetResponseHeaderLayer::overriding(
+            value,
+        ));
+    }
+    
+    if let Ok(value) = HeaderValue::from_str(&config.content_type_options) {
+        headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
-            "nosniff",
-        ),
-        tower_http::set_header::SetResponseHeaderLayer::overriding(
+            value,
+        ));
+    }
+    
+    if let Ok(value) = HeaderValue::from_str(&config.referrer_policy) {
+        headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(
             header::REFERRER_POLICY,
-            "strict-origin-when-cross-origin",
-        ),
-        tower_http::set_header::SetResponseHeaderLayer::overriding(
-            header::CONTENT_SECURITY_POLICY,
-            "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';",
-        ),
-    ]
+            value,
+        ));
+    }
+
+    // Add CSP if enabled
+    if config.csp.enabled {
+        let csp_value = format!(
+            "default-src {}; script-src {}; style-src {};",
+            config.csp.default_src.join(" "),
+            config.csp.script_src.join(" "),
+            config.csp.style_src.join(" "),
+        );
+        if let Ok(value) = HeaderValue::from_str(&csp_value) {
+            headers.push(tower_http::set_header::SetResponseHeaderLayer::overriding(
+                header::CONTENT_SECURITY_POLICY,
+                value,
+            ));
+        }
+    }
+
+    headers
 }
 
 /// Creates request body size limiting middleware
-pub fn create_body_limit_layer() -> tower_http::limit::RequestBodyLimitLayer {
-    tower_http::limit::RequestBodyLimitLayer::new(1024 * 1024) // 1MB limit
+pub fn create_body_limit_layer(max_size: usize) -> tower_http::limit::RequestBodyLimitLayer {
+    tower_http::limit::RequestBodyLimitLayer::new(max_size)
 } 

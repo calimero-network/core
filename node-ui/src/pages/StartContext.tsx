@@ -6,8 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { ContentCard } from '../components/common/ContentCard';
 import StartContextCard from '../components/context/startContext/StartContextCard';
 import translations from '../constants/en.global.json';
-import apiClient from '../api/index';
-import { useServerDown } from '../context/ServerDownContext';
+import { apiClient } from '@calimero-network/calimero-client';
 
 export interface ContextApplication {
   appId: string;
@@ -20,7 +19,6 @@ export interface ContextApplication {
 export default function StartContextPage() {
   const t = translations.startContextPage;
   const navigate = useNavigate();
-  const { showServerDownPopup } = useServerDown();
   const [application, setApplication] = useState<ContextApplication>({
     appId: '',
     name: '',
@@ -48,9 +46,7 @@ export default function StartContextPage() {
       setShowStatusModal(true);
       return;
     }
-    const startContextResponse = await apiClient(showServerDownPopup)
-      .node()
-      .createContexts(appId, argumentsJson, protocol);
+    const startContextResponse = await apiClient.node().createContext(appId, protocol);
     if (startContextResponse.error) {
       setStartContextStatus({
         title: t.startContextErrorTitle,
@@ -73,8 +69,7 @@ export default function StartContextPage() {
       return null;
     }
 
-    const response = await apiClient(showServerDownPopup)
-      .node()
+    const response = await apiClient.node()
       .installApplication(
         application.appId,
         application.version,

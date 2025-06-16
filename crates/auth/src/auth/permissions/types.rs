@@ -56,7 +56,7 @@ impl fmt::Display for UserScope {
 
 /// Master permission that grants all access
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MasterPermission;
+pub struct AdminPermission;
 
 /// Application-related permissions
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,7 +110,7 @@ pub enum ContextPermission {
 /// Represents all possible permissions in the system
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Permission {
-    Master(MasterPermission),
+    Admin(AdminPermission),
     Application(ApplicationPermission),
     Blob(BlobPermission),
     Context(ContextPermission),
@@ -132,7 +132,7 @@ impl Permission {
         let parts: Vec<&str> = s.split(&[':', '[', ']', '<', '>']).collect();
 
         match parts.get(0)? {
-            &"master" => Some(Permission::Master(MasterPermission)),
+            &"admin" => Some(Permission::Admin(AdminPermission)),
             &"application" => {
                 let scope = if let Some(ids) = parts.get(1) {
                     ResourceScope::Specific(ids.split(',').map(String::from).collect())
@@ -249,7 +249,7 @@ impl Permission {
     /// Convert a Permission enum to its string representation
     pub fn to_string(&self) -> String {
         match self {
-            Permission::Master(_) => "master".to_string(),
+            Permission::Admin(_) => "admin".to_string(),
             Permission::Application(app_perm) => match app_perm {
                 ApplicationPermission::All => "application".to_string(),
                 ApplicationPermission::List(scope) => format!("application:list{}", scope),
@@ -315,7 +315,7 @@ impl Permission {
     pub fn satisfies(&self, required: &Permission) -> bool {
         match (self, required) {
             // Master permission satisfies everything
-            (Permission::Master(_), _) => true,
+            (Permission::Admin(_), _) => true,
 
             // Application permissions
             (Permission::Application(ApplicationPermission::All), Permission::Application(_)) => {
@@ -472,8 +472,8 @@ mod tests {
     fn test_permission_parsing() {
         // Test master permission
         assert_eq!(
-            Permission::from_str("master"),
-            Some(Permission::Master(MasterPermission))
+            Permission::from_str("admin"),
+            Some(Permission::Admin(AdminPermission))
         );
 
         // Test application permissions
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn test_permission_satisfaction() {
         // Test master permission
-        let master = Permission::Master(MasterPermission);
+        let master = Permission::Admin(AdminPermission);
         let app_list = Permission::Application(ApplicationPermission::List(ResourceScope::Global));
         assert!(master.satisfies(&app_list));
 

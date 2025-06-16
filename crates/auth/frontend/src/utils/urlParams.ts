@@ -19,15 +19,19 @@ export const handleUrlParams = () => {
 };
 
 export const getStoredUrlParam = (key: string): string | null => {
-  return localStorage.getItem(JSON.parse(key));
+  const value = localStorage.getItem(key);
+  if (value) {
+    return JSON.parse(value);
+  }
+  return null;
 };
 
 export const clearStoredUrlParams = () => {
   // Get all localStorage keys
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key) {
-      localStorage.removeItem(key);
+    if (key !== 'access-token' && key !== 'refresh-token') {
+      localStorage.removeItem(key!);
     }
   }
 }; 

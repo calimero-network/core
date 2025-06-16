@@ -156,30 +156,169 @@ impl Default for CorsConfig {
 /// Security configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
-    /// Rate limit configuration (requests per minute)
-    #[serde(default = "default_rate_limit")]
-    pub rate_limit: u32,
+    /// Rate limiting settings
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 
     /// Maximum request body size in bytes
     #[serde(default = "default_max_body_size")]
     pub max_body_size: usize,
+
+    /// Security headers configuration
+    #[serde(default)]
+    pub headers: SecurityHeadersConfig,
+}
+
+/// Rate limit configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Requests per minute
+    #[serde(default = "default_rate_limit_rpm")]
+    pub rate_limit_rpm: u32,
+
+    /// Burst size for rate limiting
+    #[serde(default = "default_rate_limit_burst")]
+    pub rate_limit_burst: u32,
+}
+
+/// Security headers configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityHeadersConfig {
+    /// Whether security headers are enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// HSTS max age in seconds
+    #[serde(default = "default_hsts_max_age")]
+    pub hsts_max_age: u32,
+
+    /// Whether to include subdomains in HSTS
+    #[serde(default = "default_true")]
+    pub hsts_include_subdomains: bool,
+
+    /// X-Frame-Options value
+    #[serde(default = "default_frame_options")]
+    pub frame_options: String,
+
+    /// X-Content-Type-Options value
+    #[serde(default = "default_content_type_options")]
+    pub content_type_options: String,
+
+    /// Referrer-Policy value
+    #[serde(default = "default_referrer_policy")]
+    pub referrer_policy: String,
+
+    /// Content Security Policy configuration
+    #[serde(default)]
+    pub csp: ContentSecurityPolicyConfig,
+}
+
+/// Content Security Policy configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentSecurityPolicyConfig {
+    /// Whether CSP is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Default source directives
+    #[serde(default = "default_csp_self")]
+    pub default_src: Vec<String>,
+
+    /// Script source directives
+    #[serde(default = "default_csp_script_src")]
+    pub script_src: Vec<String>,
+
+    /// Style source directives
+    #[serde(default = "default_csp_style_src")]
+    pub style_src: Vec<String>,
 }
 
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            rate_limit: default_rate_limit(),
+            rate_limit: RateLimitConfig::default(),
             max_body_size: default_max_body_size(),
+            headers: SecurityHeadersConfig::default(),
         }
     }
 }
 
-fn default_rate_limit() -> u32 {
-    50 // 50 requests per minute
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            rate_limit_rpm: default_rate_limit_rpm(),
+            rate_limit_burst: default_rate_limit_burst(),
+        }
+    }
+}
+
+impl Default for SecurityHeadersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hsts_max_age: default_hsts_max_age(),
+            hsts_include_subdomains: true,
+            frame_options: default_frame_options(),
+            content_type_options: default_content_type_options(),
+            referrer_policy: default_referrer_policy(),
+            csp: ContentSecurityPolicyConfig::default(),
+        }
+    }
+}
+
+impl Default for ContentSecurityPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_src: default_csp_self(),
+            script_src: default_csp_script_src(),
+            style_src: default_csp_style_src(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_rate_limit_rpm() -> u32 {
+    100 // 100 requests per minute
+}
+
+fn default_rate_limit_burst() -> u32 {
+    10 // Burst size of 10
 }
 
 fn default_max_body_size() -> usize {
     1024 * 1024 // 1MB
+}
+
+fn default_hsts_max_age() -> u32 {
+    31536000 // 1 year in seconds
+}
+
+fn default_frame_options() -> String {
+    "DENY".to_string()
+}
+
+fn default_content_type_options() -> String {
+    "nosniff".to_string()
+}
+
+fn default_referrer_policy() -> String {
+    "strict-origin-when-cross-origin".to_string()
+}
+
+fn default_csp_self() -> Vec<String> {
+    vec!["'self'".to_string()]
+}
+
+fn default_csp_script_src() -> Vec<String> {
+    vec!["'self'".to_string(), "'unsafe-inline'".to_string(), "'unsafe-eval'".to_string()]
+}
+
+fn default_csp_style_src() -> Vec<String> {
+    vec!["'self'".to_string(), "'unsafe-inline'".to_string()]
 }
 
 /// Load the configuration from a file

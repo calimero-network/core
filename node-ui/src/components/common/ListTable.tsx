@@ -11,7 +11,8 @@ const ListWrapper = styled.div<ListWrapperProps>`
   flex-direction: column;
   flex: 1;
   width: 100%;
-  max-height: calc(100vh - 18rem);
+  max-height: 100%;
+  overflow: hidden;
 
   .table-description {
     padding-left: 1rem;
@@ -59,7 +60,8 @@ const ListWrapper = styled.div<ListWrapperProps>`
   }
 
   .list-items {
-    overflow-y: scroll;
+    max-height: 800px;
+    overflow-y: auto;
   }
 
   .container {

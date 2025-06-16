@@ -11,7 +11,9 @@ use axum::response::IntoResponse;
 use axum::Json;
 use rust_embed::RustEmbed;
 use serde_json::json;
+use tracing::info;
 
+use crate::api::handlers::auth::success_response;
 use crate::server::AppState;
 
 /// Embed the contents of the auth frontend build directory into the binary
@@ -53,7 +55,7 @@ pub async fn identity_handler(state: Extension<Arc<AppState>>) -> impl IntoRespo
         "providers": state.0.auth_service.providers().iter().map(|p| p.name()).collect::<Vec<_>>(),
     });
 
-    (StatusCode::OK, Json(response))
+    success_response(response, None)
 }
 
 /// Metrics handler
@@ -69,8 +71,7 @@ pub async fn identity_handler(state: Extension<Arc<AppState>>) -> impl IntoRespo
 /// * `impl IntoResponse` - The response
 pub async fn metrics_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     let metrics = state.0.metrics.get_metrics().await;
-
-    (StatusCode::OK, Json(metrics))
+    success_response(metrics, None)
 }
 
 /// Health check handler
@@ -88,19 +89,13 @@ pub async fn health_handler(state: Extension<Arc<AppState>>) -> impl IntoRespons
     // Check the connection to the storage backend
     let storage_ok = state.0.storage.exists("health-check").await.is_ok();
 
-    let status = if storage_ok {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-
     let response = json!({
-        "status": if status == StatusCode::OK { "healthy" } else { "unhealthy" },
+        "status": if storage_ok { "healthy" } else { "unhealthy" },
         "storage": storage_ok,
         "uptime_seconds": state.0.metrics.get_uptime_seconds(),
     });
 
-    (status, Json(response))
+    success_response(response, None)
 }
 
 /// Providers information handler
@@ -136,7 +131,7 @@ pub async fn providers_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
         "count": providers.len(),
     });
 
-    (StatusCode::OK, Json(response))
+    success_response(response, None)
 }
 
 /// Asset handler for serving static files from the React build
@@ -146,36 +141,25 @@ pub async fn asset_handler(Path(path): Path<String>) -> impl IntoResponse {
 
 /// Serves embedded static files or falls back to `index.html` for SPA routing.
 async fn serve_embedded_file(path: &str) -> impl IntoResponse {
-    // Clean up the path, removing any leading slashes and /auth prefix
-    let clean_path = path.trim_start_matches('/').trim_start_matches("auth/");
-
-    // For empty paths or root requests, serve index.html
-    let path_to_serve = if clean_path.is_empty() {
-        "index.html"
+    let path_to_serve = path.trim_start_matches('/');
+    
+    // Add assets/ prefix for JS and CSS files if not already present
+    let path_to_serve = if (path_to_serve.ends_with(".js") || path_to_serve.ends_with(".css")) 
+        && !path_to_serve.starts_with("assets/") {
+        format!("assets/{}", path_to_serve)
     } else {
-        clean_path
+        path_to_serve.to_string()
     };
 
-    // Special case for favicon.ico at root
-    let path_to_serve = if path_to_serve == "favicon.ico" {
-        "assets/favicon.ico"
-    } else {
-        path_to_serve
-    };
-
-    // Debug logging
-    tracing::debug!("Attempting to serve file: {}", path_to_serve);
+    info!("Serving file: {}", path_to_serve);
 
     // Attempt to serve the requested file
-    if let Some(file) = AuthUiStaticFiles::get(path_to_serve) {
+    if let Some(file) = AuthUiStaticFiles::get(&path_to_serve) {
         // Get the file extension and determine content type
         let content_type = if path_to_serve.ends_with(".js") {
-            // For ES modules, we need to set the correct MIME type
-            if path_to_serve.contains(".esm.") || path_to_serve.contains(".module.") {
-                "text/javascript; charset=utf-8"
-            } else {
-                "application/javascript; charset=utf-8"
-            }
+            "application/javascript; charset=utf-8"
+        } else if path_to_serve.ends_with(".esm") {
+            "text/javascript; charset=utf-8"
         } else if path_to_serve.ends_with(".css") {
             "text/css; charset=utf-8"
         } else if path_to_serve.ends_with(".html") {
@@ -189,6 +173,8 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
         } else {
             "application/octet-stream"
         };
+
+        info!("Content type: {}", content_type);
 
         // Set appropriate headers
         let headers = [
@@ -204,11 +190,10 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
             ),
         ];
 
-        return (StatusCode::OK, headers, file.data.into_owned()).into_response();
+        return (StatusCode::OK, headers, file.data).into_response();
     }
 
-    // Debug logging for not found files
-    tracing::debug!("File not found: {}", path_to_serve);
+    info!("File not found: {}", path_to_serve);
 
     // Fallback to index.html for SPA routing if it's not a direct asset request
     if !path_to_serve.starts_with("assets/") && path_to_serve != "index.html" {
@@ -216,10 +201,10 @@ async fn serve_embedded_file(path: &str) -> impl IntoResponse {
             // Convert the file content to a string
             let html_content = String::from_utf8_lossy(&index_file.data);
 
-            // Replace the asset paths to use the /auth prefix
+            // Replace the asset paths to use the /public prefix
             let modified_html = html_content
-                .replace("=\"/assets/", "=\"/auth/assets/")
-                .replace("=\"/favicon.ico", "=\"/auth/favicon.ico");
+                .replace("=\"/assets/", "=\"/public/assets/")
+                .replace("=\"/favicon.ico", "=\"/public/favicon.ico");
 
             return (
                 StatusCode::OK,

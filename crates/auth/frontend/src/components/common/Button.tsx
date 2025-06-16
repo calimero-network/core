@@ -1,53 +1,77 @@
 import React from 'react';
-import styled from '@emotion/styled';
+import styled, { css } from 'styled-components';
 
-interface ButtonProps {
-  primary?: boolean;
-  fullWidth?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-  children: React.ReactNode;
-  type?: 'button' | 'submit' | 'reset';
+interface StyledButtonProps {
+  $primary?: boolean;
+  $rounded?: boolean;
+  $size?: 'sm' | 'md' | 'lg' | 'full';
 }
 
-const StyledButton = styled.button<ButtonProps>`
-  padding: 10px 16px;
-  border-radius: 4px;
-  font-size: 16px;
-  font-weight: 500;
+const StyledButton = styled.button<StyledButtonProps>`
+  color: ${({ theme }) => theme.colors.text.primary};
+  width: ${({ $size }) => {
+    switch ($size) {
+      case 'sm': return '100px';
+      case 'md': return '150px';
+      case 'lg': return '200px';
+      case 'full': return '100%';
+      default: return '100%';
+    }
+  }};
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: ${({ theme }) => theme.spacing.sm};
+  height: 46px;
+  font-size: ${({ theme }) => theme.typography.body.size};
+  font-weight: ${({ theme }) => theme.typography.subtitle.weight};
+  border-radius: ${({ theme, $rounded }) => $rounded ? theme.borderRadius.lg : theme.borderRadius.default};
+  border: none;
+  outline: none;
+  padding: ${({ theme }) => theme.spacing.sm};
   cursor: pointer;
-  transition: all 0.2s;
-  width: ${props => props.fullWidth ? '100%' : 'auto'};
-  
-  background-color: ${props => props.primary ? 'var(--primary-color)' : 'white'};
-  color: ${props => props.primary ? 'white' : '#333'};
-  border: ${props => props.primary ? 'none' : '1px solid var(--border-color)'};
-  
-  &:hover {
-    background-color: ${props => props.primary ? 'var(--primary-hover)' : '#f5f5f5'};
-  }
-  
+  transition: ${({ theme }) => theme.transitions.default};
+
+  ${({ $primary, theme }) => $primary ? css`
+    background-color: ${theme.colors.accent.primary};
+    &:hover:not(:disabled) {
+      background-color: ${theme.colors.accent.secondary};
+    }
+  ` : css`
+    background-color: #6b7280;
+    &:hover:not(:disabled) {
+      opacity: 0.9;
+    }
+  `}
+
   &:disabled {
-    opacity: 0.6;
     cursor: not-allowed;
+    opacity: 0.7;
+    background-color: ${({ $primary, theme }) => 
+      $primary ? theme.colors.accent.secondary : '#6b7280'};
   }
 `;
 
+interface ButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'size'> {
+  children: React.ReactNode;
+  primary?: boolean;
+  rounded?: boolean;
+  size?: 'sm' | 'md' | 'lg' | 'full';
+}
+
 const Button: React.FC<ButtonProps> = ({ 
+  children, 
   primary = false,
-  fullWidth = false,
-  disabled = false,
-  children,
-  onClick,
-  type = 'button'
+  rounded = false,
+  size = 'full',
+  ...props 
 }) => {
   return (
-    <StyledButton
-      primary={primary}
-      fullWidth={fullWidth}
-      disabled={disabled}
-      onClick={onClick}
-      type={type}
+    <StyledButton 
+      $primary={primary}
+      $rounded={rounded}
+      $size={size}
+      {...props}
     >
       {children}
     </StyledButton>

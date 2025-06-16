@@ -5,9 +5,8 @@ import PageContentWrapper from '../components/common/PageContentWrapper';
 import { useNavigate } from 'react-router-dom';
 import { ContentCard } from '../components/common/ContentCard';
 import translations from '../constants/en.global.json';
-import apiClient from '../api/index';
 import InstallApplicationCard from '../components/applications/InstallApplicationCard';
-import { useServerDown } from '../context/ServerDownContext';
+import { apiClient } from '@calimero-network/calimero-client';
 
 export interface Application {
   appId: string;
@@ -20,7 +19,6 @@ export interface Application {
 export default function InstallApplication() {
   const t = translations.applicationsPage.installApplication;
   const navigate = useNavigate();
-  const { showServerDownPopup } = useServerDown();
   const [application, setApplication] = useState<Application>({
     appId: '',
     name: '',
@@ -54,7 +52,7 @@ export default function InstallApplication() {
       return null;
     }
 
-    const response = await apiClient(showServerDownPopup)
+    const response = await apiClient
       .node()
       .installApplication(
         application.appId,

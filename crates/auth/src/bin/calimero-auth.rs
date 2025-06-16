@@ -5,6 +5,7 @@ use std::sync::Arc;
 use calimero_auth::auth::token::TokenManager;
 use calimero_auth::config::{
     load_config, AuthConfig, JwtConfig, NearWalletConfig, SecurityConfig, StorageConfig,
+    RateLimitConfig, SecurityHeadersConfig, ContentSecurityPolicyConfig,
 };
 use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
@@ -53,8 +54,25 @@ fn create_default_config() -> AuthConfig {
         storage: StorageConfig::Memory,
         cors: Default::default(),
         security: SecurityConfig {
-            rate_limit: 50,
+            rate_limit: RateLimitConfig {
+                rate_limit_rpm: 100,
+                rate_limit_burst: 10,
+            },
             max_body_size: 1024 * 1024, // 1MB
+            headers: SecurityHeadersConfig {
+                enabled: true,
+                hsts_max_age: 31536000, // 1 year
+                hsts_include_subdomains: true,
+                frame_options: "DENY".to_string(),
+                content_type_options: "nosniff".to_string(),
+                referrer_policy: "strict-origin-when-cross-origin".to_string(),
+                csp: ContentSecurityPolicyConfig {
+                    enabled: true,
+                    default_src: vec!["'self'".to_string()],
+                    script_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string(), "'unsafe-eval'".to_string()],
+                    style_src: vec!["'self'".to_string(), "'unsafe-inline'".to_string()],
+                },
+            },
         },
         providers,
         near: NearWalletConfig::default(),

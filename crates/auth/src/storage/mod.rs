@@ -14,7 +14,7 @@ pub mod registry;
 
 // Re-export storage implementations and key manager for backward compatibility
 pub use key_manager::KeyManager;
-pub use models::{prefixes, Key, Permission};
+pub use models::{prefixes, Key};
 pub use providers::memory::MemoryStorage;
 
 /// Storage error
@@ -265,6 +265,7 @@ pub async fn create_storage(config: &StorageConfig) -> Result<Arc<dyn Storage>, 
     // Find a provider that supports this configuration
     for provider in providers {
         if provider.supports_config(config) {
+            println!("provider: {}", provider.name());
             let storage = provider.create_storage(config)?;
             return Ok(storage);
         }

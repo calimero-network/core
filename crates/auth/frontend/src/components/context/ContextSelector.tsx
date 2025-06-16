@@ -1,164 +1,223 @@
-import React, { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useContextSelection } from '../../hooks/useContextSelection';
-import { useContextCreation } from '../../hooks/useContextCreation';
+import { PROTOCOLS, PROTOCOL_DISPLAY, useContextCreation } from '../../hooks/useContextCreation';
 import { getStoredUrlParam } from '../../utils/urlParams';
-import './ContextSelector.css';
 import Button from '../common/Button';
+import { ErrorView } from '../common/ErrorView';
 import { SelectContext, SelectContextIdentity } from '@calimero-network/calimero-client';
+import { PermissionsView } from '../permissions/PermissionsView';
+import {
+  ContextSelectorWrapper,
+} from './styles';
+import { EmptyState } from '../common/styles';
+import Loader from '../common/Loader';
 
 interface ContextSelectorProps {
-    onComplete: (context: string, identity: string) => void;
-    onBack: () => void;
+  onComplete: (contextId: string, identity: string) => void;
+  onBack: () => void;
 }
 
 export function ContextSelector({ onComplete, onBack }: ContextSelectorProps) {
-    const {
-        contexts,
-        selectedContext,
-        identities,
-        selectedIdentity,
-        loading: selectionLoading,
-        error: selectionError,
-        fetchContexts,
-        handleContextSelect,
-        handleIdentitySelect,
-    } = useContextSelection();
+  const [showProtocolSelection, setShowProtocolSelection] = useState(false);
 
-    const {
-        isLoading: creationLoading,
-        error: creationError,
-        createContext,
-    } = useContextCreation();
+  const {
+    contexts,
+    selectedContext,
+    identities,
+    selectedIdentity,
+    loading: selectionLoading,
+    error: selectionError,
+    fetchContexts,
+    handleContextSelect,
+    handleIdentitySelect,
+  } = useContextSelection();
 
-    const permissions = useMemo(() => {
-        const permissionsParam = getStoredUrlParam('permissions');
-        return permissionsParam ? permissionsParam.split(',') : [];
-    }, []);
+  const {
+    isLoading: creationLoading,
+    error: creationError,
+    checkAndInstallApplication,
+    setSelectedProtocol,
+    selectedProtocol,
+    showInstallPrompt,
+    handleContextCreation,
+    handleInstallCancel,
+  } = useContextCreation();
 
-    useEffect(() => {
-        fetchContexts();
-    }, [fetchContexts]);
+  const permissions = useMemo(() => {
+    const permissionsParam = getStoredUrlParam('permissions');
+    return permissionsParam ? permissionsParam.split(',') : [];
+  }, []);
 
-    // Filter contexts based on applicationId URL parameter
-    const applicationId = getStoredUrlParam('applicationId');
-    const applicationPath = getStoredUrlParam('applicationPath');
-    
-    const filteredContexts = useMemo(() => {
-        if (!applicationId) return contexts;
-        return contexts.filter(context => context.applicationId === applicationId);
-    }, [contexts, applicationId]);
+  useEffect(() => {
+    fetchContexts();
+  }, [fetchContexts]);
 
-    const loading = selectionLoading || creationLoading;
-    const error = selectionError || creationError;
+  // Filter contexts based on applicationId URL parameter
+  const applicationId = getStoredUrlParam('application-id');
+  const applicationPath = getStoredUrlParam('application-path');
+  
+  const filteredContexts = useMemo(() => {
+    if (!applicationId) return contexts;
+    return contexts.filter(context => context.applicationId === applicationId);
+  }, [contexts, applicationId]);
 
-    if (loading) {
-        return (
-            <div className="context-selector">
-                <div className="loading">Loading...</div>
-            </div>
-        );
-    }
+  const loading = selectionLoading || creationLoading;
+  const error = selectionError || creationError;
 
-    if (error) {
-        return (
-            <div className="context-selector">
-                <div className="error">{error}</div>
-            </div>
-        );
-    }
+  if (loading) {
+    return <Loader />;
+  }
 
-    
-
-    // No contexts available and applicationPath is present - show create context prompt
-    if (!filteredContexts.length && applicationId && applicationPath) {
-        return (
-            <div className="context-selector">
-                <div className="empty-state">
-                    <h2>Create New Context</h2>
-                    <p>There are no contexts for this application ID. Would you like to create a new context?</p>
-                    <Button 
-                        onClick={createContext}
-                        disabled={loading}
-                        primary
-                    >
-                        {loading ? 'Creating...' : 'Create New Context'}
-                    </Button>
-                </div>
-            </div>
-        );
-    }
-
-    // Context selection view
+  if (error) {
     return (
-        <div className="context-selector">
-            {
-              !selectedContext && (
-                <>
-                  <h2>Select Context</h2>
-                  <SelectContext
-                      contextList={filteredContexts}
-                      setSelectedContextId={(id) => {
-                          handleContextSelect(id);
-                      }}
-                      backStep={onBack}
-                  />
-                </>
-              )
-            }
-            {/* Identity Selection */}
-            {selectedContext && identities.length > 0 && !selectedIdentity && (
-              <SelectContextIdentity
-                  contextIdentities={identities}
-                  selectedContextId={selectedContext}
-                  onSelectIdentity={handleIdentitySelect}
-                  backStep={() => {
-                      handleContextSelect(null);
-                  }}
-              />
-            )}
-
-            {/* Permissions Information */}
-            {selectedContext && selectedIdentity && (
-              <>
-                <div className="permissions-info">
-                    {permissions.length > 0 ? (
-                        <>
-                            <h3>Requested Permissions</h3>
-                            <p>This application is requesting the following permissions:</p>
-                            <ul className="permissions-list">
-                                {permissions.map((permission, index) => (
-                                    <li key={index}>{permission}</li>
-                                ))}
-                            </ul>
-                            <p className="permissions-notice">
-                                By continuing, you agree to grant these permissions to the application.
-                            </p>
-                        </>
-                    ) : (
-                        <>
-                            <h3>Default Permissions</h3>
-                            <p className="permissions-notice">
-                                This application will be granted default context permissions.
-                            </p>
-                        </>
-                    )}
-                </div>
-                <Button
-                    onClick={() => onComplete(selectedContext, selectedIdentity)}
-                    primary
-                >
-                    {permissions.length > 0 ? 'Continue and Grant Permissions' : 'Continue with Default Permissions'}
-                </Button>
-                <Button
-                    onClick={() => {
-                        handleIdentitySelect(null);
-                    }}
-                    primary
-                >
-                    Back
-                </Button>
-              </>
-            )}
-        </div>
+      <ContextSelectorWrapper>
+        <ErrorView 
+          message={error} 
+          onRetry={fetchContexts}
+        />
+      </ContextSelectorWrapper>
     );
+  }
+
+  // Show install prompt if there's an application mismatch
+  if (showInstallPrompt) {
+    return (
+      <ContextSelectorWrapper>
+        <EmptyState>
+          <h2>Application ID Mismatch</h2>
+          <p>The application ID doesn't match the actual application. Would you like to install it anyway?</p>
+          <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+            <Button 
+              onClick={handleInstallCancel}
+              style={{ marginRight: '10px' }}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={async () => {
+                const contextData = await handleContextCreation();
+                if (contextData) {
+                  handleContextSelect(contextData.contextId);
+                  handleIdentitySelect(contextData.memberPublicKey);
+                }
+              }}
+              disabled={loading}
+              primary
+            >
+              Install Anyway
+            </Button>
+          </div>
+        </EmptyState>
+      </ContextSelectorWrapper>
+    );
+  }
+
+  // No contexts available and applicationPath is present - show create context prompt
+  if (!filteredContexts.length && applicationId && applicationPath && !selectedContext && !selectedIdentity) {
+    return (
+      <ContextSelectorWrapper>
+        <EmptyState>
+          <h2>Create New Context</h2>
+          <p>There are no contexts for this application. Would you like to create a new context?</p>
+          {!showProtocolSelection ? (
+            <Button 
+              onClick={() => setShowProtocolSelection(true)}
+              primary
+            >
+              Create New Context
+            </Button>
+          ) : selectedProtocol ? (
+            <>
+              <p>Selected Protocol: {PROTOCOL_DISPLAY[selectedProtocol]}</p>
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+                <Button 
+                  onClick={() => setSelectedProtocol(null)}
+                  style={{ marginRight: '10px' }}
+                >
+                  Back
+                </Button>
+                <Button 
+                  onClick={async () => {
+                    const success = await checkAndInstallApplication(applicationId, applicationPath);
+                    if (success) {
+                      const result = await handleContextCreation();
+                      if (result) {
+                        onComplete(result.contextId, result.memberPublicKey);
+                      }
+                    }
+                  }}
+                  disabled={loading}
+                  primary
+                >
+                  {loading ? 'Creating...' : 'Create Context'}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p>Please select a protocol:</p>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center', marginBottom: '20px' }}>
+                {PROTOCOLS.map((protocol) => (
+                  <Button
+                    key={protocol}
+                    onClick={() => setSelectedProtocol(protocol)}
+                    style={{ margin: '5px' }}
+                    primary
+                  >
+                    {PROTOCOL_DISPLAY[protocol]}
+                  </Button>
+                ))}
+              </div>
+              <Button 
+                onClick={() => {
+                  setShowProtocolSelection(false);
+                }}
+                style={{ marginTop: '10px' }}
+              >
+                Back
+              </Button>
+            </>
+          )}
+        </EmptyState>
+      </ContextSelectorWrapper>
+    );
+  }
+
+  return (
+    <ContextSelectorWrapper>
+      {/* Context Selection */}
+      {!selectedContext && (
+        <SelectContext
+          contextList={filteredContexts}
+          setSelectedContextId={(id) => {
+            handleContextSelect(id);
+          }}
+          backStep={onBack}
+        />
+      )}
+
+      {/* Identity Selection */}
+      {selectedContext && identities.length > 0 && !selectedIdentity && (
+        <SelectContextIdentity
+          contextIdentities={identities}
+          selectedContextId={selectedContext}
+          onSelectIdentity={handleIdentitySelect}
+          backStep={() => {
+            handleContextSelect(null);
+          }}
+        />
+      )}
+
+      {/* Permissions View */}
+      {selectedContext && selectedIdentity && (
+        <PermissionsView
+          permissions={permissions}
+          onComplete={(contextId, identity) => onComplete(contextId, identity)}
+          onBack={() => handleIdentitySelect(null)}
+          selectedContext={selectedContext}
+          selectedIdentity={selectedIdentity}
+        />
+      )}
+    </ContextSelectorWrapper>
+  );
 } 

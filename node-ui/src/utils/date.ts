@@ -14,7 +14,8 @@ export function formatDateWithTime(timestamp: string): string {
 }
 
 export function formatTimestampToDate(timestamp: number): string {
-  const date = new Date(timestamp);
+  // Convert seconds to milliseconds
+  const date = new Date(timestamp * 1000);
 
   const formatter = new Intl.DateTimeFormat(undefined, {
     year: 'numeric',

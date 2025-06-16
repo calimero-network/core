@@ -118,6 +118,8 @@ impl ListApplicationsResponse {
     }
 }
 
+
+// TODO fix return so thats its without application key
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetApplicationResponseData {
@@ -127,7 +129,7 @@ pub struct GetApplicationResponseData {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetApplicationResponse {
-    pub data: GetApplicationResponseData,
+    pub data: Option<Application>,
 }
 
 impl GetApplicationResponse {

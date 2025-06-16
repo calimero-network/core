@@ -16,4 +16,9 @@ export default defineConfig({
     },
   },
   plugins: [nodePolyfills(), react()],
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
+    },
+  },
 });

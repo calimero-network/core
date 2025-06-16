@@ -7,11 +7,8 @@ import { useNavigate } from 'react-router-dom';
 import { useRPC } from '../hooks/useNear';
 import { Package, Release } from './Applications';
 import ApplicationDetailsTable from '../components/applications/details/ApplicationDetailsTable';
-import apiClient from '../api';
-import { ResponseData } from '../api/response';
+import { apiClient } from '@calimero-network/calimero-client';
 import { AppMetadata, parseAppMetadata } from '../utils/metadata';
-import { InstalledApplication } from '../api/dataSource/NodeDataSource';
-import { useServerDown } from '../context/ServerDownContext';
 
 export interface AppDetails {
   package: Package;
@@ -20,7 +17,6 @@ export interface AppDetails {
 
 export default function ApplicationDetailsPage() {
   const { id } = useParams();
-  const { showServerDownPopup } = useServerDown();
   const navigate = useNavigate();
   const { getPackage, getReleases } = useRPC();
   const [applicationInformation, setApplicationInformation] =
@@ -29,10 +25,7 @@ export default function ApplicationDetailsPage() {
   useEffect(() => {
     const fetchApplicationData = async () => {
       if (id) {
-        const fetchApplicationDetailsResponse: ResponseData<InstalledApplication> =
-          await apiClient(showServerDownPopup)
-            .node()
-            .getInstalledApplicationDetails(id);
+        const fetchApplicationDetailsResponse = await apiClient.node().getInstalledApplicationDetails(id);
 
         let appMetadata: AppMetadata | null = null;
         if (fetchApplicationDetailsResponse.error) {

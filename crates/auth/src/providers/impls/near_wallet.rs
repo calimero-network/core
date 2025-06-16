@@ -366,10 +366,12 @@ impl NearWalletProvider {
         // Note: We don't need to update last_used anymore since we removed that field
 
         // Save the updated key
-        self.key_manager
+        let _ = self.key_manager
             .set_key(key_id, &key)
             .await
-            .map_err(|err| AuthError::StorageError(format!("Failed to update root key: {}", err)))
+            .map_err(|err| AuthError::StorageError(format!("Failed to update root key: {}", err)));
+
+        Ok(())
     }
 
     /// Core authentication logic for NEAR wallet
@@ -418,7 +420,7 @@ impl NearWalletProvider {
         }
 
         // Get or create the root key
-        let (key_id, _root_key) = match self.get_root_key_for_account(account_id).await? {
+        let (key_id, root_key) = match self.get_root_key_for_account(account_id).await? {
             Some((key_id, root_key)) => {
                 // Update the last used timestamp
                 self.update_last_used(&key_id).await?;
@@ -430,9 +432,8 @@ impl NearWalletProvider {
             }
         };
 
-        // For now, grant admin permissions to all NEAR wallets
-        // In a real implementation, you would look up the permissions from storage
-        let permissions = vec!["admin".to_string()];
+        let permissions = root_key.permissions.clone();
+        debug!("Returning permissions for key {}: {:?}", key_id, permissions);
 
         Ok((key_id, permissions))
     }
@@ -513,6 +514,7 @@ pub struct NearWalletRequest {
     pub callback_url: Option<String>,
 }
 
+#[async_trait]
 impl AuthProvider for NearWalletProvider {
     fn name(&self) -> &str {
         "near_wallet"
@@ -660,6 +662,35 @@ impl AuthProvider for NearWalletProvider {
             "rpc_url": self.config.rpc_url,
             "network": self.config.network,
         }))
+    }
+
+    async fn create_root_key(
+        &self,
+        public_key: &str,
+        auth_method: &str,
+        provider_data: Value,
+    ) -> eyre::Result<bool> {
+        let account_id = provider_data.get("account_id").unwrap().as_str().unwrap();
+        // Create a hash of the account ID to use as a key ID
+        let mut hasher = Sha256::new();
+        hasher.update(format!("near:{account_id}").as_bytes());
+        let hash = hasher.finalize();
+        let key_id = hex::encode(hash);
+
+        // Create the root key
+        let root_key = Key::new_root_key_with_permissions(
+            public_key.to_string(),
+            auth_method.to_string(),
+            vec!["admin".to_string()],
+        );
+
+        // Store the root key using KeyManager
+        let was_updated = self.key_manager
+            .set_key(&key_id, &root_key)
+            .await
+            .map_err(|err| AuthError::StorageError(format!("Failed to store root key: {}", err)))?;
+
+        Ok(was_updated)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

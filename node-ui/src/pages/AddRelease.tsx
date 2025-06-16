@@ -4,7 +4,6 @@ import { FlexLayout } from '../components/layout/FlexLayout';
 import {
   Account,
   BrowserWallet,
-  FinalExecutionOutcome,
   NetworkId,
   setupWalletSelector,
 } from '@near-wallet-selector/core';
@@ -18,10 +17,10 @@ import PageContentWrapper from '../components/common/PageContentWrapper';
 import { useNavigate, useParams } from 'react-router-dom';
 import AddReleaseTable from '../components/publishApplication/addRelease/AddReleaseTable';
 import { DeployStatus, ReleaseInfo } from './PublishApplication';
-import { isFinalExecution } from '../utils/wallet';
-import { getNearEnvironment } from '../utils/node';
 
 const BLOBBY_IPFS = 'https://blobby-public.euw3.prod.gcp.calimero.network';
+const NEAR_NETWORK = 'testnet';
+const NEAR_CONTRACT_ID = 'calimero-package-manager.testnet';
 
 export default function AddReleasePage() {
   const { id } = useParams();
@@ -60,7 +59,7 @@ export default function AddReleasePage() {
   useEffect(() => {
     const fetchWalletAccounts = async () => {
       const selector = await setupWalletSelector({
-        network: 'testnet',
+        network: NEAR_NETWORK,
         modules: [setupMyNearWallet()],
       });
       const wallet = await selector.wallet('my-near-wallet');
@@ -86,12 +85,12 @@ export default function AddReleasePage() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
-      network: getNearEnvironment() as NetworkId,
+      network: NEAR_NETWORK as NetworkId,
       modules: [setupMyNearWallet()],
     });
     const wallet: BrowserWallet = await selector.wallet('my-near-wallet');
     await wallet.signOut();
-    wallet.signIn({ contractId: 'calimero-package-manager.testnet' });
+    wallet.signIn({ contractId: NEAR_CONTRACT_ID });
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -137,39 +136,40 @@ export default function AddReleasePage() {
 
   const addRelease = async () => {
     const selector = await setupWalletSelector({
-      network: 'testnet',
+      network: NEAR_NETWORK,
       modules: [setupMyNearWallet()],
     });
     const wallet = await selector.wallet('my-near-wallet');
     try {
-      const res: FinalExecutionOutcome | void =
-        await wallet.signAndSendTransaction({
-          signerId: deployerAccount ? deployerAccount.accountId : '',
-          actions: [
-            {
-              type: 'FunctionCall',
-              params: {
-                methodName: 'add_release',
-                args: {
-                  name: applicationInformation?.name!,
-                  version: releaseInfo.version,
-                  notes: releaseInfo.notes,
-                  path: releaseInfo.path,
-                  hash: releaseInfo.hash,
-                },
-                gas:
-                  nearAPI.utils.format.parseNearAmount('0.00000000003') ?? '0',
-                deposit: '',
+      const res = await wallet.signAndSendTransaction({
+        signerId: deployerAccount ? deployerAccount.accountId : '',
+        actions: [
+          {
+            type: 'FunctionCall',
+            params: {
+              methodName: 'add_release',
+              args: {
+                name: applicationInformation?.name!,
+                version: releaseInfo.version,
+                notes: releaseInfo.notes,
+                path: releaseInfo.path,
+                hash: releaseInfo.hash,
               },
+              gas: nearAPI.utils.format.parseNearAmount('0.00000000003') ?? '0',
+              deposit: '',
             },
-          ],
-        });
-      if (isFinalExecution(res)) {
+          },
+        ],
+      });
+
+      // Check if transaction was successful
+      const status = res?.status;
+      const isSuccess = status && status !== 'Failure';
+      
+      if (isSuccess) {
         setDeployStatus({
-          title: 'Application published',
-          message: `Release version ${
-            releaseInfo.version
-          } for ${applicationInformation?.name!} has been added!`,
+          title: 'Release added successfully',
+          message: `Release version ${releaseInfo.version} for ${applicationInformation?.name!} has been added!`,
           error: false,
         });
       }
@@ -179,53 +179,35 @@ export default function AddReleasePage() {
       if (error instanceof Error) {
         errorMessage =
           JSON.parse(error.message).kind?.kind?.FunctionCallError
-            ?.ExecutionError ??
-          'An error occurred while publishing the release';
+            ?.ExecutionError ?? 'An error occurred while publishing release';
       }
 
       setDeployStatus({
-        title: 'Failed to publish release',
+        title: 'Error',
         message: errorMessage,
         error: true,
       });
     }
+    setShowStatusModal(true);
   };
 
   const closeStatusModal = () => {
     setShowStatusModal(false);
     if (!deployStatus.error) {
-      setReleaseInfo({
-        name: '',
-        version: '',
-        notes: '',
-        path: '',
-        hash: '',
-      });
-      setFileHash('');
-      setIpfsPath('');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      navigate(`/applications/${id}`);
     }
-    setDeployStatus({
-      title: '',
-      message: '',
-      error: false,
-    });
   };
 
   const publishRelease = async () => {
     setIsLoading(true);
-    setShowStatusModal(false);
     await addRelease();
-    setShowStatusModal(true);
     setIsLoading(false);
   };
 
   return (
     <FlexLayout>
       <Navigation />
-      <PageContentWrapper isOverflow={true}>
+      <PageContentWrapper>
         <AddReleaseTable
           addWalletAccount={addWalletAccount}
           navigateToApplicationDetails={() => navigate(`/applications/${id}`)}

@@ -6,14 +6,12 @@ import ContextTable from '../components/context/ContextTable';
 import { ContextOptions } from '../constants/ContextConstants';
 import { useNavigate } from 'react-router-dom';
 import { useRPC } from '../hooks/useNear';
-import apiClient from '../api/index';
-import { Context, GetContextsResponse } from '../api/dataSource/NodeDataSource';
+import { apiClient } from '@calimero-network/calimero-client';
 import { ModalContent } from '../components/common/StatusModal';
 import { TableOptions } from '../components/common/OptionsHeader';
-import { ResponseData } from '../api/response';
 import { ContextObject, ContextsList } from '../types/context';
-import { useServerDown } from '../context/ServerDownContext';
 import { parseAppMetadata } from '../utils/metadata';
+import { Context } from '@calimero-network/calimero-client/lib/api/nodeApi';
 
 const initialOptions = [
   {
@@ -25,7 +23,6 @@ const initialOptions = [
 
 export default function ContextsPage() {
   const navigate = useNavigate();
-  const { showServerDownPopup } = useServerDown();
   const { getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState<string>(
     ContextOptions.JOINED,
@@ -53,9 +50,7 @@ export default function ContextsPage() {
         const tempContextObjects: ContextObject[] = await Promise.all(
           contexts.map(async (app: Context) => {
             const metadata = (
-              await apiClient(showServerDownPopup)
-                .node()
-                .getInstalledApplicationDetails(app.applicationId)
+              await apiClient.node().getInstalledApplicationDetails(app.applicationId)
             ).data?.metadata;
             let packageData = null;
             if (metadata) {
@@ -83,8 +78,7 @@ export default function ContextsPage() {
 
   const fetchNodeContexts = useCallback(async () => {
     setErrorMessage('');
-    const fetchContextsResponse: ResponseData<GetContextsResponse> =
-      await apiClient(showServerDownPopup).node().getContexts();
+    const fetchContextsResponse = await apiClient.node().getContexts();
     // TODO - fetch invitations
     if (fetchContextsResponse.error) {
       setErrorMessage(fetchContextsResponse.error.message);
@@ -117,9 +111,7 @@ export default function ContextsPage() {
 
   const deleteNodeContext = async () => {
     if (!selectedContextId) return;
-    const deleteContextResponse = await apiClient(showServerDownPopup)
-      .node()
-      .deleteContext(selectedContextId);
+    const deleteContextResponse = await apiClient.node().deleteContext(selectedContextId);
     if (deleteContextResponse.error) {
       setDeleteStatus({
         title: 'Error',

@@ -1,8 +1,8 @@
 import React from 'react';
 import styled from 'styled-components';
 import MenuIconDropdown from '../common/MenuIconDropdown';
-import { RootKeyObject } from '../../utils/rootkey';
 import { formatTimestampToDate } from '../../utils/date';
+import { RootKey } from '@calimero-network/calimero-client/lib/api/adminApi';
 
 interface RowItemProps {
   $hasBorders: boolean;
@@ -54,24 +54,34 @@ const RowItem = styled.div<RowItemProps>`
 `;
 
 export default function identityRowItem(
-  item: RootKeyObject,
+  item: RootKey,
   id: number,
   count: number,
-  onitemClicked?: (id: string) => void,
+  onCopyClick?: (id: string) => void,
+  onEditClick?: (id: string) => void,
+  onDeleteClick?: (id: string) => void,
 ): JSX.Element {
   return (
     <RowItem key={id} $hasBorders={id === count}>
-      <div className="row-item type">{item.type}</div>
+      <div className="row-item type">{item.auth_method}</div>
       <div className="row-item date">
-        {formatTimestampToDate(item.createdAt)}
+        {formatTimestampToDate(item.created_at)}
       </div>
-      <div className="row-item public-key">{item.publicKey}</div>
+      <div className="row-item public-key">{item.public_key}</div>
       <div className="menu-dropdown">
         <MenuIconDropdown
           options={[
             {
               title: 'Copy key',
-              onClick: () => onitemClicked && onitemClicked(item.publicKey),
+              onClick: () => onCopyClick && onCopyClick(item.public_key),
+            },
+            {
+              title: 'Edit Permissions',
+              onClick: () => onEditClick && onEditClick(item.public_key),
+            },
+            {
+              title: 'Delete Key',
+              onClick: () => onDeleteClick && onDeleteClick(item.key_id),
             },
           ]}
         />

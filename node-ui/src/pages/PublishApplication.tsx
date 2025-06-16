@@ -16,10 +16,10 @@ import { Package } from './Applications';
 import PageContentWrapper from '../components/common/PageContentWrapper';
 import PublishApplicationTable from '../components/publishApplication/PublishApplicationTable';
 import { useNavigate } from 'react-router-dom';
-import { isFinalExecution } from '../utils/wallet';
-import { getNearEnvironment } from '../utils/node';
 
 const BLOBBY_IPFS = 'https://blobby-public.euw3.prod.gcp.calimero.network';
+const NEAR_NETWORK = 'testnet';
+const NEAR_CONTRACT_ID = 'calimero-package-manager.testnet';
 
 export interface PackageInfo {
   name: string;
@@ -87,7 +87,7 @@ export default function PublishApplicationPage() {
   useEffect(() => {
     const fetchWalletAccounts = async () => {
       const selector = await setupWalletSelector({
-        network: 'testnet',
+        network: NEAR_NETWORK,
         modules: [setupMyNearWallet()],
       });
       const wallet = await selector.wallet('my-near-wallet');
@@ -101,12 +101,12 @@ export default function PublishApplicationPage() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
-      network: getNearEnvironment() as NetworkId,
+      network: NEAR_NETWORK as NetworkId,
       modules: [setupMyNearWallet()],
     });
     const wallet: BrowserWallet = await selector.wallet('my-near-wallet');
     await wallet.signOut();
-    wallet.signIn({ contractId: 'calimero-package-manager.testnet' });
+    wallet.signIn({ contractId: NEAR_CONTRACT_ID });
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -158,7 +158,7 @@ export default function PublishApplicationPage() {
 
   const addPackage = async () => {
     const selector = await setupWalletSelector({
-      network: 'testnet',
+      network: NEAR_NETWORK,
       modules: [setupMyNearWallet()],
     });
     const wallet = await selector.wallet('my-near-wallet');
@@ -181,7 +181,12 @@ export default function PublishApplicationPage() {
           },
         ],
       });
-      if (isFinalExecution(res)) {
+      
+      // Check if transaction was successful
+      const status = res?.status;
+      const isSuccess = status && status !== 'Failure';
+      
+      if (isSuccess) {
         setDeployStatus({
           title: 'Package added successfully',
           message: `Package ${packageInfo.name} added successfully`,
@@ -198,16 +203,17 @@ export default function PublishApplicationPage() {
       }
 
       setDeployStatus({
-        title: 'Failed to add package',
+        title: 'Error',
         message: errorMessage,
         error: true,
       });
     }
+    setShowStatusModal(true);
   };
 
   const addRelease = async () => {
     const selector = await setupWalletSelector({
-      network: 'testnet',
+      network: NEAR_NETWORK,
       modules: [setupMyNearWallet()],
     });
     const wallet = await selector.wallet('my-near-wallet');
@@ -220,7 +226,7 @@ export default function PublishApplicationPage() {
             params: {
               methodName: 'add_release',
               args: {
-                name: packageInfo.name,
+                package_id: packageInfo.name,
                 version: releaseInfo.version,
                 notes: releaseInfo.notes,
                 path: releaseInfo.path,
@@ -232,10 +238,15 @@ export default function PublishApplicationPage() {
           },
         ],
       });
-      if (isFinalExecution(res)) {
+
+      // Check if transaction was successful
+      const status = res?.status;
+      const isSuccess = status && status !== 'Failure';
+      
+      if (isSuccess) {
         setDeployStatus({
-          title: 'Application published',
-          message: `Application ${packageInfo.name} with release version ${releaseInfo.version} published`,
+          title: 'Release added successfully',
+          message: `Release ${releaseInfo.version} added successfully`,
           error: false,
         });
       }
@@ -245,77 +256,52 @@ export default function PublishApplicationPage() {
       if (error instanceof Error) {
         errorMessage =
           JSON.parse(error.message).kind?.kind?.FunctionCallError
-            ?.ExecutionError ??
-          'An error occurred while publishing the release';
+            ?.ExecutionError ?? 'An error occurred while publishing release';
       }
 
       setDeployStatus({
-        title: 'Failed to add release',
+        title: 'Error',
         message: errorMessage,
         error: true,
       });
     }
+    setShowStatusModal(true);
   };
 
   const closeStatusModal = () => {
     setShowStatusModal(false);
     if (!deployStatus.error) {
-      setPackageInfo({
-        name: '',
-        description: '',
-        repository: '',
-      });
-      setReleaseInfo({
-        name: '',
-        version: '',
-        notes: '',
-        path: '',
-        hash: '',
-      });
-      setFileHash('');
-      setIpfsPath('');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      navigate('/applications');
     }
-
-    setDeployStatus({
-      title: '',
-      message: '',
-      error: false,
-    });
   };
 
   const publishApplication = async () => {
     setIsLoading(true);
-    setShowStatusModal(false);
-    await addPackage();
-    await addRelease();
-    setShowStatusModal(true);
+    if (packages.find((p) => p.name === packageInfo.name)) {
+      await addRelease();
+    } else {
+      await addPackage();
+    }
     setIsLoading(false);
   };
 
   return (
     <FlexLayout>
       <Navigation />
-      <PageContentWrapper isOverflow={true}>
+      <PageContentWrapper>
         <PublishApplicationTable
-          addWalletAccount={addWalletAccount}
-          navigateToApplications={() => navigate('/applications')}
-          deployerAccount={deployerAccount}
-          showStatusModal={showStatusModal}
-          closeModal={closeStatusModal}
-          deployStatus={deployStatus}
           packageInfo={packageInfo}
           setPackageInfo={setPackageInfo}
-          handleFileChange={handleFileChange}
-          ipfsPath={ipfsPath}
-          fileHash={fileHash}
-          packages={packages}
           releaseInfo={releaseInfo}
           setReleaseInfo={setReleaseInfo}
           fileInputRef={fileInputRef}
+          handleFileChange={handleFileChange}
+          deployerAccount={deployerAccount}
+          addWalletAccount={addWalletAccount}
           publishApplication={publishApplication}
+          showStatusModal={showStatusModal}
+          closeStatusModal={closeStatusModal}
+          deployStatus={deployStatus}
           isLoading={isLoading}
         />
       </PageContentWrapper>

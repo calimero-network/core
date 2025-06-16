@@ -4,19 +4,14 @@ import { FlexLayout } from '../components/layout/FlexLayout';
 import PageContentWrapper from '../components/common/PageContentWrapper';
 import ContextTable from '../components/context/contextDetails/ContextTable';
 import { useParams, useNavigate } from 'react-router-dom';
-import apiClient from '../api/index';
+import { apiClient } from '@calimero-network/calimero-client';
 import { DetailsOptions } from '../constants/ContextConstants';
 import { useRPC } from '../hooks/useNear';
 import { TableOptions } from '../components/common/OptionsHeader';
-import {
-  ClientKey,
-  Context,
-  ContextStorage,
-  User,
-} from '../api/dataSource/NodeDataSource';
 import { ContextDetails } from '../types/context';
-import { useServerDown } from '../context/ServerDownContext';
 import { parseAppMetadata } from '../utils/metadata';
+import { Context, ContextClientKey, ContextStorage } from '@calimero-network/calimero-client/lib/api/nodeApi';
+import { User } from '@calimero-network/calimero-client/lib/api/contractApi';
 
 const initialOptions = [
   {
@@ -38,17 +33,16 @@ const initialOptions = [
 
 export default function ContextDetailsPage() {
   const { id } = useParams();
-  const { showServerDownPopup } = useServerDown();
   const navigate = useNavigate();
   const [contextDetails, setContextDetails] = useState<ContextDetails>();
   const [contextDetailsError, setContextDetailsError] = useState<string | null>(
     null,
   );
-  const [contextClientKeys, setContextClientKeys] = useState<ClientKey[]>();
+  const [contextClientKeys, setContextClientKeys] = useState<ContextClientKey[]>();
   const [contextClientKeysError, setContextClientKeysError] = useState<
     string | null
   >(null);
-  const [contextUsers, setContextUsers] = useState<User[]>();
+  const [contextUsers, setContextUsers] = useState<string[]>();
   const [contextUsersError, setContextUsersError] = useState<string | null>(
     null,
   );
@@ -97,17 +91,15 @@ export default function ContextDetailsPage() {
           contextClientUsers,
           contextStorage,
         ] = await Promise.all([
-          apiClient(showServerDownPopup).node().getContext(id),
-          apiClient(showServerDownPopup).node().getContextClientKeys(id),
-          apiClient(showServerDownPopup).node().getContextUsers(id),
-          apiClient(showServerDownPopup).node().getContextStorageUsage(id),
+          apiClient.node().getContext(id),
+          apiClient.node().getContextClientKeys(id),
+          apiClient.node().getContextUsers(id),
+          apiClient.node().getContextStorageUsage(id),
         ]);
 
         if (nodeContext.data) {
           const applicationMetadata = (
-            await apiClient(showServerDownPopup)
-              .node()
-              .getInstalledApplicationDetails(nodeContext.data.applicationId)
+            await apiClient.node().getInstalledApplicationDetails(nodeContext.data.applicationId)
           ).data?.metadata;
           const contextObject = await generateContextObjects(
             nodeContext.data,
@@ -126,11 +118,7 @@ export default function ContextDetailsPage() {
         }
 
         if (contextClientUsers.data) {
-          setContextUsers(
-            contextClientUsers.data.identities.map((identity) => ({
-              identity: identity,
-            })),
-          );
+          setContextUsers(contextClientUsers.data.identities);
         } else {
           setContextUsersError(contextClientUsers.error?.message);
         }

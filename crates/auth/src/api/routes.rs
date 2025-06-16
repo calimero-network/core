@@ -12,23 +12,22 @@ use crate::api::handlers::auth::{
 };
 use crate::api::handlers::client_keys::{delete_client_handler, list_clients_handler};
 use crate::api::handlers::permissions::{
-    get_key_permissions_handler, list_permissions_handler, update_key_permissions_handler,
+    get_key_permissions_handler, update_key_permissions_handler,
 };
 use crate::api::handlers::root_keys::{create_key_handler, delete_key_handler, list_keys_handler};
 use crate::api::handlers::{
     asset_handler, health_handler, identity_handler, metrics_handler, providers_handler,
 };
 use crate::auth::middleware::forward_auth_middleware;
-// use crate::auth::security::{
-//     create_body_limit_layer, create_rate_limit_layer,
-//     create_security_headers,
-// };
+use crate::auth::security::{
+    create_body_limit_layer, RateLimitLayer, create_security_headers,
+};
 use crate::config::AuthConfig;
 use crate::server::AppState;
 
 /// Creates and configures the router with all routes and middleware
 pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
-    // Configure the CORS layer
+    // Configure CORS layer
     let cors_layer = if config.cors.allow_all_origins {
         CorsLayer::permissive()
     } else {
@@ -61,69 +60,76 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         layer
     };
 
-    // Create public routes (no authentication required)
+    // 1. Public routes (no JWT validation required)
     let public_routes = Router::new()
-        // Public authentication endpoints
-        .route("/auth/login", get(login_handler))
-        .route("/auth/login/*path", get(asset_handler))
-        .route("/auth/challenge", get(challenge_handler))
-        .route("/auth/token", post(token_handler))
-        // Health and provider information (public for UI access)
+        // Auth UI/Frontend
+        .route("/login", get(login_handler))
+        .route("/assets/*path", get(asset_handler))  // Handle static assets
+        .route("/favicon.ico", get(asset_handler))   // Handle favicon explicitly
+        
+        // Public Auth API endpoints
+        .route("/token", post(token_handler))
+        .route("/challenge", get(challenge_handler))
+        .route("/callback", get(callback_handler))
+        .route("/providers", get(providers_handler))
         .route("/health", get(health_handler))
-        .route("/providers", get(providers_handler));
+        .route("/refresh", post(refresh_token_handler))
+        .route("/validate", get(validate_handler).post(validate_handler));
 
-    // Create authenticated routes
-    let authenticated_routes = Router::new()
-        // Protected auth endpoints
-        .route("/auth/refresh", post(refresh_token_handler))
-        .route("/auth/revoke", post(revoke_token_handler))
-        .route("/auth/validate", post(validate_handler))
-        .route("/auth/callback", get(callback_handler))
-        .route("/auth/client-key", post(generate_client_key_handler))
+    // 2. Protected routes (require JWT validation)
+    let protected_routes = Router::new()
+        // Token operations
+        .route("/revoke", post(revoke_token_handler))
+        
         // Root key management
-        .route("/auth/keys", get(list_keys_handler))
-        .route("/auth/keys", post(create_key_handler))
-        .route("/auth/keys/:key_id", delete(delete_key_handler))
+        .route("/keys", get(list_keys_handler))
+        .route("/keys", post(create_key_handler))
+        .route("/keys/:key_id", delete(delete_key_handler))
+        
         // Client key management
-        .route("/auth/keys/:key_id/clients", get(list_clients_handler))
+        .route("/keys/clients", get(list_clients_handler))
+        .route("/client-key", post(generate_client_key_handler))
         .route(
-            "/auth/keys/:key_id/clients/:client_id",
+            "/keys/:key_id/clients/:client_id",
             delete(delete_client_handler),
         )
-        // Permission management
-        .route("/auth/permissions", get(list_permissions_handler))
+        
+        // Permission management for both root and client keys
         .route(
-            "/auth/keys/:key_id/permissions",
-            get(get_key_permissions_handler),
+            "/keys/:key_id/permissions",
+            get(get_key_permissions_handler)
+                .put(update_key_permissions_handler),
         )
-        .route(
-            "/auth/keys/:key_id/permissions",
-            put(update_key_permissions_handler),
-        )
-        // Identity endpoint for development detection
+        
+        // Protected system endpoints
         .route("/identity", get(identity_handler))
-        // Metrics endpoint (should be protected)
         .route("/metrics", get(metrics_handler))
-        // Apply authentication middleware only to protected routes
+        // Add authentication middleware to all protected routes
         .layer(from_fn(forward_auth_middleware));
 
-    //TODO: FINISH security headers and rate limit
-    // Start with the base router
-    let router = Router::new()
-        .merge(public_routes)
-        .merge(authenticated_routes)
-        // .layer(create_body_limit_layer())
-        .layer(cors_layer)
+    // Create the base router with all routes
+    let mut router = Router::new()
+        .nest("/public", public_routes)
+        .nest("/private", protected_routes)
         .layer(Extension(Arc::clone(&state)));
 
-    // Add rate limit layer
-    // let rate_limit = create_rate_limit_layer();
-    // router = router.layer(rate_limit);
-
-    // Add security headers
-    // for header_layer in create_security_headers() {
-    //     router = router.layer(header_layer);
-    // }
+    // Add security layers from outermost to innermost
+    
+    // 1. Add CORS layer first (outermost)
+    router = router.layer(cors_layer);
+    
+    // 2. Add security headers if enabled
+    if config.security.headers.enabled {
+        for header_layer in create_security_headers(&config.security.headers) {
+            router = router.layer(header_layer);
+        }
+    }
+    
+    // 3. Add rate limiting
+    router = router.layer(RateLimitLayer::new(config.security.rate_limit.clone()));
+    
+    // 4. Add body size limiting (innermost)
+    router = router.layer(create_body_limit_layer(config.security.max_body_size));
 
     router
 }

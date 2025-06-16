@@ -5,8 +5,6 @@ use axum::extract::{Extension, Query};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
-use base64::Engine;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
@@ -15,28 +13,30 @@ use validator::Validate;
 use crate::api::handlers::AuthUiStaticFiles;
 use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
-use crate::AuthError;
 
 // Common response type used by all helper functions
-type ApiResponse = (StatusCode, Json<serde_json::Value>);
+type ApiResponse = (StatusCode, HeaderMap, Json<serde_json::Value>);
 
-// Helper functions for common response patterns
-pub fn unauthorized_response(message: &str) -> ApiResponse {
+pub fn success_response<T: Serialize>(data: T, headers: Option<HeaderMap>) -> ApiResponse {
     (
-        StatusCode::UNAUTHORIZED,
-        Json(serde_json::json!({ "error": message })),
+        StatusCode::OK,
+        headers.unwrap_or_default(),
+        Json(serde_json::json!({
+            "data": data,
+            "error": null
+        }))
     )
 }
 
-pub fn internal_error_response(message: &str) -> ApiResponse {
+pub fn error_response(status: StatusCode, error: impl Into<String>, headers: Option<HeaderMap>) -> ApiResponse {
     (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": message })),
+        status,
+        headers.unwrap_or_default(),
+        Json(serde_json::json!({
+            "data": null,
+            "error": error.into()
+        }))
     )
-}
-
-pub fn success_response<T: Serialize>(data: T) -> ApiResponse {
-    (StatusCode::OK, Json(serde_json::json!(data)))
 }
 
 /// Login request handler
@@ -58,15 +58,11 @@ pub async fn login_handler(
             // Convert the file content to a string
             let html_content = String::from_utf8_lossy(&file.data);
 
-            // Replace the asset paths to use the /auth prefix
-            let modified_html = html_content
-                .replace("=\"/assets/", "=\"/auth/assets/")
-                .replace("=\"/favicon.ico", "=\"/auth/favicon.ico");
-
+            // The assets are already prefixed with /public/ from the Vite build
             return (
                 StatusCode::OK,
                 [("Content-Type", "text/html")],
-                modified_html.into_bytes(),
+                html_content.into_owned().into_bytes(),
             );
         }
 
@@ -118,13 +114,7 @@ pub struct TokenResponse {
     access_token: String,
     /// Refresh token
     refresh_token: String,
-    /// Token type
-    token_type: String,
-    /// Expires in seconds
-    expires_in: u64,
-    /// Client ID
-    client_id: String,
-    /// Error information (if any)
+    /// Error message
     error: Option<String>,
 }
 
@@ -133,28 +123,11 @@ impl TokenResponse {
     pub fn new(
         access_token: String,
         refresh_token: String,
-        client_id: String,
-        expires_in: u64,
     ) -> Self {
         Self {
             access_token,
             refresh_token,
-            token_type: "Bearer".to_string(),
-            expires_in,
-            client_id,
             error: None,
-        }
-    }
-
-    /// Create an error token response
-    fn error(msg: &str) -> Self {
-        Self {
-            access_token: String::new(),
-            refresh_token: String::new(),
-            token_type: String::new(),
-            expires_in: 0,
-            client_id: String::new(),
-            error: Some(msg.to_string()),
         }
     }
 }
@@ -175,6 +148,7 @@ pub async fn token_handler(
     state: Extension<Arc<AppState>>,
     ValidatedJson(token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
+    info!("token_handler");
     // Authenticate directly using the token request
     let auth_response = match state
         .0
@@ -185,13 +159,13 @@ pub async fn token_handler(
         Ok(response) => response,
         Err(err) => {
             error!("Authentication failed: {}", err);
-            return unauthorized_response(&format!("Authentication failed: {}", err));
+            return error_response(StatusCode::UNAUTHORIZED, format!("Authentication failed: {}", err), None);
         }
     };
 
     // Ensure authentication was successful
     if !auth_response.is_valid {
-        return unauthorized_response("Authentication failed: Invalid credentials");
+        return error_response(StatusCode::UNAUTHORIZED, "Authentication failed: Invalid credentials", None);
     }
 
     let key_id = auth_response.key_id;
@@ -204,17 +178,12 @@ pub async fn token_handler(
         .await
     {
         Ok((access_token, refresh_token)) => {
-            let response = TokenResponse::new(
-                access_token,
-                refresh_token,
-                key_id,
-                state.0.config.jwt.access_token_expiry,
-            );
-            success_response(response)
+            let response = TokenResponse::new(access_token, refresh_token);
+            success_response(response, None)
         }
         Err(err) => {
             error!("Failed to generate tokens: {}", err);
-            internal_error_response("Failed to generate tokens")
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate tokens", None)
         }
     }
 }
@@ -222,6 +191,9 @@ pub async fn token_handler(
 /// Refresh token request
 #[derive(Debug, Deserialize, Validate)]
 pub struct RefreshTokenRequest {
+    /// Access token
+    #[validate(length(min = 1, message = "Access token is required"))]
+    access_token: String,
     /// Refresh token
     #[validate(length(min = 1, message = "Refresh token is required"))]
     refresh_token: String,
@@ -230,6 +202,7 @@ pub struct RefreshTokenRequest {
 /// Refresh token handler
 ///
 /// This endpoint refreshes an access token using a refresh token.
+/// It supports both root and client tokens, handling them appropriately.
 ///
 /// # Arguments
 ///
@@ -243,28 +216,17 @@ pub async fn refresh_token_handler(
     state: Extension<Arc<AppState>>,
     ValidatedJson(request): ValidatedJson<RefreshTokenRequest>,
 ) -> impl IntoResponse {
-    // First verify the refresh token to get the claims
-    let claims = match state
-        .0
-        .token_generator
-        .verify_token(&request.refresh_token)
-        .await
-    {
-        Ok(claims) => claims,
+    match state.0.token_generator.verify_token(&request.access_token).await {
+        Ok(_) => {
+            return error_response(StatusCode::UNAUTHORIZED, "Access token still valid", None);
+        }
         Err(err) => {
-            debug!("Failed to verify refresh token: {}", err);
-            let error_response = TokenResponse::error("Invalid refresh token");
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!(error_response)),
-            );
+            if !err.to_string().contains("expired") {
+                return error_response(StatusCode::UNAUTHORIZED, format!("Invalid access token: {}", err), None);
+            }
         }
     };
 
-    // Extract client_id from claims
-    let client_id = claims.sub;
-
-    // Generate new token pair
     match state
         .0
         .token_generator
@@ -272,21 +234,12 @@ pub async fn refresh_token_handler(
         .await
     {
         Ok((access_token, refresh_token)) => {
-            let response = TokenResponse::new(
-                access_token,
-                refresh_token,
-                client_id,
-                state.0.config.jwt.access_token_expiry,
-            );
-            success_response(response)
+            let response = TokenResponse::new(access_token, refresh_token);
+            success_response(response, None)
         }
         Err(err) => {
-            debug!("Failed to refresh token: {}", err);
-            let error_response = TokenResponse::error("Invalid refresh token");
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!(error_response)),
-            )
+            error!("Failed to refresh token: {}", err);
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to refresh token: {}", err), None)
         }
     }
 }
@@ -299,7 +252,7 @@ pub async fn refresh_token_handler(
 /// # Arguments
 ///
 /// * `state` - The application state
-/// * `request` - The request to validate
+/// * `headers` - The request headers
 ///
 /// # Returns
 ///
@@ -308,39 +261,57 @@ pub async fn validate_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    println!("validate_handler headers: {:?}", headers);
-    // Validate the request using the headers
-    match state
-        .0
-        .auth_service
-        .verify_token_from_headers(&headers)
-        .await
+    // Check if Authorization header exists and starts with "Bearer "
+    if !headers
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h.starts_with("Bearer "))
+        .unwrap_or(false)
     {
+        let mut error_headers = HeaderMap::new();
+        error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
+        return error_response(StatusCode::UNAUTHORIZED, "No Bearer token provided", Some(error_headers));
+    }
+
+    // Validate the request using the headers
+    match state.0.auth_service.verify_token_from_headers(&headers).await {
         Ok(auth_response) => {
             if !auth_response.is_valid {
-                return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+                return error_response(StatusCode::UNAUTHORIZED, "Unauthorized", None);
             }
 
-            // Return success with appropriate headers
+            // Create response headers
             let mut response_headers = HeaderMap::new();
 
-            // Add key_id header directly since it's no longer optional
-            if let Ok(header_value) = auth_response.key_id.parse() {
-                response_headers.insert("X-Auth-User", header_value);
-            }
+            // Add user ID header
+            response_headers.insert(
+                "X-Auth-User",
+                auth_response.key_id.parse().unwrap()
+            );
 
             // Add permissions as a comma-separated list
             if !auth_response.permissions.is_empty() {
-                let permissions = auth_response.permissions.join(",");
-                if let Ok(header_value) = permissions.parse() {
-                    response_headers.insert("X-Auth-Permissions", header_value);
-                }
+                response_headers.insert(
+                    "X-Auth-Permissions",
+                    auth_response.permissions.join(",").parse().unwrap()
+                );
             }
 
-            // Convert to Response to match error case
-            (StatusCode::OK, response_headers, "").into_response()
+            success_response("", Some(response_headers))
         }
-        Err(_) => (StatusCode::UNAUTHORIZED, HeaderMap::new(), "Unauthorized").into_response(),
+        Err(err) => {
+            let mut error_headers = HeaderMap::new();
+            // Add error type header for better client handling
+            if err.to_string().contains("expired") {
+                error_headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
+            } else if err.to_string().contains("revoked") {
+                error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+            } else {
+                error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+            }
+            
+            error_response(StatusCode::UNAUTHORIZED, format!("Invalid token: {}", err), Some(error_headers))
+        }
     }
 }
 
@@ -395,10 +366,10 @@ pub struct ChallengeResponse {
 /// * `impl IntoResponse` - The response containing the challenge token
 pub async fn challenge_handler(state: Extension<Arc<AppState>>) -> impl IntoResponse {
     match state.0.token_generator.generate_challenge().await {
-        Ok(response) => success_response(response),
+        Ok(response) => success_response(response, None),
         Err(err) => {
             error!("Failed to generate challenge: {}", err);
-            internal_error_response("Failed to generate challenge")
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate challenge", None)
         }
     }
 }
@@ -434,7 +405,6 @@ pub async fn revoke_token_handler(
         .await
     {
         Ok(_) => {
-            // Log successful revocation
             debug!(
                 "Successfully revoked tokens for client {}",
                 request.client_id
@@ -443,27 +413,15 @@ pub async fn revoke_token_handler(
             success_response(serde_json::json!({
                     "success": true,
                     "message": "Tokens revoked successfully"
-            }))
+            }), None)
         }
         Err(err) => {
-            // Log error
             error!(
                 "Failed to revoke tokens for client {}: {}",
                 request.client_id, err
             );
 
-            let status_code = match err {
-                AuthError::AuthenticationFailed(_) => StatusCode::NOT_FOUND,
-                AuthError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                _ => StatusCode::BAD_REQUEST,
-            };
-
-            (
-                status_code,
-                Json(serde_json::json!({
-                    "error": format!("Failed to revoke tokens: {}", err)
-                })),
-            )
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to revoke tokens: {}", err), None)
         }
     }
 }

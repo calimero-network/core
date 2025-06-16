@@ -7,8 +7,10 @@ use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use {base64, rand, uuid};
+use sha2::{Digest, Sha256};
+use hex;
 
-use crate::api::handlers::auth::ChallengeResponse;
+use crate::{api::handlers::auth::ChallengeResponse, storage::{models::KeyType, Key}};
 use crate::config::JwtConfig;
 use crate::secrets::SecretManager;
 use crate::storage::{KeyManager, Storage};
@@ -143,23 +145,66 @@ impl TokenManager {
             return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
         }
 
-        let access_token = self
-            .generate_token(
-                key_id.clone(),
-                permissions.clone(),
-                Duration::seconds(self.config.access_token_expiry as i64),
-            )
-            .await?;
+        match key.key_type {
+            // For root tokens, simply generate new tokens with the same ID
+            KeyType::Root => {
+                let access_token = self
+                    .generate_token(
+                        key_id.clone(),
+                        permissions.clone(),
+                        Duration::seconds(self.config.access_token_expiry as i64),
+                    )
+                    .await?;
 
-        let refresh_token = self
-            .generate_token(
-                key_id,
-                permissions,
-                Duration::seconds(self.config.refresh_token_expiry as i64),
-            )
-            .await?;
+                let refresh_token = self
+                    .generate_token(
+                        key_id,
+                        permissions,
+                        Duration::seconds(self.config.refresh_token_expiry as i64),
+                    )
+                    .await?;
 
-        Ok((access_token, refresh_token))
+                Ok((access_token, refresh_token))
+            }
+            // For client tokens, rotate the key ID
+            KeyType::Client => {
+                // Generate new client ID
+                let timestamp = Utc::now().timestamp();
+                let mut hasher = Sha256::new();
+                hasher.update(format!("refresh:{}:{}", key_id, timestamp).as_bytes());
+                let new_client_id = hex::encode(hasher.finalize());
+
+                // Store key with new ID and delete old one
+                self.key_manager
+                    .set_key(&new_client_id, &key)
+                    .await
+                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+                self.key_manager
+                    .delete_key(&key_id)
+                    .await
+                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+                // Generate new tokens with the new ID
+                let access_token = self
+                    .generate_token(
+                        new_client_id.clone(),
+                        permissions.clone(),
+                        Duration::seconds(self.config.access_token_expiry as i64),
+                    )
+                    .await?;
+
+                let refresh_token = self
+                    .generate_token(
+                        new_client_id,
+                        permissions,
+                        Duration::seconds(self.config.refresh_token_expiry as i64),
+                    )
+                    .await?;
+
+                Ok((access_token, refresh_token))
+            }
+        }
     }
 
     /// Verify a JWT token and return the claims
@@ -175,14 +220,24 @@ impl TokenManager {
         validation.set_issuer(&[&self.config.issuer]);
         validation.set_audience(&[&self.config.issuer]);
 
-        let token_data = decode::<Claims>(
+        match decode::<Claims>(
             token,
             &DecodingKey::from_secret(secret.as_bytes()),
             &validation,
-        )
-        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
-
-        Ok(token_data.claims)
+        ) {
+            Ok(token_data) => Ok(token_data.claims),
+            Err(err) => {
+              match err.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+                    Err(AuthError::InvalidToken("Token has expired".to_string()))
+                }
+                jsonwebtoken::errors::ErrorKind::InvalidToken => {
+                    Err(AuthError::InvalidToken(format!("Malformed token: {}", err)))
+                }
+                _ => Err(AuthError::InvalidToken(err.to_string())),
+              }
+            }
+        }
     }
 
     /// Verify a JWT token from request headers
@@ -264,6 +319,10 @@ impl TokenManager {
 
     /// Refresh a token pair using a refresh token
     ///
+    /// This method verifies the refresh token and generates new tokens based on the key type.
+    /// For root tokens, it preserves the key ID.
+    /// For client tokens, it generates a new client ID and rotates the key.
+    ///
     /// # Arguments
     ///
     /// * `refresh_token` - The refresh token to use
@@ -278,7 +337,7 @@ impl TokenManager {
         // Verify the refresh token to get the claims
         let claims = self.verify_token(refresh_token).await?;
 
-        // Get and verify the key
+        // Get the key and verify it's valid
         let key = self
             .key_manager
             .get_key(&claims.sub)
@@ -287,12 +346,37 @@ impl TokenManager {
             .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
 
         if !key.is_valid() {
-            return Err(AuthError::InvalidToken("Key has been revoked".to_string()));
+            return Err(AuthError::InvalidToken("Key is not valid".to_string()));
         }
 
-        // Generate new token pair with the same permissions
-        self.generate_token_pair(claims.sub, claims.permissions)
-            .await
+        match key.key_type {
+            // For root tokens, simply generate new tokens with the same ID
+            KeyType::Root => {
+                self.generate_token_pair(claims.sub, key.permissions).await
+            },
+            // For client tokens, rotate the key ID
+            KeyType::Client => {
+                // Generate new client ID
+                let timestamp = Utc::now().timestamp();
+                let mut hasher = Sha256::new();
+                hasher.update(format!("refresh:{}:{}", claims.sub, timestamp).as_bytes());
+                let new_client_id = hex::encode(hasher.finalize());
+
+                // Store key with new ID and delete old one
+                self.key_manager
+                    .set_key(&new_client_id, &key)
+                    .await
+                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+                self.key_manager
+                    .delete_key(&claims.sub)
+                    .await
+                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+                // Generate new tokens with the new ID
+                self.generate_token_pair(new_client_id, key.permissions).await
+            }
+        }
     }
 
     /// Generate a challenge token

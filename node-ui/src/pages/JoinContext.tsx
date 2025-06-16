@@ -6,10 +6,7 @@ import translations from '../constants/en.global.json';
 import JoinContextCard from '../components/context/joinContext/JoinContextCard';
 import styled from 'styled-components';
 import { ModalContent } from '../components/common/StatusModal';
-import { ResponseData } from '../api/response';
-import { JoinContextResponse } from '../api/dataSource/NodeDataSource';
-import apiClient from '../api';
-import { useServerDown } from '../context/ServerDownContext';
+import { apiClient, ResponseData } from '@calimero-network/calimero-client';
 
 export interface ContextApplication {
   appId: string;
@@ -33,7 +30,6 @@ const Wrapper = styled.div`
 export default function JoinContextPage() {
   const t = translations.joinContextPage;
   const navigate = useNavigate();
-  const { showServerDownPopup } = useServerDown();
   const [contextId, setContextId] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [modalContent, setModalContent] = useState<ModalContent>({
@@ -43,23 +39,23 @@ export default function JoinContextPage() {
   });
 
   const handleJoinContext = async () => {
-    const fetchApplicationResponse: ResponseData<JoinContextResponse> =
-      await apiClient(showServerDownPopup).node().joinContext(contextId);
-    if (fetchApplicationResponse.error) {
-      setModalContent({
-        title: t.joinErrorTitle,
-        message: fetchApplicationResponse.error.message,
-        error: true,
-      });
-      setShowModal(true);
-      return;
-    }
-    setModalContent({
-      title: t.joinSuccessTitle,
-      message: t.joinSuccessMessage,
-      error: false,
-    });
-    setShowModal(true);
+    // TODO: Implement join context
+    // const fetchApplicationResponse = await apiClient.node().joinContext(contextId);
+    // if (fetchApplicationResponse.error) {
+    //   setModalContent({
+    //     title: t.joinErrorTitle,
+    //     message: fetchApplicationResponse.error.message,
+    //     error: true,
+    //   });
+    //   setShowModal(true);
+    //   return;
+    // }
+    // setModalContent({
+    //   title: t.joinSuccessTitle,
+    //   message: t.joinSuccessMessage,
+    //   error: false,
+    // });
+    // setShowModal(true);
   };
 
   const closeModal = () => {

@@ -74,9 +74,13 @@ README.md
 **/cypress/screenshots
 **/cypress/videos
 
-# Environment variables
+# Environment variables and secrets
 **/.env*
 **/.envrc
-**/secrets.*
+**/secrets.json
+**/secrets.yaml
+**/secrets.yml
+**/secrets.toml
+**/secrets.ini
 **/*.pem
 **/*.key

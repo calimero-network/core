@@ -261,6 +261,11 @@ impl PermissionValidator {
         user_permissions: &[String],
         required: &[Permission],
     ) -> bool {
+        // First check for admin permission
+        if user_permissions.iter().any(|p| p == "admin") {
+            return true; // Admin has access to everything
+        }
+
         // Convert string permissions to Permission enums
         let user_perms: Vec<Permission> = user_permissions
             .iter()

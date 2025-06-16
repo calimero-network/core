@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Extension, Request};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
 use crate::auth::permissions::{
     ContextPermission, Permission, PermissionValidator, ResourceScope, UserScope,
 };
-use crate::server::AppState;
+use crate::{AuthError, server::AppState};
+use tracing::{debug, info, warn};
 
 /// Forward authentication middleware for reverse proxy
 ///
@@ -23,30 +24,28 @@ use crate::server::AppState;
 ///
 /// # Returns
 ///
-/// * `Result<Response, StatusCode>` - The response or error
+/// * `Result<Response, (StatusCode, HeaderMap)>` - The response or error with headers
 pub async fn forward_auth_middleware(
     state: Extension<Arc<AppState>>,
     request: Request<Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, (StatusCode, HeaderMap)> {
     // Extract request details for logging
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let start_time = std::time::Instant::now();
+    info!("Forwarding auth for {} {}", method, path);
 
-    // Skip authentication for public endpoints
-    if path.starts_with("/auth/login")
-        || path.starts_with("/auth/challenge")
-        || path.starts_with("/auth/token")
-        || path == "/health"
-        || path == "/providers"
-    {
-        tracing::debug!("Skipping auth for {} {}", method, path);
+    // Skip authentication for public endpoints, standalone version
+    if path.starts_with("/public") {
+        info!("Skipping auth for {} {}", method, path);
         let response = next.run(request).await;
         let duration = start_time.elapsed();
-        tracing::debug!("Request {} {} completed in {:?}", method, path, duration);
+        debug!("Request {} {} completed in {:?}", method, path, duration);
         return Ok(response);
     }
+
+    debug!("Forwarding auth for {} {}", method, path);
 
     // Extract headers for token validation
     let headers = request.headers().clone();
@@ -55,11 +54,9 @@ pub async fn forward_auth_middleware(
     match state.auth_service.verify_token_from_headers(&headers).await {
         Ok(auth_response) => {
             // Log successful authentication
-            tracing::debug!(
+            debug!(
                 "Successful authentication for {} {} by user {}",
-                method,
-                path,
-                auth_response.key_id
+                method, path, auth_response.key_id
             );
 
             // Create permission validator
@@ -87,20 +84,19 @@ pub async fn forward_auth_middleware(
                 validator.validate_permissions(&auth_response.permissions, &required_permissions);
 
             if !has_permission {
-                tracing::warn!(
+                warn!(
                     "Permission denied for {} {} - required: {:?}, had: {:?}",
-                    method,
-                    path,
-                    required_permissions,
-                    auth_response.permissions
+                    method, path, required_permissions, auth_response.permissions
                 );
-                return Err(StatusCode::FORBIDDEN);
+                let mut headers = HeaderMap::new();
+                headers.insert("X-Auth-Error", "permission_denied".parse().unwrap());
+                return Err((StatusCode::FORBIDDEN, headers));
             }
 
             // Continue with normal request
             let mut response = next.run(request).await;
             let duration = start_time.elapsed();
-            tracing::debug!("Request {} {} completed in {:?}", method, path, duration);
+            debug!("Request {} {} completed in {:?}", method, path, duration);
 
             // Add authentication headers
             response
@@ -119,14 +115,42 @@ pub async fn forward_auth_middleware(
         }
         Err(err) => {
             let duration = start_time.elapsed();
-            tracing::warn!(
-                "Authentication failed for {} {}: {} (took {:?})",
-                method,
-                path,
-                err,
-                duration
-            );
-            Err(StatusCode::UNAUTHORIZED)
+            let mut headers = HeaderMap::new();
+
+            match err {
+                AuthError::InvalidToken(msg) if msg.contains("expired") => {
+                    warn!(
+                        "Token expired for {} {} (took {:?})",
+                        method, path, duration
+                    );
+                    headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
+                    Err((StatusCode::UNAUTHORIZED, headers))
+                }
+                AuthError::InvalidToken(msg) if msg.contains("revoked") => {
+                    warn!(
+                        "Token revoked for {} {} (took {:?})",
+                        method, path, duration
+                    );
+                    headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+                    Err((StatusCode::FORBIDDEN, headers))
+                }
+                AuthError::InvalidRequest(_) => {
+                    warn!(
+                        "Invalid request for {} {}: {} (took {:?})",
+                        method, path, err, duration
+                    );
+                    headers.insert("X-Auth-Error", "invalid_request".parse().unwrap());
+                    Err((StatusCode::BAD_REQUEST, headers))
+                }
+                _ => {
+                    warn!(
+                        "Authentication failed for {} {}: {} (took {:?})",
+                        method, path, err, duration
+                    );
+                    headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    Err((StatusCode::UNAUTHORIZED, headers))
+                }
+            }
         }
     }
 }

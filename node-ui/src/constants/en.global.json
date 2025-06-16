@@ -42,7 +42,7 @@
     "subtitle": "Start using Calimero by selecting your wallet.",
     "buttonConnectText": "Connect Wallet",
     "loginSelector": {
-      "title": "Continue with wallet",
+      "title": "Add new root key",
       "metamaskButtonText": "Metamask wallet",
       "nearButtonText": "Near wallet",
       "starknetButtonText": "Starknet wallet",
@@ -204,7 +204,13 @@
     "badgeRevokedText": "Revoked",
     "setActiveText": "Set Active",
     "revokeKeyText": "Revoke Key",
-    "addNewText": "Add new Key"
+    "addNewText": "Add new Key",
+    "permissionsDialogTitle": "Manage Permissions",
+    "permissionsSaveButton": "Save Changes",
+    "permissionsCancelButton": "Cancel",
+    "permissionsError": "Failed to update permissions",
+    "permissionsAtLeastOne": "At least one permission is required",
+    "permissionsUpdated": "Permissions updated successfully"
   },
   "uploadPage": {
     "title": "Upload Application",
@@ -341,7 +347,6 @@
     "exportSuccessTitle": "Identity exported"
   },
   "identityPage": {
-    "title": "Root keys",
     "addRootKeyText": "Add new root key",
     "loggedInLabel": "Logged in with: ",
     "noRootKeysText": "No root keys found in the node."

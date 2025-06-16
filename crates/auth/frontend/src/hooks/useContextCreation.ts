@@ -2,16 +2,25 @@ import { useState } from 'react';
 import { getStoredUrlParam } from '../utils/urlParams';
 import { apiClient } from '@calimero-network/calimero-client';
 
-export type Protocol = 'NEAR' | 'Starknet' | 'ICP' | 'Stellar' | 'Ethereum';
+export const PROTOCOLS = ['near', 'starknet', 'icp', 'stellar', 'ethereum'] as const;
+export const PROTOCOL_DISPLAY = {
+  near: 'NEAR',
+  starknet: 'Starknet',
+  icp: 'ICP',
+  stellar: 'Stellar',
+  ethereum: 'Ethereum'
+} as const;
+
+export type Protocol = typeof PROTOCOLS[number];
 
 interface UseContextCreationReturn {
   isLoading: boolean;
   error: string | null;
   showInstallPrompt: boolean;
   selectedProtocol: Protocol | null;
-  setSelectedProtocol: (protocol: Protocol) => void;
-  createContext: () => Promise<void>;
-  handleInstallConfirm: () => Promise<void>;
+  setSelectedProtocol: (protocol: Protocol | null) => void;
+  checkAndInstallApplication: (applicationId: string, applicationPath: string) => Promise<boolean>;
+  handleContextCreation: () => Promise<{ contextId: string; memberPublicKey: string } | undefined>;
   handleInstallCancel: () => void;
 }
 
@@ -24,24 +33,30 @@ export function useContextCreation(): UseContextCreationReturn {
 
   const checkAndInstallApplication = async (applicationId: string, applicationPath: string) => {
     try {
+      if (!applicationId || !applicationPath || !selectedProtocol) {
+        throw new Error('Missing required parameters');
+      }
+
       const application = await apiClient.node().getInstalledApplicationDetails(applicationId);
       console.log('application', application);
       
-      if (!application) {
+      if (application.data) {
         // Application doesn't exist, try to install with expected ID
-        try {
-          await apiClient.node().installApplication(applicationPath, new Uint8Array(), applicationId);
-          // Application installed successfully
-          return true;
-        } catch (err: any) {
-          if (err.message?.includes('400')) {
-            // Application ID mismatch
+        const installResponse = await apiClient.node().installApplication(applicationPath, new Uint8Array(), applicationId);
+        console.log('installResponse', installResponse);
+
+        if (installResponse.error) {
+          console.log('installResponse.error', installResponse.error);
+          if(installResponse.error.message === 'fatal: blob hash mismatch') {
+            console.log('application mismatch');
             setApplicationMismatch(true);
             setShowInstallPrompt(true);
             return false;
           }
-          throw err;
+
+          throw new Error(installResponse.error.message);
         }
+        return true;
       }
       // Application exists
       return true;
@@ -50,50 +65,15 @@ export function useContextCreation(): UseContextCreationReturn {
     }
   };
 
-  const createContext = async () => {
+  const handleContextCreation = async () => {
     setIsLoading(true);
     setError(null);
     
     try {
-      if (!selectedProtocol) {
-        throw new Error('Please select a protocol before creating a context');
-      }
-
-      const applicationId = getStoredUrlParam('applicationId');
-      const applicationPath = getStoredUrlParam('applicationPath');
+      const applicationPath = getStoredUrlParam('application-path');
+      const applicationId = getStoredUrlParam('application-id');
       
-      if (!applicationId || !applicationPath) {
-        throw new Error('Missing required parameters: applicationId or applicationPath');
-      }
-
-      // Check and install application if needed
-      const hasApplication = await checkAndInstallApplication(applicationId, applicationPath);
-      
-      if (!hasApplication && !applicationMismatch) {
-        // Application doesn't exist and no mismatch - general error
-        throw new Error('Failed to install application');
-      }
-
-      if (!applicationMismatch) {
-        // Create context only if we have the application and there's no mismatch
-        await apiClient.node().createContext(applicationId, selectedProtocol);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to create context');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleInstallConfirm = async () => {
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const applicationPath = getStoredUrlParam('applicationPath');
-      const applicationId = getStoredUrlParam('applicationId');
-      
-      if (!applicationPath || !applicationId) {
+      if (!applicationPath || !applicationId || !selectedProtocol) {
         throw new Error('Missing required parameters');
       }
 
@@ -104,20 +84,23 @@ export function useContextCreation(): UseContextCreationReturn {
         return;
       }
       const newApplicationId = installResponse.data.applicationId;
-
-      if (!selectedProtocol) {
-        throw new Error('Please select a protocol before creating a context');
-      }
-
+      localStorage.setItem('application-id', JSON.stringify(newApplicationId));
       // Create context
       const createContextResponse = await apiClient.node().createContext(newApplicationId, selectedProtocol);
+      console.log('createContextResponse', createContextResponse);
       if (createContextResponse.error) {
         setError(createContextResponse.error.message);
         return;
       }
 
-      setShowInstallPrompt(false);
-      setApplicationMismatch(false);
+      // Handle successful context creation
+      if (createContextResponse.data) {
+        const { contextId, memberPublicKey } = createContextResponse.data;
+        setSelectedProtocol(null);
+        setShowInstallPrompt(false);
+        setApplicationMismatch(false);
+        return { contextId, memberPublicKey };
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to install application');
     } finally {
@@ -128,7 +111,6 @@ export function useContextCreation(): UseContextCreationReturn {
   const handleInstallCancel = () => {
     setShowInstallPrompt(false);
     setApplicationMismatch(false);
-    setError('Context creation cancelled');
   };
 
   return {
@@ -137,8 +119,8 @@ export function useContextCreation(): UseContextCreationReturn {
     showInstallPrompt,
     selectedProtocol,
     setSelectedProtocol,
-    createContext,
-    handleInstallConfirm,
+    checkAndInstallApplication,
+    handleContextCreation,
     handleInstallCancel
   };
 } 

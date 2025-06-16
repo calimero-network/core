@@ -1,38 +1,106 @@
-FROM rust:1.77-slim-bookworm as builder
+# syntax=docker/dockerfile:1.6
+
+ARG NODE_VERSION=18
+ARG RUST_VERSION=1.81
+ARG APP_NAME=calimero-auth
+
+################################################################################
+# Frontend Builder Stage
+FROM node:${NODE_VERSION}-slim AS frontend-builder
+
+WORKDIR /usr/src/calimero/frontend
+
+# Copy only package files first to leverage npm cache
+COPY crates/auth/frontend/package*.json ./
+
+# Cache npm install layer
+RUN --mount=type=cache,target=/usr/src/calimero/frontend/.npm \
+    npm set cache /usr/src/calimero/frontend/.npm && \
+    npm install
+
+# Now copy full source and build
+COPY crates/auth/frontend ./
+RUN npm run build
+
+################################################################################
+# Development Stage - this is the stage we'll use for development
+FROM rust:${RUST_VERSION}-slim-bookworm AS dev
 
 WORKDIR /usr/src/calimero
-COPY . .
 
-# Install dependencies
+# Install build dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    cmake \
-    build-essential \
-    ca-certificates \
-    git \
-    libssl-dev \
-    pkg-config
-
-# Build the auth server
-RUN cargo build --bin calimero-auth --release
-
-FROM debian:bookworm-slim
-
-WORKDIR /app
-
-# Install dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libssl-dev \
+    cmake build-essential ca-certificates git \
+    libssl-dev pkg-config clang libclang-dev llvm-dev \
+    libc6-dev libsnappy-dev zlib1g-dev libbz2-dev \
+    libgflags-dev liblz4-dev libzstd-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the binary
-COPY --from=builder /usr/src/calimero/target/release/calimero-auth /usr/local/bin/calimero-auth
-
-VOLUME ["/data"]
+# We don't COPY any source code here - it will be mounted at runtime
+# Copy config file and frontend dist
+COPY config/auth.prod.toml /etc/calimero/auth.toml
+COPY --from=frontend-builder /usr/src/calimero/frontend/dist /usr/src/calimero/crates/auth/frontend/dist
 
 EXPOSE 3001
 
+# Default command for development
+CMD ["cargo", "run", "--bin", "calimero-auth", "--", "--config", "/etc/calimero/auth.toml", "--verbose"]
+
+################################################################################
+# Production Stage - this builds the final optimized binary
+FROM dev AS build
+ARG APP_NAME
+
+# For production build, copy the source
+COPY . .
+
+# Build the release binary
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/src/calimero/target \
+    cargo build --release --bin ${APP_NAME} && \
+    cp target/release/${APP_NAME} /bin/server
+
+################################################################################
+# Final Production Stage
+FROM debian:bookworm-slim AS final
+
+# Create a non-privileged user
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    appuser
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates libssl-dev libsnappy1v5 liblz4-1 libzstd1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the executable and configs
+COPY --from=build /bin/server /usr/local/bin/calimero-auth
+COPY config/auth.prod.toml /etc/calimero/auth.toml
+
+# Copy frontend dist files
+COPY --from=frontend-builder /usr/src/calimero/frontend/dist /app/frontend/dist
+
+# Create data directory and set permissions
+RUN mkdir -p /data/auth_db && \
+    chown -R appuser:appuser /data
+
+# Switch to non-root user
+USER appuser
+
+VOLUME ["/data"]
+EXPOSE 3001
+
 ENTRYPOINT ["calimero-auth"]
-CMD ["--verbose"] 
+CMD ["--config", "/etc/calimero/auth.toml", "--verbose"]

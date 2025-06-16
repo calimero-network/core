@@ -72,6 +72,7 @@ toml = "0.8"
 
 # New dependencies
 regex = "1.10.2"
+dashmap = "5.5.3"  # Fast concurrent HashMap
 
 [dev-dependencies]
 tokio-test = "0.4"

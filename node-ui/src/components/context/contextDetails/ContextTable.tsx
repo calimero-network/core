@@ -8,12 +8,9 @@ import clientKeyRowItem from './ClientKeyRowItem';
 import userRowItem from './UserRowItem';
 import { DetailsOptions } from '../../../constants/ContextConstants';
 import DetailsCard from './DetailsCard';
-import {
-  ClientKey,
-  ContextStorage,
-  User,
-} from '../../../api/dataSource/NodeDataSource';
 import { ContextDetails } from '../../../types/context';
+import { ClientKey } from '@calimero-network/calimero-client/lib/api/adminApi';
+import { ContextStorage } from '@calimero-network/calimero-client/lib/api/nodeApi';
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -24,7 +21,7 @@ interface ContextTableProps {
   contextDetailsError: string | null;
   contextClientKeys: ClientKey[];
   contextClientKeysError: string | null;
-  contextUsers: User[];
+  contextUsers: string[];
   contextUsersError: string | null;
   contextStorage: ContextStorage;
   contextStorageError: string | null;
@@ -70,7 +67,7 @@ export default function ContextTable(props: ContextTableProps) {
           />
         )}
         {props.currentOption === DetailsOptions.USERS && (
-          <ListTable<User>
+          <ListTable<string>
             numOfColumns={1}
             listItems={props.contextUsers || []}
             error={props.contextUsersError ?? ''}

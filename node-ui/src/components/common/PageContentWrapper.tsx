@@ -5,8 +5,8 @@ const PageWrapper = styled.div<{ $isOverflow: boolean }>`
   padding: 4.705rem 2rem 2rem;
   ${(props) => (props.$isOverflow ? 'overflow-y: scroll;' : 'display: flex;')}
   flex: 1;
-  justify-content: center;
-  align-items: center;
+  // justify-content: center;
+  // align-items: center;
 `;
 
 interface PageContentWrapperProps {

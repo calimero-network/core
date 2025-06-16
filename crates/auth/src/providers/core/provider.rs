@@ -7,12 +7,14 @@ use eyre::Result;
 use serde_json::Value;
 
 use crate::api::handlers::auth::TokenRequest;
+use crate::storage::models::Key;
 use crate::{AuthError, AuthResponse};
 
 /// Authentication provider trait
 ///
 /// This trait defines the interface for authentication providers.
 /// Each provider implements a specific authentication method.
+#[async_trait]
 pub trait AuthProvider: Send + Sync {
     /// Get the name of the provider
     fn name(&self) -> &str;
@@ -71,6 +73,24 @@ pub trait AuthProvider: Send + Sync {
             "configured": self.is_configured(),
         }))
     }
+
+    /// Create a root key for provider
+    ///
+    /// # Arguments
+    ///
+    /// * `public_key` - The public key to associate with the root key
+    /// * `auth_method` - The authentication method
+    /// * `provider_data` - Provider-specific data for key creation
+    ///
+    /// # Returns
+    ///
+    /// * `eyre::Result<Key>` - The created root key
+    async fn create_root_key(
+        &self,
+        public_key: &str,
+        auth_method: &str,
+        provider_data: Value,
+    ) -> eyre::Result<bool>;
 
     /// Convert to Any for downcasting
     ///

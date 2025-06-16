@@ -216,6 +216,7 @@ interface StartContextPopupProps {
   startContextStatus: ModalContent;
   backLoginStep: () => void;
   setProtocol: (protocol: string) => void;
+  protocol: string;
 }
 
 export default function StartContextPopup({
@@ -231,6 +232,7 @@ export default function StartContextPopup({
   closeModal,
   startContextStatus,
   backLoginStep,
+  protocol,
 }: StartContextPopupProps) {
   const t = translations.startContextPage;
   const onStartContextClick = async () => {
@@ -315,19 +317,16 @@ export default function StartContextPopup({
         <div className="protocol-section">
           <div className="protocol-title">{t.protocolLabelText}</div>
           <select
-            className="protocol-input"
+            className="protocol-select"
+            value={protocol}
             onChange={(e) => setProtocol(e.target.value)}
-            defaultValue=""
-            required
           >
-            <option value="" disabled>
-              Select a protocol
-            </option>
+            <option value="">Select Protocol</option>
             <option value="near">NEAR</option>
-            <option value="starknet">Starknet</option>
-            <option value="icp">ICP</option>
-            <option value="stellar">Stellar</option>
             <option value="ethereum">Ethereum</option>
+            <option value="starknet">StarkNet</option>
+            <option value="stellar">Stellar</option>
+            <option value="icp">ICP</option>
           </select>
         </div>
         <div className="flex-wrapper-buttons">

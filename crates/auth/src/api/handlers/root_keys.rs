@@ -5,21 +5,28 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tracing::error;
+use serde_json::Value;
 
+use crate::api::handlers::auth::{error_response, success_response};
 use crate::server::AppState;
-use crate::storage::models::{Key, KeyType};
+use crate::storage::models::KeyType;
+use validator::Validate;
+use serde::Serialize;
 
 /// Key creation request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct CreateKeyRequest {
     /// Public key
+    #[validate(length(min = 1, message = "Public key is required"))]
     pub public_key: String,
+
     /// Authentication method
+    #[validate(length(min = 1, message = "Authentication method is required"))]
     pub auth_method: String,
-    /// Wallet address (if applicable)
-    pub wallet_address: Option<String>,
+
+    /// Provider-specific data
+    pub provider_data: Value,
 }
 
 /// Key list handler
@@ -45,32 +52,23 @@ pub async fn list_keys_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
                         "auth_method": key.auth_method,
                         "created_at": key.metadata.created_at,
                         "revoked_at": key.metadata.revoked_at,
+                        "permissions": key.permissions,
                     })
                 })
                 .collect::<Vec<_>>();
 
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "keys": root_keys
-                })),
-            )
+            success_response(root_keys, None)
         }
         Err(err) => {
             error!("Failed to list keys: {}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "Failed to list keys"
-                })),
-            )
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, err.to_string(), None)
         }
     }
 }
 
 /// Key creation handler
 ///
-/// This endpoint creates a new root key.
+/// This endpoint creates a new root key using the appropriate auth provider.
 ///
 /// # Arguments
 ///
@@ -84,34 +82,22 @@ pub async fn create_key_handler(
     state: Extension<Arc<AppState>>,
     Json(request): Json<CreateKeyRequest>,
 ) -> impl IntoResponse {
-    // Create a hash of the public key to use as the key ID
-    let mut hasher = Sha256::new();
-    hasher.update(request.public_key.as_bytes());
-    let hash = hasher.finalize();
-    let key_id = hex::encode(hash);
+    let provider = match state.0.auth_service.get_provider(&request.auth_method) {
+        Some(provider) => provider,
+        None => {
+            error!("Failed to get provider: {}", request.auth_method);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Provider not found".to_string(), None);
+        }
+    };
 
-    // Create the root key
-    let root_key = Key::new_root_key(request.public_key, request.auth_method);
-
-    // Store the root key
-    match state.0.key_manager.set_key(&key_id, &root_key).await {
-        Ok(_) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "key_id": key_id,
-                "public_key": root_key.public_key,
-                "auth_method": root_key.auth_method,
-                "created_at": root_key.metadata.created_at,
-            })),
-        ),
-        Err(err) => {
-            error!("Failed to store root key: {}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "Failed to store root key"
-                })),
-            )
+    match provider.create_root_key(&request.public_key, &request.auth_method, request.provider_data).await {
+        Ok(was_updated) => success_response(serde_json::json!({
+            "status": true,
+            "message": if was_updated { "Key was updated" } else { "Key was created" }
+        }), None),
+        Err(e) => {
+            error!("Failed to create root key: {}", e);
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
         }
     }
 }
@@ -132,6 +118,28 @@ pub async fn delete_key_handler(
     state: Extension<Arc<AppState>>,
     Path(key_id): Path<String>,
 ) -> impl IntoResponse {
+    // First check if there's at least one active root key
+    match state.0.key_manager.list_keys(KeyType::Root).await {
+        Ok(keys) => {
+            let active_keys = keys.iter()
+                .filter(|(_, key)| key.is_root_key() && key.is_valid())
+                .count();
+            
+            // If this is the last active key, prevent deletion
+            if active_keys <= 1 {
+                error!("Cannot delete the last active root key");
+                return success_response(serde_json::json!({
+                    "status": false,
+                    "message": "Cannot delete the last active root key"
+                }), None)
+            }
+        }
+        Err(err) => {
+            error!("Failed to list root keys: {}", err);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to check root keys".to_string(), None)
+        }
+    }
+
     match state.0.key_manager.get_key(&key_id).await {
         Ok(Some(mut key)) if key.is_root_key() => {
             // Mark the key as revoked
@@ -139,44 +147,26 @@ pub async fn delete_key_handler(
 
             // Store the updated key
             match state.0.key_manager.set_key(&key_id, &key).await {
-                Ok(_) => (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "key_id": key_id,
-                        "revoked_at": key.metadata.revoked_at,
-                    })),
-                ),
+                Ok(_) => success_response(serde_json::json!({
+                    "key_id": key_id,
+                    "revoked_at": key.metadata.revoked_at,
+                }), None),
                 Err(err) => {
                     error!("Failed to update root key: {}", err);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": "Failed to update root key"
-                        })),
-                    )
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to update root key".to_string(), None)
                 }
             }
         }
-        Ok(Some(_)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Not a root key"
-            })),
-        ),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "Root key not found"
-            })),
-        ),
+        Ok(Some(_)) => error_response(StatusCode::BAD_REQUEST, "Not a root key".to_string(), None),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Root key not found".to_string(), None),
         Err(err) => {
             error!("Failed to get root key: {}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "Failed to get root key"
-                })),
-            )
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get root key".to_string(), None)
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
 }

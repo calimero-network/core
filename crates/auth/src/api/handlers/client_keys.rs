@@ -3,18 +3,17 @@ use std::sync::Arc;
 use axum::extract::{Extension, Path};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
 use chrono::Utc;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tracing::error;
 use validator::Validate;
 
-use super::auth::{internal_error_response, success_response, unauthorized_response};
+use super::auth::{success_response, error_response};
 use crate::api::handlers::auth::TokenResponse;
 use crate::auth::validation::ValidatedJson;
 use crate::server::AppState;
-use crate::storage::models::Key;
+use crate::storage::models::{Key, KeyType};
 
 /// Generate client key request
 #[derive(Debug, Deserialize, Validate)]
@@ -33,51 +32,40 @@ pub struct GenerateClientKeyRequest {
 
 /// Client list handler
 ///
-/// This endpoint lists all client keys for a root key.
+/// This endpoint lists all client keys.
 ///
 /// # Arguments
 ///
 /// * `state` - The application state
-/// * `key_id` - The root key ID
 ///
 /// # Returns
 ///
 /// * `impl IntoResponse` - The response
 pub async fn list_clients_handler(
     state: Extension<Arc<AppState>>,
-    Path(key_id): Path<String>,
 ) -> impl IntoResponse {
-    match state.0.key_manager.list_client_keys_for_root(&key_id).await {
+    match state.0.key_manager.list_keys(KeyType::Client).await {
         Ok(client_keys) => {
             let clients = client_keys
                 .into_iter()
-                .map(|key| {
+                .map(|(key_id, key)| {
                     serde_json::json!({
-                        "client_id": key.root_key_id.clone().unwrap_or_default(),
-                        "root_key_id": key.root_key_id.unwrap_or_default(),
-                        "name": key.name.unwrap_or_default(),
+                        "client_id": key_id,
+                        "root_key_id": key.root_key_id.clone().unwrap_or_default(),
+                        "name": key.name.clone().unwrap_or_default(),
                         "permissions": key.permissions,
                         "created_at": key.metadata.created_at,
                         "revoked_at": key.metadata.revoked_at,
+                        "is_valid": key.is_valid()
                     })
                 })
                 .collect::<Vec<_>>();
 
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "clients": clients
-                })),
-            )
+            success_response(clients, None)
         }
         Err(err) => {
             error!("Failed to list client keys: {}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "Failed to list client keys"
-                })),
-            )
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to list client keys", None)
         }
     }
 }
@@ -101,7 +89,6 @@ pub async fn generate_client_key_handler(
     headers: HeaderMap,
     ValidatedJson(request): ValidatedJson<GenerateClientKeyRequest>,
 ) -> impl IntoResponse {
-    // Verify the Root JWT token from headers
     let auth_response = match state
         .0
         .token_generator
@@ -111,36 +98,38 @@ pub async fn generate_client_key_handler(
         Ok(response) => response,
         Err(err) => {
             error!("Failed to verify token: {}", err);
-            return unauthorized_response("Invalid token");
+            return error_response(StatusCode::UNAUTHORIZED, "Invalid token", None);
         }
     };
 
-    // Check if the token is valid and has admin permissions
     if !auth_response.is_valid {
-        return unauthorized_response("Invalid token");
+        return error_response(StatusCode::UNAUTHORIZED, "Invalid token", None);
     }
     if !auth_response.permissions.contains(&"admin".to_string()) {
-        return unauthorized_response("Token does not have admin permissions");
+        return error_response(StatusCode::FORBIDDEN, "Token does not have admin permissions", None);
     }
 
-    // The key_id in auth_response is the root key ID
     let root_key_id = auth_response.key_id;
 
-    // Verify the root key exists and is not revoked
-    match state.0.key_manager.get_key(&root_key_id).await {
-        Ok(Some(key)) if !key.is_valid() => return unauthorized_response("Root key is revoked"),
-        Ok(None) => return unauthorized_response("Root key not found"),
+    // Get and validate root key
+    let root_key = match state.0.key_manager.get_key(&root_key_id).await {
+        Ok(Some(key)) if !key.is_valid() => {
+            return error_response(StatusCode::UNAUTHORIZED, "Root key is revoked", None);
+        }
+        Ok(None) => {
+            return error_response(StatusCode::NOT_FOUND, "Root key not found", None);
+        }
         Err(err) => {
             error!("Failed to get root key: {}", err);
-            return internal_error_response("Failed to get root key");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get root key", None);
         }
-        Ok(Some(_)) => (), // Key exists and is valid
+        Ok(Some(key)) => key,
     };
 
-    // Get current timestamp for unique client ID
+    println!("Root key: {:?}", root_key);
+
     let timestamp = Utc::now().timestamp();
 
-    // Create a client ID using SHA256 hash
     let mut hasher = Sha256::new();
     hasher.update(
         format!(
@@ -152,33 +141,43 @@ pub async fn generate_client_key_handler(
     let hash = hasher.finalize();
     let client_id = hex::encode(hash);
 
-    // Create context-specific permission
-    let mut permissions = vec![format!(
+    // Build permissions list starting with required context permission
+    let default_permission = format!(
         "context[{},{}]",
         request.context_id, request.context_identity
-    )];
+    );
 
-    // Add any additional permissions requested
+    let mut all_permissions = vec![default_permission.clone()];
+
+    // Add and validate additional permissions
     if let Some(additional_perms) = request.permissions {
-        permissions.extend(additional_perms);
+        for perm in additional_perms {
+            // Validate each permission against root key
+            if !root_key.has_permission(&perm) {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("Root key does not have permission: {}", perm),
+                    None
+                );
+            }
+            if !all_permissions.contains(&perm) {
+                all_permissions.push(perm);
+            }
+        }
     }
 
-    // Create a descriptive name for the client key
     let name = format!(
         "Context Client - {} ({})",
         request.context_id, request.context_identity
     );
 
-    // Create the client key with context permission and any additional permissions
-    let client_key = Key::new_client_key(root_key_id.clone(), name, permissions);
+    let client_key = Key::new_client_key(root_key_id.clone(), name, all_permissions);
 
-    // Store the client key
     if let Err(err) = state.0.key_manager.set_key(&client_id, &client_key).await {
         error!("Failed to store client key: {}", err);
-        return internal_error_response("Failed to store client key");
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to store client key", None);
     }
 
-    // Generate JWT tokens for the client key
     match state
         .0
         .token_generator
@@ -188,15 +187,13 @@ pub async fn generate_client_key_handler(
         Ok((access_token, refresh_token)) => {
             let response = TokenResponse::new(
                 access_token,
-                refresh_token,
-                client_id,
-                state.0.config.jwt.access_token_expiry,
+                refresh_token
             );
-            success_response(response)
+            success_response(response, None)
         }
         Err(err) => {
             error!("Failed to generate client tokens: {}", err);
-            internal_error_response("Failed to generate client tokens")
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate client tokens", None)
         }
     }
 }
@@ -218,51 +215,30 @@ pub async fn delete_client_handler(
     state: Extension<Arc<AppState>>,
     Path((key_id, client_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    // Get the client key
     match state.0.key_manager.get_key(&client_id).await {
-        Ok(Some(client_key)) => {
-            // Verify this client belongs to the specified root key
+        Ok(Some(mut client_key)) => {
             if client_key.root_key_id.as_deref() != Some(&key_id) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "Client key does not belong to specified root key"
-                    })),
-                );
+                return error_response(StatusCode::BAD_REQUEST, "Client key does not belong to specified root key", None);
             }
 
-            // Delete/revoke the client key
-            if let Err(err) = state.0.key_manager.delete_key(&client_id).await {
-                error!("Failed to delete client key: {}", err);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": "Failed to delete client key"
-                    })),
-                );
+            // Revoke the key instead of deleting it
+            client_key.revoke();
+
+            // Store the updated key
+            if let Err(err) = state.0.key_manager.set_key(&client_id, &client_key).await {
+                error!("Failed to revoke client key: {}", err);
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to revoke client key", None);
             }
 
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "message": "Client key deleted successfully"
-                })),
-            )
+            success_response(serde_json::json!({
+                "message": "Client key revoked successfully",
+                "revoked_at": client_key.metadata.revoked_at
+            }), None)
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": "Client key not found"
-            })),
-        ),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Client key not found", None),
         Err(err) => {
             error!("Failed to get client key: {}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": "Failed to get client key"
-                })),
-            )
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get client key", None)
         }
     }
 }
