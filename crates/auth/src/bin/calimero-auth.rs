@@ -7,10 +7,10 @@ use calimero_auth::config::{
     load_config, AuthConfig, ContentSecurityPolicyConfig, JwtConfig, NearWalletConfig,
     RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig,
 };
-// use calimero_auth::secrets::SecretManager;
+use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
-// use calimero_auth::storage::{create_storage, Storage};
-// use calimero_auth::{providers, AuthService};
+use calimero_auth::storage::{create_storage, Storage};
+use calimero_auth::{providers, AuthService};
 use clap::Parser;
 use eyre::Result;
 use tracing::{info, warn}; 
@@ -127,16 +127,16 @@ async fn main() -> Result<()> {
     }
 
     // Create the storage backend
-    // let storage = create_storage(&config.storage)
-    //     .await
-    //     .expect("Failed to create storage");
+    let storage = create_storage(&config.storage)
+        .await
+        .expect("Failed to create storage");
 
     // Create the secret manager with the storage trait
-    // let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
-    // secret_manager
-    //     .initialize()
-    //     .await
-    //     .expect("Failed to initialize secret manager");
+    let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
+    secret_manager
+        .initialize()
+        .await
+        .expect("Failed to initialize secret manager");
 
     // Create JWT token manager
     // let token_manager = TokenManager::new(config.jwt.clone(), storage.clone(), secret_manager);
