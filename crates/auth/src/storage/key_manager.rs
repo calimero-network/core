@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-// use crate::auth::permissions::Permission;
+use crate::auth::permissions::Permission;
 use crate::storage::models::{prefixes, Key, KeyType};
 use crate::storage::{deserialize, serialize, Storage, StorageError};
 
@@ -232,48 +232,48 @@ impl KeyManager {
     }
 
     // /// Get a permission by ID
-    // pub async fn get_permission(
-    //     &self,
-    //     permission_id: &str,
-    // ) -> Result<Option<Permission>, StorageError> {
-    //     let key = format!("{}{}", prefixes::PERMISSION, permission_id);
-    //     match self.storage.get(&key).await? {
-    //         Some(data) => Ok(Some(deserialize(&data)?)),
-    //         None => Ok(None),
-    //     }
-    // }
+    pub async fn get_permission(
+        &self,
+        permission_id: &str,
+    ) -> Result<Option<Permission>, StorageError> {
+        let key = format!("{}{}", prefixes::PERMISSION, permission_id);
+        match self.storage.get(&key).await? {
+            Some(data) => Ok(Some(deserialize(&data)?)),
+            None => Ok(None),
+        }
+    }
 
-    // /// Set a permission
-    // pub async fn set_permission(
-    //     &self,
-    //     permission_id: &str,
-    //     permission: &Permission,
-    // ) -> Result<(), StorageError> {
-    //     let key = format!("{}{}", prefixes::PERMISSION, permission_id);
-    //     let value = serialize(permission)?;
-    //     self.storage.set(&key, &value).await
-    // }
+    /// Set a permission
+    pub async fn set_permission(
+        &self,
+        permission_id: &str,
+        permission: &Permission,
+    ) -> Result<(), StorageError> {
+        let key = format!("{}{}", prefixes::PERMISSION, permission_id);
+        let value = serialize(permission)?;
+        self.storage.set(&key, &value).await
+    }
 
-    // /// Delete a permission
-    // pub async fn delete_permission(&self, permission_id: &str) -> Result<(), StorageError> {
-    //     let key = format!("{}{}", prefixes::PERMISSION, permission_id);
-    //     self.storage.delete(&key).await
-    // }
+    /// Delete a permission
+    pub async fn delete_permission(&self, permission_id: &str) -> Result<(), StorageError> {
+        let key = format!("{}{}", prefixes::PERMISSION, permission_id);
+        self.storage.delete(&key).await
+    }
 
-    // /// List all permissions
-    // pub async fn list_permissions(&self) -> Result<Vec<Permission>, StorageError> {
-    //     let keys = self.storage.list_keys(prefixes::PERMISSION).await?;
-    //     let mut result = Vec::with_capacity(keys.len());
+    /// List all permissions
+    pub async fn list_permissions(&self) -> Result<Vec<Permission>, StorageError> {
+        let keys = self.storage.list_keys(prefixes::PERMISSION).await?;
+        let mut result = Vec::with_capacity(keys.len());
 
-    //     for key in keys {
-    //         if let Some(data) = self.storage.get(&key).await? {
-    //             let permission: Permission = deserialize(&data)?;
-    //             result.push(permission);
-    //         }
-    //     }
+        for key in keys {
+            if let Some(data) = self.storage.get(&key).await? {
+                let permission: Permission = deserialize(&data)?;
+                result.push(permission);
+            }
+        }
 
-    //     Ok(result)
-    // }
+        Ok(result)
+    }
 
     /// Add a permission to a key, with validation against root key if it's a client key
     pub async fn add_permission(&self, key_id: &str, permission: &str) -> Result<(), StorageError> {
