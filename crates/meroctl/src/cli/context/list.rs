@@ -14,8 +14,7 @@ impl Report for GetContextsResponse {
     fn report(&self) {
         let mut table = Table::new();
         let _ = table.set_header(vec![
-            Cell::new("Contexts").fg(Color::Blue),
-            Cell::new("ID").fg(Color::Blue),
+            Cell::new("Context ID").fg(Color::Blue),
             Cell::new("Application ID").fg(Color::Blue),
         ]);
 
