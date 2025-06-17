@@ -55,7 +55,7 @@ impl DevnetCommand {
 
         let config = DevnetConfig {
             node_count: self.node_count,
-            protocols: vec![], 
+            protocols: vec![],
             swarm_host: self.swarm_host,
             start_swarm_port: self.swarm_port,
             server_host: self.server_host,
