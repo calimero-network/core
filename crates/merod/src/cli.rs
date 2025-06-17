@@ -31,15 +31,6 @@ pub const EXAMPLES: &str = r"
 
   # Run a node
   $ merod --node-name node1 run
-
-  # Start a local devnet with 5 nodes
-  $ merod devnet start --node-count 5
-
-  # Check devnet status
-  $ merod devnet status
-
-  # Stop devnet
-  $ merod devnet stop
 ";
 
 #[derive(Debug, Parser)]

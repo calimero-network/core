@@ -9,6 +9,7 @@ use tokio::process::{Child, Command};
 
 use crate::output::OutputWriter;
 
+#[allow(dead_code)]
 pub struct Merod {
     pub name: String,
     process: RefCell<Option<Child>>,
@@ -36,6 +37,7 @@ impl Merod {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn init<'a>(
         &'a self,
         swarm_host: &str,
@@ -86,6 +88,7 @@ impl Merod {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn run(&self) -> EyreResult<()> {
         let child = self.run_cmd(["run"], "run").await?;
 
@@ -109,6 +112,7 @@ impl Merod {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn run_cmd<'a>(
         &'a self,
         args: impl IntoIterator<Item = &'a str>,
@@ -147,6 +151,7 @@ impl Merod {
         Ok(child)
     }
 
+    #[allow(dead_code)]
     pub async fn try_wait(&self) -> EyreResult<Option<i32>> {
         if let Some(child) = self.process.borrow_mut().as_mut() {
             Ok(child.try_wait()?.map(|status| status.code().unwrap_or(-1)))

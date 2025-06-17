@@ -5,7 +5,6 @@ authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
-license-file.workspace = true
 
 [dependencies]
 alloy.workspace = true

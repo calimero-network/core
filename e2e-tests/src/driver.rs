@@ -235,7 +235,6 @@ impl Driver {
             .output_writer
             .write_header("Starting merod nodes", 2);
 
-        // Create devnet config
         let devnet_config = DevnetConfig {
             node_count: self.config.network.node_count,
             protocols: vec![sandbox.name().to_owned()],
@@ -247,11 +246,9 @@ impl Driver {
             node_name: "devnet".into(),
         };
 
-        // Initialize and run devnet
         let mut devnet = Devnet::new(devnet_config);
-        devnet.run().await?;
+        devnet.start().await?;
 
-        // Get nodes from devnet
         let mut merods = HashMap::new();
         for (name, _node) in devnet.nodes {
             let merod = Merod::new(
@@ -261,7 +258,6 @@ impl Driver {
                 self.environment.merod_binary.clone(),
                 self.environment.output_writer,
             );
-
             merods.insert(name, merod);
         }
 

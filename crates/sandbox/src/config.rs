@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 
 use camino::Utf8PathBuf;
+use eyre::bail;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,29 +55,29 @@ impl DevnetConfig {
         }
     }
 
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> eyre::Result<()> {
         if self.node_count == 0 {
-            return Err("At least one node must be configured".to_string());
+            bail!("At least one node must be configured".to_string());
         }
 
         if self.protocols.is_empty() {
-            return Err("At least one protocol must be specified".to_string());
+            bail!("At least one protocol must be specified".to_string());
         }
 
         if let Err(e) = self.swarm_host.parse::<IpAddr>() {
-            return Err(format!("Invalid swarm host: {}", e));
+            bail!(format!("Invalid swarm host: {}", e));
         }
 
         if let Err(e) = self.server_host.parse::<IpAddr>() {
-            return Err(format!("Invalid server host: {}", e));
+            bail!(format!("Invalid server host: {}", e));
         }
 
         if self.start_swarm_port == 0 {
-            return Err("Swarm port must be greater than 0".to_string());
+            bail!("Swarm port must be greater than 0".to_string());
         }
 
         if self.start_server_port == 0 {
-            return Err("Server port must be greater than 0".to_string());
+            bail!("Server port must be greater than 0".to_string());
         }
 
         Ok(())

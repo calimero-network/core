@@ -10,7 +10,6 @@ license.workspace = true
 
 [dependencies]
 alloy.workspace = true
-async-trait.workspace = true
 axum.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }

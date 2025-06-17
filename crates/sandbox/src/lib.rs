@@ -1,11 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use config::DevnetConfig;
-use eyre::Result as EyreResult;
 use port_binding::PortBinding;
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
 
 pub mod config;
 pub mod protocol;
@@ -14,7 +10,6 @@ pub mod protocol;
 pub struct Devnet {
     config: DevnetConfig,
     pub nodes: HashMap<String, Node>,
-    processes: Arc<Mutex<HashMap<String, Child>>>,
 }
 
 #[derive(Debug)]
@@ -29,46 +24,18 @@ impl Devnet {
         Self {
             config,
             nodes: HashMap::new(),
-            processes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub async fn run(&mut self) -> EyreResult<()> {
+    pub async fn start(&mut self) -> eyre::Result<()> {
         self.start_nodes().await?;
         self.print_info();
         Ok(())
     }
 
-    pub async fn start(&mut self) -> EyreResult<()> {
-        self.start_nodes().await?;
-        self.print_info();
-        Ok(())
-    }
-
-    pub async fn stop(&self) -> EyreResult<()> {
-        let mut processes = self.processes.lock().await;
-        for (_, process) in processes.iter_mut() {
-            process.kill().await?;
-        }
-        processes.clear();
-        Ok(())
-    }
-
-    pub async fn status(&self) -> EyreResult<HashMap<String, bool>> {
-        let mut status = HashMap::new();
-        let mut processes = self.processes.lock().await;
-
-        for (name, process) in processes.iter_mut() {
-            status.insert(name.clone(), process.try_wait()?.is_none());
-        }
-
-        Ok(status)
-    }
-
-    async fn start_nodes(&mut self) -> EyreResult<()> {
+    async fn start_nodes(&mut self) -> eyre::Result<()> {
         let mut swarm_port = self.config.start_swarm_port;
         let mut server_port = self.config.start_server_port;
-        let mut processes = self.processes.lock().await;
 
         for i in 0..self.config.node_count {
             let node_name = format!("node{}", i + 1);
@@ -89,14 +56,6 @@ impl Devnet {
                 server_addr: format!("{}:{}", self.config.server_host, server_port_num),
             };
 
-            // Start the node process
-            let process = Command::new("merod")
-                .arg("--node-name")
-                .arg(&node_name)
-                .arg("run")
-                .spawn()?;
-
-            processes.insert(node_name.clone(), process);
             self.nodes.insert(node_name, node);
         }
 
@@ -119,7 +78,7 @@ impl Devnet {
 pub mod port_binding {
     use std::net::{IpAddr, SocketAddr};
 
-    use eyre::{bail, Result};
+    use eyre::bail;
     use tokio::net::TcpListener;
 
     pub struct PortBinding {
@@ -128,7 +87,7 @@ pub mod port_binding {
     }
 
     impl PortBinding {
-        pub async fn next_available(host: IpAddr, port: &mut u16) -> Result<PortBinding> {
+        pub async fn next_available(host: IpAddr, port: &mut u16) -> eyre::Result<PortBinding> {
             for _ in 0..100 {
                 let address = (host, *port).into();
 
