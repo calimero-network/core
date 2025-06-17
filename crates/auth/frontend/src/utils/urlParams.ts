@@ -6,7 +6,7 @@ export const handleUrlParams = () => {
   // Convert URLSearchParams to a plain object and store in localStorage
   searchParams.forEach((value, key) => {
     params[key] = value;
-    localStorage.setItem(JSON.stringify(key), value);
+    localStorage.setItem(key, JSON.stringify(value));
   });
   
   // Clear URL parameters without reloading the page

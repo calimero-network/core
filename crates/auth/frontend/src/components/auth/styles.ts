@@ -10,7 +10,7 @@ export const Container = styled.div`
 `;
 
 export const ErrorMessage = styled.div`
-  color: ${({ theme }) => theme.colors.error};
+  color: ${({ theme }) => theme.colors.text.error};
   margin-bottom: ${({ theme }) => theme.spacing.lg};
   text-align: center;
 `;

@@ -13,6 +13,7 @@ export interface Theme {
     accent: {
       primary: string;
       secondary: string;
+      disabled: string;
     };
     border: {
       primary: string;
@@ -52,6 +53,7 @@ export interface Theme {
   borderRadius: {
     default: string;
     lg: string;
+    sm: string;
   };
   shadows: {
     sm: string;
@@ -81,6 +83,7 @@ const defaultTheme: Theme = {
     accent: {
       primary: '#ff7a00',
       secondary: '#ff9933',
+      disabled: '#666666',
     },
     border: {
       primary: 'rgba(255, 255, 255, 0.1)',
@@ -120,6 +123,7 @@ const defaultTheme: Theme = {
   borderRadius: {
     default: '0.5rem',
     lg: '0.75rem',
+    sm: '0.25rem',
   },
   shadows: {
     sm: '0 1px 2px rgba(0, 0, 0, 0.05)',

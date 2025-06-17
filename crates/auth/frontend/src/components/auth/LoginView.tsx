@@ -23,7 +23,6 @@ const LoginView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [showProviders, setShowProviders] = useState(false);
   const [showContextSelector, setShowContextSelector] = useState(false);
-  const [rootToken, setRootToken] = useState<string | null>(null);
 
   // Load providers
   const loadProviders = useCallback(async () => {
@@ -107,13 +106,10 @@ const LoginView: React.FC = () => {
   }, []);
   
   const handleContinueSession = () => {
-    const existingAccessToken = getAccessToken();
-    setRootToken(existingAccessToken);
     setShowContextSelector(true);
   };
 
   const handleNewLogin = async () => {
-    setRootToken(null);
     await loadProviders();
     setShowProviders(true);
   };
