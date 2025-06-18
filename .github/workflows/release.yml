@@ -9,9 +9,6 @@ on:
       - Cargo.lock
       - "crates/**"
   pull_request:
-    types: [opened, synchronize, reopened]
-    branches:
-      - master
     paths:
       - Cargo.toml
       - Cargo.lock

@@ -4,6 +4,10 @@ on:
   push:
     branches: ["master"]
   pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
