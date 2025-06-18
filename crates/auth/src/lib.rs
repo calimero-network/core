@@ -8,7 +8,7 @@ pub mod config;
 // pub mod providers;
 // pub mod secrets;
 pub mod server;
-// pub mod storage;
+pub mod storage;
 pub mod utils;
 
 // pub use auth::{forward_auth_middleware, AuthService};
