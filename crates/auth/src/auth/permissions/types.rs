@@ -249,71 +249,73 @@ impl FromStr for Permission {
     }
 }
 
-impl Permission {
-    /// Convert a Permission enum to its string representation
-    pub fn to_string(&self) -> String {
+impl fmt::Display for Permission {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Permission::Admin(_) => "admin".to_string(),
+            Permission::Admin(_) => write!(f, "admin"),
             Permission::Application(app_perm) => match app_perm {
-                ApplicationPermission::All => "application".to_string(),
-                ApplicationPermission::List(scope) => format!("application:list{}", scope),
-                ApplicationPermission::Install(scope) => format!("application:install{}", scope),
+                ApplicationPermission::All => write!(f, "application"),
+                ApplicationPermission::List(scope) => write!(f, "application:list{}", scope),
+                ApplicationPermission::Install(scope) => write!(f, "application:install{}", scope),
                 ApplicationPermission::Uninstall(scope) => {
-                    format!("application:uninstall{}", scope)
+                    write!(f, "application:uninstall{}", scope)
                 }
             },
             Permission::Blob(blob_perm) => match blob_perm {
-                BlobPermission::All => "blob".to_string(),
+                BlobPermission::All => write!(f, "blob"),
                 BlobPermission::Add(add_perm) => match add_perm {
-                    AddBlobPermission::All => "blob:add".to_string(),
-                    AddBlobPermission::Stream => "blob:add:stream".to_string(),
-                    AddBlobPermission::File => "blob:add:file".to_string(),
-                    AddBlobPermission::Url => "blob:add:url".to_string(),
+                    AddBlobPermission::All => write!(f, "blob:add"),
+                    AddBlobPermission::Stream => write!(f, "blob:add:stream"),
+                    AddBlobPermission::File => write!(f, "blob:add:file"),
+                    AddBlobPermission::Url => write!(f, "blob:add:url"),
                 },
-                BlobPermission::Remove(scope) => format!("blob:remove{}", scope),
+                BlobPermission::Remove(scope) => write!(f, "blob:remove{}", scope),
             },
             Permission::Context(ctx_perm) => match ctx_perm {
-                ContextPermission::All(scope) => format!("context{}", scope),
-                ContextPermission::Create(scope) => format!("context:create{}", scope),
-                ContextPermission::List(scope) => format!("context:list{}", scope),
-                ContextPermission::Delete(scope) => format!("context:delete{}", scope),
-                ContextPermission::Leave(scope, user) => format!("context:leave{}{}", scope, user),
+                ContextPermission::All(scope) => write!(f, "context{}", scope),
+                ContextPermission::Create(scope) => write!(f, "context:create{}", scope),
+                ContextPermission::List(scope) => write!(f, "context:list{}", scope),
+                ContextPermission::Delete(scope) => write!(f, "context:delete{}", scope),
+                ContextPermission::Leave(scope, user) => write!(f, "context:leave{}{}", scope, user),
                 ContextPermission::Invite(scope, user) => {
-                    format!("context:invite{}{}", scope, user)
+                    write!(f, "context:invite{}{}", scope, user)
                 }
                 ContextPermission::Execute(scope, user, method) => {
                     if let Some(m) = method {
-                        format!("context:execute{}{}{}", scope, user, m)
+                        write!(f, "context:execute{}{}{}", scope, user, m)
                     } else {
-                        format!("context:execute{}{}", scope, user)
+                        write!(f, "context:execute{}{}", scope, user)
                     }
                 }
                 ContextPermission::Alias(alias_perm) => match alias_perm {
-                    AliasPermission::Create => "context:alias:create".to_string(),
-                    AliasPermission::Delete => "context:alias:delete".to_string(),
+                    AliasPermission::Create => write!(f, "context:alias:create"),
+                    AliasPermission::Delete => write!(f, "context:alias:delete"),
                     AliasPermission::Lookup {
                         context_id,
                         user_id,
                     } => {
-                        let mut s = "context:alias:lookup".to_string();
+                        write!(f, "context:alias:lookup")?;
                         if let Some(ctx_id) = context_id {
-                            s.push_str(&format!("[{}]", ctx_id));
+                            write!(f, "[{}]", ctx_id)?;
                             if let Some(uid) = user_id {
-                                s.push_str(&format!("[{}]", uid));
+                                write!(f, "[{}]", uid)?;
                             }
                         }
-                        s
+                        Ok(())
                     }
                 },
             },
             Permission::Keys(key_perm) => match key_perm {
-                KeyPermission::All => "keys".to_string(),
-                KeyPermission::Create => "keys:create".to_string(),
-                KeyPermission::List => "keys:list".to_string(),
-                KeyPermission::Delete => "keys:delete".to_string(),
+                KeyPermission::All => write!(f, "keys"),
+                KeyPermission::Create => write!(f, "keys:create"),
+                KeyPermission::List => write!(f, "keys:list"),
+                KeyPermission::Delete => write!(f, "keys:delete"),
             },
         }
     }
+}
+
+impl Permission {
 
     /// Check if this permission satisfies the required permission
     pub fn satisfies(&self, required: &Permission) -> bool {
@@ -497,6 +499,25 @@ mod tests {
                 Some("method1".to_string())
             )))
         );
+    }
+
+    #[test]
+    fn test_permission_display() {
+        // Test Display trait implementation
+        let perm = Permission::Admin(AdminPermission);
+        assert_eq!(format!("{}", perm), "admin");
+        assert_eq!(perm.to_string(), "admin");
+
+        let perm = Permission::Keys(KeyPermission::Create);
+        assert_eq!(format!("{}", perm), "keys:create");
+        assert_eq!(perm.to_string(), "keys:create");
+
+        let perm = Permission::Context(ContextPermission::Alias(AliasPermission::Lookup {
+            context_id: Some("ctx-123".to_string()),
+            user_id: Some("user-456".to_string()),
+        }));
+        assert_eq!(format!("{}", perm), "context:alias:lookup[ctx-123][user-456]");
+        assert_eq!(perm.to_string(), "context:alias:lookup[ctx-123][user-456]");
     }
 
     #[test]
