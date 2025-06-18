@@ -8,6 +8,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
+      - "e2e-tests/**"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
