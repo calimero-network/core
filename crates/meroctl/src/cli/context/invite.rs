@@ -10,7 +10,7 @@ use crate::cli::Environment;
 use crate::common::{create_alias, resolve_alias};
 use crate::output::Report;
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Create invitation to a context")]
 pub struct InviteCommand {
     #[clap(long, short)]

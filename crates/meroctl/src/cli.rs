@@ -17,28 +17,18 @@ use crate::connection::ConnectionInfo;
 use crate::defaults;
 use crate::output::{Format, Output, Report};
 
-mod app;
-mod call;
-mod context;
-mod node;
-mod peers;
-
-use app::AppCommand;
-use call::CallCommand;
-use context::ContextCommand;
-use node::NodeCommand;
-use peers::PeersCommand;
+pub mod app;
+pub mod call;
+pub mod context;
+pub mod node;
+pub mod peers;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl --node-name node1 app ls
-  # List all applications with custom destination config
-  $ meroctl  --home data --node-name node1 app ls
+  $ meroctl --node node1 app ls
 
   # List all contexts
-  $ meroctl --node-name node1 context ls
-  # List all contexts with custom destination config
-  $ meroctl --home data --node-name node1 context ls
+  $ meroctl --node node1 context ls
 ";
 
 #[derive(Debug, Parser)]
@@ -59,12 +49,12 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    App(AppCommand),
-    Context(ContextCommand),
-    Call(CallCommand),
-    Peers(PeersCommand),
+    App(app::AppCommand),
+    Context(context::ContextCommand),
+    Call(call::CallCommand),
+    Peers(peers::PeersCommand),
     #[command(subcommand)]
-    Node(NodeCommand),
+    Node(node::NodeCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -86,6 +76,7 @@ pub struct RootArgs {
     pub output_format: Format,
 }
 
+#[derive(Debug)]
 pub struct Environment {
     pub output: Output,
     connection: Option<ConnectionInfo>,

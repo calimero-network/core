@@ -6,7 +6,7 @@ use eyre::Result as EyreResult;
 use crate::cli::Environment;
 use crate::output::Report;
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "List all contexts")]
 pub struct ListCommand;
 

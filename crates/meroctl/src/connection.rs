@@ -9,6 +9,7 @@ use url::Url;
 use crate::cli::ApiError;
 use crate::common::RequestType;
 
+#[derive(Debug)]
 pub struct ConnectionInfo {
     pub api_url: Url,
     pub auth_key: Option<Keypair>,
