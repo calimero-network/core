@@ -1,20 +1,22 @@
 use calimero_sandbox::config::DevnetConfig;
 use calimero_sandbox::Devnet;
 use camino::Utf8PathBuf;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use const_format::concatcp;
+use serde::{Deserialize, Serialize};
+use tokio::fs;
 
 use super::RootArgs;
 
 pub const EXAMPLES: &str = r"
-# Start a local devnet with 5 nodes
-$ merod devnet start --node-count 5
+# Initialize a devnet config file
+$ merod devnet init --node-count 5 -o devnet.json
 
-# Check devnet status
-$ merod devnet status
+# Run devnet from config file  
+$ merod devnet run -c devnet.json
 
-# Stop devnet
-$ merod devnet stop
+# Run devnet with inline config
+$ merod devnet run --node-count 3 --swarm-port 2428 --server-port 2528
 ";
 
 #[derive(Debug, Parser)]
@@ -24,11 +26,29 @@ $ merod devnet stop
     EXAMPLES
 ))]
 pub struct DevnetCommand {
+    #[command(subcommand)]
+    pub action: DevnetSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DevnetSubcommand {
+    /// Initialize a devnet config file
+    Init(InitCommand),
+    /// Run a devnet
+    Run(RunCommand),
+}
+
+#[derive(Debug, Parser)]
+pub struct InitCommand {
     /// Number of nodes to start
     #[clap(long, default_value = "3")]
     pub node_count: u32,
 
-    /// Host to listen on for swarm
+    /// List of protocols to enable
+    #[clap(long, value_delimiter = ',')]
+    pub protocols: Vec<String>,
+
+    /// Host for swarm connections
     #[clap(long, default_value = "127.0.0.1")]
     pub swarm_host: String,
 
@@ -36,38 +56,122 @@ pub struct DevnetCommand {
     #[clap(long, default_value = "2428")]
     pub swarm_port: u16,
 
-    /// Host to listen on for RPC
+    /// Host for RPC servers
     #[clap(long, default_value = "127.0.0.1")]
     pub server_host: String,
 
-    /// Starting port for RPC
+    /// Starting port for RPC servers  
     #[clap(long, default_value = "2528")]
     pub server_port: u16,
 
-    /// Directory to store node data
+    /// Output config file path
+    #[clap(short, long, default_value = "devnet.json")]
+    pub output: Utf8PathBuf,
+}
+
+#[derive(Debug, Parser)]
+pub struct RunCommand {
+    /// Config file path
+    #[clap(short, long)]
+    pub config: Option<Utf8PathBuf>,
+
+    /// Number of nodes to start
+    #[clap(long)]
+    pub node_count: Option<u32>,
+
+    /// Host for swarm connections
+    #[clap(long)]
+    pub swarm_host: Option<String>,
+
+    /// Starting port for swarm
+    #[clap(long)]
+    pub swarm_port: Option<u16>,
+
+    /// Host for RPC servers
+    #[clap(long)]
+    pub server_host: Option<String>,
+
+    /// Starting port for RPC servers
+    #[clap(long)]
+    pub server_port: Option<u16>,
+
+    /// Directory for node data
     #[clap(long)]
     pub home_dir: Option<Utf8PathBuf>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct DevnetConfigFile {
+    node_count: u32,
+    protocols: Vec<String>,
+    swarm_host: String,
+    swarm_port: u16,
+    server_host: String,
+    server_port: u16,
+}
+
 impl DevnetCommand {
-    pub async fn run(self, root_args: RootArgs) -> eyre::Result<()> {
-        let home_dir = self.home_dir.unwrap_or(root_args.home);
+    pub async fn run(self, root_args: Option<RootArgs>) -> eyre::Result<()> {
+        match self.action {
+            DevnetSubcommand::Init(cmd) => {
+                let config = DevnetConfigFile {
+                    node_count: cmd.node_count,
+                    protocols: cmd.protocols,
+                    swarm_host: cmd.swarm_host,
+                    swarm_port: cmd.swarm_port,
+                    server_host: cmd.server_host,
+                    server_port: cmd.server_port,
+                };
 
-        let config = DevnetConfig {
-            node_count: self.node_count,
-            protocols: vec![],
-            swarm_host: self.swarm_host,
-            start_swarm_port: self.swarm_port,
-            server_host: self.server_host,
-            start_server_port: self.server_port,
-            home_dir,
-            node_name: root_args.node_name,
-        };
+                let config_str = serde_json::to_string_pretty(&config)?;
+                fs::write(&cmd.output, config_str).await?;
+                Ok(())
+            }
+            DevnetSubcommand::Run(cmd) => {
+                let config = if let Some(config_path) = cmd.config {
+                    let config_str = fs::read_to_string(&config_path).await?;
+                    let config_file: DevnetConfigFile = serde_json::from_str(&config_str)?;
+                    DevnetConfig {
+                        node_count: config_file.node_count,
+                        protocols: config_file.protocols,
+                        swarm_host: config_file.swarm_host,
+                        start_swarm_port: config_file.swarm_port,
+                        server_host: config_file.server_host,
+                        start_server_port: config_file.server_port,
+                        home_dir: cmd.home_dir.unwrap_or_else(|| {
+                            root_args
+                                .as_ref()
+                                .map_or_else(|| Utf8PathBuf::from("."), |args| args.home.clone())
+                        }),
+                        node_name: root_args
+                            .as_ref()
+                            .map_or_else(|| "devnet".into(), |args| args.node_name.clone()),
+                    }
+                } else {
+                    DevnetConfig {
+                        node_count: cmd.node_count.unwrap_or(3),
+                        protocols: vec![],
+                        swarm_host: cmd.swarm_host.unwrap_or_else(|| "127.0.0.1".into()),
+                        start_swarm_port: cmd.swarm_port.unwrap_or(2428),
+                        server_host: cmd.server_host.unwrap_or_else(|| "127.0.0.1".into()),
+                        start_server_port: cmd.server_port.unwrap_or(2528),
+                        home_dir: cmd.home_dir.unwrap_or_else(|| {
+                            root_args
+                                .as_ref()
+                                .map_or_else(|| Utf8PathBuf::from("."), |args| args.home.clone())
+                        }),
+                        node_name: root_args
+                            .as_ref()
+                            .map_or_else(|| "devnet".into(), |args| args.node_name.clone()),
+                    }
+                };
 
-        let mut devnet = Devnet::new(config);
-        devnet.start().await?;
+                let mut devnet = Devnet::new(config);
+                devnet.start().await?;
 
-        tokio::signal::ctrl_c().await?;
-        Ok(())
+                tokio::signal::ctrl_c().await?;
+                Ok(())
+            }
+        }
     }
 }

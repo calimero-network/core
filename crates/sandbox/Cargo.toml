@@ -22,4 +22,5 @@ soroban-client.workspace = true
 soroban-sdk.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true

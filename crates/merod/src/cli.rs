@@ -79,7 +79,7 @@ impl RootCommand {
             SubCommands::Init(init) => init.run(self.args).await,
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Relay(relay) => relay.run(self.args).await,
-            SubCommands::Devnet(devnet) => devnet.run(self.args).await,
+            SubCommands::Devnet(devnet) => devnet.run(Some(self.args)).await,
         }
     }
 }

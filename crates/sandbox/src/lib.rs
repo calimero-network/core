@@ -4,6 +4,7 @@ use config::DevnetConfig;
 use port_binding::PortBinding;
 
 pub mod config;
+pub mod port_binding;
 pub mod protocol;
 
 #[derive(Debug)]
@@ -72,48 +73,5 @@ impl Devnet {
         }
 
         println!("\nProtocols enabled: {}", self.config.protocols.join(","));
-    }
-}
-
-pub mod port_binding {
-    use std::net::{IpAddr, SocketAddr};
-
-    use eyre::bail;
-    use tokio::net::TcpListener;
-
-    pub struct PortBinding {
-        address: SocketAddr,
-        listener: TcpListener,
-    }
-
-    impl PortBinding {
-        pub async fn next_available(host: IpAddr, port: &mut u16) -> eyre::Result<PortBinding> {
-            for _ in 0..100 {
-                let address = (host, *port).into();
-
-                let res = TcpListener::bind(address).await;
-
-                *port += 1;
-
-                if let Ok(listener) = res {
-                    return Ok(PortBinding { address, listener });
-                }
-            }
-
-            bail!(
-                "unable to select a port in range {}..={}",
-                *port - 100,
-                *port - 1
-            );
-        }
-
-        pub fn port(&self) -> u16 {
-            self.address.port()
-        }
-
-        pub fn into_socket_addr(self) -> SocketAddr {
-            drop(self.listener);
-            self.address
-        }
     }
 }
