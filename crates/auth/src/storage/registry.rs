@@ -23,7 +23,6 @@ pub trait StorageProvider: Send + Sync {
 // Global registry for storage providers
 lazy_static! {
     static ref STORAGE_REGISTRY: Mutex<StorageRegistry> = Mutex::new(StorageRegistry::new());
-    static ref INIT: Once = Once::new();
 }
 
 /// Registry for storage providers
@@ -51,10 +50,6 @@ impl StorageRegistry {
 
 /// Register a storage provider
 pub fn register_provider(provider: Arc<dyn StorageProvider>) {
-    INIT.call_once(|| {
-        // Initialize any global state if needed
-    });
-
     let mut registry = STORAGE_REGISTRY.lock().unwrap();
     registry.register(provider);
 }
