@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -126,13 +127,14 @@ pub enum KeyPermission {
     Delete,
 }
 
-impl Permission {
-    /// Convert a permission string to a Permission enum
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for Permission {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split(&[':', '[', ']', '<', '>']).collect();
 
-        match parts.get(0)? {
-            &"admin" => Some(Permission::Admin(AdminPermission)),
+        match parts.get(0).ok_or("Empty permission string")? {
+            &"admin" => Ok(Permission::Admin(AdminPermission)),
             &"application" => {
                 let scope = if let Some(ids) = parts.get(1) {
                     ResourceScope::Specific(ids.split(',').map(String::from).collect())
@@ -142,15 +144,15 @@ impl Permission {
 
                 match parts.get(1).map(|&s| s) {
                     Some("list") => {
-                        Some(Permission::Application(ApplicationPermission::List(scope)))
+                        Ok(Permission::Application(ApplicationPermission::List(scope)))
                     }
-                    Some("install") => Some(Permission::Application(
+                    Some("install") => Ok(Permission::Application(
                         ApplicationPermission::Install(scope),
                     )),
-                    Some("uninstall") => Some(Permission::Application(
+                    Some("uninstall") => Ok(Permission::Application(
                         ApplicationPermission::Uninstall(scope),
                     )),
-                    _ => Some(Permission::Application(ApplicationPermission::All)),
+                    _ => Ok(Permission::Application(ApplicationPermission::All)),
                 }
             }
             &"blob" => match parts.get(1).map(|&s| s) {
@@ -161,7 +163,7 @@ impl Permission {
                         Some("url") => AddBlobPermission::Url,
                         _ => AddBlobPermission::All,
                     };
-                    Some(Permission::Blob(BlobPermission::Add(add_perm)))
+                    Ok(Permission::Blob(BlobPermission::Add(add_perm)))
                 }
                 Some("remove") => {
                     let scope = if let Some(ids) = parts.get(2) {
@@ -169,31 +171,31 @@ impl Permission {
                     } else {
                         ResourceScope::Global
                     };
-                    Some(Permission::Blob(BlobPermission::Remove(scope)))
+                    Ok(Permission::Blob(BlobPermission::Remove(scope)))
                 }
-                _ => Some(Permission::Blob(BlobPermission::All)),
+                _ => Ok(Permission::Blob(BlobPermission::All)),
             },
             &"context" => {
                 match (parts.get(1), parts.get(2)) {
                     // Handle context:alias:* permissions
                     (Some(&"alias"), Some(&action)) => match action {
-                        "create" => Some(Permission::Context(ContextPermission::Alias(
+                        "create" => Ok(Permission::Context(ContextPermission::Alias(
                             AliasPermission::Create,
                         ))),
-                        "delete" => Some(Permission::Context(ContextPermission::Alias(
+                        "delete" => Ok(Permission::Context(ContextPermission::Alias(
                             AliasPermission::Delete,
                         ))),
                         "lookup" => {
                             let context_id = parts.get(3).map(|s| s.to_string());
                             let user_id = parts.get(4).map(|s| s.to_string());
-                            Some(Permission::Context(ContextPermission::Alias(
+                            Ok(Permission::Context(ContextPermission::Alias(
                                 AliasPermission::Lookup {
                                     context_id,
                                     user_id,
                                 },
                             )))
                         }
-                        _ => None,
+                        _ => Err(format!("Invalid alias permission: {}", action)),
                     },
                     // Handle other context permissions
                     _ => {
@@ -211,41 +213,43 @@ impl Permission {
 
                         match parts.get(1).map(|&s| s) {
                             Some("create") => {
-                                Some(Permission::Context(ContextPermission::Create(scope)))
+                                Ok(Permission::Context(ContextPermission::Create(scope)))
                             }
                             Some("list") => {
-                                Some(Permission::Context(ContextPermission::List(scope)))
+                                Ok(Permission::Context(ContextPermission::List(scope)))
                             }
                             Some("delete") => {
-                                Some(Permission::Context(ContextPermission::Delete(scope)))
+                                Ok(Permission::Context(ContextPermission::Delete(scope)))
                             }
-                            Some("leave") => Some(Permission::Context(ContextPermission::Leave(
+                            Some("leave") => Ok(Permission::Context(ContextPermission::Leave(
                                 scope, user_scope,
                             ))),
-                            Some("invite") => Some(Permission::Context(ContextPermission::Invite(
+                            Some("invite") => Ok(Permission::Context(ContextPermission::Invite(
                                 scope, user_scope,
                             ))),
                             Some("execute") => {
                                 let method = parts.get(4).map(|s| s.to_string());
-                                Some(Permission::Context(ContextPermission::Execute(
+                                Ok(Permission::Context(ContextPermission::Execute(
                                     scope, user_scope, method,
                                 )))
                             }
-                            _ => Some(Permission::Context(ContextPermission::All(scope))),
+                            _ => Ok(Permission::Context(ContextPermission::All(scope))),
                         }
                     }
                 }
             }
             &"keys" => match parts.get(1).map(|&s| s) {
-                Some("create") => Some(Permission::Keys(KeyPermission::Create)),
-                Some("list") => Some(Permission::Keys(KeyPermission::List)),
-                Some("delete") => Some(Permission::Keys(KeyPermission::Delete)),
-                _ => Some(Permission::Keys(KeyPermission::All)),
+                Some("create") => Ok(Permission::Keys(KeyPermission::Create)),
+                Some("list") => Ok(Permission::Keys(KeyPermission::List)),
+                Some("delete") => Ok(Permission::Keys(KeyPermission::Delete)),
+                _ => Ok(Permission::Keys(KeyPermission::All)),
             },
-            _ => None,
+            _ => Err(format!("Unknown permission type: {}", parts[0])),
         }
     }
+}
 
+impl Permission {
     /// Convert a Permission enum to its string representation
     pub fn to_string(&self) -> String {
         match self {
@@ -472,22 +476,22 @@ mod tests {
     fn test_permission_parsing() {
         // Test master permission
         assert_eq!(
-            Permission::from_str("admin"),
-            Some(Permission::Admin(AdminPermission))
+            "admin".parse::<Permission>(),
+            Ok(Permission::Admin(AdminPermission))
         );
 
         // Test application permissions
         assert_eq!(
-            Permission::from_str("application:list[app1,app2]"),
-            Some(Permission::Application(ApplicationPermission::List(
+            "application:list[app1,app2]".parse::<Permission>(),
+            Ok(Permission::Application(ApplicationPermission::List(
                 ResourceScope::Specific(vec!["app1".to_string(), "app2".to_string()])
             )))
         );
 
         // Test context permissions
         assert_eq!(
-            Permission::from_str("context:execute[ctx1]<user1>method1"),
-            Some(Permission::Context(ContextPermission::Execute(
+            "context:execute[ctx1]<user1>method1".parse::<Permission>(),
+            Ok(Permission::Context(ContextPermission::Execute(
                 ResourceScope::Specific(vec!["ctx1".to_string()]),
                 UserScope::Specific("user1".to_string()),
                 Some("method1".to_string())
@@ -519,21 +523,21 @@ mod tests {
     #[test]
     fn test_alias_permission_parsing() {
         // Test create permission
-        let perm = Permission::from_str("context:alias:create").unwrap();
+        let perm = "context:alias:create".parse::<Permission>().unwrap();
         assert!(matches!(
             perm,
             Permission::Context(ContextPermission::Alias(AliasPermission::Create))
         ));
 
         // Test delete permission
-        let perm = Permission::from_str("context:alias:delete").unwrap();
+        let perm = "context:alias:delete".parse::<Permission>().unwrap();
         assert!(matches!(
             perm,
             Permission::Context(ContextPermission::Alias(AliasPermission::Delete))
         ));
 
         // Test lookup permission with context
-        let perm = Permission::from_str("context:alias:lookup[ctx-123]").unwrap();
+        let perm = "context:alias:lookup[ctx-123]".parse::<Permission>().unwrap();
         match perm {
             Permission::Context(ContextPermission::Alias(AliasPermission::Lookup {
                 context_id,
@@ -546,7 +550,7 @@ mod tests {
         }
 
         // Test lookup permission with context and user
-        let perm = Permission::from_str("context:alias:lookup[ctx-123,user-456]").unwrap();
+        let perm = "context:alias:lookup[ctx-123,user-456]".parse::<Permission>().unwrap();
         match perm {
             Permission::Context(ContextPermission::Alias(AliasPermission::Lookup {
                 context_id,
@@ -562,38 +566,38 @@ mod tests {
     #[test]
     fn test_alias_permission_satisfaction() {
         // Test create permission
-        let held = Permission::from_str("context:alias:create").unwrap();
-        let required = Permission::from_str("context:alias:create").unwrap();
+        let held = "context:alias:create".parse::<Permission>().unwrap();
+        let required = "context:alias:create".parse::<Permission>().unwrap();
         assert!(held.satisfies(&required));
 
         // Test delete permission
-        let held = Permission::from_str("context:alias:delete").unwrap();
-        let required = Permission::from_str("context:alias:delete").unwrap();
+        let held = "context:alias:delete".parse::<Permission>().unwrap();
+        let required = "context:alias:delete".parse::<Permission>().unwrap();
         assert!(held.satisfies(&required));
 
         // Test lookup permission - global access
-        let held = Permission::from_str("context:alias:lookup").unwrap();
-        let required = Permission::from_str("context:alias:lookup[ctx-123]").unwrap();
+        let held = "context:alias:lookup".parse::<Permission>().unwrap();
+        let required = "context:alias:lookup[ctx-123]".parse::<Permission>().unwrap();
         assert!(held.satisfies(&required));
 
         // Test lookup permission - specific context
-        let held = Permission::from_str("context:alias:lookup[ctx-123]").unwrap();
-        let required = Permission::from_str("context:alias:lookup[ctx-123]").unwrap();
+        let held = "context:alias:lookup[ctx-123]".parse::<Permission>().unwrap();
+        let required = "context:alias:lookup[ctx-123]".parse::<Permission>().unwrap();
         assert!(held.satisfies(&required));
 
         // Test lookup permission - specific context and user
-        let held = Permission::from_str("context:alias:lookup[ctx-123,user-456]").unwrap();
-        let required = Permission::from_str("context:alias:lookup[ctx-123,user-456]").unwrap();
+        let held = "context:alias:lookup[ctx-123,user-456]".parse::<Permission>().unwrap();
+        let required = "context:alias:lookup[ctx-123,user-456]".parse::<Permission>().unwrap();
         assert!(held.satisfies(&required));
 
         // Test lookup permission - global context but specific user (should fail)
-        let held = Permission::from_str("context:alias:lookup[ctx-123]").unwrap();
-        let required = Permission::from_str("context:alias:lookup[ctx-456]").unwrap();
+        let held = "context:alias:lookup[ctx-123]".parse::<Permission>().unwrap();
+        let required = "context:alias:lookup[ctx-456]".parse::<Permission>().unwrap();
         assert!(!held.satisfies(&required));
 
         // Test master permission satisfies all
-        let held = Permission::from_str("master").unwrap();
-        let required = Permission::from_str("context:alias:lookup[ctx-123,user-456]").unwrap();
+        let held = "admin".parse::<Permission>().unwrap();
+        let required = "context:alias:lookup[ctx-123,user-456]".parse::<Permission>().unwrap();
         assert!(held.satisfies(&required));
     }
 }

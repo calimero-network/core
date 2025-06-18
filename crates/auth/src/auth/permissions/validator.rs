@@ -269,7 +269,7 @@ impl PermissionValidator {
         // Convert string permissions to Permission enums
         let user_perms: Vec<Permission> = user_permissions
             .iter()
-            .filter_map(|p| Permission::from_str(p))
+            .filter_map(|p| p.parse::<Permission>().ok())
             .collect();
 
         // Check if any user permission satisfies each required permission
