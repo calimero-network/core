@@ -9,6 +9,8 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# Core dependencies
+async-trait = "0.1"
 bs58.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 chrono.workspace = true
@@ -31,6 +33,11 @@ tokio = { workspace = true, features = ["io-std", "macros"] }
 tokio-tungstenite.workspace = true
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
+
+# Auth-related dependencies
+hyper = { version = "0.14", features = ["full"] }
+opener = "0.7"
+urlencoding = "2.1"
 
 calimero-config.workspace = true
 calimero-context-config.workspace = true

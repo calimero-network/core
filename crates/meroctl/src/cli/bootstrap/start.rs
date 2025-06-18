@@ -67,6 +67,9 @@ impl StartBootstrapCommand {
                 None,
                 Some(node1_name.to_owned()),
                 crate::output::Format::Json,
+                None,  // profile
+                None,  // token
+                false, // no_auth
             ),
             Output::new(crate::output::Format::Json),
             None,
@@ -97,6 +100,9 @@ impl StartBootstrapCommand {
                 None,
                 Some(node2_name.to_owned()),
                 crate::output::Format::Json,
+                None,  // profile
+                None,  // token
+                false, // no_auth
             ),
             Output::new(crate::output::Format::Json),
             None,
