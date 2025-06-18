@@ -29,13 +29,13 @@ async fn identity_exists_in_context(
     Ok(response.data.identities.contains(target_identity))
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub struct ContextIdentityAliasCommand {
     #[command(subcommand)]
-    command: ContextIdentityAliasSubcommand,
+    pub command: ContextIdentityAliasSubcommand,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub enum ContextIdentityAliasSubcommand {
     #[command(about = "Add new alias for an identity in a context", aliases = ["new", "create"])]
     Add {
@@ -86,10 +86,7 @@ pub enum ContextIdentityAliasSubcommand {
 
 impl ContextIdentityAliasCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         match self.command {
             ContextIdentityAliasSubcommand::Add {
