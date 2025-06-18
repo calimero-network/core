@@ -82,10 +82,13 @@ impl Storage for RocksDBStorage {
     }
 
     async fn exists(&self, key: &str) -> Result<bool, StorageError> {
-        self.db
-            .get(key.as_bytes())
-            .map(|v| v.is_some())
-            .map_err(|e| StorageError::StorageError(format!("Failed to check key existence: {e}")))
+        let key_bytes = key.as_bytes();
+        let exists = self.db.key_may_exist(key_bytes) 
+            && self.db.get(key_bytes)
+                .map_err(|e| StorageError::StorageError(format!("Failed to check key existence: {e}")))?
+                .is_some();
+        
+        Ok(exists)
     }
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
