@@ -234,9 +234,13 @@ mod tests {
         let result = RocksDBStorage::new("/nonexistent/path/that/should/fail");
         assert!(result.is_err());
 
-        // Test opening an existing database
+        // Test that we can reopen a database after closing the first instance
         let temp_dir = tempdir().unwrap();
-        let _storage1 = RocksDBStorage::new(temp_dir.path()).unwrap();
+        {
+            let _storage1 = RocksDBStorage::new(temp_dir.path()).unwrap();
+            // _storage1 is dropped here, releasing the lock
+        }
+        // Now we can open it again
         let _storage2 = RocksDBStorage::new(temp_dir.path()).unwrap();
     }
 }
