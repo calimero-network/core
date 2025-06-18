@@ -5,7 +5,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{bail, Report as EyreReport, WrapErr};
+use eyre::{OptionExt, Report as EyreReport, WrapErr};
 use libp2p::identity::Keypair;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
@@ -18,7 +18,6 @@ use crate::defaults;
 use crate::output::{Format, Output, Report};
 
 pub mod app;
-pub mod bootstrap;
 pub mod call;
 pub mod context;
 pub mod node;
@@ -53,7 +52,6 @@ pub enum SubCommands {
     App(app::AppCommand),
     Context(context::ContextCommand),
     Call(call::CallCommand),
-    Bootstrap(bootstrap::BootstrapCommand),
     Peers(peers::PeersCommand),
     #[command(subcommand)]
     Node(node::NodeCommand),
@@ -78,36 +76,21 @@ pub struct RootArgs {
     pub output_format: Format,
 }
 
-impl RootArgs {
-    pub const fn new(
-        home: Utf8PathBuf,
-        api: Option<Url>,
-        node: Option<String>,
-        output_format: Format,
-    ) -> Self {
-        Self {
-            home,
-            api,
-            node,
-            output_format,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Environment {
-    pub args: RootArgs,
     pub output: Output,
-    pub connection: Option<ConnectionInfo>,
+    connection: Option<ConnectionInfo>,
 }
 
 impl Environment {
-    pub const fn new(args: RootArgs, output: Output, connection: Option<ConnectionInfo>) -> Self {
-        Self {
-            args,
-            output,
-            connection,
-        }
+    pub const fn new(output: Output, connection: Option<ConnectionInfo>) -> Self {
+        Self { output, connection }
+    }
+
+    pub fn connection(&self) -> eyre::Result<&ConnectionInfo> {
+        self.connection
+            .as_ref()
+            .ok_or_eyre("No node connection: either `--node` or `--api` must be set")
     }
 }
 
@@ -124,13 +107,12 @@ impl RootCommand {
             }
         };
 
-        let environment = Environment::new(self.args, output, Some(connection));
+        let environment = Environment::new(output, connection);
 
         let result = match self.action {
             SubCommands::App(application) => application.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
-            SubCommands::Bootstrap(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
             SubCommands::Node(node) => node.run().await,
         };
@@ -148,13 +130,13 @@ impl RootCommand {
         Ok(())
     }
 
-    async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
+    async fn prepare_connection(&self) -> eyre::Result<Option<ConnectionInfo>> {
         let connection = match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
                 let config = Config::load().await?;
 
                 if let Some(conn) = config.get_connection(node).await? {
-                    return Ok(conn);
+                    return Ok(Some(conn));
                 }
 
                 let config = load_config(&self.args.home, node).await?;
@@ -179,9 +161,11 @@ impl RootCommand {
 
                 ConnectionInfo::new(api_url.clone(), auth_key).await
             }
-            _ => bail!("expected one of `--node` or `--api` to be set"),
+            // todo! if neither is selected, we should load the "default" config
+            _ => return Ok(None),
         };
-        Ok(connection)
+
+        Ok(Some(connection))
     }
 }
 

@@ -47,10 +47,7 @@ pub enum ContextAliasSubcommand {
 
 impl ContextAliasCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         match self.command {
             ContextAliasSubcommand::Add {
@@ -130,10 +127,7 @@ pub struct UseCommand {
 
 impl UseCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let default_alias: Alias<ContextId> = "default"
             .parse()

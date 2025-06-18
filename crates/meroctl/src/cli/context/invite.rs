@@ -70,10 +70,7 @@ impl InviteCommand {
     }
 
     pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
             .await?
