@@ -93,7 +93,7 @@ pub async fn update_key_permissions_handler(
         *add = add.iter().map(|p| sanitize_string(p)).collect();
         add.retain(|p| !p.is_empty()); // Remove empty permissions after sanitization
     }
-    
+
     if let Some(ref mut remove) = request.remove {
         *remove = remove.iter().map(|p| sanitize_string(p)).collect();
         remove.retain(|p| !p.is_empty()); // Remove empty permissions after sanitization

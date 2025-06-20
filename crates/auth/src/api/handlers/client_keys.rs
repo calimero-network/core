@@ -153,21 +153,12 @@ pub async fn generate_client_key_handler(
     let timestamp = Utc::now().timestamp();
 
     let mut hasher = Sha256::new();
-    hasher.update(
-        format!(
-            "client:{}:{}:{}",
-            context_id, context_identity, timestamp
-        )
-        .as_bytes(),
-    );
+    hasher.update(format!("client:{}:{}:{}", context_id, context_identity, timestamp).as_bytes());
     let hash = hasher.finalize();
     let client_id = hex::encode(hash);
 
     // Build permissions list starting with required context permission
-    let default_permission = format!(
-        "context[{},{}]",
-        context_id, context_identity
-    );
+    let default_permission = format!("context[{},{}]", context_id, context_identity);
 
     let mut all_permissions = vec![default_permission.clone()];
 
@@ -188,10 +179,7 @@ pub async fn generate_client_key_handler(
         }
     }
 
-    let name = format!(
-        "Context Client - {} ({})",
-        context_id, context_identity
-    );
+    let name = format!("Context Client - {} ({})", context_id, context_identity);
 
     let client_key = Key::new_client_key(root_key_id.clone(), name, all_permissions);
 

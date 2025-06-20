@@ -392,17 +392,13 @@ impl NearWalletProvider {
             .await?;
 
         if !signature_valid {
-            return Err(eyre::eyre!(
-                "Signature verification failed"
-            ));
+            return Err(eyre::eyre!("Signature verification failed"));
         }
         debug!("Signature verification successful");
 
         // Verify the account owns the key
         if !self.verify_account_owns_key(account_id, public_key).await? {
-            return Err(eyre::eyre!(
-                "Public key does not belong to account"
-            ));
+            return Err(eyre::eyre!("Public key does not belong to account"));
         }
 
         // Get or create the root key
@@ -536,9 +532,8 @@ impl AuthProvider for NearWalletProvider {
     fn prepare_auth_data(&self, token_request: &TokenRequest) -> eyre::Result<Value> {
         // Parse the provider-specific data into our request type
         let near_data: NearWalletRequest =
-            serde_json::from_value(token_request.provider_data.clone()).map_err(|e| {
-                eyre::eyre!("Invalid NEAR wallet data: {}", e)
-            })?;
+            serde_json::from_value(token_request.provider_data.clone())
+                .map_err(|e| eyre::eyre!("Invalid NEAR wallet data: {}", e))?;
 
         // Create NEAR-specific auth data JSON
         Ok(serde_json::json!({

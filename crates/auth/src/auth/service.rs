@@ -90,7 +90,8 @@ impl AuthService {
 
         // The provider prepares the auth data based on the token request
         // Each provider implements its own logic for this, so we don't need special cases here
-        let auth_data_json = provider.prepare_auth_data(token_request)
+        let auth_data_json = provider
+            .prepare_auth_data(token_request)
             .map_err(|e| AuthError::InvalidRequest(e.to_string()))?;
 
         // Use the auth data registry to parse auth data to the correct type

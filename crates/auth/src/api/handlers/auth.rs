@@ -150,12 +150,12 @@ pub async fn token_handler(
     ValidatedJson(mut token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
     info!("token_handler");
-    
+
     // Sanitize string inputs to prevent injection attacks
     token_request.auth_method = sanitize_identifier(&token_request.auth_method);
     token_request.public_key = sanitize_string(&token_request.public_key);
     token_request.client_name = sanitize_string(&token_request.client_name);
-    
+
     // Validate sanitized inputs are not empty
     if token_request.auth_method.is_empty() {
         return error_response(
@@ -164,7 +164,7 @@ pub async fn token_handler(
             None,
         );
     }
-    
+
     if token_request.public_key.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -172,7 +172,7 @@ pub async fn token_handler(
             None,
         );
     }
-    
+
     if token_request.client_name.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -180,7 +180,7 @@ pub async fn token_handler(
             None,
         );
     }
-    
+
     // Authenticate directly using the token request
     let auth_response = match state
         .0
@@ -472,7 +472,7 @@ pub async fn revoke_token_handler(
 ) -> impl IntoResponse {
     // Sanitize client ID to prevent injection attacks
     request.client_id = sanitize_identifier(&request.client_id);
-    
+
     if request.client_id.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,

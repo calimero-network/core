@@ -85,7 +85,7 @@ pub async fn create_key_handler(
     // Sanitize inputs to prevent injection attacks
     request.auth_method = sanitize_identifier(&request.auth_method);
     request.public_key = sanitize_string(&request.public_key);
-    
+
     // Validate sanitized inputs are not empty
     if request.auth_method.is_empty() {
         return error_response(
@@ -94,7 +94,7 @@ pub async fn create_key_handler(
             None,
         );
     }
-    
+
     if request.public_key.is_empty() {
         return error_response(
             StatusCode::BAD_REQUEST,
