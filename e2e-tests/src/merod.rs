@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 
+use camino::Utf8Path;
 use tokio::process::Child;
 
 pub struct Merod {
@@ -11,6 +12,20 @@ impl Merod {
         Self {
             process: RefCell::new(None),
         }
+    }
+
+    pub async fn start(&self, home_dir: &Utf8Path, node_name: &str) -> eyre::Result<()> {
+        let mut command = tokio::process::Command::new("merod");
+        command
+            .arg("--home")
+            .arg(home_dir)
+            .arg("--node-name")
+            .arg(node_name)
+            .arg("run");
+
+        let child = command.spawn()?;
+        self.process.borrow_mut().replace(child);
+        Ok(())
     }
 
     pub async fn stop(&self) -> eyre::Result<()> {

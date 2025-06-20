@@ -249,9 +249,13 @@ impl Driver {
         let mut devnet = Devnet::new(devnet_config);
         devnet.start().await?;
 
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
         let mut merods = HashMap::new();
         for name in devnet.nodes.keys() {
-            merods.insert(name.clone(), Merod::new());
+            let merod = Merod::new();
+            merod.start(&self.environment.nodes_dir, name).await?;
+            merods.insert(name.clone(), merod);
         }
 
         Ok(Mero {
