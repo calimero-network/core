@@ -131,13 +131,16 @@ impl AuthService {
             })?;
 
         // Parse the auth data using our registry
-        let auth_data = provider_data_registry::parse_auth_data(auth_method, auth_data_json)?;
+        let auth_data = provider_data_registry::parse_auth_data(auth_method, auth_data_json)
+            .map_err(|e| AuthError::InvalidRequest(e.to_string()))?;
 
         // Create a verifier from the provider and let it handle the authentication
-        let verifier = provider.create_verifier(auth_method, auth_data)?;
+        let verifier = provider.create_verifier(auth_method, auth_data)
+            .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))?;
 
         // Execute the verification process
         verifier.verify().await
+            .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))
     }
 
     /// Get the available providers
