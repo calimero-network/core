@@ -29,7 +29,6 @@ pub trait ProviderRegistration: Send + Sync {
 // A global registry for all providers
 lazy_static! {
     static ref PROVIDER_REGISTRY: Mutex<ProviderRegistry> = Mutex::new(ProviderRegistry::new());
-    static ref INIT: Once = Once::new();
 }
 
 /// Global provider registry that collects all available auth providers
@@ -58,10 +57,6 @@ impl ProviderRegistry {
 
 /// Global function to register a provider
 pub fn register_provider(registration: Arc<dyn ProviderRegistration>) {
-    INIT.call_once(|| {
-        // Initialize any global state if needed
-    });
-
     let mut registry = PROVIDER_REGISTRY.lock().unwrap();
     registry.register(registration);
 }

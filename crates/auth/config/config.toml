@@ -2,8 +2,6 @@
 
 # Server configuration
 listen_addr = "0.0.0.0:3001"
-node_url = "http://node:2428"
-frontend_path = "/app/frontend/dist"
 
 # JWT token settings
 [jwt]

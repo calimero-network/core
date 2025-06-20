@@ -13,7 +13,7 @@ use calimero_auth::storage::{create_storage, Storage};
 use calimero_auth::{providers, AuthService};
 use clap::Parser;
 use eyre::Result;
-use tracing::{info, warn}; 
+use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 

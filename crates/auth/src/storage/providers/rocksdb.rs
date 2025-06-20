@@ -82,10 +82,17 @@ impl Storage for RocksDBStorage {
     }
 
     async fn exists(&self, key: &str) -> Result<bool, StorageError> {
-        self.db
-            .get(key.as_bytes())
-            .map(|v| v.is_some())
-            .map_err(|e| StorageError::StorageError(format!("Failed to check key existence: {e}")))
+        let key_bytes = key.as_bytes();
+        let exists = self.db.key_may_exist(key_bytes)
+            && self
+                .db
+                .get(key_bytes)
+                .map_err(|e| {
+                    StorageError::StorageError(format!("Failed to check key existence: {e}"))
+                })?
+                .is_some();
+
+        Ok(exists)
     }
 
     async fn list_keys(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
@@ -227,9 +234,13 @@ mod tests {
         let result = RocksDBStorage::new("/nonexistent/path/that/should/fail");
         assert!(result.is_err());
 
-        // Test opening an existing database
+        // Test that we can reopen a database after closing the first instance
         let temp_dir = tempdir().unwrap();
-        let _storage1 = RocksDBStorage::new(temp_dir.path()).unwrap();
+        {
+            let _storage1 = RocksDBStorage::new(temp_dir.path()).unwrap();
+            // _storage1 is dropped here, releasing the lock
+        }
+        // Now we can open it again
         let _storage2 = RocksDBStorage::new(temp_dir.path()).unwrap();
     }
 }
