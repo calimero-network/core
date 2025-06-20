@@ -72,14 +72,14 @@ impl AuthDataType for NearWalletAuthDataType {
     fn parse_from_value(
         &self,
         value: Value,
-    ) -> Result<Box<dyn std::any::Any + Send + Sync>, AuthError> {
+    ) -> eyre::Result<Box<dyn std::any::Any + Send + Sync>> {
         // Try to deserialize as NearWalletAuthData
         match serde_json::from_value::<NearWalletAuthData>(value) {
             Ok(data) => Ok(Box::new(data)),
-            Err(err) => Err(AuthError::InvalidRequest(format!(
+            Err(err) => Err(eyre::eyre!(
                 "Invalid NEAR wallet auth data: {}",
                 err
-            ))),
+            )),
         }
     }
 
@@ -126,7 +126,7 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<bool, AuthError>` - Whether the signature is valid
+    /// * `eyre::Result<bool>` - Whether the signature is valid
     async fn verify_signature(
         &self,
         nonce: &str,
@@ -134,26 +134,26 @@ impl NearWalletProvider {
         app: &str,
         signature_str: &str,
         public_key_str: &str,
-    ) -> Result<bool, AuthError> {
+    ) -> eyre::Result<bool> {
         // Parse the public key
         let public_key = PublicKey::from_str(public_key_str)
-            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid public key: {}", e)))?;
+            .map_err(|e| eyre::eyre!("Invalid public key: {}", e))?;
 
         // Decode the base64 nonce
         let nonce_bytes = STANDARD
             .decode(nonce)
-            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid nonce base64: {}", e)))?;
+            .map_err(|e| eyre::eyre!("Invalid nonce base64: {}", e))?;
 
         let nonce_array: [u8; 32] = nonce_bytes
             .try_into()
-            .map_err(|_| AuthError::AuthenticationFailed("Invalid nonce length".to_string()))?;
+            .map_err(|_| eyre::eyre!("Invalid nonce length"))?;
 
         // Create the payload that was signed
         let payload = create_payload(message, nonce_array, app);
 
         // Serialize the payload using borsh::to_vec
         let payload_bytes = borsh::to_vec(&payload).map_err(|e| {
-            AuthError::AuthenticationFailed(format!("Failed to serialize payload: {}", e))
+            eyre::eyre!("Failed to serialize payload: {}", e)
         })?;
 
         // Hash the payload - this is what was actually signed
@@ -161,12 +161,12 @@ impl NearWalletProvider {
 
         // Decode the base64 signature
         let signature_bytes = STANDARD.decode(signature_str).map_err(|e| {
-            AuthError::AuthenticationFailed(format!("Invalid signature base64: {}", e))
+            eyre::eyre!("Invalid signature base64: {}", e)
         })?;
 
         // Create signature from bytes
         let signature = Signature::from_parts(NearKeyType::ED25519, &signature_bytes)
-            .map_err(|e| AuthError::AuthenticationFailed(format!("Invalid signature: {}", e)))?;
+            .map_err(|e| eyre::eyre!("Invalid signature: {}", e))?;
 
         // Verify the signature against the hashed payload
         let is_valid = signature.verify(&hash, &public_key);
@@ -183,34 +183,34 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<bool, AuthError>` - Whether the public key belongs to the account
+    /// * `eyre::Result<bool>` - Whether the public key belongs to the account
     async fn verify_account_owns_key(
         &self,
         account_id: &str,
         public_key: &str,
-    ) -> Result<bool, AuthError> {
+    ) -> eyre::Result<bool> {
         // Validate inputs
         if account_id.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Account ID cannot be empty".to_string(),
+            return Err(eyre::eyre!(
+                "Account ID cannot be empty"
             ));
         }
 
         if public_key.is_empty() {
-            return Err(AuthError::InvalidRequest(
-                "Public key cannot be empty".to_string(),
+            return Err(eyre::eyre!(
+                "Public key cannot be empty"
             ));
         }
 
         // Parse the account ID
         let account_id: AccountId = account_id.parse().map_err(|err| {
-            AuthError::KeyOwnershipFailed(format!("Invalid NEAR account ID: {}", err))
+            eyre::eyre!("Invalid NEAR account ID: {}", err)
         })?;
 
         // Parse the public key - use a variable first to avoid type annotation issues
         let public_key_result = public_key.parse::<near_crypto::PublicKey>();
         let parsed_public_key = public_key_result.map_err(|err| {
-            AuthError::KeyOwnershipFailed(format!("Invalid NEAR public key format: {}", err))
+            eyre::eyre!("Invalid NEAR public key format: {}", err)
         })?;
 
         // Connect to the NEAR RPC with retry logic
@@ -274,11 +274,11 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<Option<(String, Key)>, AuthError>` - The root key ID and root key, if found
+    /// * `eyre::Result<Option<(String, Key)>>` - The root key ID and root key, if found
     async fn get_root_key_for_account(
         &self,
         account_id: &str,
-    ) -> Result<Option<(String, Key)>, AuthError> {
+    ) -> eyre::Result<Option<(String, Key)>> {
         // Create a hash of the account ID to use as a lookup key
         let mut hasher = Sha256::new();
         hasher.update(format!("near:{account_id}").as_bytes());
@@ -298,10 +298,10 @@ impl NearWalletProvider {
             Ok(None) => Ok(None),
             Err(err) => {
                 error!("Failed to get root key: {}", err);
-                Err(AuthError::StorageError(format!(
+                Err(eyre::eyre!(
                     "Failed to get root key: {}",
                     err
-                )))
+                ))
             }
         }
     }
@@ -315,12 +315,12 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<(String, Key), AuthError>` - The created root key ID and root key
+    /// * `eyre::Result<(String, Key)>` - The created root key ID and root key
     async fn create_root_key(
         &self,
         account_id: &str,
         public_key: &str,
-    ) -> Result<(String, Key), AuthError> {
+    ) -> eyre::Result<(String, Key)> {
         // Create a hash of the account ID to use as a key ID
         let mut hasher = Sha256::new();
         hasher.update(format!("near:{account_id}").as_bytes());
@@ -338,7 +338,7 @@ impl NearWalletProvider {
         self.key_manager
             .set_key(&key_id, &root_key)
             .await
-            .map_err(|err| AuthError::StorageError(format!("Failed to store root key: {}", err)))?;
+            .map_err(|err| eyre::eyre!("Failed to store root key: {}", err))?;
 
         Ok((key_id, root_key))
     }
@@ -352,15 +352,15 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<(), AuthError>` - Success or error
-    async fn update_last_used(&self, key_id: &str) -> Result<(), AuthError> {
+    /// * `eyre::Result<()>` - Success or error
+    async fn update_last_used(&self, key_id: &str) -> eyre::Result<()> {
         // Get the current root key
         let key = self
             .key_manager
             .get_key(key_id)
             .await
-            .map_err(|err| AuthError::StorageError(format!("Failed to get root key: {}", err)))?
-            .ok_or_else(|| AuthError::StorageError("Root key not found".to_string()))?;
+            .map_err(|err| eyre::eyre!("Failed to get root key: {}", err))?
+            .ok_or_else(|| eyre::eyre!("Root key not found"))?;
 
         // Update the last used timestamp
         // Note: We don't need to update last_used anymore since we removed that field
@@ -368,7 +368,7 @@ impl NearWalletProvider {
         // Save the updated key
         let _ =
             self.key_manager.set_key(key_id, &key).await.map_err(|err| {
-                AuthError::StorageError(format!("Failed to update root key: {}", err))
+                eyre::eyre!("Failed to update root key: {}", err)
             });
 
         Ok(())
@@ -388,7 +388,7 @@ impl NearWalletProvider {
     ///
     /// # Returns
     ///
-    /// * `Result<(String, Vec<String>), AuthError>` - The key ID and permissions
+    /// * `eyre::Result<(String, Vec<String>)>` - The key ID and permissions
     async fn authenticate_core(
         &self,
         account_id: &str,
@@ -396,7 +396,7 @@ impl NearWalletProvider {
         message: String,
         signature: &str,
         recipient: &str,
-    ) -> Result<(String, Vec<String>), AuthError> {
+    ) -> eyre::Result<(String, Vec<String>)> {
         // // First verify that the message is a valid challenge token and get its claims
         // // let claims = self.token_manager.verify_challenge(&message).await?;
 
@@ -460,7 +460,7 @@ struct NearWalletVerifier {
 
 #[async_trait]
 impl AuthVerifierFn for NearWalletVerifier {
-    async fn verify(&self) -> Result<AuthResponse, AuthError> {
+    async fn verify(&self) -> eyre::Result<AuthResponse> {
         let auth_data = &self.auth_data;
 
         // Authenticate using the core authentication logic
@@ -548,7 +548,7 @@ impl AuthProvider for NearWalletProvider {
         })
     }
 
-    fn prepare_auth_data(&self, token_request: &str) -> Result<Value, AuthError> {
+    fn prepare_auth_data(&self, token_request: &str) -> eyre::Result<Value> {
         // // Parse the provider-specific data into our request type
         // let near_data: NearWalletRequest =
         //     serde_json::from_value(token_request.provider_data.clone()).map_err(|e| {
@@ -571,21 +571,21 @@ impl AuthProvider for NearWalletProvider {
         &self,
         method: &str,
         auth_data: Box<dyn Any + Send + Sync>,
-    ) -> Result<AuthRequestVerifier, AuthError> {
+    ) -> eyre::Result<AuthRequestVerifier> {
         // Only handle supported methods
         if !self.supports_method(method) {
-            return Err(AuthError::InvalidRequest(format!(
+            return Err(eyre::eyre!(
                 "Provider {} does not support method {}",
                 self.name(),
                 method
-            )));
+            ));
         }
 
         // Downcast to NearWalletAuthData
         let near_auth_data = auth_data
             .downcast_ref::<NearWalletAuthData>()
             .ok_or_else(|| {
-                AuthError::InvalidRequest("Failed to parse NEAR wallet auth data".to_string())
+                eyre::eyre!("Failed to parse NEAR wallet auth data")
             })?;
 
         // Create a clone of the auth data and provider for the verifier
@@ -694,7 +694,7 @@ impl AuthProvider for NearWalletProvider {
             .key_manager
             .set_key(&key_id, &root_key)
             .await
-            .map_err(|err| AuthError::StorageError(format!("Failed to store root key: {}", err)))?;
+            .map_err(|err| eyre::eyre!("Failed to store root key: {}", err))?;
 
         Ok(was_updated)
     }
