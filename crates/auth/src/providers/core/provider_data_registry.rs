@@ -57,10 +57,7 @@ pub fn register_auth_data_type(auth_type: Box<dyn AuthDataType>) {
 }
 
 /// Parse auth data from a JSON value
-pub fn parse_auth_data(
-    method: &str,
-    value: Value,
-) -> eyre::Result<Box<dyn Any + Send + Sync>> {
+pub fn parse_auth_data(method: &str, value: Value) -> eyre::Result<Box<dyn Any + Send + Sync>> {
     let registry = AUTH_DATA_REGISTRY.lock().unwrap();
 
     if let Some(auth_type) = registry.get(method) {
