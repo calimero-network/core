@@ -13,7 +13,7 @@ pub trait AuthDataType: Send + Sync {
     fn method_name(&self) -> &str;
 
     /// Parse from JSON value
-    fn parse_from_value(&self, value: Value) -> Result<Box<dyn Any + Send + Sync>, AuthError>;
+    fn parse_from_value(&self, value: Value) -> eyre::Result<Box<dyn Any + Send + Sync>>;
 
     /// Get a sample structure for documentation
     fn get_sample_structure(&self) -> Value;
@@ -22,7 +22,6 @@ pub trait AuthDataType: Send + Sync {
 // Global registry for auth data types
 lazy_static! {
     static ref AUTH_DATA_REGISTRY: Mutex<AuthDataRegistry> = Mutex::new(AuthDataRegistry::new());
-    static ref INIT: Once = Once::new();
 }
 
 /// Registry for auth data types
@@ -53,29 +52,22 @@ impl AuthDataRegistry {
 
 /// Register an auth data type
 pub fn register_auth_data_type(auth_type: Box<dyn AuthDataType>) {
-    INIT.call_once(|| {
-        // Initialize any global state if needed
-    });
-
     let mut registry = AUTH_DATA_REGISTRY.lock().unwrap();
     registry.register(auth_type);
 }
 
 /// Parse auth data from a JSON value
-pub fn parse_auth_data(
-    method: &str,
-    value: Value,
-) -> Result<Box<dyn Any + Send + Sync>, AuthError> {
+pub fn parse_auth_data(method: &str, value: Value) -> eyre::Result<Box<dyn Any + Send + Sync>> {
     let registry = AUTH_DATA_REGISTRY.lock().unwrap();
 
     if let Some(auth_type) = registry.get(method) {
         auth_type.parse_from_value(value)
     } else {
-        Err(AuthError::InvalidRequest(format!(
+        Err(eyre::eyre!(
             "Unsupported authentication method: {}. Supported methods: {}",
             method,
             registry.get_all_methods().join(", ")
-        )))
+        ))
     }
 }
 
