@@ -5,14 +5,14 @@ use thiserror::Error;
 // pub mod api;
 pub mod auth;
 pub mod config;
-// pub mod providers;
+pub mod providers;
 // pub mod secrets;
 pub mod server;
 pub mod storage;
 pub mod utils;
 
 // pub use auth::{forward_auth_middleware, AuthService};
-// pub use providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
+pub use providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 
 /// Response from an authentication validation attempt
 #[derive(Debug, Clone)]
