@@ -87,8 +87,8 @@ macro_rules! route_permissions {
                 AddBlobPermission::Url,
             ))],
 
-                        _ => vec![],
-                    }
+            _ => vec![],
+        }
     }};
 }
 
@@ -137,8 +137,8 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             return match method {
                 HttpMethod::POST => vec![Permission::Context(ContextPermission::Application(
                     ContextApplicationPermission::Update(scope),
-                        ))],
-                        _ => vec![],
+                ))],
+                _ => vec![],
             };
         }
     }
@@ -158,7 +158,7 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
     if let Some(_captures) = ADMIN_KEY_REGEX.captures(path) {
         return match method {
             HttpMethod::DELETE => vec![Permission::Keys(KeyPermission::Delete)],
-                _ => vec![],
+            _ => vec![],
         };
     }
 
@@ -178,11 +178,11 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
     if let Some(_captures) = CLIENT_MANAGEMENT_REGEX.captures(path) {
         return match method {
             HttpMethod::DELETE => vec![Permission::Keys(KeyPermission::DeleteClient)],
-                        _ => vec![],
+            _ => vec![],
         };
-                    }
+    }
 
-                    vec![]
+    vec![]
 }
 
 impl PermissionValidator {

@@ -135,11 +135,14 @@ impl AuthService {
             .map_err(|e| AuthError::InvalidRequest(e.to_string()))?;
 
         // Create a verifier from the provider and let it handle the authentication
-        let verifier = provider.create_verifier(auth_method, auth_data)
+        let verifier = provider
+            .create_verifier(auth_method, auth_data)
             .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))?;
 
         // Execute the verification process
-        verifier.verify().await
+        verifier
+            .verify()
+            .await
             .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))
     }
 
