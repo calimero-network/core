@@ -88,21 +88,16 @@ const LoginView: React.FC = () => {
     checkExistingSession();
   }, [loadProviders]);
   
-  useEffect(() => {
-    localStorage.setItem('application-path', JSON.stringify('https://calimero-only-peers-dev.s3.amazonaws.com/uploads/only_peers.wasm'));
-    localStorage.setItem('application-id', JSON.stringify('CxQn8heNGU9gCCAyPMy3EBuqq812oXJU4Bp16HZd1RFK'));
-    localStorage.setItem('app-url', JSON.stringify('http://localhost'));
 
-    // // Handle URL parameters on mount
-    // const urlParams = handleUrlParams();
-    // console.log('Stored URL parameters:', urlParams);
+  useEffect(() => {
+    handleUrlParams();
     
-    // // Check for mandatory callback URL
-    // const callback = getStoredUrlParam('callback-url');
-    // if (!callback) {
-    //   setError('Missing required callback URL parameter');
-    //   setLoading(false);
-    // }
+    const callback = getStoredUrlParam('callback-url');
+    if (!callback) {
+      setError('Missing required callback URL parameter');
+      setLoading(false);
+    }
+    checkExistingSession();
   }, []);
   
   const handleContinueSession = () => {
