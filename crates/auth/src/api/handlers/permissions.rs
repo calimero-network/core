@@ -8,7 +8,7 @@ use tracing::{error, info};
 use validator::Validate;
 
 use crate::api::handlers::auth::{error_response, success_response};
-use crate::auth::validation::ValidatedJson;
+use crate::auth::validation::{sanitize_string, ValidatedJson};
 use crate::server::AppState;
 use crate::storage::StorageError;
 
@@ -86,8 +86,18 @@ pub async fn get_key_permissions_handler(
 pub async fn update_key_permissions_handler(
     state: Extension<Arc<AppState>>,
     Path(key_id): Path<String>,
-    ValidatedJson(request): ValidatedJson<UpdateKeyPermissionsRequest>,
+    ValidatedJson(mut request): ValidatedJson<UpdateKeyPermissionsRequest>,
 ) -> impl IntoResponse {
+    // Sanitize permission strings to prevent injection attacks
+    if let Some(ref mut add) = request.add {
+        *add = add.iter().map(|p| sanitize_string(p)).collect();
+        add.retain(|p| !p.is_empty()); // Remove empty permissions after sanitization
+    }
+    
+    if let Some(ref mut remove) = request.remove {
+        *remove = remove.iter().map(|p| sanitize_string(p)).collect();
+        remove.retain(|p| !p.is_empty()); // Remove empty permissions after sanitization
+    }
     // Get current key
     let key_result = state.0.key_manager.get_key(&key_id).await;
 

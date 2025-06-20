@@ -10,6 +10,7 @@ use tracing::error;
 use validator::Validate;
 
 use crate::api::handlers::auth::{error_response, success_response};
+use crate::auth::validation::{sanitize_identifier, sanitize_string};
 use crate::server::AppState;
 use crate::storage::models::KeyType;
 
@@ -79,8 +80,28 @@ pub async fn list_keys_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
 /// * `impl IntoResponse` - The response
 pub async fn create_key_handler(
     state: Extension<Arc<AppState>>,
-    Json(request): Json<CreateKeyRequest>,
+    Json(mut request): Json<CreateKeyRequest>,
 ) -> impl IntoResponse {
+    // Sanitize inputs to prevent injection attacks
+    request.auth_method = sanitize_identifier(&request.auth_method);
+    request.public_key = sanitize_string(&request.public_key);
+    
+    // Validate sanitized inputs are not empty
+    if request.auth_method.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Authentication method must contain valid characters",
+            None,
+        );
+    }
+    
+    if request.public_key.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Public key cannot be empty after sanitization",
+            None,
+        );
+    }
     let provider = match state.0.auth_service.get_provider(&request.auth_method) {
         Some(provider) => provider,
         None => {

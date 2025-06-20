@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use validator::Validate;
 
 use crate::api::handlers::AuthUiStaticFiles;
-use crate::auth::validation::ValidatedJson;
+use crate::auth::validation::{sanitize_identifier, sanitize_string, ValidatedJson};
 use crate::server::AppState;
 
 // Common response type used by all helper functions
@@ -147,9 +147,40 @@ impl TokenResponse {
 /// * `impl IntoResponse` - The response
 pub async fn token_handler(
     state: Extension<Arc<AppState>>,
-    ValidatedJson(token_request): ValidatedJson<TokenRequest>,
+    ValidatedJson(mut token_request): ValidatedJson<TokenRequest>,
 ) -> impl IntoResponse {
     info!("token_handler");
+    
+    // Sanitize string inputs to prevent injection attacks
+    token_request.auth_method = sanitize_identifier(&token_request.auth_method);
+    token_request.public_key = sanitize_string(&token_request.public_key);
+    token_request.client_name = sanitize_string(&token_request.client_name);
+    
+    // Validate sanitized inputs are not empty
+    if token_request.auth_method.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Authentication method must contain valid characters",
+            None,
+        );
+    }
+    
+    if token_request.public_key.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Public key cannot be empty after sanitization",
+            None,
+        );
+    }
+    
+    if token_request.client_name.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Client name cannot be empty after sanitization",
+            None,
+        );
+    }
+    
     // Authenticate directly using the token request
     let auth_response = match state
         .0
@@ -270,10 +301,11 @@ pub async fn refresh_token_handler(
     }
 }
 
-/// Validation handler
+/// Forward authentication validation handler
 ///
-/// This endpoint validates a request and returns authentication information.
-/// It's used by reverse proxies for forward authentication.
+/// This endpoint is designed for reverse proxies (nginx, Traefik, etc.) to validate
+/// authentication before forwarding requests to backend services. It validates JWT tokens
+/// and returns user information via response headers.
 ///
 /// # Arguments
 ///
@@ -436,8 +468,18 @@ pub struct RevokeTokenRequest {
 /// * `impl IntoResponse` - The response
 pub async fn revoke_token_handler(
     state: Extension<Arc<AppState>>,
-    ValidatedJson(request): ValidatedJson<RevokeTokenRequest>,
+    ValidatedJson(mut request): ValidatedJson<RevokeTokenRequest>,
 ) -> impl IntoResponse {
+    // Sanitize client ID to prevent injection attacks
+    request.client_id = sanitize_identifier(&request.client_id);
+    
+    if request.client_id.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Client ID must contain valid characters",
+            None,
+        );
+    }
     match state
         .0
         .token_generator
