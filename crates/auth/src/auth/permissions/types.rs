@@ -718,7 +718,6 @@ fn matches_method(held: Option<&str>, required: Option<&str>) -> bool {
         (None, _) => true,
         (Some(_), None) => true,
         (Some(h), Some(r)) => h == r,
-        _ => false,
     }
 }
 
@@ -768,7 +767,6 @@ fn matches_application(
             ContextApplicationPermission::Update(h_scope),
             ContextApplicationPermission::Update(r_scope),
         ) => matches_scope(h_scope, r_scope),
-        _ => false,
     }
 }
 

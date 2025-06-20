@@ -3,11 +3,10 @@ use std::any::Any;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
-use eyre::Result;
 use serde_json::Value;
 
 use crate::api::handlers::auth::TokenRequest;
-use crate::{AuthError, AuthResponse};
+use crate::AuthResponse;
 
 /// Authentication provider trait
 ///
