@@ -250,15 +250,8 @@ impl Driver {
         devnet.start().await?;
 
         let mut merods = HashMap::new();
-        for (name, _node) in devnet.nodes {
-            let merod = Merod::new(
-                name.clone(),
-                self.environment.nodes_dir.clone(),
-                &self.environment.logs_dir,
-                self.environment.merod_binary.clone(),
-                self.environment.output_writer,
-            );
-            merods.insert(name, merod);
+        for name in devnet.nodes.keys() {
+            merods.insert(name.clone(), Merod::new());
         }
 
         Ok(Mero {
