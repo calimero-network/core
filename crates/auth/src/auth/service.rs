@@ -90,7 +90,8 @@ impl AuthService {
 
         // The provider prepares the auth data based on the token request
         // Each provider implements its own logic for this, so we don't need special cases here
-        let auth_data_json = provider.prepare_auth_data(token_request)?;
+        let auth_data_json = provider.prepare_auth_data(token_request)
+            .map_err(|e| AuthError::InvalidRequest(e.to_string()))?;
 
         // Use the auth data registry to parse auth data to the correct type
         self.authenticate_with_data(auth_method, auth_data_json)
@@ -127,13 +128,19 @@ impl AuthService {
             })?;
 
         // Parse the auth data using our registry
-        let auth_data = provider_data_registry::parse_auth_data(auth_method, auth_data_json)?;
+        let auth_data = provider_data_registry::parse_auth_data(auth_method, auth_data_json)
+            .map_err(|e| AuthError::InvalidRequest(e.to_string()))?;
 
         // Create a verifier from the provider and let it handle the authentication
-        let verifier = provider.create_verifier(auth_method, auth_data)?;
+        let verifier = provider
+            .create_verifier(auth_method, auth_data)
+            .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))?;
 
         // Execute the verification process
-        verifier.verify().await
+        verifier
+            .verify()
+            .await
+            .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))
     }
 
     /// Get the available providers
