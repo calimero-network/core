@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::header::HeaderValue;
-use axum::http::{Request, Response};
+use axum::http::Request;
 use axum::response::Response as AxumResponse;
 use dashmap::DashMap;
 use tower::{Layer, Service};

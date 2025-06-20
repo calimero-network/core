@@ -3,12 +3,10 @@ use std::any::Any;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::Request;
-use eyre::Result;
 use serde_json::Value;
 
-// use crate::api::handlers::auth::TokenRequest;
-use crate::storage::models::Key;
-use crate::{AuthError, AuthResponse};
+use crate::api::handlers::auth::TokenRequest;
+use crate::AuthResponse;
 
 /// Authentication provider trait
 ///
@@ -37,9 +35,7 @@ pub trait AuthProvider: Send + Sync {
     /// Convert a TokenRequest to provider-specific auth data JSON
     ///
     /// This method allows providers to extract and format data according to their needs
-    fn prepare_auth_data(&self, token_request: &str) -> eyre::Result<Value> {
-        todo!()
-    }
+    fn prepare_auth_data(&self, token_request: &TokenRequest) -> eyre::Result<Value>;
 
     /// Create a verifier from parsed auth data
     ///

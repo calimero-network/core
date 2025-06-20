@@ -4,7 +4,7 @@ use std::sync::Arc;
 use eyre::Result;
 use serde_json::Value;
 
-// use crate::auth::token::TokenManager;
+use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::storage::{KeyManager, Storage};
 
@@ -24,7 +24,7 @@ pub struct ProviderContext {
     /// Key manager for domain operations
     pub key_manager: KeyManager,
     /// Token manager
-    // pub token_manager: TokenManager,
+    pub token_manager: TokenManager,
     /// Configuration
     pub config: Arc<AuthConfig>,
 }
@@ -51,14 +51,14 @@ impl ProviderFactory {
         &self,
         storage: Arc<dyn Storage>,
         config: &AuthConfig,
-        // token_manager: TokenManager,
+        token_manager: TokenManager,
     ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
         let mut providers = Vec::new();
         let key_manager = KeyManager::new(Arc::clone(&storage));
         let context = ProviderContext {
             storage,
             key_manager,
-            // token_manager: token_manager.clone(),
+            token_manager: token_manager.clone(),
             config: Arc::new(config.clone()),
         };
 
@@ -78,14 +78,14 @@ impl ProviderFactory {
         name: &str,
         storage: Arc<dyn Storage>,
         config: &AuthConfig,
-        // token_manager: TokenManager,
+        token_manager: TokenManager,
     ) -> Result<Box<dyn AuthProvider>, eyre::Error> {
         if let Some(registration) = self.registrations.get(name) {
             let key_manager = KeyManager::new(Arc::clone(&storage));
             let context = ProviderContext {
                 storage,
                 key_manager,
-                // token_manager,
+                token_manager,
                 config: Arc::new(config.clone()),
             };
             registration.create_provider(context)
@@ -113,8 +113,8 @@ impl ProviderFactory {
 pub fn create_providers(
     storage: Arc<dyn Storage>,
     config: &AuthConfig,
-    // token_manager: TokenManager,
+    token_manager: TokenManager,
 ) -> Result<Vec<Box<dyn AuthProvider>>, eyre::Error> {
     let factory = ProviderFactory::new();
-    factory.create_providers(storage, config)
+    factory.create_providers(storage, config, token_manager)
 }
