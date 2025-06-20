@@ -11,7 +11,7 @@ pub mod server;
 pub mod storage;
 pub mod utils;
 
-pub use auth::{AuthService};
+pub use auth::AuthService;
 pub use providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 
 /// Response from an authentication validation attempt

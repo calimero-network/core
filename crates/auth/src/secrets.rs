@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use eyre::{eyre, Result};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info};
@@ -90,8 +91,7 @@ impl VersionedSecret {
             .as_secs();
 
         // Generate a secure random secret
-        let mut secret = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut secret);
+        let secret: [u8; 32] = rand::thread_rng().gen();
 
         Self {
             value: URL_SAFE_NO_PAD.encode(secret),

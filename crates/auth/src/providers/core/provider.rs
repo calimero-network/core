@@ -36,7 +36,7 @@ pub trait AuthProvider: Send + Sync {
     /// Convert a TokenRequest to provider-specific auth data JSON
     ///
     /// This method allows providers to extract and format data according to their needs
-    fn prepare_auth_data(&self, token_request: &TokenRequest) -> Result<Value, AuthError>;
+    fn prepare_auth_data(&self, token_request: &TokenRequest) -> eyre::Result<Value>;
 
     /// Create a verifier from parsed auth data
     ///
@@ -50,12 +50,12 @@ pub trait AuthProvider: Send + Sync {
     ///
     /// # Returns
     ///
-    /// * `Result<AuthRequestVerifier, AuthError>` - A verifier that can authenticate the user
+    /// * `eyre::Result<AuthRequestVerifier>` - A verifier that can authenticate the user
     fn create_verifier(
         &self,
         method: &str,
         auth_data: Box<dyn Any + Send + Sync>,
-    ) -> Result<AuthRequestVerifier, AuthError>;
+    ) -> eyre::Result<AuthRequestVerifier>;
 
     /// Verify a request and check permissions
     ///
@@ -83,7 +83,7 @@ pub trait AuthProvider: Send + Sync {
     ///
     /// # Returns
     ///
-    /// * `eyre::Result<Key>` - The created root key
+    /// * `eyre::Result<bool>` - Whether the root key was created successfully
     async fn create_root_key(
         &self,
         public_key: &str,
@@ -104,7 +104,7 @@ pub trait AuthProvider: Send + Sync {
 #[async_trait]
 pub trait AuthVerifierFn: Send + Sync {
     /// Perform verification
-    async fn verify(&self) -> Result<AuthResponse, AuthError>;
+    async fn verify(&self) -> eyre::Result<AuthResponse>;
 }
 
 /// Auth request verifier
@@ -127,7 +127,7 @@ impl AuthRequestVerifier {
     }
 
     /// Verify the request
-    pub async fn verify(&self) -> Result<AuthResponse, AuthError> {
+    pub async fn verify(&self) -> eyre::Result<AuthResponse> {
         self.verifier.verify().await
     }
 }

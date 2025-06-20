@@ -5,5 +5,5 @@ pub mod service;
 pub mod token;
 pub mod validation;
 
-pub use middleware::forward_auth_middleware;
+pub use middleware::auth_middleware;
 pub use service::AuthService;

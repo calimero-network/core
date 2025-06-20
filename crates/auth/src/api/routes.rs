@@ -18,7 +18,7 @@ use crate::api::handlers::root_keys::{create_key_handler, delete_key_handler, li
 use crate::api::handlers::{
     asset_handler, health_handler, identity_handler, metrics_handler, providers_handler,
 };
-use crate::auth::middleware::forward_auth_middleware;
+use crate::auth::middleware::auth_middleware;
 use crate::auth::security::{create_body_limit_layer, create_security_headers, RateLimitLayer};
 use crate::config::AuthConfig;
 use crate::server::AppState;
@@ -97,7 +97,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/identity", get(identity_handler))
         .route("/metrics", get(metrics_handler))
         // Add authentication middleware to all protected routes
-        .layer(from_fn(forward_auth_middleware));
+        .layer(from_fn(auth_middleware));
 
     // Create the base router with all routes
     let mut router = Router::new()

@@ -11,7 +11,7 @@ use validator::Validate;
 
 use super::auth::{error_response, success_response};
 use crate::api::handlers::auth::TokenResponse;
-use crate::auth::validation::ValidatedJson;
+use crate::auth::validation::{escape_html, sanitize_identifier, ValidatedJson};
 use crate::server::AppState;
 use crate::storage::models::{Key, KeyType};
 
@@ -117,6 +117,18 @@ pub async fn generate_client_key_handler(
 
     let root_key_id = auth_response.key_id;
 
+    // Sanitize identifiers to prevent injection attacks
+    let context_id = sanitize_identifier(&request.context_id);
+    let context_identity = sanitize_identifier(&request.context_identity);
+
+    if context_id.is_empty() || context_identity.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Context ID and context identity must contain valid characters",
+            None,
+        );
+    }
+
     // Get and validate root key
     let root_key = match state.0.key_manager.get_key(&root_key_id).await {
         Ok(Some(key)) if !key.is_valid() => {
@@ -141,21 +153,12 @@ pub async fn generate_client_key_handler(
     let timestamp = Utc::now().timestamp();
 
     let mut hasher = Sha256::new();
-    hasher.update(
-        format!(
-            "client:{}:{}:{}",
-            request.context_id, request.context_identity, timestamp
-        )
-        .as_bytes(),
-    );
+    hasher.update(format!("client:{}:{}:{}", context_id, context_identity, timestamp).as_bytes());
     let hash = hasher.finalize();
     let client_id = hex::encode(hash);
 
     // Build permissions list starting with required context permission
-    let default_permission = format!(
-        "context[{},{}]",
-        request.context_id, request.context_identity
-    );
+    let default_permission = format!("context[{},{}]", context_id, context_identity);
 
     let mut all_permissions = vec![default_permission.clone()];
 
@@ -166,7 +169,7 @@ pub async fn generate_client_key_handler(
             if !root_key.has_permission(&perm) {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    format!("Root key does not have permission: {}", perm),
+                    format!("Root key does not have permission: {}", escape_html(&perm)),
                     None,
                 );
             }
@@ -176,10 +179,7 @@ pub async fn generate_client_key_handler(
         }
     }
 
-    let name = format!(
-        "Context Client - {} ({})",
-        request.context_id, request.context_identity
-    );
+    let name = format!("Context Client - {} ({})", context_id, context_identity);
 
     let client_key = Key::new_client_key(root_key_id.clone(), name, all_permissions);
 
