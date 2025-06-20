@@ -86,7 +86,8 @@ pub struct AccountId(pub String);
 /// ```rust,no_run
 /// use calimero_sdk::{External, AccountId};
 ///
-/// let proposal_id = External.propose()
+/// let proposal_id = Self::external()
+///     .propose()
 ///     .transfer(AccountId("bob.near".to_string()), 1_000_000_000_000_000_000_000_000)
 ///     .external_function_call(
 ///         "contract.near".to_string(),
