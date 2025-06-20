@@ -165,9 +165,9 @@ fn parse_permission_params(s: &str) -> (ResourceScope, UserScope, Option<String>
                 if params_str.is_empty() {
                     return (ResourceScope::Global, UserScope::Any, None);
                 }
-                
+
                 let params: Vec<&str> = params_str.split(',').collect();
-                
+
                 // Parse context_ids (first parameter)
                 let context_scope = if let Some(&context_param) = params.get(0) {
                     let context_param = context_param.trim();
@@ -179,8 +179,8 @@ fn parse_permission_params(s: &str) -> (ResourceScope, UserScope, Option<String>
                 } else {
                     ResourceScope::Global
                 };
-                
-                // Parse user_id (second parameter) 
+
+                // Parse user_id (second parameter)
                 let user_scope = if let Some(&user_param) = params.get(1) {
                     let user_param = user_param.trim();
                     if user_param.is_empty() {
@@ -191,7 +191,7 @@ fn parse_permission_params(s: &str) -> (ResourceScope, UserScope, Option<String>
                 } else {
                     UserScope::Any
                 };
-                
+
                 // Parse method (third parameter)
                 let method = if let Some(&method_param) = params.get(2) {
                     let method_param = method_param.trim();
@@ -203,36 +203,36 @@ fn parse_permission_params(s: &str) -> (ResourceScope, UserScope, Option<String>
                 } else {
                     None
                 };
-                
+
                 return (context_scope, user_scope, method);
             }
         }
     }
-    
+
     (ResourceScope::Global, UserScope::Any, None)
 }
 
 /// Helper function to format permission parameters
 fn format_params(scope: &ResourceScope, user: &UserScope, method: &Option<String>) -> String {
     let mut params = Vec::new();
-    
+
     // Add context scope
     match scope {
-        ResourceScope::Global => {}, // Don't add empty context
+        ResourceScope::Global => {} // Don't add empty context
         ResourceScope::Specific(ids) => {
             if !ids.is_empty() {
                 params.push(ids[0].clone()); // Only first context ID for now
             }
         }
     }
-    
+
     // Add user scope
     match user {
         UserScope::Any => {
             if !params.is_empty() {
                 params.push(String::new()); // Empty user param
             }
-        },
+        }
         UserScope::Specific(user_id) => {
             // Ensure we have at least context param (empty if needed)
             if params.is_empty() {
@@ -241,7 +241,7 @@ fn format_params(scope: &ResourceScope, user: &UserScope, method: &Option<String
             params.push(user_id.clone());
         }
     }
-    
+
     // Add method
     if let Some(method_name) = method {
         // Ensure we have context and user params
@@ -250,7 +250,7 @@ fn format_params(scope: &ResourceScope, user: &UserScope, method: &Option<String
         }
         params.push(method_name.clone());
     }
-    
+
     if params.is_empty() || params.iter().all(|p| p.is_empty()) {
         String::new()
     } else {
@@ -292,24 +292,28 @@ impl FromStr for Permission {
 
         match *category {
             "admin" => Ok(Permission::Admin(AdminPermission)),
-            
+
             "application" => {
                 let action = parts.get(1).unwrap_or(&"");
                 let (scope, _, _) = parse_permission_params(params_part);
-                
+
                 match *action {
                     "list" => Ok(Permission::Application(ApplicationPermission::List(scope))),
-                    "install" => Ok(Permission::Application(ApplicationPermission::Install(scope))),
-                    "uninstall" => Ok(Permission::Application(ApplicationPermission::Uninstall(scope))),
+                    "install" => Ok(Permission::Application(ApplicationPermission::Install(
+                        scope,
+                    ))),
+                    "uninstall" => Ok(Permission::Application(ApplicationPermission::Uninstall(
+                        scope,
+                    ))),
                     "" => Ok(Permission::Application(ApplicationPermission::All)),
                     _ => Err(format!("Unknown application action: {}", action)),
                 }
-            },
-            
+            }
+
             "blob" => {
                 let action = parts.get(1).unwrap_or(&"");
                 let subaction = parts.get(2).unwrap_or(&"");
-                
+
                 match *action {
                     "add" => {
                         let add_perm = match *subaction {
@@ -320,93 +324,110 @@ impl FromStr for Permission {
                             _ => return Err(format!("Unknown blob add action: {}", subaction)),
                         };
                         Ok(Permission::Blob(BlobPermission::Add(add_perm)))
-                    },
+                    }
                     "remove" => {
                         let (scope, _, _) = parse_permission_params(params_part);
                         Ok(Permission::Blob(BlobPermission::Remove(scope)))
-                    },
+                    }
                     "" => Ok(Permission::Blob(BlobPermission::All)),
                     _ => Err(format!("Unknown blob action: {}", action)),
                 }
-            },
-            
+            }
+
             "context" => {
                 let action = parts.get(1).unwrap_or(&"");
                 let subaction = parts.get(2).unwrap_or(&"");
                 let subsubaction = parts.get(3).unwrap_or(&"");
                 let (scope, user_scope, method) = parse_permission_params(params_part);
-                
+
                 match *action {
                     "create" => Ok(Permission::Context(ContextPermission::Create(scope))),
                     "list" => Ok(Permission::Context(ContextPermission::List(scope))),
                     "delete" => Ok(Permission::Context(ContextPermission::Delete(scope))),
-                    "leave" => Ok(Permission::Context(ContextPermission::Leave(scope, user_scope))),
-                    "invite" => Ok(Permission::Context(ContextPermission::Invite(scope, user_scope))),
-                    "execute" => Ok(Permission::Context(ContextPermission::Execute(scope, user_scope, method))),
-                    "capabilities" => {
-                        match *subaction {
-                            "grant" => Ok(Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Grant(scope)))),
-                            "revoke" => Ok(Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Revoke(scope)))),
-                            _ => Err(format!("Unknown context capabilities action: {}", subaction)),
-                        }
+                    "leave" => Ok(Permission::Context(ContextPermission::Leave(
+                        scope, user_scope,
+                    ))),
+                    "invite" => Ok(Permission::Context(ContextPermission::Invite(
+                        scope, user_scope,
+                    ))),
+                    "execute" => Ok(Permission::Context(ContextPermission::Execute(
+                        scope, user_scope, method,
+                    ))),
+                    "capabilities" => match *subaction {
+                        "grant" => Ok(Permission::Context(ContextPermission::Capabilities(
+                            CapabilityPermission::Grant(scope),
+                        ))),
+                        "revoke" => Ok(Permission::Context(ContextPermission::Capabilities(
+                            CapabilityPermission::Revoke(scope),
+                        ))),
+                        _ => Err(format!(
+                            "Unknown context capabilities action: {}",
+                            subaction
+                        )),
                     },
-                    "application" => {
-                        match *subaction {
-                            "update" => Ok(Permission::Context(ContextPermission::Application(ContextApplicationPermission::Update(scope)))),
-                            _ => Err(format!("Unknown context application action: {}", subaction)),
-                        }
+                    "application" => match *subaction {
+                        "update" => Ok(Permission::Context(ContextPermission::Application(
+                            ContextApplicationPermission::Update(scope),
+                        ))),
+                        _ => Err(format!("Unknown context application action: {}", subaction)),
                     },
-                    "alias" => {
-                        match *subaction {
-                            "create" => {
-                                let alias_type = match *subsubaction {
-                                    "context" => AliasType::Context,
-                                    "application" => AliasType::Application,
-                                    "identity" => AliasType::Identity,
-                                    _ => return Err(format!("Unknown alias type: {}", subsubaction)),
-                                };
-                                Ok(Permission::Context(ContextPermission::Alias(AliasPermission::Create(alias_type, scope))))
-                            },
-                            "list" => {
-                                let alias_type = match *subsubaction {
-                                    "context" => AliasType::Context,
-                                    "application" => AliasType::Application,
-                                    "identity" => AliasType::Identity,
-                                    _ => return Err(format!("Unknown alias type: {}", subsubaction)),
-                                };
-                                Ok(Permission::Context(ContextPermission::Alias(AliasPermission::List(alias_type, scope))))
-                            },
-                            "lookup" => {
-                                let alias_type = match *subsubaction {
-                                    "context" => AliasType::Context,
-                                    "application" => AliasType::Application,
-                                    "identity" => AliasType::Identity,
-                                    _ => return Err(format!("Unknown alias type: {}", subsubaction)),
-                                };
-                                Ok(Permission::Context(ContextPermission::Alias(AliasPermission::Lookup(alias_type, scope))))
-                            },
-                            "delete" => {
-                                let alias_type = match *subsubaction {
-                                    "context" => AliasType::Context,
-                                    "application" => AliasType::Application,
-                                    "identity" => AliasType::Identity,
-                                    _ => return Err(format!("Unknown alias type: {}", subsubaction)),
-                                };
-                                Ok(Permission::Context(ContextPermission::Alias(AliasPermission::Delete(alias_type, scope))))
-                            },
-                            _ => Err(format!("Unknown context alias action: {}", subaction)),
+                    "alias" => match *subaction {
+                        "create" => {
+                            let alias_type = match *subsubaction {
+                                "context" => AliasType::Context,
+                                "application" => AliasType::Application,
+                                "identity" => AliasType::Identity,
+                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                            };
+                            Ok(Permission::Context(ContextPermission::Alias(
+                                AliasPermission::Create(alias_type, scope),
+                            )))
                         }
+                        "list" => {
+                            let alias_type = match *subsubaction {
+                                "context" => AliasType::Context,
+                                "application" => AliasType::Application,
+                                "identity" => AliasType::Identity,
+                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                            };
+                            Ok(Permission::Context(ContextPermission::Alias(
+                                AliasPermission::List(alias_type, scope),
+                            )))
+                        }
+                        "lookup" => {
+                            let alias_type = match *subsubaction {
+                                "context" => AliasType::Context,
+                                "application" => AliasType::Application,
+                                "identity" => AliasType::Identity,
+                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                            };
+                            Ok(Permission::Context(ContextPermission::Alias(
+                                AliasPermission::Lookup(alias_type, scope),
+                            )))
+                        }
+                        "delete" => {
+                            let alias_type = match *subsubaction {
+                                "context" => AliasType::Context,
+                                "application" => AliasType::Application,
+                                "identity" => AliasType::Identity,
+                                _ => return Err(format!("Unknown alias type: {}", subsubaction)),
+                            };
+                            Ok(Permission::Context(ContextPermission::Alias(
+                                AliasPermission::Delete(alias_type, scope),
+                            )))
+                        }
+                        _ => Err(format!("Unknown context alias action: {}", subaction)),
                     },
                     "" => Ok(Permission::Context(ContextPermission::All(scope))),
                     _ => Err(format!("Unknown context action: {}", action)),
                 }
-            },
-            
+            }
+
             "keys" => {
                 let action = parts.get(1).unwrap_or(&"");
                 let subaction = parts.get(2).unwrap_or(&"");
                 let (scope, _, _) = parse_permission_params(params_part);
-                
+
                 match *action {
                     "create" => Ok(Permission::Keys(KeyPermission::Create)),
                     "list" => Ok(Permission::Keys(KeyPermission::List)),
@@ -426,8 +447,8 @@ impl FromStr for Permission {
                     "" => Ok(Permission::Keys(KeyPermission::All)),
                     _ => Err(format!("Unknown keys action: {}", action)),
                 }
-            },
-            
+            }
+
             _ => Err(format!("Unknown permission category: {}", category)),
         }
     }
@@ -442,11 +463,11 @@ impl fmt::Display for Permission {
                 ApplicationPermission::List(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "application:list{}", params)
-                },
+                }
                 ApplicationPermission::Install(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "application:install{}", params)
-                },
+                }
                 ApplicationPermission::Uninstall(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "application:uninstall{}", params)
@@ -463,29 +484,29 @@ impl fmt::Display for Permission {
                 BlobPermission::Remove(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "blob:remove{}", params)
-                },
+                }
             },
             Permission::Context(ctx_perm) => match ctx_perm {
                 ContextPermission::All(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "context{}", params)
-                },
+                }
                 ContextPermission::Create(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "context:create{}", params)
-                },
+                }
                 ContextPermission::List(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "context:list{}", params)
-                },
+                }
                 ContextPermission::Delete(scope) => {
                     let params = format_params(scope, &UserScope::Any, &None);
                     write!(f, "context:delete{}", params)
-                },
+                }
                 ContextPermission::Leave(scope, user) => {
                     let params = format_params(scope, user, &None);
                     write!(f, "context:leave{}", params)
-                },
+                }
                 ContextPermission::Invite(scope, user) => {
                     let params = format_params(scope, user, &None);
                     write!(f, "context:invite{}", params)
@@ -498,12 +519,12 @@ impl fmt::Display for Permission {
                     AliasPermission::Create(alias_type, scope) => {
                         let type_str = match alias_type {
                             AliasType::Context => "context",
-                            AliasType::Application => "application", 
+                            AliasType::Application => "application",
                             AliasType::Identity => "identity",
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:create:{}{}", type_str, params)
-                    },
+                    }
                     AliasPermission::List(alias_type, scope) => {
                         let type_str = match alias_type {
                             AliasType::Context => "context",
@@ -512,7 +533,7 @@ impl fmt::Display for Permission {
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:list:{}{}", type_str, params)
-                    },
+                    }
                     AliasPermission::Lookup(alias_type, scope) => {
                         let type_str = match alias_type {
                             AliasType::Context => "context",
@@ -521,7 +542,7 @@ impl fmt::Display for Permission {
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:lookup:{}{}", type_str, params)
-                    },
+                    }
                     AliasPermission::Delete(alias_type, scope) => {
                         let type_str = match alias_type {
                             AliasType::Context => "context",
@@ -530,14 +551,26 @@ impl fmt::Display for Permission {
                         };
                         let params = format_simple_params(scope);
                         write!(f, "context:alias:delete:{}{}", type_str, params)
-                    },
+                    }
                 },
                 ContextPermission::Capabilities(cap_perm) => match cap_perm {
-                    CapabilityPermission::Grant(scope) => write!(f, "context:capabilities:grant{}", format_simple_params(scope)),
-                    CapabilityPermission::Revoke(scope) => write!(f, "context:capabilities:revoke{}", format_simple_params(scope)),
+                    CapabilityPermission::Grant(scope) => write!(
+                        f,
+                        "context:capabilities:grant{}",
+                        format_simple_params(scope)
+                    ),
+                    CapabilityPermission::Revoke(scope) => write!(
+                        f,
+                        "context:capabilities:revoke{}",
+                        format_simple_params(scope)
+                    ),
                 },
                 ContextPermission::Application(app_perm) => match app_perm {
-                    ContextApplicationPermission::Update(scope) => write!(f, "context:application:update{}", format_simple_params(scope)),
+                    ContextApplicationPermission::Update(scope) => write!(
+                        f,
+                        "context:application:update{}",
+                        format_simple_params(scope)
+                    ),
                 },
             },
             Permission::Keys(key_perm) => match key_perm {
@@ -550,18 +583,17 @@ impl fmt::Display for Permission {
                 KeyPermission::GetPermissions(scope) => {
                     let params = format_simple_params(scope);
                     write!(f, "keys:permissions:get{}", params)
-                },
+                }
                 KeyPermission::UpdatePermissions(scope) => {
                     let params = format_simple_params(scope);
                     write!(f, "keys:permissions:update{}", params)
-                },
+                }
             },
         }
     }
 }
 
 impl Permission {
-
     /// Check if this permission satisfies the required permission
     pub fn satisfies(&self, required: &Permission) -> bool {
         match (self, required) {
@@ -639,12 +671,14 @@ impl Permission {
                 (ContextPermission::Alias(held), ContextPermission::Alias(required)) => {
                     matches_alias(held, required)
                 }
-                (ContextPermission::Capabilities(held), ContextPermission::Capabilities(required)) => {
-                    matches_capability(held, required)
-                }
-                (ContextPermission::Application(held), ContextPermission::Application(required)) => {
-                    matches_application(held, required)
-                }
+                (
+                    ContextPermission::Capabilities(held),
+                    ContextPermission::Capabilities(required),
+                ) => matches_capability(held, required),
+                (
+                    ContextPermission::Application(held),
+                    ContextPermission::Application(required),
+                ) => matches_application(held, required),
                 _ => false,
             },
 
@@ -691,18 +725,22 @@ fn matches_method(held: Option<&str>, required: Option<&str>) -> bool {
 /// Helper function to check if one alias permission satisfies another
 fn matches_alias(held: &AliasPermission, required: &AliasPermission) -> bool {
     match (held, required) {
-        (AliasPermission::Create(held_type, held_scope), AliasPermission::Create(req_type, req_scope)) => {
-            held_type == req_type && matches_scope(held_scope, req_scope)
-        }
-        (AliasPermission::Delete(held_type, held_scope), AliasPermission::Delete(req_type, req_scope)) => {
-            held_type == req_type && matches_scope(held_scope, req_scope)
-        }
-        (AliasPermission::Lookup(held_type, held_scope), AliasPermission::Lookup(req_type, req_scope)) => {
-            held_type == req_type && matches_scope(held_scope, req_scope)
-        }
-        (AliasPermission::List(held_type, held_scope), AliasPermission::List(req_type, req_scope)) => {
-            held_type == req_type && matches_scope(held_scope, req_scope)
-        }
+        (
+            AliasPermission::Create(held_type, held_scope),
+            AliasPermission::Create(req_type, req_scope),
+        ) => held_type == req_type && matches_scope(held_scope, req_scope),
+        (
+            AliasPermission::Delete(held_type, held_scope),
+            AliasPermission::Delete(req_type, req_scope),
+        ) => held_type == req_type && matches_scope(held_scope, req_scope),
+        (
+            AliasPermission::Lookup(held_type, held_scope),
+            AliasPermission::Lookup(req_type, req_scope),
+        ) => held_type == req_type && matches_scope(held_scope, req_scope),
+        (
+            AliasPermission::List(held_type, held_scope),
+            AliasPermission::List(req_type, req_scope),
+        ) => held_type == req_type && matches_scope(held_scope, req_scope),
         _ => false,
     }
 }
@@ -721,11 +759,15 @@ fn matches_capability(held: &CapabilityPermission, required: &CapabilityPermissi
 }
 
 /// Helper function to check if one application permission satisfies another
-fn matches_application(held: &ContextApplicationPermission, required: &ContextApplicationPermission) -> bool {
+fn matches_application(
+    held: &ContextApplicationPermission,
+    required: &ContextApplicationPermission,
+) -> bool {
     match (held, required) {
-        (ContextApplicationPermission::Update(h_scope), ContextApplicationPermission::Update(r_scope)) => {
-            matches_scope(h_scope, r_scope)
-        }
+        (
+            ContextApplicationPermission::Update(h_scope),
+            ContextApplicationPermission::Update(r_scope),
+        ) => matches_scope(h_scope, r_scope),
         _ => false,
     }
 }
@@ -776,7 +818,10 @@ mod tests {
             AliasType::Identity,
             ResourceScope::Specific(vec!["ctx-123".to_string()]),
         )));
-        assert_eq!(format!("{}", perm), "context:alias:lookup:identity[ctx-123]");
+        assert_eq!(
+            format!("{}", perm),
+            "context:alias:lookup:identity[ctx-123]"
+        );
         assert_eq!(perm.to_string(), "context:alias:lookup:identity[ctx-123]");
     }
 
@@ -804,64 +849,103 @@ mod tests {
     #[test]
     fn test_alias_permission_parsing() {
         // Test create permission for context
-        let perm = "context:alias:create:context".parse::<Permission>().unwrap();
+        let perm = "context:alias:create:context"
+            .parse::<Permission>()
+            .unwrap();
         assert!(matches!(
             perm,
-            Permission::Context(ContextPermission::Alias(AliasPermission::Create(AliasType::Context, ResourceScope::Global)))
+            Permission::Context(ContextPermission::Alias(AliasPermission::Create(
+                AliasType::Context,
+                ResourceScope::Global
+            )))
         ));
 
         // Test create permission for identity with context
-        let perm = "context:alias:create:identity[ctx-123]".parse::<Permission>().unwrap();
+        let perm = "context:alias:create:identity[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
         match perm {
-            Permission::Context(ContextPermission::Alias(AliasPermission::Create(AliasType::Identity, scope))) => {
+            Permission::Context(ContextPermission::Alias(AliasPermission::Create(
+                AliasType::Identity,
+                scope,
+            ))) => {
                 assert_eq!(scope, ResourceScope::Specific(vec!["ctx-123".to_string()]));
             }
             _ => panic!("Wrong permission type"),
         }
 
         // Test lookup permission for application
-        let perm = "context:alias:lookup:application[alias-name]".parse::<Permission>().unwrap();
+        let perm = "context:alias:lookup:application[alias-name]"
+            .parse::<Permission>()
+            .unwrap();
         match perm {
-            Permission::Context(ContextPermission::Alias(AliasPermission::Lookup(AliasType::Application, scope))) => {
-                assert_eq!(scope, ResourceScope::Specific(vec!["alias-name".to_string()]));
+            Permission::Context(ContextPermission::Alias(AliasPermission::Lookup(
+                AliasType::Application,
+                scope,
+            ))) => {
+                assert_eq!(
+                    scope,
+                    ResourceScope::Specific(vec!["alias-name".to_string()])
+                );
             }
             _ => panic!("Wrong permission type"),
         }
 
         // Test list permission for identity
-        let perm = "context:alias:list:identity[ctx-123]".parse::<Permission>().unwrap();
+        let perm = "context:alias:list:identity[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
         match perm {
-            Permission::Context(ContextPermission::Alias(AliasPermission::List(AliasType::Identity, scope))) => {
+            Permission::Context(ContextPermission::Alias(AliasPermission::List(
+                AliasType::Identity,
+                scope,
+            ))) => {
                 assert_eq!(scope, ResourceScope::Specific(vec!["ctx-123".to_string()]));
             }
             _ => panic!("Wrong permission type"),
         }
 
         // Test delete permission for context
-        let perm = "context:alias:delete:context[alias-name]".parse::<Permission>().unwrap();
+        let perm = "context:alias:delete:context[alias-name]"
+            .parse::<Permission>()
+            .unwrap();
         match perm {
-            Permission::Context(ContextPermission::Alias(AliasPermission::Delete(AliasType::Context, scope))) => {
-                assert_eq!(scope, ResourceScope::Specific(vec!["alias-name".to_string()]));
+            Permission::Context(ContextPermission::Alias(AliasPermission::Delete(
+                AliasType::Context,
+                scope,
+            ))) => {
+                assert_eq!(
+                    scope,
+                    ResourceScope::Specific(vec!["alias-name".to_string()])
+                );
             }
             _ => panic!("Wrong permission type"),
         }
     }
 
-    #[test] 
+    #[test]
     fn test_context_capabilities_parsing() {
         // Test grant permission
-        let perm = "context:capabilities:grant[ctx-123]".parse::<Permission>().unwrap();
+        let perm = "context:capabilities:grant[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
         match perm {
-            Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Grant(scope))) => {
+            Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Grant(
+                scope,
+            ))) => {
                 assert_eq!(scope, ResourceScope::Specific(vec!["ctx-123".to_string()]));
             }
             _ => panic!("Wrong permission type"),
         }
 
         // Test revoke permission
-        let perm = "context:capabilities:revoke[ctx-123]".parse::<Permission>().unwrap();
+        let perm = "context:capabilities:revoke[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
         match perm {
-            Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Revoke(scope))) => {
+            Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Revoke(
+                scope,
+            ))) => {
                 assert_eq!(scope, ResourceScope::Specific(vec!["ctx-123".to_string()]));
             }
             _ => panic!("Wrong permission type"),
@@ -871,9 +955,13 @@ mod tests {
     #[test]
     fn test_context_application_parsing() {
         // Test update permission
-        let perm = "context:application:update[ctx-123]".parse::<Permission>().unwrap();
+        let perm = "context:application:update[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
         match perm {
-            Permission::Context(ContextPermission::Application(ContextApplicationPermission::Update(scope))) => {
+            Permission::Context(ContextPermission::Application(
+                ContextApplicationPermission::Update(scope),
+            )) => {
                 assert_eq!(scope, ResourceScope::Specific(vec!["ctx-123".to_string()]));
             }
             _ => panic!("Wrong permission type"),
@@ -883,33 +971,55 @@ mod tests {
     #[test]
     fn test_alias_permission_satisfaction() {
         // Test create permission for same alias type
-        let held = "context:alias:create:context".parse::<Permission>().unwrap();
-        let required = "context:alias:create:context".parse::<Permission>().unwrap();
+        let held = "context:alias:create:context"
+            .parse::<Permission>()
+            .unwrap();
+        let required = "context:alias:create:context"
+            .parse::<Permission>()
+            .unwrap();
         assert!(held.satisfies(&required));
 
         // Test delete permission for specific alias
-        let held = "context:alias:delete:application[alias-name]".parse::<Permission>().unwrap();
-        let required = "context:alias:delete:application[alias-name]".parse::<Permission>().unwrap();
+        let held = "context:alias:delete:application[alias-name]"
+            .parse::<Permission>()
+            .unwrap();
+        let required = "context:alias:delete:application[alias-name]"
+            .parse::<Permission>()
+            .unwrap();
         assert!(held.satisfies(&required));
 
         // Test lookup permission - specific context
-        let held = "context:alias:lookup:identity[ctx-123]".parse::<Permission>().unwrap();
-        let required = "context:alias:lookup:identity[ctx-123]".parse::<Permission>().unwrap();
+        let held = "context:alias:lookup:identity[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
+        let required = "context:alias:lookup:identity[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
         assert!(held.satisfies(&required));
 
         // Test different alias types don't satisfy each other
-        let held = "context:alias:create:context".parse::<Permission>().unwrap();
-        let required = "context:alias:create:application".parse::<Permission>().unwrap();
+        let held = "context:alias:create:context"
+            .parse::<Permission>()
+            .unwrap();
+        let required = "context:alias:create:application"
+            .parse::<Permission>()
+            .unwrap();
         assert!(!held.satisfies(&required));
 
         // Test different actions don't satisfy each other
-        let held = "context:alias:create:context".parse::<Permission>().unwrap();
-        let required = "context:alias:delete:context".parse::<Permission>().unwrap();
+        let held = "context:alias:create:context"
+            .parse::<Permission>()
+            .unwrap();
+        let required = "context:alias:delete:context"
+            .parse::<Permission>()
+            .unwrap();
         assert!(!held.satisfies(&required));
 
         // Test master permission satisfies all
         let held = "admin".parse::<Permission>().unwrap();
-        let required = "context:alias:lookup:identity[ctx-123]".parse::<Permission>().unwrap();
+        let required = "context:alias:lookup:identity[ctx-123]"
+            .parse::<Permission>()
+            .unwrap();
         assert!(held.satisfies(&required));
     }
 }

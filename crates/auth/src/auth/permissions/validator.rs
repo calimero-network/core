@@ -1,46 +1,39 @@
 use std::sync::LazyLock;
+
 use axum::body::Body;
 use axum::http::Request;
 use regex::Regex;
 
 use super::types::{
-    AddBlobPermission, ApplicationPermission, BlobPermission, 
-    CapabilityPermission, ContextApplicationPermission, ContextPermission,
-    HttpMethod, KeyPermission, Permission, ResourceScope, UserScope,
+    AddBlobPermission, ApplicationPermission, BlobPermission, CapabilityPermission,
+    ContextApplicationPermission, ContextPermission, HttpMethod, KeyPermission, Permission,
+    ResourceScope, UserScope,
 };
 
 /// Pre-compiled regex patterns for performance
-static APPLICATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/applications/([^/]+)$").unwrap()
-});
+static APPLICATION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/applications/([^/]+)$").unwrap());
 
-static CONTEXT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/contexts/([^/]+)$").unwrap()
-});
+static CONTEXT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)$").unwrap());
 
 static CONTEXT_CAPABILITIES_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^/admin-api/contexts/([^/]+)/capabilities/(grant|revoke)$").unwrap()
 });
 
-static CONTEXT_APPLICATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin-api/contexts/([^/]+)/application$").unwrap()
-});
+static CONTEXT_APPLICATION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin-api/contexts/([^/]+)/application$").unwrap());
 
-static BLOB_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/blobs/([^/]+)$").unwrap()
-});
+static BLOB_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/blobs/([^/]+)$").unwrap());
 
-static ADMIN_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin/keys/([^/]+)$").unwrap()
-});
+static ADMIN_KEY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin/keys/([^/]+)$").unwrap());
 
-static KEY_PERMISSIONS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin/keys/([^/]+)/permissions$").unwrap()
-});
+static KEY_PERMISSIONS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin/keys/([^/]+)/permissions$").unwrap());
 
-static CLIENT_MANAGEMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^/admin/keys/([^/]+)/clients/([^/]+)$").unwrap()
-});
+static CLIENT_MANAGEMENT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/admin/keys/([^/]+)/clients/([^/]+)$").unwrap());
 
 /// Permission validator for checking request permissions
 #[derive(Debug, Default)]
@@ -50,31 +43,51 @@ macro_rules! route_permissions {
     ($path:expr, $method:expr) => {{
         match ($path, $method) {
             // JSON-RPC endpoints
-            ("/jsonrpc", HttpMethod::POST) => vec![Permission::Context(ContextPermission::Execute(
-                ResourceScope::Global, UserScope::Any, None
-            ))],
-            
+            ("/jsonrpc", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Execute(ResourceScope::Global, UserScope::Any, None),
+            )],
+
             // Admin API - Applications
-            ("/admin-api/applications", HttpMethod::GET) => vec![Permission::Application(ApplicationPermission::List(ResourceScope::Global))],
-            ("/admin-api/install-application", HttpMethod::POST) => vec![Permission::Application(ApplicationPermission::Install(ResourceScope::Global))],
-            ("/admin-api/uninstall-application", HttpMethod::POST) => vec![Permission::Application(ApplicationPermission::Uninstall(ResourceScope::Global))],
-            
-            // Admin API - Contexts  
-            ("/admin-api/contexts", HttpMethod::GET) => vec![Permission::Context(ContextPermission::List(ResourceScope::Global))],
-            ("/admin-api/contexts", HttpMethod::POST) => vec![Permission::Context(ContextPermission::Create(ResourceScope::Global))],
-            
+            ("/admin-api/applications", HttpMethod::GET) => vec![Permission::Application(
+                ApplicationPermission::List(ResourceScope::Global),
+            )],
+            ("/admin-api/install-application", HttpMethod::POST) => vec![Permission::Application(
+                ApplicationPermission::Install(ResourceScope::Global),
+            )],
+            ("/admin-api/uninstall-application", HttpMethod::POST) => {
+                vec![Permission::Application(ApplicationPermission::Uninstall(
+                    ResourceScope::Global,
+                ))]
+            }
+
+            // Admin API - Contexts
+            ("/admin-api/contexts", HttpMethod::GET) => vec![Permission::Context(
+                ContextPermission::List(ResourceScope::Global),
+            )],
+            ("/admin-api/contexts", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Create(ResourceScope::Global),
+            )],
+
             // Admin auth endpoints
             ("/admin/keys", HttpMethod::GET) => vec![Permission::Keys(KeyPermission::List)],
             ("/admin/keys", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Create)],
             ("/admin/revoke", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Delete)],
-            ("/admin/keys/clients", HttpMethod::GET) => vec![Permission::Keys(KeyPermission::ListClients)],
-            
+            ("/admin/keys/clients", HttpMethod::GET) => {
+                vec![Permission::Keys(KeyPermission::ListClients)]
+            }
+
             // Blob endpoints
-            ("/blobs/stream", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(AddBlobPermission::Stream))],
-            ("/blobs/file", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(AddBlobPermission::File))],
-            ("/blobs/url", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(AddBlobPermission::Url))],
-            
-            _ => vec![]
+            ("/blobs/stream", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
+                AddBlobPermission::Stream,
+            ))],
+            ("/blobs/file", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
+                AddBlobPermission::File,
+            ))],
+            ("/blobs/url", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
+                AddBlobPermission::Url,
+            ))],
+
+            _ => vec![],
         }
     }};
 }
@@ -85,13 +98,13 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
         if let Some(app_id) = captures.get(1) {
             return match method {
                 HttpMethod::GET => vec![Permission::Application(ApplicationPermission::List(
-                    ResourceScope::Specific(vec![app_id.as_str().to_string()])
+                    ResourceScope::Specific(vec![app_id.as_str().to_string()]),
                 ))],
                 _ => vec![],
             };
         }
     }
-    
+
     if let Some(captures) = CONTEXT_REGEX.captures(path) {
         if let Some(ctx_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
@@ -102,39 +115,45 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             };
         }
     }
-    
+
     if let Some(captures) = CONTEXT_CAPABILITIES_REGEX.captures(path) {
         if let (Some(ctx_id), Some(action)) = (captures.get(1), captures.get(2)) {
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
             return match (method, action.as_str()) {
-                (HttpMethod::POST, "grant") => vec![Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Grant(scope)))],
-                (HttpMethod::POST, "revoke") => vec![Permission::Context(ContextPermission::Capabilities(CapabilityPermission::Revoke(scope)))],
+                (HttpMethod::POST, "grant") => vec![Permission::Context(
+                    ContextPermission::Capabilities(CapabilityPermission::Grant(scope)),
+                )],
+                (HttpMethod::POST, "revoke") => vec![Permission::Context(
+                    ContextPermission::Capabilities(CapabilityPermission::Revoke(scope)),
+                )],
                 _ => vec![],
             };
         }
     }
-    
+
     if let Some(captures) = CONTEXT_APPLICATION_REGEX.captures(path) {
         if let Some(ctx_id) = captures.get(1) {
             let scope = ResourceScope::Specific(vec![ctx_id.as_str().to_string()]);
             return match method {
-                HttpMethod::POST => vec![Permission::Context(ContextPermission::Application(ContextApplicationPermission::Update(scope)))],
-                _ => vec![],
-            };
-        }
-    }
-    
-    if let Some(captures) = BLOB_REGEX.captures(path) {
-        if let Some(blob_id) = captures.get(1) {
-            return match method {
-                HttpMethod::DELETE => vec![Permission::Blob(BlobPermission::Remove(
-                    ResourceScope::Specific(vec![blob_id.as_str().to_string()])
+                HttpMethod::POST => vec![Permission::Context(ContextPermission::Application(
+                    ContextApplicationPermission::Update(scope),
                 ))],
                 _ => vec![],
             };
         }
     }
-    
+
+    if let Some(captures) = BLOB_REGEX.captures(path) {
+        if let Some(blob_id) = captures.get(1) {
+            return match method {
+                HttpMethod::DELETE => vec![Permission::Blob(BlobPermission::Remove(
+                    ResourceScope::Specific(vec![blob_id.as_str().to_string()]),
+                ))],
+                _ => vec![],
+            };
+        }
+    }
+
     // Admin key management endpoints
     if let Some(_captures) = ADMIN_KEY_REGEX.captures(path) {
         return match method {
@@ -142,7 +161,7 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             _ => vec![],
         };
     }
-    
+
     // Key permissions management: /admin/keys/:key_id/permissions
     if let Some(captures) = KEY_PERMISSIONS_REGEX.captures(path) {
         if let Some(key_id) = captures.get(1) {
@@ -154,7 +173,7 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             };
         }
     }
-    
+
     // Client management: /admin/keys/:key_id/clients/:client_id
     if let Some(_captures) = CLIENT_MANAGEMENT_REGEX.captures(path) {
         return match method {
@@ -162,7 +181,7 @@ fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<
             _ => vec![],
         };
     }
-    
+
     vec![]
 }
 
@@ -187,7 +206,7 @@ impl PermissionValidator {
 
         // First check exact path matches
         required_permissions.extend(route_permissions!(path, method.clone()));
-        
+
         // Then check parameterized paths
         required_permissions.extend(get_permissions_for_path_with_params(path, &method));
 
@@ -225,7 +244,11 @@ impl PermissionValidator {
     }
 
     /// Validate that a user has all required permissions
-    pub fn validate_permissions(&self, user_permissions: &[String], required_permissions: &[Permission]) -> bool {
+    pub fn validate_permissions(
+        &self,
+        user_permissions: &[String],
+        required_permissions: &[Permission],
+    ) -> bool {
         // First check for admin permission
         if user_permissions.iter().any(|p| p == "admin") {
             return true; // Admin has access to everything
@@ -238,17 +261,15 @@ impl PermissionValidator {
             .collect();
 
         // Check if any user permission satisfies each required permission
-        required_permissions
-            .iter()
-            .all(|req| {
-                // Check exact string match first (for simple cases)
-                if user_permissions.contains(&req.to_string()) {
-                    return true;
-                }
-                
-                // Check hierarchical permissions using satisfies method
-                user_perms.iter().any(|user_perm| user_perm.satisfies(req))
-            })
+        required_permissions.iter().all(|req| {
+            // Check exact string match first (for simple cases)
+            if user_permissions.contains(&req.to_string()) {
+                return true;
+            }
+
+            // Check hierarchical permissions using satisfies method
+            user_perms.iter().any(|user_perm| user_perm.satisfies(req))
+        })
     }
 
     /// Check if a user has a specific permission (string format)
@@ -580,7 +601,7 @@ mod tests {
 
         let permissions = validator.determine_required_permissions(&request);
         assert_eq!(permissions.len(), 1);
-        
+
         match &permissions[0] {
             Permission::Context(ContextPermission::Execute(scope, user_scope, method)) => {
                 assert_eq!(*scope, ResourceScope::Global);
@@ -601,12 +622,15 @@ mod tests {
     #[test]
     fn test_pre_compiled_regex_performance() {
         let validator = PermissionValidator::new();
-        
+
         // Test various parameterized routes to ensure regex patterns work correctly
         let test_routes = vec![
             ("/admin-api/applications/app-123", Method::GET),
             ("/admin-api/contexts/ctx-456", Method::GET),
-            ("/admin-api/contexts/ctx-789/capabilities/grant", Method::POST),
+            (
+                "/admin-api/contexts/ctx-789/capabilities/grant",
+                Method::POST,
+            ),
             ("/admin-api/contexts/ctx-101/application", Method::POST),
             ("/blobs/blob-123", Method::DELETE),
             ("/admin/keys/key-456", Method::DELETE),
@@ -622,12 +646,12 @@ mod tests {
                 .uri(path)
                 .body(Body::empty())
                 .unwrap();
-            
+
             let perms = validator.determine_required_permissions(&req);
             // Each parameterized route should return exactly one permission
             assert!(!perms.is_empty(), "No permissions found for {}", path);
         }
-        
+
         // Note: The performance benefit comes from:
         // 1. LazyLock ensures regexes are compiled only once per pattern
         // 2. No repeated Regex::new() calls on each request
