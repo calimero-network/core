@@ -7,6 +7,7 @@ use calimero_context_primitives::messages::join_context::{
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::{ContextConfigParams, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
+use eyre::eyre;
 
 use crate::ContextManager;
 
@@ -15,23 +16,15 @@ impl Handler<JoinContextRequest> for ContextManager {
 
     fn handle(
         &mut self,
-        JoinContextRequest {
-            identity_secret,
-            invitation_payload,
-        }: JoinContextRequest,
+        JoinContextRequest { invitation_payload }: JoinContextRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
         let node_client = self.node_client.clone();
         let context_client = self.context_client.clone();
 
         let task = async move {
-            let (context_id, invitee_id) = join_context(
-                node_client,
-                context_client,
-                invitation_payload,
-                identity_secret,
-            )
-            .await?;
+            let (context_id, invitee_id) =
+                join_context(node_client, context_client, invitation_payload).await?;
 
             Ok(JoinContextResponse {
                 context_id,
@@ -47,13 +40,8 @@ async fn join_context(
     node_client: NodeClient,
     context_client: ContextClient,
     invitation_payload: ContextInvitationPayload,
-    identity_secret: PrivateKey,
 ) -> eyre::Result<(ContextId, PublicKey)> {
     let (context_id, invitee_id, protocol, network_id, contract_id) = invitation_payload.parts()?;
-
-    if identity_secret.public_key() != invitee_id {
-        eyre::bail!("identity mismatch")
-    }
 
     if context_client
         .get_identity(&context_id, &invitee_id)?
@@ -61,6 +49,18 @@ async fn join_context(
         .is_some()
     {
         return Ok((context_id, invitee_id));
+    }
+
+    let stored_identity = context_client
+        .get_identity(&ContextId::from([0u8; 32]), &invitee_id)?
+        .ok_or_else(|| eyre!("missing identity for public key: {}", invitee_id))?;
+
+    let identity_secret = stored_identity
+        .private_key
+        .ok_or_else(|| eyre!("stored identity '{}' is missing private key", invitee_id))?;
+
+    if identity_secret.public_key() != invitee_id {
+        eyre::bail!("identity mismatch")
     }
 
     let mut config = None;
@@ -106,6 +106,8 @@ async fn join_context(
             sender_key: Some(sender_key),
         },
     )?;
+
+    context_client.delete_identity(&ContextId::from([0u8; 32]), &invitee_id)?;
 
     node_client.subscribe(&context_id).await?;
 

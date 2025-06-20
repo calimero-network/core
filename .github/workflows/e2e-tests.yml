@@ -8,19 +8,18 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
-      - 'e2e-tests/**'
+      - "crates/**"
+      - "e2e-tests/**"
   pull_request:
-    types: [opened, synchronize, reopened]
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
-      - 'e2e-tests/**'
+      - "crates/**"
+      - "e2e-tests/**"
 
 env:
   # Or you can use 'prerelease-{PR-NUMBER}'
-  CALIMERO_CONTRACTS_VERSION: 'latest'
+  CALIMERO_CONTRACTS_VERSION: "latest"
 
 jobs:
   build:
@@ -39,10 +38,11 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          cache-on-failure: true
-          cache-all-crates: true
+          key: e2e-tests
 
       - name: Build Apps & Binaries
+        env:
+          CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./apps/kv-store/build.sh
           cargo build -p meroctl -p merod -p e2e-tests

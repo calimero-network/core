@@ -4,22 +4,19 @@ use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
-use crate::cli::app::get::GetCommand;
-use crate::cli::app::install::InstallCommand;
-use crate::cli::app::list::ListCommand;
 use crate::cli::Environment;
 use crate::output::Report;
 
-mod get;
+pub mod get;
 pub mod install;
-mod list;
+pub mod list;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl -- --node-name node1 application ls
+  $ meroctl --node node1 application ls
 
   # Get details of an application
-  $ meroctl -- --node-name node1 application get <APP_ID>
+  $ meroctl --node node1 application get <app_id>
 ";
 
 #[derive(Debug, Parser)]
@@ -35,10 +32,10 @@ pub struct AppCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AppSubCommands {
-    Get(GetCommand),
-    Install(InstallCommand),
+    Get(get::GetCommand),
+    Install(install::InstallCommand),
     #[command(alias = "ls")]
-    List(ListCommand),
+    List(list::ListCommand),
 }
 
 impl Report for Application {
@@ -50,7 +47,7 @@ impl Report for Application {
         ]);
         let _ = table.add_row(vec!["Application ID", &self.id.to_string()]);
         let _ = table.add_row(vec!["Size", &self.size.to_string()]);
-        let _ = table.add_row(vec!["Blob ID", &self.blob.to_string()]);
+        let _ = table.add_row(vec!["Blob ID", &self.blob.bytecode.to_string()]);
         let _ = table.add_row(vec!["Source", &self.source.to_string()]);
         let _ = table.add_row(vec!["Metadata", ""]);
 

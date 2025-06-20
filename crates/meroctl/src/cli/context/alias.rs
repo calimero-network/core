@@ -1,27 +1,21 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::GetContextResponse;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult, WrapErr};
-use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
-use reqwest::Client;
+use eyre::{eyre, OptionExt, Result as EyreResult, WrapErr};
 
 use crate::cli::{ApiError, Environment};
-use crate::common::{
-    create_alias, delete_alias, do_request, fetch_multiaddr, load_config, lookup_alias,
-    multiaddr_to_url, resolve_alias, RequestType,
-};
+use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
+use crate::connection::ConnectionInfo;
 use crate::output::{ErrorLine, WarnLine};
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Manage context aliases")]
 pub struct ContextAliasCommand {
     #[command(subcommand)]
-    command: ContextAliasSubcommand,
+    pub command: ContextAliasSubcommand,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub enum ContextAliasSubcommand {
     #[command(about = "Add new alias for a context", aliases = ["new", "create"])]
     Add {
@@ -46,12 +40,14 @@ pub enum ContextAliasSubcommand {
         #[arg(help = "Name of the alias to look up", default_value = "default")]
         alias: Alias<ContextId>,
     },
+
+    #[command(about = "List all context aliases", alias = "ls")]
+    List,
 }
 
 impl ContextAliasCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment.connection()?;
 
         match self.command {
             ContextAliasSubcommand::Add {
@@ -59,7 +55,7 @@ impl ContextAliasCommand {
                 context_id,
                 force,
             } => {
-                if !context_exists(&multiaddr, &config.identity, &context_id).await? {
+                if !context_exists(connection, &context_id).await? {
                     environment.output.write(&ErrorLine(&format!(
                         "Context with ID '{}' does not exist",
                         context_id
@@ -67,7 +63,7 @@ impl ContextAliasCommand {
                     return Ok(());
                 }
 
-                let lookup_result = lookup_alias(multiaddr, &config.identity, alias, None).await?;
+                let lookup_result = lookup_alias(connection, alias, None).await?;
                 if let Some(existing_context) = lookup_result.data.value {
                     if existing_context == context_id {
                         environment.output.write(&WarnLine(&format!(
@@ -75,6 +71,7 @@ impl ContextAliasCommand {
                         )));
                         return Ok(());
                     }
+
                     if !force {
                         environment.output.write(&ErrorLine(&format!(
                             "Alias '{alias}' already exists and points to '{existing_context}'. Use --force to overwrite."
@@ -85,22 +82,29 @@ impl ContextAliasCommand {
                         "Overwriting existing alias '{alias}' from '{existing_context}' to '{context_id}'"
                     )));
 
-                    let _ = delete_alias(multiaddr, &config.identity, alias, None)
+                    let _ignored = delete_alias(connection, alias, None)
                         .await
                         .wrap_err("Failed to delete existing alias")?;
                 }
 
-                let res =
-                    create_alias(multiaddr, &config.identity, alias, None, context_id).await?;
+                let res = create_alias(connection, alias, None, context_id)
+                    .await
+                    .map_err(|e| eyre!("Failed to create alias: {}", e))?;
                 environment.output.write(&res);
             }
+
             ContextAliasSubcommand::Remove { alias } => {
-                let res = delete_alias(multiaddr, &config.identity, alias, None).await?;
+                let res = delete_alias(connection, alias, None).await?;
 
                 environment.output.write(&res);
             }
             ContextAliasSubcommand::Get { alias } => {
-                let res = lookup_alias(multiaddr, &config.identity, alias, None).await?;
+                let res = lookup_alias(connection, alias, None).await?;
+
+                environment.output.write(&res);
+            }
+            ContextAliasSubcommand::List => {
+                let res = list_aliases::<ContextId>(connection, None).await?;
 
                 environment.output.write(&res);
             }
@@ -110,7 +114,7 @@ impl ContextAliasCommand {
     }
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Set the default context")]
 pub struct UseCommand {
     /// The context to set as default
@@ -123,14 +127,13 @@ pub struct UseCommand {
 
 impl UseCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment.connection()?;
 
         let default_alias: Alias<ContextId> = "default"
             .parse()
             .wrap_err("Failed to parse 'default' as a valid alias name")?;
 
-        let resolve_response = resolve_alias(multiaddr, &config.identity, self.context, None)
+        let resolve_response = resolve_alias(connection, self.context, None)
             .await
             .wrap_err("Failed to resolve context")?;
 
@@ -139,7 +142,7 @@ impl UseCommand {
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let lookup_result = lookup_alias(multiaddr, &config.identity, default_alias, None).await?;
+        let lookup_result = lookup_alias(connection, default_alias, None).await?;
         if let Some(existing_context) = lookup_result.data.value {
             if existing_context == context_id {
                 environment.output.write(&WarnLine(&format!(
@@ -158,12 +161,12 @@ impl UseCommand {
             environment.output.write(&WarnLine(&format!(
                 "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
             )));
-            let _ = delete_alias(multiaddr, &config.identity, default_alias, None)
+            let _ignored = delete_alias(connection, default_alias, None)
                 .await
                 .wrap_err("Failed to delete existing default alias")?;
         }
 
-        let res = create_alias(multiaddr, &config.identity, default_alias, None, context_id)
+        let res = create_alias(connection, default_alias, None, context_id)
             .await
             .wrap_err("Failed to set default context")?;
 
@@ -173,21 +176,10 @@ impl UseCommand {
     }
 }
 
-async fn context_exists(
-    multiaddr: &Multiaddr,
-    identity: &Keypair,
-    target_id: &ContextId,
-) -> EyreResult<bool> {
-    let url = multiaddr_to_url(multiaddr, &format!("admin-api/dev/contexts/{}", target_id))?;
-
-    let result = do_request::<_, GetContextResponse>(
-        &Client::new(),
-        url,
-        None::<()>,
-        identity,
-        RequestType::Get,
-    )
-    .await;
+async fn context_exists(connection: &ConnectionInfo, target_id: &ContextId) -> EyreResult<bool> {
+    let result = connection
+        .get::<serde_json::Value>(&format!("admin-api/dev/contexts/{}", target_id))
+        .await;
 
     match result {
         Ok(_) => Ok(true),

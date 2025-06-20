@@ -1,26 +1,18 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::{ContextId, ContextInvitationPayload};
-use calimero_primitives::identity::{PrivateKey, PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use eyre::Result as EyreResult;
-use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{
-    create_alias, do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType,
-};
+use crate::common::create_alias;
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Join an application context")]
 pub struct JoinCommand {
-    #[clap(
-        value_name = "PRIVATE_KEY",
-        help = "The private key for signing the join context request"
-    )]
-    pub private_key: PrivateKey,
     #[clap(
         value_name = "INVITE",
         help = "The invitation payload for joining the context"
@@ -52,40 +44,28 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let multiaddr = fetch_multiaddr(&config)?;
+        let connection = environment.connection()?;
 
-        let response: JoinContextResponse = do_request(
-            &Client::new(),
-            multiaddr_to_url(multiaddr, "admin-api/dev/contexts/join")?,
-            Some(JoinContextRequest::new(
-                self.private_key,
-                self.invitation_payload,
-            )),
-            &config.identity,
-            RequestType::Post,
-        )
-        .await?;
+        let response: JoinContextResponse = connection
+            .post(
+                "admin-api/dev/contexts/join",
+                JoinContextRequest::new(self.invitation_payload),
+            )
+            .await?;
 
         environment.output.write(&response);
 
         if let Some(ref payload) = response.data {
             if let Some(context) = self.context {
-                let context_id = payload.context_id;
-                let res =
-                    create_alias(multiaddr, &config.identity, context, None, context_id).await?;
+                let res = create_alias(connection, context, None, payload.context_id).await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {
-                let context_id = payload.context_id;
-                let public_key = payload.member_public_key;
-
                 let res = create_alias(
-                    multiaddr,
-                    &config.identity,
+                    connection,
                     identity,
-                    Some(context_id),
-                    public_key,
+                    Some(payload.context_id),
+                    payload.member_public_key,
                 )
                 .await?;
                 environment.output.write(&res);

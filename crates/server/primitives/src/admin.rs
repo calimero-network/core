@@ -1,11 +1,13 @@
+use std::collections::BTreeMap;
+
 use calimero_context_config::repr::Repr;
-use calimero_context_config::types::{ContextIdentity, ContextStorageEntry};
+use calimero_context_config::types::{Capability, ContextIdentity, ContextStorageEntry};
 use calimero_context_config::{Proposal, ProposalWithApprovals};
 use calimero_primitives::alias::Alias;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{ClientKey, ContextUser, PrivateKey, PublicKey, WalletType};
+use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey, WalletType};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -253,6 +255,19 @@ impl GetContextIdentitiesResponse {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAliasesResponse<T> {
+    #[serde(bound(deserialize = "T: Ord + Deserialize<'de>"))]
+    pub data: BTreeMap<Alias<T>, T>,
+}
+
+impl<T> ListAliasesResponse<T> {
+    pub fn new(data: BTreeMap<Alias<T>, T>) -> Self {
+        Self { data }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetContextClientKeysResponseData {
@@ -346,19 +361,12 @@ impl InviteToContextResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinContextRequest {
-    pub private_key: PrivateKey,
     pub invitation_payload: ContextInvitationPayload,
 }
 
 impl JoinContextRequest {
-    pub const fn new(
-        private_key: PrivateKey,
-        invitation_payload: ContextInvitationPayload,
-    ) -> Self {
-        Self {
-            private_key,
-            invitation_payload,
-        }
+    pub const fn new(invitation_payload: ContextInvitationPayload) -> Self {
+        Self { invitation_payload }
     }
 }
 
@@ -419,7 +427,6 @@ impl UpdateContextApplicationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GenerateContextIdentityResponseData {
     pub public_key: PublicKey,
-    pub private_key: PrivateKey,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -429,12 +436,9 @@ pub struct GenerateContextIdentityResponse {
 }
 
 impl GenerateContextIdentityResponse {
-    pub const fn new(public_key: PublicKey, private_key: PrivateKey) -> Self {
+    pub const fn new(public_key: PublicKey) -> Self {
         Self {
-            data: GenerateContextIdentityResponseData {
-                public_key,
-                private_key,
-            },
+            data: GenerateContextIdentityResponseData { public_key },
         }
     }
 }
@@ -837,4 +841,78 @@ pub struct GetProposalApproversResponse {
 #[serde(rename_all = "camelCase")]
 pub struct GetNumberOfProposalApprovalsResponse {
     pub data: ProposalWithApprovals,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantPermissionRequest {
+    pub context_id: ContextId,
+    pub granter_id: PublicKey,
+    pub grantee_id: PublicKey,
+    pub capability: Capability,
+}
+
+impl GrantPermissionRequest {
+    pub const fn new(
+        context_id: ContextId,
+        granter_id: PublicKey,
+        grantee_id: PublicKey,
+        capability: Capability,
+    ) -> Self {
+        Self {
+            context_id,
+            granter_id,
+            grantee_id,
+            capability,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantPermissionResponse {
+    pub data: Empty,
+}
+
+impl GrantPermissionResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokePermissionRequest {
+    pub context_id: ContextId,
+    pub revoker_id: PublicKey,
+    pub revokee_id: PublicKey,
+    pub capability: Capability,
+}
+
+impl RevokePermissionRequest {
+    pub const fn new(
+        context_id: ContextId,
+        revoker_id: PublicKey,
+        revokee_id: PublicKey,
+        capability: Capability,
+    ) -> Self {
+        Self {
+            context_id,
+            revoker_id,
+            revokee_id,
+            capability,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokePermissionResponse {
+    pub data: Empty,
+}
+
+impl RevokePermissionResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
 }

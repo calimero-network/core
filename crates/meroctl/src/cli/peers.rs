@@ -3,18 +3,15 @@ use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
-use reqwest::Client;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
-  #
-  $ meroctl -- --node-name node1 peers
+  $ meroctl --node node1 peers
 ";
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Return the number of connected peers")]
 #[command(after_help = concatcp!(
     "Examples:",
@@ -33,16 +30,9 @@ impl Report for GetPeersCountResponse {
 
 impl PeersCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let connection = environment.connection()?;
 
-        let response: GetPeersCountResponse = do_request(
-            &Client::new(),
-            multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/peers")?,
-            None::<()>,
-            &config.identity,
-            RequestType::Get,
-        )
-        .await?;
+        let response: GetPeersCountResponse = connection.get("admin-api/dev/peers").await?;
 
         environment.output.write(&response);
 

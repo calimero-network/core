@@ -9,13 +9,11 @@ use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result as EyreResult};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
-use reqwest::Client;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use url::Url;
 
 use crate::cli::Environment;
-use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
 use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
@@ -59,49 +57,37 @@ impl InstallCommand {
     }
 
     pub async fn install_app(&self, environment: &Environment) -> EyreResult<ApplicationId> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
-        let mut is_dev_installation = false;
+        let connection = environment.connection()?;
+
         let metadata = self
             .metadata
             .as_ref()
             .map(|s| s.as_bytes().to_vec())
             .unwrap_or_default();
-        let request = if let Some(app_path) = self.path.as_ref() {
-            is_dev_installation = true;
-            serde_json::to_value(InstallDevApplicationRequest::new(
-                app_path.canonicalize_utf8()?,
-                metadata,
-            ))?
+
+        let response = if let Some(app_path) = self.path.as_ref() {
+            let request =
+                InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
+            connection
+                .post::<_, InstallApplicationResponse>(
+                    "admin-api/dev/install-dev-application",
+                    request,
+                )
+                .await?
         } else if let Some(app_url) = self.url.as_ref() {
-            serde_json::to_value(InstallApplicationRequest::new(
-                Url::parse(&app_url)?,
-                self.hash,
-                metadata,
-            ))?
+            let request =
+                InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
+            connection
+                .post::<_, InstallApplicationResponse>("admin-api/dev/install-application", request)
+                .await?
         } else {
             bail!("Either path or url must be provided");
         };
 
-        let url = multiaddr_to_url(
-            fetch_multiaddr(&config)?,
-            if is_dev_installation {
-                "admin-api/dev/install-dev-application"
-            } else {
-                "admin-api/dev/install-application"
-            },
-        )?;
-
-        let response: InstallApplicationResponse = do_request(
-            &Client::new(),
-            url,
-            Some(request),
-            &config.identity,
-            RequestType::Post,
-        )
-        .await?;
         environment.output.write(&response);
         Ok(response.data.application_id)
     }
+
     pub async fn watch_app(&self, environment: &Environment) -> EyreResult<()> {
         let Some(path) = self.path.as_ref() else {
             bail!("The path must be provided");

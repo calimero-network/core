@@ -2,11 +2,19 @@ name: CI
 
 on:
   push:
-    branches: ['master']
+    branches: ["master"]
   pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests/**"
 
 env:
-  CARGO_TERM_COLOR: always
+  CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+permissions:
+  contents: read
 
 jobs:
   rust:
@@ -16,31 +24,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup rust toolchain
-        run: rustup toolchain install stable --profile minimal
-
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
         with:
           key: ci-checks
+          cache-on-failure: true
 
       - name: Build
         run: |
           ./scripts/build-all-apps.sh
-          cargo build --all-targets --tests
+          cargo build --workspace --all-targets --tests
 
       - name: Cargo format
         run: |
-          rustup toolchain install nightly
-          rustup component add rustfmt --toolchain nightly
+          rustup toolchain install nightly --component rustfmt
 
           cargo +nightly fmt -- --check
 
       - name: Cargo clippy
-        run: |
-          cargo clippy -- -A warnings
+        if: ${{ !cancelled() }}
+        run: cargo clippy -- -A warnings
 
       - name: Cargo test
+        if: ${{ !cancelled() }}
         run: |
           FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
 
@@ -50,32 +56,7 @@ jobs:
           cargo test -- --nocapture
 
       - name: Cargo deny
+        if: ${{ !cancelled() }}
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses sources
-
-  nodejs:
-    name: NodeJS
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v2
-        with:
-          node-version: '20'
-
-      - name: Install pnpm
-        run: npm install -g pnpm
-
-      - name: Install node-ui dependencies with pnpm
-        run: pnpm install --prefix ./node-ui
-
-      - name: Build node-ui
-        run: pnpm --filter ./node-ui run build
-
-      - name: Prettier check
-        run: |
-          cd node-ui
-          pnpm prettier:check .

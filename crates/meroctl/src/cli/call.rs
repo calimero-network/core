@@ -11,14 +11,12 @@ use eyre::{OptionExt, Result as EyreResult};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
-use crate::common::{
-    do_request, fetch_multiaddr, load_config, multiaddr_to_url, resolve_alias, RequestType,
-};
+use crate::common::resolve_alias;
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
   # Execute a RPC method call
-  $ meroctl -- --node-name node1 call <CONTEXT> <METHOD>
+  $ meroctl --node node1 call <CONTEXT> <METHOD>
 ";
 
 #[derive(Debug, Parser)]
@@ -81,26 +79,21 @@ impl Report for Response {
     }
 }
 
-#[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 impl CallCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let config = load_config(&environment.args.home, &environment.args.node_name).await?;
+        let connection = environment.connection()?;
 
-        let multiaddr = fetch_multiaddr(&config)?;
-
-        let resolve_response =
-            resolve_alias(multiaddr, &config.identity, self.context, None).await?;
+        let resolve_response = resolve_alias(connection, self.context, None).await?;
         let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
-        let executor = resolve_alias(multiaddr, &config.identity, self.executor, Some(context_id))
+
+        let executor = resolve_alias(connection, self.executor, Some(context_id))
             .await?
             .value()
             .cloned()
             .ok_or_eyre("unable to resolve")?;
-
-        let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
         let payload = RequestPayload::Execute(ExecutionRequest::new(
             context_id,
@@ -116,16 +109,7 @@ impl CallCommand {
             payload,
         );
 
-        let client = reqwest::Client::new();
-        let response: Response = do_request(
-            &client,
-            url,
-            Some(request),
-            &config.identity,
-            RequestType::Post,
-        )
-        .await?;
-
+        let response: Response = connection.post("jsonrpc/dev", request).await?;
         environment.output.write(&response);
 
         Ok(())

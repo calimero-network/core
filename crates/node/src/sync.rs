@@ -304,11 +304,11 @@ impl SyncManager {
         self.initiate_key_share_process(&mut context, our_identity, &mut stream)
             .await?;
 
-        if !self.node_client.has_blob(&application.blob)? {
+        if !self.node_client.has_blob(&application.blob.bytecode)? {
             self.initiate_blob_share_process(
                 &context,
                 our_identity,
-                application.blob,
+                application.blob.bytecode,
                 application.size,
                 &mut stream,
             )

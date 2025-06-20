@@ -1,43 +1,39 @@
-use alias::ContextAliasCommand;
 use calimero_primitives::context::Context;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Table};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
-use crate::cli::context::alias::UseCommand;
-use crate::cli::context::create::CreateCommand;
-use crate::cli::context::delete::DeleteCommand;
-use crate::cli::context::get::GetCommand;
-use crate::cli::context::identity::ContextIdentityCommand;
-use crate::cli::context::invite::InviteCommand;
-use crate::cli::context::join::JoinCommand;
-use crate::cli::context::list::ListCommand;
-use crate::cli::context::update::UpdateCommand;
-use crate::cli::context::watch::WatchCommand;
 use crate::cli::Environment;
 use crate::output::Report;
 
-mod alias;
+pub mod alias;
 pub mod create;
-mod delete;
-mod get;
-mod identity;
+pub mod delete;
+pub mod get;
+pub mod identity;
 pub mod invite;
 pub mod join;
-mod list;
-mod update;
-mod watch;
+pub mod list;
+pub mod proposals;
+pub mod update;
+pub mod watch;
 
 pub const EXAMPLES: &str = r"
   # List all contexts
-  $ meroctl -- --node-name node1 context ls
+  $ meroctl --node node1 context ls
 
   # Create a new context
-  $ meroctl --  --node-name node1 context create --application-id <appId>
+  $ meroctl --node node1 context create --application-id <app_id>
 
   # Create a new context in dev mode
-  $ meroctl --  --node-name node1 context create --watch <path> -c <contextId>
+  $ meroctl --node node1 context create --watch <path> -c <context_id>
+
+  # Grant permission to manage applications
+  $ meroctl context identity grant bob ManageApplication --as alice
+
+  # Revoke permission to manage members
+  $ meroctl context identity revoke bob ManageMembers --as alice
 ";
 
 #[derive(Debug, Parser)]
@@ -54,19 +50,20 @@ pub struct ContextCommand {
 #[derive(Debug, Subcommand)]
 pub enum ContextSubCommands {
     #[command(alias = "ls")]
-    List(ListCommand),
-    Create(Box<CreateCommand>),
-    Join(JoinCommand),
-    Invite(InviteCommand),
-    Get(GetCommand),
+    List(list::ListCommand),
+    Create(Box<create::CreateCommand>),
+    Join(join::JoinCommand),
+    Invite(invite::InviteCommand),
+    Get(get::GetCommand),
     #[command(alias = "del")]
-    Delete(DeleteCommand),
+    Delete(delete::DeleteCommand),
     #[command(alias = "ws")]
-    Watch(WatchCommand),
-    Update(UpdateCommand),
-    Identity(ContextIdentityCommand),
-    Alias(ContextAliasCommand),
-    Use(UseCommand),
+    Watch(watch::WatchCommand),
+    Update(update::UpdateCommand),
+    Identity(identity::ContextIdentityCommand),
+    Alias(alias::ContextAliasCommand),
+    Use(alias::UseCommand),
+    Proposals(proposals::ProposalsCommand),
 }
 
 impl Report for Context {
@@ -101,6 +98,7 @@ impl ContextCommand {
             ContextSubCommands::Identity(identity) => identity.run(environment).await,
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
             ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
+            ContextSubCommands::Proposals(proposals) => proposals.run(environment).await,
         }
     }
 }

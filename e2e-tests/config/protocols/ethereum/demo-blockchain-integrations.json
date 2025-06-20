@@ -52,13 +52,6 @@
     },
     {
       "getProposals": {
-        "target": "inviter",
-        "retries": 20,
-        "intervalMs": 5000,
-        "argsJson": {
-          "offset": 0,
-          "limit": 10
-        },
         "description": [
           "get current proposals and extract the ID of the first one"
         ]
@@ -85,9 +78,7 @@
       "wait": {
         "for": "broadcast",
         "durationMs": 5000,
-        "description": [
-          "wait exactly 5s for the broadcast to propagate"
-        ]
+        "description": ["wait exactly 5s for the broadcast to propagate"]
       }
     },
     {
@@ -121,16 +112,20 @@
         },
         "expectedResultJson": null,
         "target": "invitees",
-        "genericInput": "proposal_id"
+        "genericInput": "proposal_id",
+        "retries": 20,
+        "intervalMs": 1000,
+        "description": [
+          "if a node still hasn't received the broadcast",
+          "try 20 more times every second, but no more"
+        ]
       }
     },
     {
       "verifyExternalState": {
         "contractId": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
         "methodName": "getValue(string)",
-        "args": [
-          "someKey"
-        ],
+        "args": ["someKey"],
         "expectedValue": "someValue"
       }
     }

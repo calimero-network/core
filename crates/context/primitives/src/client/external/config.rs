@@ -3,7 +3,8 @@ use std::future::Future;
 use calimero_context_config::client::env::config::ContextConfig;
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{self as types, Capability};
-use calimero_primitives::application::Application;
+use calimero_primitives::application::{Application, ApplicationBlob};
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use eyre::{bail, OptionExt};
 
@@ -98,7 +99,11 @@ impl ExternalConfigClient<'_> {
                 identity.rt().expect("infallible conversion"),
                 types::Application::new(
                     application.id.rt().expect("infallible conversion"),
-                    application.blob.rt().expect("infallible conversion"),
+                    application
+                        .blob
+                        .bytecode
+                        .rt()
+                        .expect("infallible conversion"),
                     application.size,
                     types::ApplicationSource(application.source.to_string().into()),
                     types::ApplicationMetadata(Repr::new(application.metadata.as_slice().into())),
@@ -135,7 +140,11 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     types::Application::new(
                         application.id.rt().expect("infallible conversion"),
-                        application.blob.rt().expect("infallible conversion"),
+                        application
+                            .blob
+                            .bytecode
+                            .rt()
+                            .expect("infallible conversion"),
                         application.size,
                         types::ApplicationSource(application.source.to_string().into()),
                         types::ApplicationMetadata(Repr::new(
@@ -143,7 +152,7 @@ impl ExternalConfigClient<'_> {
                         )),
                     ),
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -182,7 +191,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &identities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -221,7 +230,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &identities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -260,7 +269,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &capabilities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -299,7 +308,7 @@ impl ExternalConfigClient<'_> {
                     self.client.context_id.rt().expect("infallible conversion"),
                     &capabilities,
                 )
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -325,7 +334,7 @@ impl ExternalConfigClient<'_> {
 
             client
                 .update_proxy_contract(self.client.context_id.rt().expect("infallible conversion"))
-                .send(*private_key, nonce)
+                .send(**private_key, nonce)
                 .await
         })
         .await?;
@@ -346,7 +355,10 @@ impl ExternalConfigClient<'_> {
 
         let application = Application::new(
             application.id.as_bytes().into(),
-            application.blob.as_bytes().into(),
+            ApplicationBlob {
+                bytecode: application.blob.as_bytes().into(),
+                compiled: BlobId::from([0; 32]),
+            },
             application.size,
             application.source.0.parse()?,
             application.metadata.0.into_inner().into_owned(),
