@@ -1,21 +1,39 @@
+use camino::{Utf8Path, Utf8PathBuf};
 use core::cell::RefCell;
-
-use camino::Utf8Path;
 use tokio::process::Child;
 
 pub struct Merod {
     process: RefCell<Option<Child>>,
+    binary_path: Utf8PathBuf,
 }
 
 impl Merod {
-    pub fn new() -> Self {
+    pub fn new(binary_path: Utf8PathBuf) -> Self {
         Self {
             process: RefCell::new(None),
+            binary_path,
         }
     }
 
     pub async fn start(&self, home_dir: &Utf8Path, node_name: &str) -> eyre::Result<()> {
-        let mut command = tokio::process::Command::new("merod");
+        let mut init_command = tokio::process::Command::new(&self.binary_path);
+        init_command
+            .arg("--home")
+            .arg(home_dir)
+            .arg("--node-name")
+            .arg(node_name)
+            .arg("init")
+            .arg("--swarm-port")
+            .arg("2427") 
+            .arg("--server-port")
+            .arg("2527"); 
+
+        let init_status = init_command.status().await?;
+        if !init_status.success() {
+            return Err(eyre::eyre!("Failed to initialize node {}", node_name));
+        }
+
+        let mut command = tokio::process::Command::new(&self.binary_path);
         command
             .arg("--home")
             .arg(home_dir)
