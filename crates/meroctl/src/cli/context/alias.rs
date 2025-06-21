@@ -8,14 +8,14 @@ use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, reso
 use crate::connection::ConnectionInfo;
 use crate::output::{ErrorLine, WarnLine};
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Manage context aliases")]
 pub struct ContextAliasCommand {
     #[command(subcommand)]
-    command: ContextAliasSubcommand,
+    pub command: ContextAliasSubcommand,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub enum ContextAliasSubcommand {
     #[command(about = "Add new alias for a context", aliases = ["new", "create"])]
     Add {
@@ -47,10 +47,7 @@ pub enum ContextAliasSubcommand {
 
 impl ContextAliasCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         match self.command {
             ContextAliasSubcommand::Add {
@@ -117,7 +114,7 @@ impl ContextAliasCommand {
     }
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Set the default context")]
 pub struct UseCommand {
     /// The context to set as default
@@ -130,10 +127,7 @@ pub struct UseCommand {
 
 impl UseCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let default_alias: Alias<ContextId> = "default"
             .parse()

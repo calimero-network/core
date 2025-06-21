@@ -1,6 +1,7 @@
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::Table;
+use const_format::concatcp;
 use eyre::bail;
 use url::Url;
 
@@ -19,7 +20,7 @@ pub struct AddNodeCommand {
     #[arg(long, conflicts_with = "path")]
     pub url: Option<Url>,
 
-    /// Authentication key for the node
+    /// Authentication key for the remote node
     #[arg(long, env = "MEROCTL_NODE_KEY")]
     pub auth: Option<String>,
 }
@@ -30,7 +31,26 @@ pub struct RemoveNodeCommand {
     pub name: String,
 }
 
+pub const EXAMPLES: &str = r"
+  # Add a local node
+  $ meroctl node add node1 --path /path/to/home
+
+  # Add another local node
+  $ meroctl node add node2 --path /path/to/home
+
+  # Add a remote node
+  $ meroctl node add node3 --url http://public.node.com
+
+  # Add a remote node that requires authentication
+  $ meroctl node add node3 --url http://private.node.com --auth some_secret_key
+";
+
 #[derive(Debug, Subcommand)]
+#[command(about = "Command for managing nodes")]
+#[command(after_help = concatcp!(
+    "Examples:",
+    EXAMPLES
+))]
 pub enum NodeCommand {
     /// Add or connect to a node
     #[command(alias = "connect")]
@@ -59,6 +79,12 @@ impl NodeCommand {
                     },
                     _ => bail!("either `--path` or `--url` must be specified"),
                 };
+                if config.nodes.contains_key(&cmd.name) {
+                    bail!(
+                        "node with name '{}' already exists, to update it, remove it first",
+                        cmd.name
+                    );
+                }
                 let _ignored = config.nodes.insert(cmd.name, connection);
             }
             NodeCommand::Remove(cmd) => {

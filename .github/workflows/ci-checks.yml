@@ -4,6 +4,11 @@ on:
   push:
     branches: ["master"]
   pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests/**"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,9 +42,11 @@ jobs:
           cargo +nightly fmt -- --check
 
       - name: Cargo clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy -- -A warnings
 
       - name: Cargo test
+        if: ${{ !cancelled() }}
         run: |
           FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
 
@@ -49,6 +56,7 @@ jobs:
           cargo test -- --nocapture
 
       - name: Cargo deny
+        if: ${{ !cancelled() }}
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses sources

@@ -12,7 +12,7 @@ use crate::cli::Environment;
 use crate::common::resolve_alias;
 use crate::output::Report;
 
-#[derive(Parser, Debug)]
+#[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Fetch details about the context")]
 pub struct GetCommand {
     #[command(subcommand)]
@@ -26,7 +26,7 @@ pub struct GetCommand {
     pub context: Alias<ContextId>,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub enum GetSubcommand {
     #[command(about = "Get context information")]
     Info,
@@ -107,10 +107,7 @@ impl Report for GetContextIdentitiesResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;
 

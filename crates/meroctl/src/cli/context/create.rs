@@ -12,7 +12,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8PathBuf;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, OptionExt, Result as EyreResult};
+use eyre::{bail, Result as EyreResult};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
@@ -31,14 +31,14 @@ pub struct CreateCommand {
         short = 'a',
         help = "The application ID to attach to the context"
     )]
-    application_id: Option<ApplicationId>,
+    pub application_id: Option<ApplicationId>,
 
     #[clap(
         long,
         short = 'p',
         help = "The parameters to pass to the application initialization function"
     )]
-    params: Option<String>,
+    pub params: Option<String>,
 
     #[clap(
         long,
@@ -46,29 +46,29 @@ pub struct CreateCommand {
         conflicts_with = "application_id",
         help = "Path to the application file to watch and install locally"
     )]
-    watch: Option<Utf8PathBuf>,
+    pub watch: Option<Utf8PathBuf>,
 
     #[clap(
         requires = "watch",
         help = "Metadata needed for the application installation"
     )]
-    metadata: Option<String>,
+    pub metadata: Option<String>,
 
     #[clap(
         short = 's',
         long = "seed",
         help = "The seed for the random generation of the context id"
     )]
-    context_seed: Option<Hash>,
+    pub context_seed: Option<Hash>,
 
     #[clap(long, value_name = "PROTOCOL")]
-    protocol: String,
+    pub protocol: String,
 
     #[clap(long = "as", help = "Create an alias for the context identity")]
-    identity: Option<Alias<PublicKey>>,
+    pub identity: Option<Alias<PublicKey>>,
 
     #[clap(long = "name", help = "Create an alias for the context")]
-    context: Option<Alias<ContextId>>,
+    pub context: Option<Alias<ContextId>>,
 }
 
 impl Report for CreateContextResponse {
@@ -95,10 +95,7 @@ impl Report for UpdateContextApplicationResponse {
 
 impl CreateCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         match self {
             Self {

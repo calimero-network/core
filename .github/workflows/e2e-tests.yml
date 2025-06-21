@@ -8,19 +8,18 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
-      - 'e2e-tests/**'
+      - "crates/**"
+      - "e2e-tests/**"
   pull_request:
-    types: [opened, synchronize, reopened]
     paths:
       - Cargo.toml
       - Cargo.lock
-      - 'crates/**'
-      - 'e2e-tests/**'
+      - "crates/**"
+      - "e2e-tests/**"
 
 env:
   # Or you can use 'prerelease-{PR-NUMBER}'
-  CALIMERO_CONTRACTS_VERSION: 'latest'
+  CALIMERO_CONTRACTS_VERSION: "latest"
 
 jobs:
   build:
