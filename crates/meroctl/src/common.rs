@@ -69,6 +69,7 @@ pub fn fetch_multiaddr(config: &ConfigFile) -> EyreResult<&Multiaddr> {
     Ok(multiaddr)
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum RequestType {
     Get,
     Post,

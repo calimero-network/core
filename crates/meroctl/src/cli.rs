@@ -5,7 +5,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{bail, Report as EyreReport, WrapErr};
+use eyre::{bail, Report as EyreReport};
 use libp2p::identity::Keypair;
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
@@ -32,22 +32,31 @@ use node::NodeCommand;
 use peers::PeersCommand;
 
 pub const EXAMPLES: &str = r"
-  # List all applications
-  $ meroctl --node-name node1 app ls
-  # List all applications with custom destination config
-  $ meroctl  --home data --node-name node1 app ls
+  # Authentication examples
+  $ meroctl auth login                    # Login with default profile
+  $ meroctl auth login --profile prod     # Login with specific profile  
+  $ meroctl auth status                   # Show auth status
+  $ meroctl auth logout                   # Logout from default profile
 
-  # List all contexts
-  $ meroctl --node-name node1 context ls
-  # List all contexts with custom destination config
-  $ meroctl --home data --node-name node1 context ls
+  # Using with authentication
+  $ meroctl --api https://node.calimero.network context ls    # Auto-auth
+  $ meroctl --profile prod --api https://node.example.com app ls
+
+  # Using environment variables  
+  $ MEROCTL_TOKEN=xyz meroctl --api https://node.example.com context ls
+  $ MEROCTL_PROFILE=prod meroctl --api https://node.example.com app ls
+
+  # Development mode (no auth)
+  $ meroctl --no-auth --api http://localhost:2428 context ls
 ";
 
 #[derive(Debug, Parser)]
 #[command(author, version = CalimeroVersion::current_str(), about, long_about = None)]
 #[command(after_help = concatcp!(
     "Environment variables:\n",
-    "  CALIMERO_HOME    Directory for config and data\n\n",
+    "  CALIMERO_HOME     Directory for config and data\n",
+    "  MEROCTL_TOKEN     JWT token for authentication\n",
+    "  MEROCTL_PROFILE   Authentication profile to use\n\n",
     "Examples:",
     EXAMPLES
 ))]
@@ -68,6 +77,8 @@ pub enum SubCommands {
     Peers(PeersCommand),
     #[command(subcommand)]
     Node(NodeCommand),
+    /// Manage authentication
+    Auth(crate::auth::AuthCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -87,6 +98,18 @@ pub struct RootArgs {
 
     #[arg(long, value_name = "FORMAT", default_value_t, value_enum)]
     pub output_format: Format,
+
+    /// Authentication profile to use
+    #[arg(long, value_name = "PROFILE", env = "MEROCTL_PROFILE")]
+    pub profile: Option<String>,
+
+    /// JWT token for authentication (overrides stored tokens)
+    #[arg(long, value_name = "TOKEN", env = "MEROCTL_TOKEN")]
+    pub token: Option<String>,
+
+    /// Skip authentication (for development mode)
+    #[arg(long)]
+    pub no_auth: bool,
 }
 
 impl RootArgs {
@@ -95,12 +118,18 @@ impl RootArgs {
         api: Option<Url>,
         node: Option<String>,
         output_format: Format,
+        profile: Option<String>,
+        token: Option<String>,
+        no_auth: bool,
     ) -> Self {
         Self {
             home,
             api,
             node,
             output_format,
+            profile,
+            token,
+            no_auth,
         }
     }
 }
@@ -143,6 +172,7 @@ impl RootCommand {
             SubCommands::Bootstrap(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
             SubCommands::Node(node) => node.run().await,
+            SubCommands::Auth(auth) => auth.run(&environment).await,
         };
 
         if let Err(err) = result {
@@ -159,39 +189,46 @@ impl RootCommand {
     }
 
     async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
-        let connection = match (&self.args.node, &self.args.api) {
+        // Get the API URL
+        let api_url = match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
+                // Try to get from stored config first
                 let config = Config::load().await?;
-
                 if let Some(conn) = config.get_connection(node).await? {
                     return Ok(conn);
                 }
 
+                // Fallback to local node config
                 let config = load_config(&self.args.home, node).await?;
                 let multiaddr = fetch_multiaddr(&config)?;
-                let url = multiaddr_to_url(&multiaddr, "")?;
-
-                ConnectionInfo::new(url, Some(config.identity)).await
+                multiaddr_to_url(&multiaddr, "")?
             }
-            (None, Some(api_url)) => {
-                let mut auth_key = None;
-
-                if let Ok(node_key) = std::env::var("MEROCTL_NODE_KEY") {
-                    let bytes = bs58::decode(node_key)
-                        .into_vec()
-                        .wrap_err("failed to decode node key from environment variable")?;
-
-                    let node_key = Keypair::from_protobuf_encoding(&bytes)
-                        .wrap_err("failed to decode node key from environment variable")?;
-
-                    auth_key = Some(node_key);
-                }
-
-                ConnectionInfo::new(api_url.clone(), auth_key).await
-            }
+            (None, Some(api_url)) => api_url.clone(),
             _ => bail!("expected one of `--node` or `--api` to be set"),
         };
-        Ok(connection)
+
+        // Handle authentication
+        if self.args.no_auth {
+            // Development mode - no authentication
+            return Ok(ConnectionInfo::new(api_url, None).await);
+        }
+
+        // Check for direct token first
+        if let Some(token) = &self.args.token {
+            return Ok(ConnectionInfo::new_with_jwt(api_url, token.clone()).await);
+        }
+
+        // Set up auth manager for JWT authentication
+        let profile = self.args.profile.clone().unwrap_or_else(|| "default".to_string());
+        let auth_manager = crate::auth::AuthManager::new(profile, api_url.clone()).await?;
+        
+        // Check if we have valid tokens already
+        if let Ok(Some(token)) = auth_manager.get_valid_token().await {
+            return Ok(ConnectionInfo::new_with_jwt(api_url, token).await);
+        }
+
+        // Return connection with auth manager (will handle auth on-demand)
+        Ok(ConnectionInfo::new_with_auth_manager(api_url, auth_manager).await)
     }
 }
 
