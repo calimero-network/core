@@ -14,7 +14,7 @@ camino = { workspace = true, features = ["serde1"] }
 chrono.workspace = true
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
-comfy-table.workspace = true 
+comfy-table.workspace = true
 const_format.workspace = true
 dirs.workspace = true
 eyre.workspace = true
@@ -28,7 +28,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
-tokio-tungstenite.workspace = true
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 
