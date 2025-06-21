@@ -1,5 +1,6 @@
-use camino::{Utf8Path, Utf8PathBuf};
 use core::cell::RefCell;
+
+use camino::{Utf8Path, Utf8PathBuf};
 use tokio::process::Child;
 
 pub struct Merod {
@@ -24,9 +25,9 @@ impl Merod {
             .arg(node_name)
             .arg("init")
             .arg("--swarm-port")
-            .arg("2427") 
+            .arg("2427")
             .arg("--server-port")
-            .arg("2527"); 
+            .arg("2527");
 
         let init_status = init_command.status().await?;
         if !init_status.success() {
