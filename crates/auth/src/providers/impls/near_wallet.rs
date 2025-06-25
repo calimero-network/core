@@ -18,8 +18,8 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, error};
 use validator::Validate;
 
-// use crate::api::handlers::auth::TokenRequest;
-// use crate::auth::token::TokenManager;
+use crate::api::handlers::auth::TokenRequest;
+use crate::auth::token::TokenManager;
 use crate::config::{AuthConfig, NearWalletConfig};
 use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVerifierFn};
 use crate::providers::core::provider_data_registry::AuthDataType;
@@ -27,7 +27,7 @@ use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
 use crate::storage::models::Key;
 use crate::storage::{KeyManager, Storage};
-use crate::{register_auth_data_type, register_auth_provider, AuthError, AuthResponse};
+use crate::{register_auth_data_type, register_auth_provider, AuthResponse};
 
 /// Represents the payload structure that contains a message, nonce, recipient, and optional callback URL.
 ///
@@ -92,7 +92,7 @@ impl AuthDataType for NearWalletAuthDataType {
 pub struct NearWalletProvider {
     storage: Arc<dyn Storage>,
     key_manager: KeyManager,
-    // token_manager: TokenManager,
+    token_manager: TokenManager,
     config: NearWalletConfig,
 }
 
@@ -102,7 +102,7 @@ impl NearWalletProvider {
         Self {
             storage: context.storage,
             key_manager: context.key_manager,
-            // token_manager: context.token_manager,
+            token_manager: context.token_manager,
             config,
         }
     }
@@ -383,59 +383,54 @@ impl NearWalletProvider {
         signature: &str,
         recipient: &str,
     ) -> eyre::Result<(String, Vec<String>)> {
-        // // First verify that the message is a valid challenge token and get its claims
-        // // let claims = self.token_manager.verify_challenge(&message).await?;
+        // First verify that the message is a valid challenge token and get its claims
+        let claims = self.token_manager.verify_challenge(&message).await?;
 
-        // // Then verify the signature using the nonce from the claims
-        // let signature_valid = self
-        //     .verify_signature(&claims.nonce, &message, recipient, signature, public_key)
-        //     .await?;
+        // Then verify the signature using the nonce from the claims
+        let signature_valid = self
+            .verify_signature(&claims.nonce, &message, recipient, signature, public_key)
+            .await?;
 
-        // if !signature_valid {
-        //     return Err(AuthError::AuthenticationFailed(
-        //         "Signature verification failed".to_string(),
-        //     ));
-        // }
-        // debug!("Signature verification successful");
+        if !signature_valid {
+            return Err(eyre::eyre!("Signature verification failed"));
+        }
+        debug!("Signature verification successful");
 
-        // // Verify the account owns the key
-        // if !self.verify_account_owns_key(account_id, public_key).await? {
-        //     return Err(AuthError::AuthenticationFailed(
-        //         "Public key does not belong to account".to_string(),
-        //     ));
-        // }
+        // Verify the account owns the key
+        if !self.verify_account_owns_key(account_id, public_key).await? {
+            return Err(eyre::eyre!("Public key does not belong to account"));
+        }
 
-        // // Get or create the root key
-        // let (key_id, root_key) = match self.get_root_key_for_account(account_id).await? {
-        //     Some((key_id, root_key)) => {
-        //         // Update the last used timestamp
-        //         self.update_last_used(&key_id).await?;
-        //         (key_id, root_key)
-        //     }
-        //     None => {
-        //         // Create a new root key
-        //         self.create_root_key(account_id, public_key).await?
-        //     }
-        // };
+        // Get or create the root key
+        let (key_id, root_key) = match self.get_root_key_for_account(account_id).await? {
+            Some((key_id, root_key)) => {
+                // Update the last used timestamp
+                self.update_last_used(&key_id).await?;
+                (key_id, root_key)
+            }
+            None => {
+                // Create a new root key
+                self.create_root_key(account_id, public_key).await?
+            }
+        };
 
-        // let permissions = root_key.permissions.clone();
-        // debug!(
-        //     "Returning permissions for key {}: {:?}",
-        //     key_id, permissions
-        // );
+        let permissions = root_key.permissions.clone();
+        debug!(
+            "Returning permissions for key {}: {:?}",
+            key_id, permissions
+        );
 
-        // Ok((key_id, permissions))
-        todo!()
+        Ok((key_id, permissions))
     }
 
-    // / Get the token manager
-    // /
-    // / # Returns
-    // /
-    // /// * `&TokenManager` - Reference to the token manager
-    // pub fn get_token_manager(&self) -> &TokenManager {
-    //     &self.token_manager
-    // }
+    /// Get the token manager
+    ///
+    /// # Returns
+    ///
+    /// * `&TokenManager` - Reference to the token manager
+    pub fn get_token_manager(&self) -> &TokenManager {
+        &self.token_manager
+    }
 }
 
 /// NEAR wallet auth verifier
@@ -476,7 +471,7 @@ impl Clone for NearWalletProvider {
         Self {
             storage: Arc::clone(&self.storage),
             key_manager: self.key_manager.clone(),
-            // token_manager: self.token_manager.clone(),
+            token_manager: self.token_manager.clone(),
             config: self.config.clone(),
         }
     }
@@ -534,23 +529,21 @@ impl AuthProvider for NearWalletProvider {
         })
     }
 
-    fn prepare_auth_data(&self, token_request: &str) -> eyre::Result<Value> {
-        // // Parse the provider-specific data into our request type
-        // let near_data: NearWalletRequest =
-        //     serde_json::from_value(token_request.provider_data.clone()).map_err(|e| {
-        //         AuthError::InvalidRequest(format!("Invalid NEAR wallet data: {}", e))
-        //     })?;
+    fn prepare_auth_data(&self, token_request: &TokenRequest) -> eyre::Result<Value> {
+        // Parse the provider-specific data into our request type
+        let near_data: NearWalletRequest =
+            serde_json::from_value(token_request.provider_data.clone())
+                .map_err(|e| eyre::eyre!("Invalid NEAR wallet data: {}", e))?;
 
-        // // Create NEAR-specific auth data JSON
-        // Ok(serde_json::json!({
-        //     "account_id": near_data.wallet_address,
-        //     "public_key": token_request.public_key,
-        //     "message": near_data.message,
-        //     "signature": near_data.signature,
-        //     "recipient": near_data.recipient.unwrap_or_else(|| "calimero".to_string()),
-        //     "callback_url": near_data.callback_url.unwrap_or_default()
-        // }))
-        todo!()
+        // Create NEAR-specific auth data JSON
+        Ok(serde_json::json!({
+            "account_id": near_data.wallet_address,
+            "public_key": token_request.public_key,
+            "message": near_data.message,
+            "signature": near_data.signature,
+            "recipient": near_data.recipient.unwrap_or_else(|| "calimero".to_string()),
+            "callback_url": near_data.callback_url.unwrap_or_default()
+        }))
     }
 
     fn create_verifier(
