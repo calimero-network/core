@@ -20,7 +20,11 @@ impl ConnectionInfo {
     /// Create a new connection with optional profile config
     /// If profile_config is None, this is a no-auth connection
     /// If profile_config is Some, this is an authenticated connection
-    pub fn new(api_url: Url, profile: Option<String>, profile_config: Option<crate::cli::storage::ProfileConfig>) -> Self {
+    pub fn new(
+        api_url: Url,
+        profile: Option<String>,
+        profile_config: Option<crate::cli::storage::ProfileConfig>,
+    ) -> Self {
         Self {
             api_url,
             client: Client::new(),
@@ -31,7 +35,11 @@ impl ConnectionInfo {
 
     /// Update the active profile and its config in the connection
     /// This avoids needing to reload from storage when switching profiles
-    pub fn set_profile(&mut self, profile: Option<String>, profile_config: Option<crate::cli::storage::ProfileConfig>) {
+    pub fn set_profile(
+        &mut self,
+        profile: Option<String>,
+        profile_config: Option<crate::cli::storage::ProfileConfig>,
+    ) {
         self.profile = profile;
         self.profile_config = profile_config;
     }
@@ -95,17 +103,18 @@ impl ConnectionInfo {
                             // Retry the request with the new token
                             let mut retry_url = self.api_url.clone();
                             retry_url.set_path(path);
-                            
+
                             let mut retry_builder = match req_type {
                                 RequestType::Get => self.client.get(retry_url),
                                 RequestType::Post => self.client.post(retry_url).json(&body),
                                 RequestType::Delete => self.client.delete(retry_url),
                             };
-                            
-                            retry_builder = retry_builder.header("Authorization", format!("Bearer {}", new_token));
-                            
+
+                            retry_builder = retry_builder
+                                .header("Authorization", format!("Bearer {}", new_token));
+
                             let retry_response = retry_builder.send().await?;
-                            
+
                             if retry_response.status().is_success() {
                                 return retry_response.json::<O>().await.map_err(Into::into);
                             }
@@ -118,12 +127,16 @@ impl ConnectionInfo {
                     }
                 }
             }
-            
-            return Err(eyre!("Authentication required. Please run 'meroctl auth login --profile <name>'"));
+
+            return Err(eyre!(
+                "Authentication required. Please run 'meroctl auth login --profile <name>'"
+            ));
         }
 
         if response.status() == 403 {
-            return Err(eyre!("Access denied. Your authentication may not have sufficient permissions."));
+            return Err(eyre!(
+                "Access denied. Your authentication may not have sufficient permissions."
+            ));
         }
 
         // Handle other errors
@@ -143,15 +156,19 @@ impl ConnectionInfo {
     /// Refresh an expired access token using the refresh token
     async fn refresh_token(&self) -> EyreResult<String> {
         // Use the cached profile config to get the refresh token
-        let profile_config = self.profile_config.as_ref()
+        let profile_config = self
+            .profile_config
+            .as_ref()
             .ok_or_eyre("Profile not found")?;
-        
-        let tokens = profile_config.token.as_ref()
+
+        let tokens = profile_config
+            .token
+            .as_ref()
             .ok_or_eyre("No token found in profile")?;
 
         // Call the refresh endpoint
         let refresh_url = self.api_url.join("/auth/refresh")?;
-        
+
         #[derive(serde::Serialize)]
         struct RefreshRequest {
             access_token: String,
@@ -169,7 +186,8 @@ impl ConnectionInfo {
             refresh_token: tokens.refresh_token.clone().unwrap_or_default(),
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(refresh_url)
             .json(&refresh_request)
             .send()
@@ -177,7 +195,10 @@ impl ConnectionInfo {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
             bail!("Failed to refresh token: HTTP {} - {}", status, error_text);
         }
 
@@ -205,9 +226,12 @@ impl ConnectionInfo {
 
     /// Detect authentication mode for this connection
     pub async fn detect_auth_mode(&self) -> EyreResult<String> {
-        let identity_url = self.api_url.join("/admin-api/health")
+        let identity_url = self
+            .api_url
+            .join("/admin-api/health")
             .map_err(|e| eyre!("Failed to construct identity URL: {e}"))?;
-        let response = self.client
+        let response = self
+            .client
             .get(identity_url)
             .send()
             .await
@@ -218,10 +242,14 @@ impl ConnectionInfo {
                 authentication_mode: Option<String>,
             }
 
-            let data: IdentityResponse = response.json().await
+            let data: IdentityResponse = response
+                .json()
+                .await
                 .map_err(|e| eyre!("Failed to parse identity response: {e}"))?;
-            
-            Ok(data.authentication_mode.unwrap_or_else(|| "none".to_string()))
+
+            Ok(data
+                .authentication_mode
+                .unwrap_or_else(|| "none".to_string()))
         } else if response.status() == 401 {
             // 401 means authentication is required
             Ok("required".to_string())

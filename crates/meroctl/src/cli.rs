@@ -174,7 +174,7 @@ impl RootCommand {
 
     async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
         use crate::cli::storage::create_storage;
-        
+
         let (url, profile) = match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
                 let config = Config::load().await?;
@@ -195,15 +195,20 @@ impl RootCommand {
                 if auth_required {
                     // Auth is required - get current profile and its config in one storage access
                     let storage = create_storage();
-                    
+
                     match storage.get_current_profile().await? {
                         Some((profile, profile_config)) => {
                             // Check if the profile URL matches the requested API URL (normalize trailing slashes)
-                            let profile_url_str = profile_config.node_url.as_str().trim_end_matches('/');
+                            let profile_url_str =
+                                profile_config.node_url.as_str().trim_end_matches('/');
                             let api_url_str = api_url.as_str().trim_end_matches('/');
                             if profile_url_str == api_url_str {
                                 // URLs match - use this profile with loaded config
-                                return Ok(ConnectionInfo::new(api_url.clone(), Some(profile), Some(profile_config)));
+                                return Ok(ConnectionInfo::new(
+                                    api_url.clone(),
+                                    Some(profile),
+                                    Some(profile_config),
+                                ));
                             } else {
                                 // URLs don't match - user needs to login for this API
                                 bail!("Current active profile '{}' is for {}, but you're trying to access {}.\nPlease login for this API: meroctl auth login --api {} --profile <n>", 
@@ -222,7 +227,7 @@ impl RootCommand {
             }
             _ => bail!("expected one of `--node` or `--api` to be set"),
         };
-        
+
         Ok(ConnectionInfo::new(url, Some(profile), None))
     }
 }
@@ -230,7 +235,7 @@ impl RootCommand {
 async fn check_auth_required(url: &Url) -> eyre::Result<bool> {
     let client = reqwest::Client::new();
     let health_url = url.join("/admin-api/health")?;
-    
+
     match client.get(health_url).send().await {
         Ok(response) => {
             // If we get 200, auth is not required
@@ -238,7 +243,7 @@ async fn check_auth_required(url: &Url) -> eyre::Result<bool> {
             match response.status().as_u16() {
                 200..=299 => Ok(false), // No auth required
                 401 | 403 => Ok(true),  // Auth required
-                _ => Ok(false), // Assume no auth for other status codes
+                _ => Ok(false),         // Assume no auth for other status codes
             }
         }
         Err(_) => {

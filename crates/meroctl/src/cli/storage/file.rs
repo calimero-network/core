@@ -1,6 +1,7 @@
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use eyre::{Context, Result as EyreResult};
-use std::path::PathBuf;
 use tokio::fs;
 
 use super::{ProfileConfig, ProfileTokens, TokenStorage};
@@ -22,7 +23,8 @@ impl FileStorage {
 
     async fn ensure_config_dir(&self) -> EyreResult<()> {
         if let Some(parent) = self.tokens_path.parent() {
-            fs::create_dir_all(parent).await
+            fs::create_dir_all(parent)
+                .await
                 .wrap_err("Failed to create config directory")?;
         }
         Ok(())
@@ -30,24 +32,20 @@ impl FileStorage {
 
     async fn load_all_tokens(&self) -> EyreResult<ProfileTokens> {
         match fs::read_to_string(&self.tokens_path).await {
-            Ok(content) => {
-                serde_json::from_str(&content)
-                    .wrap_err("Failed to parse tokens file")
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(ProfileTokens::default())
-            }
+            Ok(content) => serde_json::from_str(&content).wrap_err("Failed to parse tokens file"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ProfileTokens::default()),
             Err(e) => Err(e).wrap_err("Failed to read tokens file"),
         }
     }
 
     async fn save_all_tokens(&self, tokens: &ProfileTokens) -> EyreResult<()> {
         self.ensure_config_dir().await?;
-        
-        let content = serde_json::to_string_pretty(tokens)
-            .wrap_err("Failed to serialize tokens")?;
-        
-        fs::write(&self.tokens_path, content).await
+
+        let content =
+            serde_json::to_string_pretty(tokens).wrap_err("Failed to serialize tokens")?;
+
+        fs::write(&self.tokens_path, content)
+            .await
             .wrap_err("Failed to write tokens file")?;
 
         // Set restrictive permissions (Unix only)
@@ -68,12 +66,12 @@ impl TokenStorage for FileStorage {
     async fn store_profile(&self, profile: &str, config: &ProfileConfig) -> EyreResult<()> {
         let mut tokens = self.load_all_tokens().await?;
         drop(tokens.profiles.insert(profile.to_string(), config.clone()));
-        
+
         // Set as current profile if it's the first one
         if tokens.current_profile.is_empty() {
             tokens.current_profile = profile.to_string();
         }
-        
+
         self.save_all_tokens(&tokens).await
     }
 
@@ -85,13 +83,17 @@ impl TokenStorage for FileStorage {
     async fn remove_profile(&self, profile: &str) -> EyreResult<()> {
         let mut tokens = self.load_all_tokens().await?;
         drop(tokens.profiles.remove(profile));
-        
+
         // If we removed the current profile, switch to another one or clear
         if tokens.current_profile == profile {
-            tokens.current_profile = tokens.profiles.keys().next()
-                .unwrap_or(&String::new()).to_string();
+            tokens.current_profile = tokens
+                .profiles
+                .keys()
+                .next()
+                .unwrap_or(&String::new())
+                .to_string();
         }
-        
+
         self.save_all_tokens(&tokens).await
     }
 
@@ -107,11 +109,11 @@ impl TokenStorage for FileStorage {
 
     async fn set_current_profile(&self, profile: &str) -> EyreResult<()> {
         let mut tokens = self.load_all_tokens().await?;
-        
+
         if !tokens.profiles.contains_key(profile) {
             return Err(eyre::eyre!("Profile '{}' does not exist", profile));
         }
-        
+
         tokens.current_profile = profile.to_string();
         self.save_all_tokens(&tokens).await
     }
@@ -138,4 +140,4 @@ impl TokenStorage for FileStorage {
             }
         }
     }
-} 
+}

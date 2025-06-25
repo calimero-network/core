@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use eyre::Result as EyreResult;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::{ProfileConfig, ProfileTokens, TokenStorage};
@@ -23,12 +24,12 @@ impl TokenStorage for MemoryStorage {
     async fn store_profile(&self, profile: &str, config: &ProfileConfig) -> EyreResult<()> {
         let mut data = self.data.write().await;
         drop(data.profiles.insert(profile.to_string(), config.clone()));
-        
+
         // Set as current profile if it's the first one
         if data.current_profile.is_empty() {
             data.current_profile = profile.to_string();
         }
-        
+
         Ok(())
     }
 
@@ -40,13 +41,17 @@ impl TokenStorage for MemoryStorage {
     async fn remove_profile(&self, profile: &str) -> EyreResult<()> {
         let mut data = self.data.write().await;
         drop(data.profiles.remove(profile));
-        
+
         // If we removed the current profile, switch to another one or clear
         if data.current_profile == profile {
-            data.current_profile = data.profiles.keys().next()
-                .unwrap_or(&String::new()).to_string();
+            data.current_profile = data
+                .profiles
+                .keys()
+                .next()
+                .unwrap_or(&String::new())
+                .to_string();
         }
-        
+
         Ok(())
     }
 
@@ -59,11 +64,11 @@ impl TokenStorage for MemoryStorage {
 
     async fn set_current_profile(&self, profile: &str) -> EyreResult<()> {
         let mut data = self.data.write().await;
-        
+
         if !data.profiles.contains_key(profile) {
             return Err(eyre::eyre!("Profile '{}' does not exist", profile));
         }
-        
+
         data.current_profile = profile.to_string();
         Ok(())
     }
@@ -90,4 +95,4 @@ impl TokenStorage for MemoryStorage {
             }
         }
     }
-} 
+}

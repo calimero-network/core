@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use eyre::Result as EyreResult;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use url::Url;
 
 mod file;
@@ -38,9 +39,9 @@ pub trait TokenStorage: Send + Sync {
     async fn clear_all(&self) -> EyreResult<()>;
     async fn set_current_profile(&self, profile: &str) -> EyreResult<()>;
     // async fn get_current_profile(&self) -> EyreResult<Option<String>>;
-    
+
     async fn list_profiles(&self) -> EyreResult<(Vec<String>, Option<String>)>;
-    
+
     /// Get the current active profile and its config in one call to avoid multiple storage accesses
     async fn get_current_profile(&self) -> EyreResult<Option<(String, ProfileConfig)>>;
 }
@@ -58,4 +59,4 @@ pub fn create_storage() -> Box<dyn TokenStorage> {
 /// Create in-memory storage for testing
 pub fn create_memory_storage() -> Box<dyn TokenStorage> {
     Box::new(MemoryStorage::new())
-} 
+}
