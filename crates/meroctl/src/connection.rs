@@ -33,17 +33,6 @@ impl ConnectionInfo {
         }
     }
 
-    /// Update the active profile and its config in the connection
-    /// This avoids needing to reload from storage when switching profiles
-    pub fn set_profile(
-        &mut self,
-        profile: Option<String>,
-        profile_config: Option<crate::cli::storage::ProfileConfig>,
-    ) {
-        self.profile = profile;
-        self.profile_config = profile_config;
-    }
-
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> EyreResult<T> {
         self.request(RequestType::Get, path, None::<()>).await
     }
