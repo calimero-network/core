@@ -1,11 +1,9 @@
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 
 use lazy_static::lazy_static;
 use serde_json::Value;
-
-use crate::AuthError;
 
 /// Trait for authentication data types
 pub trait AuthDataType: Send + Sync {

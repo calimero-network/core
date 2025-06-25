@@ -7,5 +7,3 @@ pub use types::{
     HttpMethod, KeyPermission, Permission, ResourceScope, UserScope,
 };
 pub use validator::PermissionValidator;
-
-// Re-export the main types and validator for easier access
