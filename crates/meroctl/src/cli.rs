@@ -5,8 +5,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{bail, Report as EyreReport, WrapErr};
-use libp2p::identity::Keypair;
+use eyre::{bail, Report as EyreReport};
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
@@ -18,13 +17,16 @@ use crate::defaults;
 use crate::output::{Format, Output, Report};
 
 mod app;
+mod auth;
 mod bootstrap;
 mod call;
 mod context;
 mod node;
 mod peers;
+pub mod storage;
 
 use app::AppCommand;
+use auth::AuthCommand;
 use bootstrap::BootstrapCommand;
 use call::CallCommand;
 use context::ContextCommand;
@@ -62,6 +64,7 @@ pub struct RootCommand {
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
     App(AppCommand),
+    Auth(AuthCommand),
     Context(ContextCommand),
     Call(CallCommand),
     Bootstrap(BootstrapCommand),
@@ -125,19 +128,30 @@ impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
 
-        let connection = match self.prepare_connection().await {
-            Ok(conn) => conn,
-            Err(err) => {
-                let err = CliError::Other(err);
-                output.write(&err);
-                return Err(err);
-            }
+        // Some commands don't require a connection (like auth commands)
+        let needs_connection = match &self.action {
+            SubCommands::Auth(_) => false,
+            _ => true,
         };
 
-        let environment = Environment::new(self.args, output, Some(connection));
+        let connection = if needs_connection {
+            match self.prepare_connection().await {
+                Ok(conn) => Some(conn),
+                Err(err) => {
+                    let err = CliError::Other(err);
+                    output.write(&err);
+                    return Err(err);
+                }
+            }
+        } else {
+            None
+        };
+
+        let environment = Environment::new(self.args, output, connection);
 
         let result = match self.action {
             SubCommands::App(application) => application.run(&environment).await,
+            SubCommands::Auth(auth) => auth.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Bootstrap(call) => call.run(&environment).await,
@@ -159,7 +173,9 @@ impl RootCommand {
     }
 
     async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
-        let connection = match (&self.args.node, &self.args.api) {
+        use crate::cli::storage::create_storage;
+        
+        let (url, profile) = match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
                 let config = Config::load().await?;
 
@@ -171,27 +187,64 @@ impl RootCommand {
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                ConnectionInfo::new(url, Some(config.identity)).await
+                (url, node.clone())
             }
             (None, Some(api_url)) => {
-                let mut auth_key = None;
-
-                if let Ok(node_key) = std::env::var("MEROCTL_NODE_KEY") {
-                    let bytes = bs58::decode(node_key)
-                        .into_vec()
-                        .wrap_err("failed to decode node key from environment variable")?;
-
-                    let node_key = Keypair::from_protobuf_encoding(&bytes)
-                        .wrap_err("failed to decode node key from environment variable")?;
-
-                    auth_key = Some(node_key);
+                // Check if this node requires authentication
+                let auth_required = check_auth_required(api_url).await?;
+                if auth_required {
+                    // Auth is required - get current profile and its config in one storage access
+                    let storage = create_storage();
+                    
+                    match storage.get_current_profile().await? {
+                        Some((profile, profile_config)) => {
+                            // Check if the profile URL matches the requested API URL (normalize trailing slashes)
+                            let profile_url_str = profile_config.node_url.as_str().trim_end_matches('/');
+                            let api_url_str = api_url.as_str().trim_end_matches('/');
+                            if profile_url_str == api_url_str {
+                                // URLs match - use this profile with loaded config
+                                return Ok(ConnectionInfo::new(api_url.clone(), Some(profile), Some(profile_config)));
+                            } else {
+                                // URLs don't match - user needs to login for this API
+                                bail!("Current active profile '{}' is for {}, but you're trying to access {}.\nPlease login for this API: meroctl auth login --api {} --profile <n>", 
+                                      profile, profile_config.node_url, api_url, api_url);
+                            }
+                        }
+                        None => {
+                            // No active profile but auth is required
+                            bail!("Authentication required but no active profile found.\nPlease login first: meroctl auth login --api {} --profile <n>", api_url);
+                        }
+                    }
+                } else {
+                    // No auth required - use connection without auth
+                    return Ok(ConnectionInfo::new(api_url.clone(), None, None));
                 }
-
-                ConnectionInfo::new(api_url.clone(), auth_key).await
             }
             _ => bail!("expected one of `--node` or `--api` to be set"),
         };
-        Ok(connection)
+        
+        Ok(ConnectionInfo::new(url, Some(profile), None))
+    }
+}
+
+async fn check_auth_required(url: &Url) -> eyre::Result<bool> {
+    let client = reqwest::Client::new();
+    let health_url = url.join("/admin-api/health")?;
+    
+    match client.get(health_url).send().await {
+        Ok(response) => {
+            // If we get 200, auth is not required
+            // If we get 401/403, auth is required
+            match response.status().as_u16() {
+                200..=299 => Ok(false), // No auth required
+                401 | 403 => Ok(true),  // Auth required
+                _ => Ok(false), // Assume no auth for other status codes
+            }
+        }
+        Err(_) => {
+            // If we can't reach the endpoint, assume no auth required
+            Ok(false)
+        }
     }
 }
 

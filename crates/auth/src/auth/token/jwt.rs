@@ -347,6 +347,8 @@ impl TokenManager {
             return Err(AuthError::InvalidToken("Key is not valid".to_string()));
         }
 
+        println!("key: {:?}", key);
+
         match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
             KeyType::Root => self.generate_token_pair(claims.sub, key.permissions).await,

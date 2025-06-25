@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use camino::Utf8PathBuf;
-use eyre::{OptionExt, WrapErr};
-use libp2p::identity::Keypair;
+use eyre::OptionExt;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use url::Url;
@@ -63,32 +62,23 @@ impl Config {
             return Ok(None);
         };
 
-        let connection = match connection {
+        let connection_info = match connection {
             NodeConnection::Local { path } => {
                 let config = load_config(path, node).await?;
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                ConnectionInfo::new(url, Some(config.identity)).await
+                // Use the node name as profile for local connections
+                // For local connections, we typically don't have stored auth profiles
+                ConnectionInfo::new(url, Some(node.to_string()), None)
             }
-            NodeConnection::Remote { url, auth } => {
-                let mut auth_key = None;
-
-                if let Some(auth) = auth {
-                    let bytes = bs58::decode(auth)
-                        .into_vec()
-                        .wrap_err("invalid base58 encoding")?;
-
-                    let keypair = Keypair::from_protobuf_encoding(&bytes)
-                        .wrap_err("invalid keypair encoding")?;
-
-                    auth_key = Some(keypair);
-                };
-
-                ConnectionInfo::new(url.clone(), auth_key).await
+            NodeConnection::Remote { url, auth: _ } => {
+                // For remote connections, we'll use the node name as the profile
+                // The old auth key handling is replaced by the new JWT storage system
+                ConnectionInfo::new(url.clone(), Some(node.to_string()), None)
             }
         };
 
-        Ok(Some(connection))
+        Ok(Some(connection_info))
     }
 }
