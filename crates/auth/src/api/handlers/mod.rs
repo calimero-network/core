@@ -6,18 +6,17 @@ pub mod root_keys;
 use std::sync::Arc;
 
 use axum::extract::{Extension, Path};
-use axum::http::{header, StatusCode};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use rust_embed::RustEmbed;
 use serde_json::json;
-use tracing::info;
 
 use crate::api::handlers::auth::success_response;
 use crate::server::AppState;
 
 /// Embed the contents of the auth frontend build directory into the binary
 #[derive(RustEmbed)]
-#[folder = "frontend/dist/"]
+#[folder = "$CALIMERO_AUTH_FRONTEND_PATH"]
 struct AuthUiStaticFiles;
 
 /// Re-export authentication flow handlers
@@ -128,85 +127,51 @@ pub async fn providers_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
     success_response(response, None)
 }
 
-/// Asset handler for serving static files from the React build
+/// Serves embedded frontend files for auth UI root path
+pub async fn frontend_handler() -> impl IntoResponse {
+    serve_embedded_file("index.html").await
+}
+
+/// Asset handler for serving static files from the frontend build
 pub async fn asset_handler(Path(path): Path<String>) -> impl IntoResponse {
     serve_embedded_file(&path).await
 }
 
 /// Serves embedded static files or falls back to `index.html` for SPA routing.
 async fn serve_embedded_file(path: &str) -> impl IntoResponse {
-    let path_to_serve = path.trim_start_matches('/');
+    use axum::body::Body;
+    use axum::http::Response;
 
-    // Add assets/ prefix for JS and CSS files if not already present
-    let path_to_serve = if (path_to_serve.ends_with(".js") || path_to_serve.ends_with(".css"))
-        && !path_to_serve.starts_with("assets/")
-    {
-        format!("assets/{}", path_to_serve)
-    } else {
-        path_to_serve.to_string()
-    };
+    let path = path.trim_start_matches('/');
 
-    info!("Serving file: {}", path_to_serve);
+    // Use "index.html" for empty paths (root requests)
+    let path = if path.is_empty() { "index.html" } else { path };
 
     // Attempt to serve the requested file
-    if let Some(file) = AuthUiStaticFiles::get(&path_to_serve) {
-        // Get the file extension and determine content type
-        let content_type = if path_to_serve.ends_with(".js") {
-            "application/javascript; charset=utf-8"
-        } else if path_to_serve.ends_with(".esm") {
-            "text/javascript; charset=utf-8"
-        } else if path_to_serve.ends_with(".css") {
-            "text/css; charset=utf-8"
-        } else if path_to_serve.ends_with(".html") {
-            "text/html; charset=utf-8"
-        } else if path_to_serve.ends_with(".ico") {
-            "image/x-icon"
-        } else if path_to_serve.ends_with(".png") {
-            "image/png"
-        } else if path_to_serve.ends_with(".svg") {
-            "image/svg+xml"
-        } else {
-            "application/octet-stream"
+    if let Some(file) = AuthUiStaticFiles::get(path) {
+        return match Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", file.metadata.mimetype())
+            .body(Body::from(file.data.into_owned()))
+        {
+            Ok(response) => response.into_response(),
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to serve file").into_response(),
         };
-
-        info!("Content type: {}", content_type);
-
-        // Set appropriate headers
-        let headers = [
-            (header::CONTENT_TYPE, content_type),
-            // Add cache control for static assets
-            (
-                header::CACHE_CONTROL,
-                if path_to_serve.starts_with("assets/") {
-                    "public, max-age=31536000" // Cache for 1 year
-                } else {
-                    "no-cache" // Don't cache HTML
-                },
-            ),
-        ];
-
-        return (StatusCode::OK, headers, file.data).into_response();
     }
 
-    info!("File not found: {}", path_to_serve);
-
-    // Fallback to index.html for SPA routing if it's not a direct asset request
-    if !path_to_serve.starts_with("assets/") && path_to_serve != "index.html" {
+    // Fallback to index.html for SPA routing if the file wasn't found and it's not already "index.html"
+    if path != "index.html" {
         if let Some(index_file) = AuthUiStaticFiles::get("index.html") {
-            // Convert the file content to a string
-            let html_content = String::from_utf8_lossy(&index_file.data);
-
-            // Replace the asset paths to use the /public prefix
-            let modified_html = html_content
-                .replace("=\"/assets/", "=\"/public/assets/")
-                .replace("=\"/favicon.ico", "=\"/public/favicon.ico");
-
-            return (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                modified_html.into_bytes(),
-            )
-                .into_response();
+            return match Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", index_file.metadata.mimetype())
+                .body(Body::from(index_file.data.into_owned()))
+            {
+                Ok(response) => response.into_response(),
+                Err(_) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to serve file").into_response()
+                }
+            };
         }
     }
 

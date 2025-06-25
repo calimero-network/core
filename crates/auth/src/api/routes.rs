@@ -61,9 +61,9 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
     // 1. Public routes (no JWT validation required)
     let public_routes = Router::new()
         // Auth UI/Frontend
-        .route("/login", get(login_handler))
-        .route("/assets/*path", get(asset_handler)) // Handle static assets
-        .route("/favicon.ico", get(asset_handler)) // Handle favicon explicitly
+        .route("/login", get(login_handler)) // Main auth UI entry point
+        .route("/assets/*path", get(asset_handler)) // Static assets for the UI
+        .route("/favicon.ico", get(asset_handler)) // Favicon
         // Public Auth API endpoints
         .route("/token", post(token_handler))
         .route("/challenge", get(challenge_handler))
