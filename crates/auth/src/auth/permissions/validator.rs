@@ -39,58 +39,7 @@ static CLIENT_MANAGEMENT_REGEX: LazyLock<Regex> =
 #[derive(Debug, Default)]
 pub struct PermissionValidator;
 
-macro_rules! route_permissions {
-    ($path:expr, $method:expr) => {{
-        match ($path, $method) {
-            // JSON-RPC endpoints
-            ("/jsonrpc", HttpMethod::POST) => vec![Permission::Context(
-                ContextPermission::Execute(ResourceScope::Global, UserScope::Any, None),
-            )],
 
-            // Admin API - Applications
-            ("/admin-api/applications", HttpMethod::GET) => vec![Permission::Application(
-                ApplicationPermission::List(ResourceScope::Global),
-            )],
-            ("/admin-api/install-application", HttpMethod::POST) => vec![Permission::Application(
-                ApplicationPermission::Install(ResourceScope::Global),
-            )],
-            ("/admin-api/uninstall-application", HttpMethod::POST) => {
-                vec![Permission::Application(ApplicationPermission::Uninstall(
-                    ResourceScope::Global,
-                ))]
-            }
-
-            // Admin API - Contexts
-            ("/admin-api/contexts", HttpMethod::GET) => vec![Permission::Context(
-                ContextPermission::List(ResourceScope::Global),
-            )],
-            ("/admin-api/contexts", HttpMethod::POST) => vec![Permission::Context(
-                ContextPermission::Create(ResourceScope::Global),
-            )],
-
-            // Admin auth endpoints
-            ("/admin/keys", HttpMethod::GET) => vec![Permission::Keys(KeyPermission::List)],
-            ("/admin/keys", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Create)],
-            ("/admin/revoke", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Delete)],
-            ("/admin/keys/clients", HttpMethod::GET) => {
-                vec![Permission::Keys(KeyPermission::ListClients)]
-            }
-
-            // Blob endpoints
-            ("/blobs/stream", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
-                AddBlobPermission::Stream,
-            ))],
-            ("/blobs/file", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
-                AddBlobPermission::File,
-            ))],
-            ("/blobs/url", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
-                AddBlobPermission::Url,
-            ))],
-
-            _ => vec![],
-        }
-    }};
-}
 
 fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<Permission> {
     // Handle parameterized routes with pre-compiled regex patterns
@@ -190,6 +139,58 @@ impl PermissionValidator {
         Self
     }
 
+    /// Get permissions for exact path matches (non-parameterized routes)
+    fn get_permissions_for_exact_paths(&self, path: &str, method: &HttpMethod) -> Vec<Permission> {
+        match (path, method) {
+            // JSON-RPC endpoints
+            ("/jsonrpc", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Execute(ResourceScope::Global, UserScope::Any, None),
+            )],
+
+            // Admin API - Applications
+            ("/admin-api/applications", HttpMethod::GET) => vec![Permission::Application(
+                ApplicationPermission::List(ResourceScope::Global),
+            )],
+            ("/admin-api/install-application", HttpMethod::POST) => vec![Permission::Application(
+                ApplicationPermission::Install(ResourceScope::Global),
+            )],
+            ("/admin-api/uninstall-application", HttpMethod::POST) => {
+                vec![Permission::Application(ApplicationPermission::Uninstall(
+                    ResourceScope::Global,
+                ))]
+            }
+
+            // Admin API - Contexts
+            ("/admin-api/contexts", HttpMethod::GET) => vec![Permission::Context(
+                ContextPermission::List(ResourceScope::Global),
+            )],
+            ("/admin-api/contexts", HttpMethod::POST) => vec![Permission::Context(
+                ContextPermission::Create(ResourceScope::Global),
+            )],
+
+            // Admin auth endpoints
+            ("/admin/keys", HttpMethod::GET) => vec![Permission::Keys(KeyPermission::List)],
+            ("/admin/keys", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Create)],
+            ("/admin/revoke", HttpMethod::POST) => vec![Permission::Keys(KeyPermission::Delete)],
+            ("/admin/keys/clients", HttpMethod::GET) => {
+                vec![Permission::Keys(KeyPermission::ListClients)]
+            }
+
+            // Blob endpoints
+            ("/blobs/stream", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
+                AddBlobPermission::Stream,
+            ))],
+            ("/blobs/file", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
+                AddBlobPermission::File,
+            ))],
+            ("/blobs/url", HttpMethod::POST) => vec![Permission::Blob(BlobPermission::Add(
+                AddBlobPermission::Url,
+            ))],
+
+            _ => vec![],
+        }
+    }
+
     /// Determine required permissions for a given request
     pub fn determine_required_permissions(&self, request: &Request<Body>) -> Vec<Permission> {
         let path = request.uri().path();
@@ -205,7 +206,7 @@ impl PermissionValidator {
         let mut required_permissions = Vec::new();
 
         // First check exact path matches
-        required_permissions.extend(route_permissions!(path, method.clone()));
+        required_permissions.extend(self.get_permissions_for_exact_paths(path, &method));
 
         // Then check parameterized paths
         required_permissions.extend(get_permissions_for_path_with_params(path, &method));
