@@ -4,8 +4,8 @@ use tokio::signal;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-// use crate::api::routes::create_router;
-// use crate::auth::token::TokenManager;
+use crate::api::routes::create_router;
+use crate::auth::token::TokenManager;
 use crate::config::AuthConfig;
 use crate::storage::{KeyManager, Storage};
 use crate::utils::AuthMetrics;
@@ -20,7 +20,7 @@ pub struct AppState {
     /// Key manager for domain operations
     pub key_manager: KeyManager,
     /// Token generator
-    // pub token_generator: TokenManager,
+    pub token_generator: TokenManager,
     /// Configuration
     pub config: AuthConfig,
     /// Metrics
@@ -51,7 +51,7 @@ pub async fn start_server(
         auth_service: auth_service.clone(),
         storage,
         key_manager,
-        // token_generator: auth_service.get_token_manager().clone(),
+        token_generator: auth_service.get_token_manager().clone(),
         config: config.clone(),
         metrics,
     });
@@ -60,22 +60,22 @@ pub async fn start_server(
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
-    // // Create the router with all routes and middleware
-    // let app = create_router(Arc::clone(&state), &config)
-    //     // Apply session layer
-    //     .layer(session_layer);
+    // Create the router with all routes and middleware
+    let app = create_router(Arc::clone(&state), &config)
+        // Apply session layer
+        .layer(session_layer);
 
     // Bind to the address
     let addr = config.listen_addr;
     info!("Auth service listening on {}", addr);
-    // info!(
-    //     "Using {} auth provider(s)",
-    //     state.auth_service.providers().len()
-    // );
+    info!(
+        "Using {} auth provider(s)",
+        state.auth_service.providers().len()
+    );
 
     // Start the server using Axum's built-in server
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    // axum::serve(listener, app.into_make_service()).await?;
+    axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
 }

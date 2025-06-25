@@ -2,11 +2,11 @@ extern crate lazy_static;
 
 use thiserror::Error;
 
-// pub mod api;
+pub mod api;
 pub mod auth;
 pub mod config;
 pub mod providers;
-// pub mod secrets;
+pub mod secrets;
 pub mod server;
 pub mod storage;
 pub mod utils;

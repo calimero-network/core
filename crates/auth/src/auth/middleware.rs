@@ -11,10 +11,10 @@ use crate::auth::permissions::PermissionValidator;
 use crate::server::AppState;
 use crate::AuthError;
 
-/// Forward authentication middleware for reverse proxy
+/// Authentication middleware for protected routes
 ///
-/// This middleware is used by reverse proxies to validate authentication.
-/// If the request is authenticated, it adds the user ID and permissions to the response headers.
+/// This middleware validates JWT tokens and enforces permissions for protected API endpoints.
+/// It adds user ID and permissions headers to successful responses for downstream use.
 ///
 /// # Arguments
 ///
@@ -24,7 +24,7 @@ use crate::AuthError;
 /// # Returns
 ///
 /// * `Result<Response, (StatusCode, HeaderMap)>` - The response or error with headers
-pub async fn forward_auth_middleware(
+pub async fn auth_middleware(
     state: Extension<Arc<AppState>>,
     request: Request<Body>,
     next: Next,
@@ -33,18 +33,18 @@ pub async fn forward_auth_middleware(
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let start_time = std::time::Instant::now();
-    info!("Forwarding auth for {} {}", method, path);
+    info!("Authenticating request {} {}", method, path);
 
-    // Skip authentication for public endpoints, standalone version
+    // Skip authentication for public endpoints
     if path.starts_with("/public") {
-        info!("Skipping auth for {} {}", method, path);
+        info!("Skipping auth for public endpoint {} {}", method, path);
         let response = next.run(request).await;
         let duration = start_time.elapsed();
         debug!("Request {} {} completed in {:?}", method, path, duration);
         return Ok(response);
     }
 
-    debug!("Forwarding auth for {} {}", method, path);
+    debug!("Validating authentication for {} {}", method, path);
 
     // Extract headers for token validation
     let headers = request.headers().clone();

@@ -34,7 +34,7 @@ parking_lot = { workspace = true }
 rand = { workspace = true }
 regex = "1.10.2"
 rocksdb = { workspace = true }
-rust-embed = { workspace = true, features = ["mime-guess"] }
+rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -57,3 +57,13 @@ mockall = "0.11"
 reqwest = { workspace = true, features = ["json"] }
 tempfile = "3.8"
 tokio-test = "0.4"
+
+[build-dependencies]
+bytes = { workspace = true }
+cached-path = { workspace = true }
+eyre = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+# cached-path compat
+reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
