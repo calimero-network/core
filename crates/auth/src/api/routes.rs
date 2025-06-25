@@ -101,8 +101,8 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
 
     // Create the base router with all routes
     let mut router = Router::new()
-        .nest("/public", public_routes)
-        .nest("/private", protected_routes)
+        .nest("/auth", public_routes)
+        .nest("/admin", protected_routes)
         .layer(Extension(Arc::clone(&state)));
 
     // Add security layers from outermost to innermost
