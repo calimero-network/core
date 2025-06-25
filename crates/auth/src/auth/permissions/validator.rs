@@ -39,8 +39,6 @@ static CLIENT_MANAGEMENT_REGEX: LazyLock<Regex> =
 #[derive(Debug, Default)]
 pub struct PermissionValidator;
 
-
-
 fn get_permissions_for_path_with_params(path: &str, method: &HttpMethod) -> Vec<Permission> {
     // Handle parameterized routes with pre-compiled regex patterns
     if let Some(captures) = APPLICATION_REGEX.captures(path) {
