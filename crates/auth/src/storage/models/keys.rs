@@ -104,18 +104,14 @@ impl Key {
         }
 
         // Convert required permission string to Permission enum
-        if let Some(required_perm) = Permission::from_str(required) {
-            println!("Required permission: {:?}", required_perm);
+        if let Ok(required_perm) = required.parse::<Permission>() {
             // Root keys have special handling
             if self.is_root_key() {
-                println!("Root key");
                 // Root keys automatically get admin access
                 if required == "admin" || required.starts_with("admin:") {
                     return true;
                 }
             }
-
-            println!("Permissions: {:?}", self.permissions);
 
             // Check if we have master permission
             if self.permissions.iter().any(|p| p == "admin") {
@@ -124,7 +120,7 @@ impl Key {
 
             // Convert our permissions to Permission enums and check each
             for perm_str in &self.permissions {
-                if let Some(held_perm) = Permission::from_str(perm_str) {
+                if let Ok(held_perm) = perm_str.parse::<Permission>() {
                     if held_perm.satisfies(&required_perm) {
                         return true;
                     }
@@ -137,7 +133,7 @@ impl Key {
     /// Add a permission to the key
     pub fn add_permission(&mut self, permission: &str) -> Result<(), String> {
         // Validate permission format
-        if Permission::from_str(permission).is_none() {
+        if permission.parse::<Permission>().is_err() {
             return Err("Invalid permission format".to_string());
         }
 
