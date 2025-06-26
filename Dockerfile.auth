@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1.6
+
+ARG RUST_VERSION=1.81
+ARG APP_NAME=calimero-auth
+
+################################################################################
+# Development Stage - this is the stage we'll use for development
+FROM rust:${RUST_VERSION}-slim-bookworm AS dev
+
+WORKDIR /usr/src/calimero
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    cmake build-essential ca-certificates git \
+    libssl-dev pkg-config clang libclang-dev llvm-dev \
+    libc6-dev libsnappy-dev zlib1g-dev libbz2-dev \
+    libgflags-dev liblz4-dev libzstd-dev curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# We don't COPY any source code here - it will be mounted at runtime
+# Copy config file
+COPY crates/auth/config/config.toml /etc/calimero/auth.toml
+
+EXPOSE 3001
+
+# Default command for development
+CMD ["cargo", "run", "--bin", "calimero-auth", "--", "--config", "/etc/calimero/auth.toml", "--verbose"]
+
+################################################################################
+# Production Stage - this builds the final optimized binary
+FROM dev AS build
+ARG APP_NAME
+
+# For production build, copy the source
+COPY . .
+
+# Build the release binary with forced frontend fetch
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/usr/src/calimero/target \
+    CALIMERO_AUTH_FRONTEND_FETCH=1 cargo build --release --bin ${APP_NAME} && \
+    cp target/release/${APP_NAME} /bin/server
+
+################################################################################
+# Final Production Stage
+FROM debian:bookworm-slim AS final
+
+# Create a non-privileged user
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/nonexistent" \
+    --shell "/sbin/nologin" \
+    --no-create-home \
+    --uid "${UID}" \
+    appuser
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates libssl-dev libsnappy1v5 liblz4-1 libzstd1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the executable and configs
+COPY --from=build /bin/server /usr/local/bin/calimero-auth
+COPY crates/auth/config/config.toml /etc/calimero/auth.toml
+
+# Create data directory and set permissions
+RUN mkdir -p /data/auth_db && \
+    chown -R appuser:appuser /data
+
+# Switch to non-root user
+USER appuser
+
+VOLUME ["/data"]
+EXPOSE 3001
+
+ENTRYPOINT ["calimero-auth"]
+CMD ["--config", "/etc/calimero/auth.toml", "--verbose"]
