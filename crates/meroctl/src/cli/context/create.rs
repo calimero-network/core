@@ -188,8 +188,7 @@ pub async fn create_context(
         params.map(String::into_bytes).unwrap_or_default(),
     );
 
-    let response: CreateContextResponse =
-        connection.post("admin-api/contexts", request).await?;
+    let response: CreateContextResponse = connection.post("admin-api/contexts", request).await?;
 
     environment.output.write(&response);
 

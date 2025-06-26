@@ -128,10 +128,7 @@ impl GetCommand {
             }
             GetSubcommand::ClientKeys => {
                 let response: GetContextClientKeysResponse = connection
-                    .get(&format!(
-                        "admin-api/contexts/{}/client-keys",
-                        context_id
-                    ))
+                    .get(&format!("admin-api/contexts/{}/client-keys", context_id))
                     .await?;
                 environment.output.write(&response);
             }

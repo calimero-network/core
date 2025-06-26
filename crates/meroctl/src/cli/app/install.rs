@@ -72,10 +72,7 @@ impl InstallCommand {
             let request =
                 InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
             connection
-                .post::<_, InstallApplicationResponse>(
-                    "admin-api/install-dev-application",
-                    request,
-                )
+                .post::<_, InstallApplicationResponse>("admin-api/install-dev-application", request)
                 .await?
         } else if let Some(app_url) = self.url.as_ref() {
             let request =

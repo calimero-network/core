@@ -31,7 +31,6 @@ impl RunCommand {
             config.network.server.websocket,
         );
 
-
         start(NodeConfig {
             home: path.clone(),
             identity: config.identity.clone(),
