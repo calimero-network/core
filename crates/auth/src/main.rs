@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-// use calimero_auth::auth::token::TokenManager;
+use calimero_auth::auth::token::TokenManager;
 use calimero_auth::config::{
     load_config, AuthConfig, ContentSecurityPolicyConfig, JwtConfig, NearWalletConfig,
     RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig,
 };
-// use calimero_auth::secrets::SecretManager;
+use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
-// use calimero_auth::storage::{create_storage, Storage};
-// use calimero_auth::{providers, AuthService};
+use calimero_auth::storage::{create_storage, Storage};
+use calimero_auth::{providers, AuthService};
 use clap::Parser;
 use eyre::Result;
 use tracing::{info, warn};
@@ -127,46 +127,46 @@ async fn main() -> Result<()> {
     }
 
     // Create the storage backend
-    // let storage = create_storage(&config.storage)
-    //     .await
-    //     .expect("Failed to create storage");
+    let storage = create_storage(&config.storage)
+        .await
+        .expect("Failed to create storage");
 
     // Create the secret manager with the storage trait
-    // let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
-    // secret_manager
-    //     .initialize()
-    //     .await
-    //     .expect("Failed to initialize secret manager");
+    let secret_manager = Arc::new(SecretManager::new(storage.clone() as Arc<dyn Storage>));
+    secret_manager
+        .initialize()
+        .await
+        .expect("Failed to initialize secret manager");
 
     // Create JWT token manager
-    // let token_manager = TokenManager::new(config.jwt.clone(), storage.clone(), secret_manager);
+    let token_manager = TokenManager::new(config.jwt.clone(), storage.clone(), secret_manager);
 
     // Create providers using the provider factory
     info!("Starting authentication service");
-    // let providers = providers::create_providers(storage.clone(), &config, token_manager.clone())
-    //     .expect("Failed to create authentication providers");
+    let providers = providers::create_providers(storage.clone(), &config, token_manager.clone())
+        .expect("Failed to create authentication providers");
 
-    // info!("Initialized {} authentication providers", providers.len());
-    // for provider in &providers {
-    //     info!("  - {} ({})", provider.name(), provider.description());
-    // }
+    info!("Initialized {} authentication providers", providers.len());
+    for provider in &providers {
+        info!("  - {} ({})", provider.name(), provider.description());
+    }
 
-    // let auth_service = AuthService::new(providers, token_manager);
+    let auth_service = AuthService::new(providers, token_manager);
 
     // Start the server
     info!("Starting auth server on {}", config.listen_addr);
 
-    // tokio::select! {
-    //     result = start_server(auth_service, storage, config) => {
-    //         if let Err(err) = result {
-    //             eprintln!("Server error: {}", err);
-    //             return Err(err);
-    //         }
-    //     }
-    //     _ = shutdown_signal() => {
-    //         info!("Shutdown signal received, shutting down");
-    //     }
-    // }
+    tokio::select! {
+        result = start_server(auth_service, storage, config) => {
+            if let Err(err) = result {
+                eprintln!("Server error: {}", err);
+                return Err(err);
+            }
+        }
+        _ = shutdown_signal() => {
+            info!("Shutdown signal received, shutting down");
+        }
+    }
 
     Ok(())
 }
