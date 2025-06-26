@@ -11,9 +11,6 @@ pub struct AuthConfig {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: SocketAddr,
 
-    /// Node URL
-    pub node_url: String,
-
     /// JWT configuration
     pub jwt: JwtConfig,
 

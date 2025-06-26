@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use eyre::{Context, Result as EyreResult};
 use tokio::fs;
 
-use super::{ProfileConfig, ProfileTokens, TokenStorage};
+use super::{AllProfiles, ProfileConfig, TokenStorage};
 
 pub struct FileStorage {
-    tokens_path: PathBuf,
+    profiles_path: PathBuf,
 }
 
 impl FileStorage {
@@ -17,127 +17,93 @@ impl FileStorage {
             .join("meroctl");
 
         Self {
-            tokens_path: config_dir.join("tokens.json"),
+            profiles_path: config_dir.join("profiles.json"),
         }
     }
 
     async fn ensure_config_dir(&self) -> EyreResult<()> {
-        if let Some(parent) = self.tokens_path.parent() {
+        if let Some(parent) = self.profiles_path.parent() {
             fs::create_dir_all(parent)
                 .await
                 .wrap_err("Failed to create config directory")?;
         }
         Ok(())
     }
+}
 
-    async fn load_all_tokens(&self) -> EyreResult<ProfileTokens> {
-        match fs::read_to_string(&self.tokens_path).await {
-            Ok(content) => serde_json::from_str(&content).wrap_err("Failed to parse tokens file"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ProfileTokens::default()),
-            Err(e) => Err(e).wrap_err("Failed to read tokens file"),
+#[async_trait]
+impl TokenStorage for FileStorage {
+    async fn load_all_profiles(&self) -> EyreResult<AllProfiles> {
+        match fs::read_to_string(&self.profiles_path).await {
+            Ok(content) => serde_json::from_str(&content).wrap_err("Failed to parse profiles file"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AllProfiles::default()),
+            Err(e) => Err(e).wrap_err("Failed to read profiles file"),
         }
     }
 
-    async fn save_all_tokens(&self, tokens: &ProfileTokens) -> EyreResult<()> {
+    async fn save_all_profiles(&self, profiles: &AllProfiles) -> EyreResult<()> {
         self.ensure_config_dir().await?;
 
         let content =
-            serde_json::to_string_pretty(tokens).wrap_err("Failed to serialize tokens")?;
+            serde_json::to_string_pretty(profiles).wrap_err("Failed to serialize profiles")?;
 
-        fs::write(&self.tokens_path, content)
+        fs::write(&self.profiles_path, content)
             .await
-            .wrap_err("Failed to write tokens file")?;
+            .wrap_err("Failed to write profiles file")?;
 
         // Set restrictive permissions (Unix only)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let permissions = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&self.tokens_path, permissions)
+            std::fs::set_permissions(&self.profiles_path, permissions)
                 .wrap_err("Failed to set file permissions")?;
         }
 
         Ok(())
     }
-}
 
-#[async_trait]
-impl TokenStorage for FileStorage {
-    async fn store_profile(&self, profile: &str, config: &ProfileConfig) -> EyreResult<()> {
-        let mut tokens = self.load_all_tokens().await?;
-        drop(tokens.profiles.insert(profile.to_string(), config.clone()));
+    async fn store_profile(&self, name: &str, config: &ProfileConfig) -> EyreResult<()> {
+        let mut all = self.load_all_profiles().await?;
+        drop(all.profiles.insert(name.to_string(), config.clone()));
+        self.save_all_profiles(&all).await
+    }
 
-        // Set as current profile if it's the first one
-        if tokens.current_profile.is_empty() {
-            tokens.current_profile = profile.to_string();
+    async fn remove_profile(&self, name: &str) -> EyreResult<()> {
+        let mut all = self.load_all_profiles().await?;
+        drop(all.profiles.remove(name));
+        if all.active_profile.as_deref() == Some(name) {
+            all.active_profile = None;
         }
-
-        self.save_all_tokens(&tokens).await
-    }
-
-    async fn load_profile(&self, profile: &str) -> EyreResult<Option<ProfileConfig>> {
-        let tokens = self.load_all_tokens().await?;
-        Ok(tokens.profiles.get(profile).cloned())
-    }
-
-    async fn remove_profile(&self, profile: &str) -> EyreResult<()> {
-        let mut tokens = self.load_all_tokens().await?;
-        drop(tokens.profiles.remove(profile));
-
-        // If we removed the current profile, switch to another one or clear
-        if tokens.current_profile == profile {
-            tokens.current_profile = tokens
-                .profiles
-                .keys()
-                .next()
-                .unwrap_or(&String::new())
-                .to_string();
-        }
-
-        self.save_all_tokens(&tokens).await
-    }
-
-    async fn clear_all(&self) -> EyreResult<()> {
-        // Remove the tokens file
-        if let Err(e) = fs::remove_file(&self.tokens_path).await {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(e).wrap_err("Failed to remove tokens file");
-            }
-        }
-        Ok(())
-    }
-
-    async fn set_current_profile(&self, profile: &str) -> EyreResult<()> {
-        let mut tokens = self.load_all_tokens().await?;
-
-        if !tokens.profiles.contains_key(profile) {
-            return Err(eyre::eyre!("Profile '{}' does not exist", profile));
-        }
-
-        tokens.current_profile = profile.to_string();
-        self.save_all_tokens(&tokens).await
-    }
-
-    async fn list_profiles(&self) -> EyreResult<(Vec<String>, Option<String>)> {
-        let tokens = self.load_all_tokens().await?;
-        let profiles = tokens.profiles.keys().cloned().collect();
-        let current = if tokens.current_profile.is_empty() {
-            None
-        } else {
-            Some(tokens.current_profile)
-        };
-        Ok((profiles, current))
+        self.save_all_profiles(&all).await
     }
 
     async fn get_current_profile(&self) -> EyreResult<Option<(String, ProfileConfig)>> {
-        let tokens = self.load_all_tokens().await?;
-        if tokens.current_profile.is_empty() {
-            Ok(None)
-        } else {
-            match tokens.profiles.get(&tokens.current_profile) {
-                Some(config) => Ok(Some((tokens.current_profile, config.clone()))),
-                None => Ok(None), // Current profile points to non-existent profile
-            }
+        let all = self.load_all_profiles().await?;
+        match all.active_profile {
+            Some(name) => Ok(all.profiles.get(&name).map(|config| (name, config.clone()))),
+            None => Ok(None),
         }
+    }
+
+    async fn set_current_profile(&self, name: &str) -> EyreResult<()> {
+        let mut all = self.load_all_profiles().await?;
+        if all.profiles.contains_key(name) {
+            all.active_profile = Some(name.to_string());
+            self.save_all_profiles(&all).await
+        } else {
+            Err(eyre::eyre!("Profile {} does not exist", name))
+        }
+    }
+
+    async fn list_profiles(&self) -> EyreResult<(Vec<String>, Option<String>)> {
+        let all = self.load_all_profiles().await?;
+        let mut profiles: Vec<_> = all.profiles.keys().cloned().collect();
+        profiles.sort();
+        Ok((profiles, all.active_profile))
+    }
+
+    async fn clear_all(&self) -> EyreResult<()> {
+        self.save_all_profiles(&AllProfiles::default()).await
     }
 }

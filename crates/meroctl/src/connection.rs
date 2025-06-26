@@ -1,35 +1,36 @@
-use eyre::{bail, eyre, OptionExt, Result as EyreResult};
+use eyre::{bail, eyre, Result as EyreResult};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
-use crate::cli::storage::create_storage;
+use crate::cli::storage::get_storage;
 use crate::cli::ApiError;
 use crate::common::RequestType;
 
+#[derive(Debug, thiserror::Error)]
+pub enum TokenError {
+    #[error("Token refresh failed")]
+    RefreshFailed,
+    #[error("Token expired and refresh token is not available")]
+    NoRefreshToken,
+    #[error("Failed to store refreshed token: {0}")]
+    StorageError(#[from] eyre::Error),
+}
+
+#[derive(Clone)]
 pub struct ConnectionInfo {
     pub api_url: Url,
     pub client: Client,
-    pub profile: Option<String>,
-    // Store the current active profile config to avoid keychain accesses
-    pub profile_config: Option<crate::cli::storage::ProfileConfig>,
+    pub requires_auth: bool,
 }
 
 impl ConnectionInfo {
-    /// Create a new connection with optional profile config
-    /// If profile_config is None, this is a no-auth connection
-    /// If profile_config is Some, this is an authenticated connection
-    pub fn new(
-        api_url: Url,
-        profile: Option<String>,
-        profile_config: Option<crate::cli::storage::ProfileConfig>,
-    ) -> Self {
+    pub fn new(api_url: Url, requires_auth: bool) -> Self {
         Self {
             api_url,
             client: Client::new(),
-            profile,
-            profile_config,
+            requires_auth,
         }
     }
 
@@ -62,100 +63,127 @@ impl ConnectionInfo {
         let mut url = self.api_url.clone();
         url.set_path(path);
 
-        // Build the request
-        let mut builder = match req_type {
-            RequestType::Get => self.client.get(url),
-            RequestType::Post => self.client.post(url).json(&body),
-            RequestType::Delete => self.client.delete(url),
-        };
+        loop {
+            let mut builder = match req_type {
+                RequestType::Get => self.client.get(url.clone()),
+                RequestType::Post => self.client.post(url.clone()).json(&body),
+                RequestType::Delete => self.client.delete(url.clone()),
+            };
 
-        // Add JWT auth header if available from cached profile config
-        if let Some(ref profile_config) = self.profile_config {
-            if let Some(ref token) = profile_config.token {
-                builder = builder.header("Authorization", format!("Bearer {}", token.access_token));
-            }
-        }
-
-        // Execute the request
-        let response = builder.send().await?;
-
-        // Handle authentication errors
-        if response.status() == 401 {
-            // Check if this is a token expiration error
-            if let Some(auth_error) = response.headers().get("x-auth-error") {
-                if auth_error.to_str().unwrap_or("") == "token_expired" {
-                    println!("🔄 Token expired, attempting refresh...");
-                    // Try to refresh the token
-                    match self.refresh_token().await {
-                        Ok(new_token) => {
-                            println!("✅ Token refreshed successfully");
-                            // Retry the request with the new token
-                            let mut retry_url = self.api_url.clone();
-                            retry_url.set_path(path);
-
-                            let mut retry_builder = match req_type {
-                                RequestType::Get => self.client.get(retry_url),
-                                RequestType::Post => self.client.post(retry_url).json(&body),
-                                RequestType::Delete => self.client.delete(retry_url),
-                            };
-
-                            retry_builder = retry_builder
-                                .header("Authorization", format!("Bearer {}", new_token));
-
-                            let retry_response = retry_builder.send().await?;
-
-                            if retry_response.status().is_success() {
-                                return retry_response.json::<O>().await.map_err(Into::into);
-                            }
-                            // If retry also fails, fall through to normal error handling
-                        }
-                        Err(refresh_err) => {
-                            println!("❌ Token refresh failed: {}", refresh_err);
-                            // Fall through to normal error handling
-                        }
+            if self.requires_auth {
+                let storage = get_storage();
+                if let Ok(Some((_profile_name, profile_config))) =
+                    storage.get_current_profile().await
+                {
+                    if let Some(ref token) = profile_config.token {
+                        builder = builder
+                            .header("Authorization", format!("Bearer {}", token.access_token));
                     }
                 }
             }
 
-            return Err(eyre!(
-                "Authentication required. Please run 'meroctl auth login --profile <name>'"
-            ));
-        }
+            let response = builder.send().await?;
 
-        if response.status() == 403 {
-            return Err(eyre!(
-                "Access denied. Your authentication may not have sufficient permissions."
-            ));
-        }
+            if response.status() == 401 {
+                if self.requires_auth {
+                    if let Some(auth_error) = response.headers().get("x-auth-error") {
+                        if auth_error.to_str().unwrap_or("") == "token_expired" {
+                            println!("🔄 Token expired, attempting refresh...");
 
-        // Handle other errors
-        if !response.status().is_success() {
-            bail!(ApiError {
-                status_code: response.status().as_u16(),
-                message: response
-                    .text()
-                    .await
-                    .map_err(|e| eyre!("Failed to get response text: {e}"))?,
-            });
-        }
+                            match self.refresh_token().await {
+                                Ok(_) => {
+                                    println!("✅ Token refreshed successfully");
+                                    continue;
+                                }
+                                Err(e) => match e {
+                                    TokenError::NoRefreshToken => {
+                                        return Err(eyre!("Authentication required - no refresh token available. Please run 'meroctl auth login --profile <name>'"));
+                                    }
+                                    TokenError::RefreshFailed => {
+                                        println!("❌ Token refresh failed");
+                                        return Err(eyre!("Token refresh failed. Please run 'meroctl auth login --profile <name>' to reauthenticate"));
+                                    }
+                                    TokenError::StorageError(e) => {
+                                        println!("❌ Failed to store refreshed token: {}", e);
+                                        return Err(eyre!("Failed to store refreshed token. Please check your keychain access and try again"));
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
 
-        response.json::<O>().await.map_err(Into::into)
+                return Err(eyre!(
+                    "Authentication required. Please run 'meroctl auth login --profile <name>'"
+                ));
+            }
+
+            if response.status() == 403 {
+                return Err(eyre!(
+                    "Access denied. Your authentication may not have sufficient permissions."
+                ));
+            }
+
+            if !response.status().is_success() {
+                bail!(ApiError {
+                    status_code: response.status().as_u16(),
+                    message: response
+                        .text()
+                        .await
+                        .map_err(|e| eyre!("Failed to get response text: {e}"))?,
+                });
+            }
+
+            return response.json::<O>().await.map_err(Into::into);
+        }
     }
 
-    /// Refresh an expired access token using the refresh token
-    async fn refresh_token(&self) -> EyreResult<String> {
-        // Use the cached profile config to get the refresh token
-        let profile_config = self
-            .profile_config
-            .as_ref()
-            .ok_or_eyre("Profile not found")?;
+    async fn refresh_token(&self) -> Result<(), TokenError> {
+        let storage = get_storage();
+
+        let (profile_name, profile_config) = storage
+            .get_current_profile()
+            .await
+            .map_err(|e| TokenError::StorageError(e))?
+            .ok_or_else(|| TokenError::StorageError(eyre::eyre!("No active profile found")))?;
 
         let tokens = profile_config
             .token
             .as_ref()
-            .ok_or_eyre("No token found in profile")?;
+            .ok_or_else(|| TokenError::StorageError(eyre::eyre!("No token found in profile")))?;
 
-        // Call the refresh endpoint
+        let refresh_token = tokens
+            .refresh_token
+            .clone()
+            .ok_or(TokenError::NoRefreshToken)?;
+
+        match self
+            .try_refresh_token(&tokens.access_token, &refresh_token)
+            .await
+        {
+            Ok(new_token) => {
+                let updated_config = crate::cli::storage::ProfileConfig {
+                    auth_profile: profile_name.clone(),
+                    node_url: profile_config.node_url,
+                    token: Some(new_token),
+                };
+
+                storage
+                    .store_profile(&profile_name, &updated_config)
+                    .await
+                    .map_err(TokenError::StorageError)?;
+
+                Ok(())
+            }
+            Err(_) => Err(TokenError::RefreshFailed),
+        }
+    }
+
+    async fn try_refresh_token(
+        &self,
+        access_token: &str,
+        refresh_token: &str,
+    ) -> EyreResult<crate::cli::storage::JwtToken> {
         let refresh_url = self.api_url.join("/auth/refresh")?;
 
         #[derive(serde::Serialize)]
@@ -170,9 +198,15 @@ impl ConnectionInfo {
             refresh_token: String,
         }
 
+        #[derive(serde::Deserialize, Debug)]
+        struct WrappedRefreshResponse {
+            data: RefreshResponse,
+            error: Option<String>,
+        }
+
         let refresh_request = RefreshRequest {
-            access_token: tokens.access_token.clone(),
-            refresh_token: tokens.refresh_token.clone().unwrap_or_default(),
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.to_string(),
         };
 
         let response = self
@@ -191,29 +225,18 @@ impl ConnectionInfo {
             bail!("Failed to refresh token: HTTP {} - {}", status, error_text);
         }
 
-        let refresh_response: RefreshResponse = response.json().await?;
+        let wrapped_response: WrappedRefreshResponse = response.json().await?;
 
-        // Update the stored tokens
-        let new_jwt_token = crate::cli::storage::JwtToken {
-            access_token: refresh_response.access_token.clone(),
-            refresh_token: Some(refresh_response.refresh_token),
-        };
-
-        let updated_config = crate::cli::storage::ProfileConfig {
-            node_url: profile_config.node_url.clone(),
-            token: Some(new_jwt_token),
-        };
-
-        // Store in storage (note: cached config won't be updated until next request, but that's ok)
-        if let Some(ref profile_name) = self.profile {
-            let storage = create_storage();
-            storage.store_profile(profile_name, &updated_config).await?;
+        if let Some(error_msg) = wrapped_response.error {
+            bail!("Token refresh failed: {}", error_msg);
         }
 
-        Ok(refresh_response.access_token)
+        Ok(crate::cli::storage::JwtToken {
+            access_token: wrapped_response.data.access_token,
+            refresh_token: Some(wrapped_response.data.refresh_token),
+        })
     }
 
-    /// Detect authentication mode for this connection
     pub async fn detect_auth_mode(&self) -> EyreResult<String> {
         let identity_url = self
             .api_url
@@ -240,10 +263,8 @@ impl ConnectionInfo {
                 .authentication_mode
                 .unwrap_or_else(|| "none".to_string()))
         } else if response.status() == 401 {
-            // 401 means authentication is required
             Ok("required".to_string())
         } else {
-            // Other errors (404, 500, etc.) - assume no auth required (dev mode)
             Ok("none".to_string())
         }
     }

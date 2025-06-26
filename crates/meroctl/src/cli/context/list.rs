@@ -36,7 +36,7 @@ impl ListCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let response: GetContextsResponse = connection.get("admin-api/dev/contexts").await?;
+        let response: GetContextsResponse = connection.get("admin-api/contexts").await?;
 
         environment.output.write(&response);
 

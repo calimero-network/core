@@ -173,9 +173,9 @@ impl RootCommand {
     }
 
     async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
-        use crate::cli::storage::create_storage;
+        use crate::cli::storage::get_storage;
 
-        let (url, profile) = match (&self.args.node, &self.args.api) {
+        let (url, _) = match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
                 let config = Config::load().await?;
 
@@ -190,45 +190,36 @@ impl RootCommand {
                 (url, node.clone())
             }
             (None, Some(api_url)) => {
-                // Check if this node requires authentication
                 let auth_required = check_auth_required(api_url).await?;
                 if auth_required {
-                    // Auth is required - get current profile and its config in one storage access
-                    let storage = create_storage();
+                    let storage = get_storage();
 
                     match storage.get_current_profile().await? {
-                        Some((profile, profile_config)) => {
-                            // Check if the profile URL matches the requested API URL (normalize trailing slashes)
+                        Some((profile, mut profile_config)) => {
+                            profile_config.auth_profile = profile.clone();
+
                             let profile_url_str =
                                 profile_config.node_url.as_str().trim_end_matches('/');
                             let api_url_str = api_url.as_str().trim_end_matches('/');
                             if profile_url_str == api_url_str {
-                                // URLs match - use this profile with loaded config
-                                return Ok(ConnectionInfo::new(
-                                    api_url.clone(),
-                                    Some(profile),
-                                    Some(profile_config),
-                                ));
+                                return Ok(ConnectionInfo::new(api_url.clone(), true));
                             } else {
-                                // URLs don't match - user needs to login for this API
                                 bail!("Current active profile '{}' is for {}, but you're trying to access {}.\nPlease login for this API: meroctl auth login --api {} --profile <n>", 
                                       profile, profile_config.node_url, api_url, api_url);
                             }
                         }
                         None => {
-                            // No active profile but auth is required
                             bail!("Authentication required but no active profile found.\nPlease login first: meroctl auth login --api {} --profile <n>", api_url);
                         }
                     }
                 } else {
-                    // No auth required - use connection without auth
-                    return Ok(ConnectionInfo::new(api_url.clone(), None, None));
+                    return Ok(ConnectionInfo::new(api_url.clone(), false));
                 }
             }
             _ => bail!("expected one of `--node` or `--api` to be set"),
         };
 
-        Ok(ConnectionInfo::new(url, Some(profile), None))
+        Ok(ConnectionInfo::new(url, false))
     }
 }
 
@@ -237,19 +228,12 @@ async fn check_auth_required(url: &Url) -> eyre::Result<bool> {
     let health_url = url.join("/admin-api/health")?;
 
     match client.get(health_url).send().await {
-        Ok(response) => {
-            // If we get 200, auth is not required
-            // If we get 401/403, auth is required
-            match response.status().as_u16() {
-                200..=299 => Ok(false), // No auth required
-                401 | 403 => Ok(true),  // Auth required
-                _ => Ok(false),         // Assume no auth for other status codes
-            }
-        }
-        Err(_) => {
-            // If we can't reach the endpoint, assume no auth required
-            Ok(false)
-        }
+        Ok(response) => match response.status().as_u16() {
+            200..=299 => Ok(false),
+            401 | 403 => Ok(true),
+            _ => Ok(false),
+        },
+        Err(_) => Ok(false),
     }
 }
 

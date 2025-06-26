@@ -148,8 +148,6 @@ pub async fn generate_client_key_handler(
         Ok(Some(key)) => key,
     };
 
-    println!("Root key: {:?}", root_key);
-
     let timestamp = Utc::now().timestamp();
 
     let mut hasher = Sha256::new();

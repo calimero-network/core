@@ -1,139 +1,139 @@
+use std::sync::RwLock;
+
 use async_trait::async_trait;
 use eyre::{Context, Result as EyreResult};
 use keyring::Entry;
 
-use super::{ProfileConfig, ProfileTokens, TokenStorage};
+use super::{AllProfiles, ProfileConfig, TokenStorage};
 
 const SERVICE_NAME: &str = "meroctl";
-const TOKENS_KEY: &str = "auth_tokens";
-const PROFILE_KEY: &str = "current_profile";
+const STORAGE_KEY: &str = "profiles";
 
 pub struct KeychainStorage {
-    service_name: String,
+    entry: Entry,
+    cache: RwLock<Option<AllProfiles>>,
 }
 
 impl KeychainStorage {
     pub fn new() -> Self {
         Self {
-            service_name: SERVICE_NAME.to_string(),
+            entry: Entry::new(SERVICE_NAME, STORAGE_KEY).expect("Failed to create keychain entry"),
+            cache: RwLock::new(None),
         }
     }
 
     pub fn is_available() -> bool {
-        // Test if we can create an entry (this will work on macOS, Windows, Linux with proper setup)
-        Entry::new(SERVICE_NAME, "test").is_ok()
+        Entry::new(SERVICE_NAME, STORAGE_KEY).is_ok()
     }
 
-    fn get_tokens_entry(&self) -> EyreResult<Entry> {
-        Entry::new(&self.service_name, TOKENS_KEY)
-            .wrap_err("Failed to create keychain entry for tokens")
-    }
-
-    fn get_profile_entry(&self) -> EyreResult<Entry> {
-        Entry::new(&self.service_name, PROFILE_KEY)
-            .wrap_err("Failed to create keychain entry for profile")
-    }
-
-    async fn load_all_tokens(&self) -> EyreResult<ProfileTokens> {
-        let entry = self.get_tokens_entry()?;
-
-        match entry.get_password() {
-            Ok(data) => {
-                serde_json::from_str(&data).wrap_err("Failed to deserialize tokens from keychain")
+    async fn load_profiles_cached(&self) -> EyreResult<AllProfiles> {
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(ref cached) = *cache {
+                return Ok(cached.clone());
             }
-            Err(keyring::Error::NoEntry) => Ok(ProfileTokens::default()),
-            Err(e) => Err(e).wrap_err("Failed to read tokens from keychain"),
+        }
+
+        let profiles = self.load_from_keychain().await?;
+        {
+            let mut cache = self.cache.write().unwrap();
+            *cache = Some(profiles.clone());
+        }
+        Ok(profiles)
+    }
+
+    async fn load_from_keychain(&self) -> EyreResult<AllProfiles> {
+        match self.entry.get_password() {
+            Ok(data) => {
+                serde_json::from_str(&data).wrap_err("Failed to deserialize profiles from keychain")
+            }
+            Err(keyring::Error::NoEntry) => Ok(AllProfiles::default()),
+            Err(e) => Err(e).wrap_err("Failed to read profiles from keychain"),
         }
     }
 
-    async fn save_all_tokens(&self, tokens: &ProfileTokens) -> EyreResult<()> {
-        let entry = self.get_tokens_entry()?;
-        let data = serde_json::to_string(tokens).wrap_err("Failed to serialize tokens")?;
+    async fn save_profiles_with_cache(&self, profiles: &AllProfiles) -> EyreResult<()> {
+        let data = serde_json::to_string(profiles).wrap_err("Failed to serialize profiles")?;
 
-        entry
+        self.entry
             .set_password(&data)
-            .wrap_err("Failed to store tokens in keychain")
+            .wrap_err("Failed to store profiles in keychain")?;
+
+        {
+            let mut cache = self.cache.write().unwrap();
+            *cache = Some(profiles.clone());
+        }
+
+        Ok(())
     }
 }
 
 #[async_trait]
 impl TokenStorage for KeychainStorage {
-    async fn store_profile(&self, profile: &str, config: &ProfileConfig) -> EyreResult<()> {
-        let mut tokens = self.load_all_tokens().await?;
-        let _unused = tokens.profiles.insert(profile.to_string(), config.clone());
+    async fn load_all_profiles(&self) -> EyreResult<AllProfiles> {
+        self.load_profiles_cached().await
+    }
 
-        // Set as current profile if it's the first one
-        if tokens.current_profile.is_empty() {
-            tokens.current_profile = profile.to_string();
+    async fn save_all_profiles(&self, profiles: &AllProfiles) -> EyreResult<()> {
+        self.save_profiles_with_cache(profiles).await
+    }
+
+    async fn store_profile(&self, name: &str, config: &ProfileConfig) -> EyreResult<()> {
+        let mut all = self.load_profiles_cached().await?;
+        drop(all.profiles.insert(name.to_string(), config.clone()));
+        self.save_profiles_with_cache(&all).await
+    }
+
+    async fn remove_profile(&self, name: &str) -> EyreResult<()> {
+        let mut all = self.load_profiles_cached().await?;
+        let profile_existed = all.profiles.remove(name).is_some();
+
+        if !profile_existed {
+            return Ok(());
         }
 
-        self.save_all_tokens(&tokens).await
-    }
-
-    async fn load_profile(&self, profile: &str) -> EyreResult<Option<ProfileConfig>> {
-        let tokens = self.load_all_tokens().await?;
-        Ok(tokens.profiles.get(profile).cloned())
-    }
-
-    async fn remove_profile(&self, profile: &str) -> EyreResult<()> {
-        let mut tokens = self.load_all_tokens().await?;
-        let _unused = tokens.profiles.remove(profile);
-
-        // If we removed the current profile, switch to another one or clear
-        if tokens.current_profile == profile {
-            tokens.current_profile = tokens
-                .profiles
-                .keys()
-                .next()
-                .unwrap_or(&String::new())
-                .to_string();
+        if all.active_profile.as_deref() == Some(name) {
+            all.active_profile = None;
         }
 
-        self.save_all_tokens(&tokens).await
+        self.save_profiles_with_cache(&all).await
     }
 
-    async fn clear_all(&self) -> EyreResult<()> {
-        let entry = self.get_tokens_entry()?;
-        let profile_entry = self.get_profile_entry()?;
+    async fn get_current_profile(&self) -> EyreResult<Option<(String, ProfileConfig)>> {
+        let all = self.load_profiles_cached().await?;
+        match all.active_profile {
+            Some(name) => match all.profiles.get(&name) {
+                Some(config) => Ok(Some((name, config.clone()))),
+                None => Ok(None),
+            },
+            None => Ok(None),
+        }
+    }
 
-        // Ignore errors if entries don't exist
-        let _unused = entry.delete_password();
-        let _unused = profile_entry.delete_password();
+    async fn set_current_profile(&self, name: &str) -> EyreResult<()> {
+        let mut all = self.load_profiles_cached().await?;
+
+        if !all.profiles.contains_key(name) {
+            return Err(eyre::eyre!("Profile '{}' does not exist", name));
+        }
+
+        if all.active_profile.as_deref() != Some(name) {
+            all.active_profile = Some(name.to_string());
+            self.save_profiles_with_cache(&all).await?;
+        }
 
         Ok(())
     }
 
-    async fn set_current_profile(&self, profile: &str) -> EyreResult<()> {
-        let mut tokens = self.load_all_tokens().await?;
-
-        if !tokens.profiles.contains_key(profile) {
-            return Err(eyre::eyre!("Profile '{}' does not exist", profile));
-        }
-
-        tokens.current_profile = profile.to_string();
-        self.save_all_tokens(&tokens).await
-    }
-
     async fn list_profiles(&self) -> EyreResult<(Vec<String>, Option<String>)> {
-        let tokens = self.load_all_tokens().await?;
-        let profiles = tokens.profiles.keys().cloned().collect();
-        let current = if tokens.current_profile.is_empty() {
-            None
-        } else {
-            Some(tokens.current_profile)
-        };
-        Ok((profiles, current))
+        let all = self.load_profiles_cached().await?;
+        let mut profiles: Vec<String> = all.profiles.keys().cloned().collect();
+        profiles.sort_unstable();
+        Ok((profiles, all.active_profile))
     }
 
-    async fn get_current_profile(&self) -> EyreResult<Option<(String, ProfileConfig)>> {
-        let tokens = self.load_all_tokens().await?;
-        if tokens.current_profile.is_empty() {
-            Ok(None)
-        } else {
-            match tokens.profiles.get(&tokens.current_profile) {
-                Some(config) => Ok(Some((tokens.current_profile, config.clone()))),
-                None => Ok(None), // Current profile points to non-existent profile
-            }
-        }
+    async fn clear_all(&self) -> EyreResult<()> {
+        let empty_profiles = AllProfiles::default();
+        self.save_profiles_with_cache(&empty_profiles).await
     }
 }

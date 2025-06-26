@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use url::Url;
 
-use crate::cli::storage::{create_storage, JwtToken, ProfileConfig};
+use crate::cli::storage::{get_storage, JwtToken, ProfileConfig};
 use crate::cli::Environment;
 use crate::connection::ConnectionInfo;
 
@@ -66,33 +66,27 @@ pub struct LoginCommand {
 
 #[derive(Debug, Parser)]
 pub struct LogoutCommand {
-    /// Profile name to remove authentication tokens for
     #[arg(long, default_value = "default")]
     pub profile: String,
 }
 
 #[derive(Debug, Parser)]
 pub struct InfoCommand {
-    /// Profile name to check authentication info for
     #[arg(long)]
     pub profile: String,
 }
 
 #[derive(Debug, Parser)]
 pub struct SetActiveCommand {
-    /// Profile name to set as active
     #[arg(long)]
     pub profile: String,
 }
 
 #[derive(Debug, Parser)]
-pub struct ListCommand {
-    // No additional arguments needed for listing profiles
-}
+pub struct ListCommand {}
 
 #[derive(Debug, Parser)]
 pub struct ClearCommand {
-    /// Skip confirmation prompt
     #[arg(long, short)]
     pub force: bool,
 }
@@ -118,14 +112,10 @@ impl AuthCommand {
 
 impl LoginCommand {
     pub async fn run(&self, _environment: &Environment) -> EyreResult<()> {
-        // Use the API URL from the command arguments
         let api_url = &self.api;
 
-        // Create a temporary connection for auth detection (no auth)
-        let temp_connection = ConnectionInfo::new(api_url.clone(), None, None);
+        let temp_connection = ConnectionInfo::new(api_url.clone(), false);
 
-        // 1. Detect authentication mode
-        println!("🔍 Detecting authentication mode...");
         let auth_mode = temp_connection.detect_auth_mode().await?;
 
         if auth_mode == "none" {
@@ -134,11 +124,9 @@ impl LoginCommand {
 
         println!("✅ Server requires authentication (mode: {})", auth_mode);
 
-        // 2. Start local callback server
         let (callback_port, callback_rx) = self.start_callback_server().await?;
         println!("🌐 Started local callback server on port {}", callback_port);
 
-        // 3. Build auth URL and open browser
         let auth_url = self.build_auth_url(api_url, callback_port)?;
         println!("🔗 Opening browser to: {}", auth_url);
 
@@ -148,7 +136,6 @@ impl LoginCommand {
             println!("   {}", auth_url);
         }
 
-        // 4. Wait for callback with timeout
         println!(
             "⏳ Waiting for authentication callback (timeout: {}s)...",
             self.timeout
@@ -159,7 +146,6 @@ impl LoginCommand {
             .map_err(|_| eyre!("Authentication timed out after {} seconds", self.timeout))?
             .map_err(|_| eyre!("Callback server error"))?;
 
-        // 5. Process callback result
         match auth_result {
             Ok(callback) => {
                 let access_token = callback
@@ -174,17 +160,34 @@ impl LoginCommand {
                 };
 
                 let profile_config = ProfileConfig {
+                    auth_profile: self.profile.clone(),
                     node_url: api_url.clone(),
                     token: Some(jwt_token),
                 };
 
-                let storage = create_storage();
+                let storage = get_storage();
+
+                println!("✅ Authentication successful!");
+                println!("🔐 Tokens stored for profile: {}", self.profile);
+
+                // Always store the profile first
                 storage
                     .store_profile(&self.profile, &profile_config)
                     .await?;
 
-                println!("✅ Authentication successful!");
-                println!("🔐 Tokens stored for profile: {}", self.profile);
+                // Check if there's currently no active profile, and if so, set this one as active
+                // This optimizes future requests by leveraging the cached storage
+                match storage.get_current_profile().await? {
+                    None => {
+                        // No active profile - set this newly logged-in profile as active
+                        storage.set_current_profile(&self.profile).await?;
+                        println!("🎯 Set as active profile (no previous active profile found)");
+                    }
+                    Some((current_active, _)) => {
+                        // There's already an active profile - just inform user
+                        println!("ℹ️  Active profile remains: {} (use 'meroctl auth set-active --profile {}' to switch)", current_active, self.profile);
+                    }
+                }
             }
             Err(e) => {
                 bail!("Authentication failed: {}", e);
@@ -202,7 +205,6 @@ impl LoginCommand {
         let (tx, rx) = oneshot::channel();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
 
-        // Try to bind to a port in the range
         let mut listener = None;
         let mut bound_port = 0;
 
@@ -222,22 +224,16 @@ impl LoginCommand {
             port_start, port_end
         ))?;
 
-        // Create axum router
         let app = Router::new().route(
             "/callback",
             get({
                 let tx = Arc::clone(&tx);
                 move |query: Query<HashMap<String, String>>| async move {
-                    println!("🔍 Callback received parameters: {:?}", query.0);
-
                     let callback = AuthCallback {
                         access_token: query.get("access_token").cloned(),
                         refresh_token: query.get("refresh_token").cloned(),
                     };
 
-                    println!("🔍 Parsed callback: {:?}", callback);
-
-                    // Send result through channel
                     if let Ok(mut guard) = tx.lock() {
                         if let Some(sender) = guard.take() {
                             drop(sender.send(Ok(callback)));
@@ -260,16 +256,12 @@ impl LoginCommand {
             }),
         );
 
-        // Start server in background
         let _server_handle = tokio::spawn(async move {
             let result = axum::serve(listener, app).await;
 
             match result {
-                Ok(_) => {
-                    println!("🔍 DEBUG: axum::serve completed successfully");
-                }
+                Ok(_) => {}
                 Err(e) => {
-                    println!("🔍 DEBUG: axum::serve failed with error: {}", e);
                     eprintln!("Callback server error: {}", e);
                     if let Ok(mut guard) = tx.lock() {
                         if let Some(sender) = guard.take() {
@@ -334,11 +326,8 @@ impl LoginCommand {
 
 impl LogoutCommand {
     pub async fn run(&self, _environment: &Environment) -> EyreResult<()> {
-        println!("Logging out profile: {}", self.profile);
+        let storage = get_storage();
 
-        let storage = create_storage();
-
-        // Check if profile exists
         match storage.load_profile(&self.profile).await? {
             Some(_) => {
                 storage.remove_profile(&self.profile).await?;
@@ -355,7 +344,7 @@ impl LogoutCommand {
 
 impl InfoCommand {
     pub async fn run(&self, _environment: &Environment) -> EyreResult<()> {
-        let storage = create_storage();
+        let storage = get_storage();
 
         match storage.load_profile(&self.profile).await? {
             Some(config) => {
@@ -384,11 +373,8 @@ impl InfoCommand {
 
 impl SetActiveCommand {
     pub async fn run(&self, _environment: &Environment) -> EyreResult<()> {
-        println!("Setting active profile: {}", self.profile);
+        let storage = get_storage();
 
-        let storage = create_storage();
-
-        // Check if profile exists
         match storage.load_profile(&self.profile).await? {
             Some(_) => {
                 storage.set_current_profile(&self.profile).await?;
@@ -397,7 +383,6 @@ impl SetActiveCommand {
             None => {
                 println!("Profile '{}' does not exist", self.profile);
                 println!("Available profiles:");
-                // Use the combined method to avoid additional keychain access
                 let (profiles, _current) = storage.list_profiles().await?;
                 for profile in profiles {
                     println!("{}", profile);
@@ -411,7 +396,7 @@ impl SetActiveCommand {
 
 impl ListCommand {
     pub async fn run(&self, _environment: &Environment) -> EyreResult<()> {
-        let storage = create_storage();
+        let storage = get_storage();
 
         let (profiles, current_profile) = storage.list_profiles().await?;
 
@@ -433,7 +418,6 @@ impl ListCommand {
 
 impl ClearCommand {
     pub async fn run(&self, _environment: &Environment) -> EyreResult<()> {
-        // Confirmation prompt (unless --force is used)
         if !self.force {
             print!("Are you sure you want to clear all profiles? (y/N): ");
             io::stdout().flush()?;
@@ -448,9 +432,8 @@ impl ClearCommand {
             }
         }
 
-        let storage = create_storage();
+        let storage = get_storage();
 
-        // Clear all profiles using the storage method (single keychain access)
         storage.clear_all().await?;
 
         println!("Successfully deleted all profiles");

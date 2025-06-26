@@ -134,7 +134,14 @@ pub async fn frontend_handler() -> impl IntoResponse {
 
 /// Asset handler for serving static files from the frontend build
 pub async fn asset_handler(Path(path): Path<String>) -> impl IntoResponse {
-    serve_embedded_file(&path).await
+    // Handle favicon.ico directly
+    if path == "favicon.ico" {
+        return serve_embedded_file("favicon.ico").await;
+    }
+
+    // For all other assets, prepend "assets/" to match the embedded file structure
+    let asset_path = format!("assets/{}", path);
+    serve_embedded_file(&asset_path).await
 }
 
 /// Serves embedded static files or falls back to `index.html` for SPA routing.

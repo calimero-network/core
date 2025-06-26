@@ -68,14 +68,12 @@ impl Config {
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                // Use the node name as profile for local connections
-                // For local connections, we typically don't have stored auth profiles
-                ConnectionInfo::new(url, Some(node.to_string()), None)
+                ConnectionInfo::new(url, false) // Local nodes typically don't require auth
             }
             NodeConnection::Remote { url, auth: _ } => {
-                // For remote connections, we'll use the node name as the profile
-                // The old auth key handling is replaced by the new JWT storage system
-                ConnectionInfo::new(url.clone(), Some(node.to_string()), None)
+                // For remote connections, we could check if auth is required
+                // For now, assume no auth required (this could be enhanced)
+                ConnectionInfo::new(url.clone(), false)
             }
         };
 
