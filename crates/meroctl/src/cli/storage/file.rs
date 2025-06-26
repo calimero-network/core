@@ -65,7 +65,7 @@ impl TokenStorage for FileStorage {
 
     async fn store_profile(&self, name: &str, config: &ProfileConfig) -> EyreResult<()> {
         let mut all = self.load_all_profiles().await?;
-        drop(all.profiles.insert(name.to_string(), config.clone()));
+        drop(all.profiles.insert(name.to_owned(), config.clone()));
         self.save_all_profiles(&all).await
     }
 
@@ -89,7 +89,7 @@ impl TokenStorage for FileStorage {
     async fn set_current_profile(&self, name: &str) -> EyreResult<()> {
         let mut all = self.load_all_profiles().await?;
         if all.profiles.contains_key(name) {
-            all.active_profile = Some(name.to_string());
+            all.active_profile = Some(name.to_owned());
             self.save_all_profiles(&all).await
         } else {
             Err(eyre::eyre!("Profile {} does not exist", name))

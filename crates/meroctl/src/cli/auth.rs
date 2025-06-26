@@ -83,7 +83,7 @@ pub struct SetActiveCommand {
 }
 
 #[derive(Debug, Parser)]
-pub struct ListCommand {}
+pub struct ListCommand;
 
 #[derive(Debug, Parser)]
 pub struct ClearCommand {

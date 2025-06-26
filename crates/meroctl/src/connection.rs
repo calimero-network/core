@@ -205,8 +205,8 @@ impl ConnectionInfo {
         }
 
         let refresh_request = RefreshRequest {
-            access_token: access_token.to_string(),
-            refresh_token: refresh_token.to_string(),
+            access_token: access_token.to_owned(),
+            refresh_token: refresh_token.to_owned(),
         };
 
         let response = self
@@ -221,7 +221,7 @@ impl ConnectionInfo {
             let error_text = response
                 .text()
                 .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
+                .unwrap_or_else(|_| "Unknown error".to_owned());
             bail!("Failed to refresh token: HTTP {} - {}", status, error_text);
         }
 
@@ -261,11 +261,11 @@ impl ConnectionInfo {
 
             Ok(data
                 .authentication_mode
-                .unwrap_or_else(|| "none".to_string()))
+                .unwrap_or_else(|| "none".to_owned()))
         } else if response.status() == 401 {
-            Ok("required".to_string())
+            Ok("required".to_owned())
         } else {
-            Ok("none".to_string())
+            Ok("none".to_owned())
         }
     }
 }

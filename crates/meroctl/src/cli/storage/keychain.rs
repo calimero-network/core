@@ -80,7 +80,7 @@ impl TokenStorage for KeychainStorage {
 
     async fn store_profile(&self, name: &str, config: &ProfileConfig) -> EyreResult<()> {
         let mut all = self.load_profiles_cached().await?;
-        drop(all.profiles.insert(name.to_string(), config.clone()));
+        drop(all.profiles.insert(name.to_owned(), config.clone()));
         self.save_profiles_with_cache(&all).await
     }
 
@@ -118,7 +118,7 @@ impl TokenStorage for KeychainStorage {
         }
 
         if all.active_profile.as_deref() != Some(name) {
-            all.active_profile = Some(name.to_string());
+            all.active_profile = Some(name.to_owned());
             self.save_profiles_with_cache(&all).await?;
         }
 
