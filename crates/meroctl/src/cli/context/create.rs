@@ -189,7 +189,7 @@ pub async fn create_context(
     );
 
     let response: CreateContextResponse =
-        connection.post("admin-api/dev/contexts", request).await?;
+        connection.post("admin-api/contexts", request).await?;
 
     environment.output.write(&response);
 
@@ -204,7 +204,7 @@ pub async fn create_context(
         let alias_response: CreateAliasResponse = connection
             .post(
                 &format!(
-                    "admin-api/dev/alias/create/identity/{}",
+                    "admin-api/alias/create/identity/{}",
                     response.data.context_id
                 ),
                 alias_request,
@@ -294,7 +294,7 @@ async fn update_context_application(
 
     let response: UpdateContextApplicationResponse = connection
         .post(
-            &format!("admin-api/dev/contexts/{}/application", context_id),
+            &format!("admin-api/contexts/{}/application", context_id),
             request,
         )
         .await?;
@@ -309,7 +309,7 @@ async fn app_installed(
     application_id: &ApplicationId,
 ) -> eyre::Result<bool> {
     let response: GetApplicationResponse = connection
-        .get(&format!("admin-api/dev/applications/{application_id}"))
+        .get(&format!("admin-api/applications/{application_id}"))
         .await?;
 
     Ok(response.data.application.is_some())
@@ -324,7 +324,7 @@ async fn install_app(
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse = connection
-        .post("admin-api/dev/install-dev-application", request)
+        .post("admin-api/install-dev-application", request)
         .await?;
 
     environment.output.write(&response);

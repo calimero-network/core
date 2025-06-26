@@ -58,7 +58,7 @@ impl RevokePermissionCommand {
 
         let response: RevokePermissionResponse = connection
             .post(
-                &format!("admin-api/dev/contexts/{}/capabilities/revoke", context_id),
+                &format!("admin-api/contexts/{}/capabilities/revoke", context_id),
                 request,
             )
             .await?;

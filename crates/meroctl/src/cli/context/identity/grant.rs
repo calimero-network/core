@@ -54,7 +54,7 @@ impl GrantPermissionCommand {
 
         let response: GrantPermissionResponse = connection
             .post(
-                &format!("admin-api/dev/contexts/{}/capabilities/grant", context_id),
+                &format!("admin-api/contexts/{}/capabilities/grant", context_id),
                 request,
             )
             .await?;

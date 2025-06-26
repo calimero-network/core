@@ -51,7 +51,7 @@ impl JoinCommand {
 
         let response: JoinContextResponse = connection
             .post(
-                "admin-api/dev/contexts/join",
+                "admin-api/contexts/join",
                 JoinContextRequest::new(self.invitation_payload),
             )
             .await?;

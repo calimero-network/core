@@ -146,7 +146,7 @@ where
     T: UrlFragment + Serialize,
     T::Value: Serialize,
 {
-    let prefix = "admin-api/dev/alias/create";
+    let prefix = "admin-api/alias/create";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
@@ -178,7 +178,7 @@ pub(crate) async fn delete_alias<T>(
 where
     T: UrlFragment,
 {
-    let prefix = "admin-api/dev/alias/delete";
+    let prefix = "admin-api/alias/delete";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
@@ -214,7 +214,7 @@ pub(crate) async fn list_aliases<T>(
 where
     T: Ord + UrlFragment + DeserializeOwned,
 {
-    let prefix = "admin-api/dev/alias/list";
+    let prefix = "admin-api/alias/list";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
@@ -230,7 +230,7 @@ pub(crate) async fn lookup_alias<T>(
 where
     T: UrlFragment + DeserializeOwned,
 {
-    let prefix = "admin-api/dev/alias/lookup";
+    let prefix = "admin-api/alias/lookup";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));

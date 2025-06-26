@@ -184,7 +184,7 @@ impl UseCommand {
 
 async fn context_exists(connection: &ConnectionInfo, target_id: &ContextId) -> EyreResult<bool> {
     let result = connection
-        .get::<serde_json::Value>(&format!("admin-api/dev/contexts/{}", target_id))
+        .get::<serde_json::Value>(&format!("admin-api/contexts/{}", target_id))
         .await;
 
     match result {

@@ -35,7 +35,7 @@ impl GetCommand {
             .ok_or_eyre("No connection configured")?;
 
         let response: GetApplicationResponse = connection
-            .get(&format!("admin-api/dev/applications/{}", self.app_id))
+            .get(&format!("admin-api/applications/{}", self.app_id))
             .await?;
 
         environment.output.write(&response);

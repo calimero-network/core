@@ -45,7 +45,7 @@ impl DeleteCommand {
             .ok_or_eyre("unable to resolve")?;
 
         let response: DeleteContextResponse = connection
-            .delete(&format!("admin-api/dev/contexts/{}", context_id))
+            .delete(&format!("admin-api/contexts/{}", context_id))
             .await?;
 
         environment.output.write(&response);

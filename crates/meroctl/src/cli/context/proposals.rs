@@ -219,7 +219,7 @@ impl ProposalsCommand {
     ) -> EyreResult<GetProposalApproversResponse> {
         let response = connection
             .get(&format!(
-                "admin-api/dev/contexts/{}/proposals/{}/approvals/users",
+                "admin-api/contexts/{}/proposals/{}/approvals/users",
                 context_id, proposal_id
             ))
             .await?;
@@ -236,7 +236,7 @@ impl ProposalsCommand {
     ) -> EyreResult<()> {
         let response: GetProposalsResponse = connection
             .post(
-                &format!("admin-api/dev/contexts/{}/proposals", context_id),
+                &format!("admin-api/contexts/{}/proposals", context_id),
                 args,
             )
             .await?;
@@ -253,7 +253,7 @@ impl ProposalsCommand {
     ) -> EyreResult<GetProposalResponse> {
         let response = connection
             .get(&format!(
-                "admin-api/dev/contexts/{}/proposals/{}",
+                "admin-api/contexts/{}/proposals/{}",
                 context_id, proposal_id
             ))
             .await?;

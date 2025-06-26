@@ -54,7 +54,7 @@ impl ListCommand {
             .ok_or_eyre("No connection configured")?;
 
         let response: ListApplicationsResponse =
-            connection.get("admin-api/dev/applications").await?;
+            connection.get("admin-api/applications").await?;
 
         environment.output.write(&response);
 

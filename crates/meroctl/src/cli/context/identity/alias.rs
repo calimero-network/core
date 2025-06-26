@@ -23,7 +23,7 @@ async fn identity_exists_in_context(
         .ok_or_eyre("unable to resolve alias")?;
 
     let response: GetContextIdentitiesResponse = connection
-        .get(&format!("admin-api/dev/contexts/{}/identities", context_id))
+        .get(&format!("admin-api/contexts/{}/identities", context_id))
         .await?;
 
     Ok(response.data.identities.contains(target_identity))

@@ -36,7 +36,7 @@ impl PeersCommand {
             .as_ref()
             .ok_or_eyre("No connection configured")?;
 
-        let response: GetPeersCountResponse = connection.get("admin-api/dev/peers").await?;
+        let response: GetPeersCountResponse = connection.get("admin-api/peers").await?;
 
         environment.output.write(&response);
 
