@@ -2321,6 +2321,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-mero"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "const_format",
+ "eyre",
+ "rust-embed",
+ "tokio",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
