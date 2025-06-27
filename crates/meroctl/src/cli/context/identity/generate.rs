@@ -24,7 +24,7 @@ impl GenerateCommand {
         let connection = environment.connection()?;
 
         let response: GenerateContextIdentityResponse = connection
-            .post("admin-api/dev/identity/context", None::<()>)
+            .post("admin-api/identity/context", None::<()>)
             .await?;
 
         environment.output.write(&response);

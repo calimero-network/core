@@ -69,16 +69,13 @@ impl InstallCommand {
             let request =
                 InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
             connection
-                .post::<_, InstallApplicationResponse>(
-                    "admin-api/dev/install-dev-application",
-                    request,
-                )
+                .post::<_, InstallApplicationResponse>("admin-api/install-dev-application", request)
                 .await?
         } else if let Some(app_url) = self.url.as_ref() {
             let request =
                 InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
             connection
-                .post::<_, InstallApplicationResponse>("admin-api/dev/install-application", request)
+                .post::<_, InstallApplicationResponse>("admin-api/install-application", request)
                 .await?
         } else {
             bail!("Either path or url must be provided");

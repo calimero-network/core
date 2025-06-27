@@ -119,22 +119,19 @@ impl GetCommand {
         match self.command {
             GetSubcommand::Info => {
                 let response: GetContextResponse = connection
-                    .get(&format!("admin-api/dev/contexts/{}", context_id))
+                    .get(&format!("admin-api/contexts/{}", context_id))
                     .await?;
                 environment.output.write(&response);
             }
             GetSubcommand::ClientKeys => {
                 let response: GetContextClientKeysResponse = connection
-                    .get(&format!(
-                        "admin-api/dev/contexts/{}/client-keys",
-                        context_id
-                    ))
+                    .get(&format!("admin-api/contexts/{}/client-keys", context_id))
                     .await?;
                 environment.output.write(&response);
             }
             GetSubcommand::Storage => {
                 let response: GetContextStorageResponse = connection
-                    .get(&format!("admin-api/dev/contexts/{}/storage", context_id))
+                    .get(&format!("admin-api/contexts/{}/storage", context_id))
                     .await?;
                 environment.output.write(&response);
             }

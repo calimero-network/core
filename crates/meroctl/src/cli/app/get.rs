@@ -32,7 +32,7 @@ impl GetCommand {
         let connection = environment.connection()?;
 
         let response: GetApplicationResponse = connection
-            .get(&format!("admin-api/dev/applications/{}", self.app_id))
+            .get(&format!("admin-api/applications/{}", self.app_id))
             .await?;
 
         environment.output.write(&response);

@@ -50,8 +50,7 @@ impl ListCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let connection = environment.connection()?;
 
-        let response: ListApplicationsResponse =
-            connection.get("admin-api/dev/applications").await?;
+        let response: ListApplicationsResponse = connection.get("admin-api/applications").await?;
 
         environment.output.write(&response);
 

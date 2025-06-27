@@ -86,7 +86,7 @@ impl InviteCommand {
 
         let response: InviteToContextResponse = connection
             .post(
-                "admin-api/dev/contexts/invite",
+                "admin-api/contexts/invite",
                 InviteToContextRequest {
                     context_id,
                     inviter_id,

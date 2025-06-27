@@ -18,37 +18,24 @@ Build application:
 ./apps/kv-store/build.sh
 ```
 
-NEAR setup:
-
+Prepare Protocols smart contracts:
 ```bash
-./contracts/near/context-config/build.sh
-./contracts/near/context-proxy/build.sh
+cd ../scripts
+./download-contracts.sh
 ```
 
-ICP setup:
+Move created contracts folder to root level
+
+For testing ICP contracts you will need to deploy ICP devnet:
 
 ```bash
-./contracts/icp/context-config/build.sh
-./contracts/icp/context-proxy/build.sh
+/scripts/icp/deploy_devnet.sh
 ```
 
-After building the ICP contracts, deploy the ICP devnet:
+For testing Stellar contract you will need to deploy Stellar devnet:
 
 ```bash
-./contracts/icp/context-config/deploy_devnet.sh
-```
-
-STELLAR setup:
-
-```bash
-./contracts/stellar/context-config/build.sh
-./contracts/stellar/context-proxy/build.sh
-```
-
-After building the Stellar contracts, deploy the Stellar devnet:
-
-```bash
-./contracts/stellar/context-config/deploy_devnet.sh
+./scripts/stellar/deploy_devnet.sh
 ```
 
 In case of Stellar, you will need to set the values shown in the output of the

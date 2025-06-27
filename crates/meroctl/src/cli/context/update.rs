@@ -149,7 +149,7 @@ async fn install_app(
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse = connection
-        .post("admin-api/dev/install-dev-application", request)
+        .post("admin-api/install-dev-application", request)
         .await?;
 
     environment.output.write(&response);
@@ -168,7 +168,7 @@ async fn update_context_application(
 
     let response: UpdateContextApplicationResponse = connection
         .post(
-            &format!("admin-api/dev/contexts/{}/application", context_id),
+            &format!("admin-api/contexts/{}/application", context_id),
             request,
         )
         .await?;

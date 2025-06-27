@@ -160,9 +160,9 @@ async fn list_identities(
     };
 
     let endpoint = if owned {
-        format!("admin-api/dev/contexts/{}/identities-owned", context_id)
+        format!("admin-api/contexts/{}/identities-owned", context_id)
     } else {
-        format!("admin-api/dev/contexts/{}/identities", context_id)
+        format!("admin-api/contexts/{}/identities", context_id)
     };
 
     let response: GetContextIdentitiesResponse = connection.get(&endpoint).await?;

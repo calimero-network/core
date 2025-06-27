@@ -32,7 +32,7 @@ impl PeersCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
         let connection = environment.connection()?;
 
-        let response: GetPeersCountResponse = connection.get("admin-api/dev/peers").await?;
+        let response: GetPeersCountResponse = connection.get("admin-api/peers").await?;
 
         environment.output.write(&response);
 
