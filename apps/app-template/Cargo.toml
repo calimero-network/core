@@ -1,0 +1,19 @@
+[package]
+name = "app-template"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+license-file.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+thiserror.workspace = true
+calimero-sdk.workspace = true
+calimero-storage.workspace = true
+
+[lints]
+workspace = true

@@ -944,6 +944,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
 
 [[package]]
+name = "app-template"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
