@@ -10,7 +10,7 @@ use crate::cli::Environment;
 use crate::common::{create_alias, resolve_alias};
 use crate::output::Report;
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Create invitation to a context")]
 pub struct InviteCommand {
     #[clap(long, short)]
@@ -70,10 +70,7 @@ impl InviteCommand {
     }
 
     pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
             .await?

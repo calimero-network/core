@@ -31,14 +31,14 @@ impl Report for ProposalDetailsResponse {
     }
 }
 
-#[derive(Parser, Debug)]
+#[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Manage proposals within a context")]
 pub struct ProposalsCommand {
     #[command(subcommand)]
     pub command: ProposalsSubcommand,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Copy, Clone, Debug, Subcommand)]
 pub enum ProposalsSubcommand {
     #[command(about = "List all proposals in a context", alias = "ls")]
     List {
@@ -157,10 +157,7 @@ impl Report for GetProposalsResponse {
 
 impl ProposalsCommand {
     pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         match &self.command {
             ProposalsSubcommand::List {

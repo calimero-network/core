@@ -11,7 +11,7 @@ use crate::cli::Environment;
 use crate::common::resolve_alias;
 use crate::output::Report;
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Grant permissions to a member in a context")]
 pub struct GrantPermissionCommand {
     #[arg(help = "The context ID")]
@@ -32,10 +32,7 @@ pub struct GrantPermissionCommand {
 
 impl GrantPermissionCommand {
     pub async fn run(self, environment: &Environment) -> eyre::Result<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
             .await?

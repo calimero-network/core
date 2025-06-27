@@ -317,8 +317,6 @@ impl TokenManager {
         // Verify the refresh token to get the claims
         let claims = self.verify_token(refresh_token).await?;
 
-        tracing::debug!("Refreshing token for key_id: {}", claims.sub);
-
         // Get the key and verify it's valid
         let key = self
             .key_manager

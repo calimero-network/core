@@ -11,10 +11,10 @@ use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
 use crate::connection::ConnectionInfo;
 use crate::output::ErrorLine;
 
-mod alias;
-mod generate;
-mod grant;
-mod revoke;
+pub mod alias;
+pub mod generate;
+pub mod grant;
+pub mod revoke;
 
 #[derive(Debug, Clone, ValueEnum, Copy)]
 #[clap(rename_all = "PascalCase")]
@@ -34,14 +34,14 @@ impl From<Capability> for ConfigCapability {
     }
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Manage context identities")]
 pub struct ContextIdentityCommand {
     #[command(subcommand)]
     command: ContextIdentitySubcommand,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Copy, Clone, Debug, Parser)]
 pub enum ContextIdentitySubcommand {
     #[command(about = "List identities in a context", alias = "ls")]
     List {
@@ -71,10 +71,7 @@ pub enum ContextIdentitySubcommand {
 
 impl ContextIdentityCommand {
     pub async fn run(self, environment: &Environment) -> EyreResult<()> {
-        let connection = environment
-            .connection
-            .as_ref()
-            .ok_or_eyre("No connection configured")?;
+        let connection = environment.connection()?;
 
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {

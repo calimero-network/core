@@ -212,6 +212,8 @@ impl Meroctl {
         let task = async move {
             let json = task.await?;
 
+            println!("JSON RPC response: {:?}", json);
+
             if let Some(error) = json.get("error") {
                 bail!("JSON RPC response error: {:?}", error)
             }
