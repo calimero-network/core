@@ -9,7 +9,7 @@ pub enum Format {
     Human,
 }
 
-#[derive(Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Output {
     format: Format,
 }

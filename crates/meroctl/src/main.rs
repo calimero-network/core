@@ -2,15 +2,13 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-mod cli;
+pub mod cli;
 mod common;
 mod config;
 mod connection;
 mod defaults;
 mod output;
 mod version;
-
-use cli::RootCommand;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -21,7 +19,7 @@ async fn main() -> ExitCode {
 
     version::check_for_update().await;
 
-    let command = RootCommand::parse();
+    let command = cli::RootCommand::parse();
     match command.run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => err.into(),
