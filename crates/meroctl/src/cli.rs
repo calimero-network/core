@@ -5,7 +5,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{bail, Report as EyreReport};
+use eyre::{bail, OptionExt, Report as EyreReport};
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
@@ -18,7 +18,6 @@ use crate::output::{Format, Output, Report};
 
 mod app;
 mod auth;
-mod bootstrap;
 mod call;
 mod context;
 mod node;
@@ -27,22 +26,18 @@ pub mod storage;
 
 use app::AppCommand;
 use auth::AuthCommand;
-use bootstrap::BootstrapCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
+use storage::get_storage;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl --node-name node1 app ls
-  # List all applications with custom destination config
-  $ meroctl  --home data --node-name node1 app ls
+  $ meroctl --node node1 app ls
 
   # List all contexts
-  $ meroctl --node-name node1 context ls
-  # List all contexts with custom destination config
-  $ meroctl --home data --node-name node1 context ls
+  $ meroctl --node node1 context ls
 ";
 
 #[derive(Debug, Parser)]
@@ -67,7 +62,6 @@ pub enum SubCommands {
     Auth(AuthCommand),
     Context(ContextCommand),
     Call(CallCommand),
-    Bootstrap(BootstrapCommand),
     Peers(PeersCommand),
     #[command(subcommand)]
     Node(NodeCommand),
@@ -92,35 +86,21 @@ pub struct RootArgs {
     pub output_format: Format,
 }
 
-impl RootArgs {
-    pub const fn new(
-        home: Utf8PathBuf,
-        api: Option<Url>,
-        node: Option<String>,
-        output_format: Format,
-    ) -> Self {
-        Self {
-            home,
-            api,
-            node,
-            output_format,
-        }
-    }
-}
-
+#[derive(Debug)]
 pub struct Environment {
-    pub args: RootArgs,
     pub output: Output,
-    pub connection: Option<ConnectionInfo>,
+    connection: Option<ConnectionInfo>,
 }
 
 impl Environment {
-    pub const fn new(args: RootArgs, output: Output, connection: Option<ConnectionInfo>) -> Self {
-        Self {
-            args,
-            output,
-            connection,
-        }
+    pub const fn new(output: Output, connection: Option<ConnectionInfo>) -> Self {
+        Self { output, connection }
+    }
+
+    pub fn connection(&self) -> eyre::Result<&ConnectionInfo> {
+        self.connection
+            .as_ref()
+            .ok_or_eyre("No node connection: either `--node` or `--api` must be set")
     }
 }
 
@@ -136,7 +116,7 @@ impl RootCommand {
 
         let connection = if needs_connection {
             match self.prepare_connection().await {
-                Ok(conn) => Some(conn),
+                Ok(conn) => conn,
                 Err(err) => {
                     let err = CliError::Other(err);
                     output.write(&err);
@@ -147,14 +127,13 @@ impl RootCommand {
             None
         };
 
-        let environment = Environment::new(self.args, output, connection);
+        let environment = Environment::new(output, connection);
 
         let result = match self.action {
             SubCommands::App(application) => application.run(&environment).await,
             SubCommands::Auth(auth) => auth.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
-            SubCommands::Bootstrap(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
             SubCommands::Node(node) => node.run().await,
         };
@@ -172,22 +151,20 @@ impl RootCommand {
         Ok(())
     }
 
-    async fn prepare_connection(&self) -> eyre::Result<ConnectionInfo> {
-        use crate::cli::storage::get_storage;
-
-        let (url, _) = match (&self.args.node, &self.args.api) {
+    async fn prepare_connection(&self) -> eyre::Result<Option<ConnectionInfo>> {
+        match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
                 let config = Config::load().await?;
 
                 if let Some(conn) = config.get_connection(node).await? {
-                    return Ok(conn);
+                    return Ok(Some(conn));
                 }
 
                 let config = load_config(&self.args.home, node).await?;
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                (url, node.clone())
+                Ok(Some(ConnectionInfo::new(url, false)))
             }
             (None, Some(api_url)) => {
                 let auth_required = check_auth_required(api_url).await?;
@@ -195,31 +172,28 @@ impl RootCommand {
                     let storage = get_storage();
 
                     match storage.get_current_profile().await? {
-                        Some((profile, mut profile_config)) => {
-                            profile_config.auth_profile = profile.clone();
-
+                        Some((profile, profile_config)) => {
                             let profile_url_str =
                                 profile_config.node_url.as_str().trim_end_matches('/');
                             let api_url_str = api_url.as_str().trim_end_matches('/');
                             if profile_url_str == api_url_str {
-                                return Ok(ConnectionInfo::new(api_url.clone(), true));
+                                Ok(Some(ConnectionInfo::new(api_url.clone(), true)))
                             } else {
-                                bail!("Current active profile '{}' is for {}, but you're trying to access {}.\nPlease login for this API: meroctl auth login --api {} --profile <n>", 
+                                bail!("Current active profile '{}' is for {}, but you're trying to access {}.\nPlease login for this API: meroctl auth login --api {} --profile <profile_name>", 
                                       profile, profile_config.node_url, api_url, api_url);
                             }
                         }
                         None => {
-                            bail!("Authentication required but no active profile found.\nPlease login first: meroctl auth login --api {} --profile <n>", api_url);
+                            bail!("Authentication required but no active profile found.\nPlease login first: meroctl auth login --api {} --profile <profile_name>", api_url);
                         }
                     }
                 } else {
-                    return Ok(ConnectionInfo::new(api_url.clone(), false));
+                    Ok(Some(ConnectionInfo::new(api_url.clone(), false)))
                 }
             }
-            _ => bail!("expected one of `--node` or `--api` to be set"),
-        };
-
-        Ok(ConnectionInfo::new(url, false))
+            // todo! if neither is selected, we should load the "default" config
+            _ => Ok(None),
+        }
     }
 }
 

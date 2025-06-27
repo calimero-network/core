@@ -12,7 +12,7 @@ license.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
-comfy-table.workspace = true 
+comfy-table.workspace = true
 const_format.workspace = true
 dirs.workspace = true
 eyre.workspace = true

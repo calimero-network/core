@@ -18,7 +18,7 @@ pub enum TokenError {
     StorageError(#[from] eyre::Error),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConnectionInfo {
     pub api_url: Url,
     pub client: Client,
