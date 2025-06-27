@@ -109,7 +109,7 @@ impl CallCommand {
             payload,
         );
 
-        let response: Response = connection.post("jsonrpc/dev", request).await?;
+        let response: Response = connection.post("jsonrpc", request).await?;
         environment.output.write(&response);
 
         Ok(())
