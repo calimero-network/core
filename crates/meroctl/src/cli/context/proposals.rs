@@ -6,7 +6,7 @@ use calimero_server_primitives::admin::{
 };
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -156,7 +156,7 @@ impl Report for GetProposalsResponse {
 }
 
 impl ProposalsCommand {
-    pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(&self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         match &self.command {
@@ -213,7 +213,7 @@ impl ProposalsCommand {
         connection: &ConnectionInfo,
         context_id: ContextId,
         proposal_id: &Hash,
-    ) -> EyreResult<GetProposalApproversResponse> {
+    ) -> Result<GetProposalApproversResponse> {
         let response = connection
             .get(&format!(
                 "admin-api/contexts/{}/proposals/{}/approvals/users",
@@ -230,7 +230,7 @@ impl ProposalsCommand {
         connection: &ConnectionInfo,
         context_id: ContextId,
         args: Value,
-    ) -> EyreResult<()> {
+    ) -> Result<()> {
         let response: GetProposalsResponse = connection
             .post(
                 &format!("admin-api/contexts/{}/proposals", context_id),
@@ -247,7 +247,7 @@ impl ProposalsCommand {
         connection: &ConnectionInfo,
         context_id: ContextId,
         proposal_id: &Hash,
-    ) -> EyreResult<GetProposalResponse> {
+    ) -> Result<GetProposalResponse> {
         let response = connection
             .get(&format!(
                 "admin-api/contexts/{}/proposals/{}",

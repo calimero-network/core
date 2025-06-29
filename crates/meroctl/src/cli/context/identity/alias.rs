@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult, WrapErr};
+use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
 use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
@@ -15,7 +15,7 @@ async fn identity_exists_in_context(
     connection: &ConnectionInfo,
     context: &Alias<ContextId>,
     target_identity: &PublicKey,
-) -> EyreResult<bool> {
+) -> Result<bool> {
     let context_id = resolve_alias(connection, *context, None)
         .await?
         .value()
@@ -85,7 +85,7 @@ pub enum ContextIdentityAliasSubcommand {
 }
 
 impl ContextIdentityAliasCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         match self.command {

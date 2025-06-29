@@ -4,7 +4,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{InviteToContextRequest, InviteToContextResponse};
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
 use crate::common::{create_alias, resolve_alias};
@@ -64,12 +64,12 @@ impl Report for InviteToContextResponse {
 }
 
 impl InviteCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let _ignored = self.invite(environment).await?;
         Ok(())
     }
 
-    pub async fn invite(&self, environment: &Environment) -> EyreResult<ContextInvitationPayload> {
+    pub async fn invite(&self, environment: &Environment) -> Result<ContextInvitationPayload> {
         let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)

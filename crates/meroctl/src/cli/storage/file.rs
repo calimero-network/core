@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use eyre::{Context, Result as EyreResult};
+use eyre::{bail, Context, Result};
 use tokio::fs;
 
 use super::{AllProfiles, ProfileConfig, TokenStorage};
 
+#[derive(Debug)]
 pub struct FileStorage {
     profiles_path: PathBuf,
 }
@@ -14,6 +15,7 @@ impl FileStorage {
     pub fn new() -> Self {
         let config_dir = dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config"))
+            .join("calimero")
             .join("meroctl");
 
         Self {
@@ -21,7 +23,7 @@ impl FileStorage {
         }
     }
 
-    async fn ensure_config_dir(&self) -> EyreResult<()> {
+    async fn ensure_config_dir(&self) -> Result<()> {
         if let Some(parent) = self.profiles_path.parent() {
             fs::create_dir_all(parent)
                 .await
@@ -33,7 +35,7 @@ impl FileStorage {
 
 #[async_trait]
 impl TokenStorage for FileStorage {
-    async fn load_all_profiles(&self) -> EyreResult<AllProfiles> {
+    async fn load_all_profiles(&self) -> Result<AllProfiles> {
         match fs::read_to_string(&self.profiles_path).await {
             Ok(content) => serde_json::from_str(&content).wrap_err("Failed to parse profiles file"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AllProfiles::default()),
@@ -41,7 +43,7 @@ impl TokenStorage for FileStorage {
         }
     }
 
-    async fn save_all_profiles(&self, profiles: &AllProfiles) -> EyreResult<()> {
+    async fn save_all_profiles(&self, profiles: &AllProfiles) -> Result<()> {
         self.ensure_config_dir().await?;
 
         let content =
@@ -63,13 +65,13 @@ impl TokenStorage for FileStorage {
         Ok(())
     }
 
-    async fn store_profile(&self, name: &str, config: &ProfileConfig) -> EyreResult<()> {
+    async fn store_profile(&self, name: &str, config: &ProfileConfig) -> Result<()> {
         let mut all = self.load_all_profiles().await?;
         drop(all.profiles.insert(name.to_owned(), config.clone()));
         self.save_all_profiles(&all).await
     }
 
-    async fn remove_profile(&self, name: &str) -> EyreResult<()> {
+    async fn remove_profile(&self, name: &str) -> Result<()> {
         let mut all = self.load_all_profiles().await?;
         drop(all.profiles.remove(name));
         if all.active_profile.as_deref() == Some(name) {
@@ -78,7 +80,7 @@ impl TokenStorage for FileStorage {
         self.save_all_profiles(&all).await
     }
 
-    async fn get_current_profile(&self) -> EyreResult<Option<(String, ProfileConfig)>> {
+    async fn get_current_profile(&self) -> Result<Option<(String, ProfileConfig)>> {
         let all = self.load_all_profiles().await?;
         match all.active_profile {
             Some(name) => Ok(all.profiles.get(&name).map(|config| (name, config.clone()))),
@@ -86,24 +88,24 @@ impl TokenStorage for FileStorage {
         }
     }
 
-    async fn set_current_profile(&self, name: &str) -> EyreResult<()> {
+    async fn set_current_profile(&self, name: &str) -> Result<()> {
         let mut all = self.load_all_profiles().await?;
         if all.profiles.contains_key(name) {
             all.active_profile = Some(name.to_owned());
             self.save_all_profiles(&all).await
         } else {
-            Err(eyre::eyre!("Profile {} does not exist", name))
+            bail!("Profile {} does not exist", name)
         }
     }
 
-    async fn list_profiles(&self) -> EyreResult<(Vec<String>, Option<String>)> {
+    async fn list_profiles(&self) -> Result<(Vec<String>, Option<String>)> {
         let all = self.load_all_profiles().await?;
         let mut profiles: Vec<_> = all.profiles.keys().cloned().collect();
         profiles.sort();
         Ok((profiles, all.active_profile))
     }
 
-    async fn clear_all(&self) -> EyreResult<()> {
+    async fn clear_all(&self) -> Result<()> {
         self.save_all_profiles(&AllProfiles::default()).await
     }
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use eyre::Result as EyreResult;
+use eyre::Result;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -34,33 +34,33 @@ pub struct AllProfiles {
 #[async_trait]
 pub trait TokenStorage: Send + Sync {
     /// Load all profiles in a single operation
-    async fn load_all_profiles(&self) -> EyreResult<AllProfiles>;
+    async fn load_all_profiles(&self) -> Result<AllProfiles>;
 
     /// Save all profiles in a single operation
-    async fn save_all_profiles(&self, profiles: &AllProfiles) -> EyreResult<()>;
+    async fn save_all_profiles(&self, profiles: &AllProfiles) -> Result<()>;
 
     /// Get a specific profile config
-    async fn load_profile(&self, name: &str) -> EyreResult<Option<ProfileConfig>> {
+    async fn load_profile(&self, name: &str) -> Result<Option<ProfileConfig>> {
         Ok(self.load_all_profiles().await?.profiles.get(name).cloned())
     }
 
     /// Store a profile config
-    async fn store_profile(&self, name: &str, config: &ProfileConfig) -> EyreResult<()>;
+    async fn store_profile(&self, name: &str, config: &ProfileConfig) -> Result<()>;
 
     /// Remove a profile
-    async fn remove_profile(&self, name: &str) -> EyreResult<()>;
+    async fn remove_profile(&self, name: &str) -> Result<()>;
 
     /// Get current active profile with its config
-    async fn get_current_profile(&self) -> EyreResult<Option<(String, ProfileConfig)>>;
+    async fn get_current_profile(&self) -> Result<Option<(String, ProfileConfig)>>;
 
     /// Set active profile
-    async fn set_current_profile(&self, name: &str) -> EyreResult<()>;
+    async fn set_current_profile(&self, name: &str) -> Result<()>;
 
     /// List all profiles
-    async fn list_profiles(&self) -> EyreResult<(Vec<String>, Option<String>)>;
+    async fn list_profiles(&self) -> Result<(Vec<String>, Option<String>)>;
 
     /// Clear all profiles
-    async fn clear_all(&self) -> EyreResult<()>;
+    async fn clear_all(&self) -> Result<()>;
 }
 
 /// Global storage instance to maximize cache utilization

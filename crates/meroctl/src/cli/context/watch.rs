@@ -8,7 +8,7 @@ use calimero_server_primitives::ws::{
 };
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -97,7 +97,7 @@ impl Report for ExecutionOutput<'_> {
 }
 
 impl WatchCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;

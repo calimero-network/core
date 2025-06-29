@@ -6,7 +6,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8PathBuf;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
@@ -48,7 +48,7 @@ impl Report for InstallApplicationResponse {
 }
 
 impl InstallCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let _ignored = self.install_app(environment).await?;
         if self.watch {
             self.watch_app(environment).await?;
@@ -56,7 +56,7 @@ impl InstallCommand {
         Ok(())
     }
 
-    pub async fn install_app(&self, environment: &Environment) -> EyreResult<ApplicationId> {
+    pub async fn install_app(&self, environment: &Environment) -> Result<ApplicationId> {
         let connection = environment.connection()?;
 
         let metadata = self
@@ -85,7 +85,7 @@ impl InstallCommand {
         Ok(response.data.application_id)
     }
 
-    pub async fn watch_app(&self, environment: &Environment) -> EyreResult<()> {
+    pub async fn watch_app(&self, environment: &Environment) -> Result<()> {
         let Some(path) = self.path.as_ref() else {
             bail!("The path must be provided");
         };

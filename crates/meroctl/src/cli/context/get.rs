@@ -6,7 +6,7 @@ use calimero_server_primitives::admin::{
 };
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
 use crate::common::resolve_alias;
@@ -106,7 +106,7 @@ impl Report for GetContextIdentitiesResponse {
 }
 
 impl GetCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;

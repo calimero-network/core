@@ -12,7 +12,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8PathBuf;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
@@ -94,7 +94,7 @@ impl Report for UpdateContextApplicationResponse {
 }
 
 impl CreateCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         match self {
@@ -173,7 +173,7 @@ pub async fn create_context(
     protocol: String,
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
-) -> EyreResult<(ContextId, PublicKey)> {
+) -> Result<(ContextId, PublicKey)> {
     if !app_installed(connection, &application_id).await? {
         bail!("Application is not installed on node.")
     }
@@ -223,7 +223,7 @@ async fn watch_app_and_update_context(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     member_public_key: PublicKey,
-) -> EyreResult<()> {
+) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
     let handle = Handle::current();
@@ -285,7 +285,7 @@ async fn update_context_application(
     context_id: ContextId,
     application_id: ApplicationId,
     member_public_key: PublicKey,
-) -> EyreResult<()> {
+) -> Result<()> {
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
     let response: UpdateContextApplicationResponse = connection
@@ -303,7 +303,7 @@ async fn update_context_application(
 async fn app_installed(
     connection: &ConnectionInfo,
     application_id: &ApplicationId,
-) -> eyre::Result<bool> {
+) -> Result<bool> {
     let response: GetApplicationResponse = connection
         .get(&format!("admin-api/applications/{application_id}"))
         .await?;
@@ -316,7 +316,7 @@ async fn install_app(
     connection: &ConnectionInfo,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
-) -> EyreResult<ApplicationId> {
+) -> Result<ApplicationId> {
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse = connection

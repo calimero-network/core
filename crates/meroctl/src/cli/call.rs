@@ -7,7 +7,7 @@ use calimero_server_primitives::jsonrpc::{
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
@@ -80,7 +80,7 @@ impl Report for Response {
 }
 
 impl CallCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;

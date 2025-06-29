@@ -1,7 +1,7 @@
 use calimero_server_primitives::admin::GenerateContextIdentityResponse;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::Result as EyreResult;
+use eyre::Result;
 
 use crate::cli::Environment;
 use crate::output::Report;
@@ -20,7 +20,7 @@ impl Report for GenerateContextIdentityResponse {
 }
 
 impl GenerateCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let response: GenerateContextIdentityResponse = connection
