@@ -5,7 +5,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{bail, OptionExt, Report as EyreReport};
+use eyre::{bail, OptionExt, Report as EyreReport, Result};
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
@@ -17,7 +17,7 @@ use crate::defaults;
 use crate::output::{Format, Output, Report};
 
 mod app;
-mod auth;
+pub mod auth;
 mod call;
 mod context;
 mod node;
@@ -25,12 +25,11 @@ mod peers;
 pub mod storage;
 
 use app::AppCommand;
-use auth::AuthCommand;
+use auth::{authenticate_with_keychain_cache, check_authentication, AuthCommand};
 use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
-use storage::get_storage;
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -97,10 +96,10 @@ impl Environment {
         Self { output, connection }
     }
 
-    pub fn connection(&self) -> eyre::Result<&ConnectionInfo> {
+    pub fn connection(&self) -> Result<&ConnectionInfo> {
         self.connection
             .as_ref()
-            .ok_or_eyre("No node connection: either `--node` or `--api` must be set")
+            .ok_or_eyre("No node selected: set default node by running `meroctl node set <node_name>` or use `--node` or `--api` to manually select a node")
     }
 }
 
@@ -108,9 +107,10 @@ impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
 
-        // Some commands don't require a connection (like auth commands)
+        // Some commands don't require a connection (like auth and node commands)
         let needs_connection = match &self.action {
             SubCommands::Auth(_) => false,
+            SubCommands::Node(_) => false,
             _ => true,
         };
 
@@ -151,63 +151,49 @@ impl RootCommand {
         Ok(())
     }
 
-    async fn prepare_connection(&self) -> eyre::Result<Option<ConnectionInfo>> {
+    async fn prepare_connection(&self) -> Result<Option<ConnectionInfo>> {
         match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
+                // Use specific node - first check if it's registered
                 let config = Config::load().await?;
 
                 if let Some(conn) = config.get_connection(node).await? {
                     return Ok(Some(conn));
                 }
 
+                // Check if it's a local node at <home>/<node>
                 let config = load_config(&self.args.home, node).await?;
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                Ok(Some(ConnectionInfo::new(url, false)))
+                // Even local nodes might require authentication - authenticate immediately since this is not a registered node
+                let keychain_key = format!("node_{}", url.host_str().unwrap_or("unknown"));
+                let connection = authenticate_with_keychain_cache(&url, &keychain_key, &format!("local node {}", node)).await?;
+                Ok(Some(connection))
             }
             (None, Some(api_url)) => {
-                let auth_required = check_auth_required(api_url).await?;
-                if auth_required {
-                    let storage = get_storage();
-
-                    match storage.get_current_profile().await? {
-                        Some((profile, profile_config)) => {
-                            let profile_url_str =
-                                profile_config.node_url.as_str().trim_end_matches('/');
-                            let api_url_str = api_url.as_str().trim_end_matches('/');
-                            if profile_url_str == api_url_str {
-                                Ok(Some(ConnectionInfo::new(api_url.clone(), true)))
-                            } else {
-                                bail!("Current active profile '{}' is for {}, but you're trying to access {}.\nPlease login for this API: meroctl auth login --api {} --profile <profile_name>", 
-                                      profile, profile_config.node_url, api_url, api_url);
-                            }
-                        }
-                        None => {
-                            bail!("Authentication required but no active profile found.\nPlease login first: meroctl auth login --api {} --profile <profile_name>", api_url);
-                        }
-                    }
-                } else {
-                    Ok(Some(ConnectionInfo::new(api_url.clone(), false)))
-                }
+                // Use specific API URL - check keychain first, then authenticate if needed
+                let keychain_key = format!("api_{}", api_url.host_str().unwrap_or("unknown"));
+                let connection = authenticate_with_keychain_cache(api_url, &keychain_key, &api_url.to_string()).await?;
+                Ok(Some(connection))
             }
-            // todo! if neither is selected, we should load the "default" config
+            (None, None) => {
+                // Try to use active node
+                let config = Config::load().await?;
+                
+                if let Some(active_node_name) = &config.active_node {
+                    if let Some(conn) = config.get_connection(active_node_name).await? {
+                        return Ok(Some(conn));
+                    } else {
+                        bail!("Active node '{}' not found. Please check your configuration.", active_node_name);
+                    }
+                }
+                
+                // No active node set
+                Ok(None)
+            }
             _ => Ok(None),
         }
-    }
-}
-
-async fn check_auth_required(url: &Url) -> eyre::Result<bool> {
-    let client = reqwest::Client::new();
-    let health_url = url.join("/admin-api/health")?;
-
-    match client.get(health_url).send().await {
-        Ok(response) => match response.status().as_u16() {
-            200..=299 => Ok(false),
-            401 | 403 => Ok(true),
-            _ => Ok(false),
-        },
-        Err(_) => Ok(false),
     }
 }
 
