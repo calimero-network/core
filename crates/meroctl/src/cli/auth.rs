@@ -76,7 +76,6 @@ impl ClearCommand {
     }
 }
 
-
 pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
     let temp_connection = ConnectionInfo::new(api_url.clone(), None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
@@ -124,7 +123,6 @@ pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
 }
 
 async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCallback, String>>)> {
-
     let (tx, rx) = oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
@@ -208,7 +206,10 @@ fn build_auth_url(api_url: &Url, callback_port: u16) -> Result<Url> {
     auth_url.set_path("/auth/login");
     let _ = auth_url
         .query_pairs_mut()
-        .append_pair("callback-url", &format!("http://127.0.0.1:{}/callback", callback_port))
+        .append_pair(
+            "callback-url",
+            &format!("http://127.0.0.1:{}/callback", callback_port),
+        )
         .append_pair("app-url", api_url.as_str().trim_end_matches('/'));
 
     Ok(auth_url)
@@ -219,11 +220,14 @@ fn build_auth_url(api_url: &Url, callback_port: u16) -> Result<Url> {
 pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<JwtToken>> {
     let temp_connection = ConnectionInfo::new(url.clone(), None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
-    
+
     if auth_mode != "none" {
-        println!("🔐 {} requires authentication (mode: {})", node_name, auth_mode);
+        println!(
+            "🔐 {} requires authentication (mode: {})",
+            node_name, auth_mode
+        );
         println!("🚀 Starting authentication process...");
-        
+
         match authenticate(url).await {
             Ok(tokens) => {
                 println!("✅ Authentication successful for {}", node_name);
@@ -241,16 +245,22 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
 
 /// Helper function for keychain-based authentication with caching
 /// Returns a ConnectionInfo with appropriate authentication tokens
-pub async fn authenticate_with_keychain_cache(url: &Url, keychain_key: &str, node_name: &str) -> Result<ConnectionInfo> {    
+pub async fn authenticate_with_keychain_cache(
+    url: &Url,
+    keychain_key: &str,
+    node_name: &str,
+) -> Result<ConnectionInfo> {
     let temp_connection = ConnectionInfo::new(url.clone(), None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
-    
+
     if auth_mode != "none" {
         // Check if we have tokens in keychain for this URL
         let storage = get_storage();
-        
+
         match storage.load_profile(keychain_key).await? {
-            Some(profile_config) if profile_config.node_url == *url && profile_config.token.is_some() => {
+            Some(profile_config)
+                if profile_config.node_url == *url && profile_config.token.is_some() =>
+            {
                 // We have existing tokens for this URL
                 println!("✅ Using cached authentication for {}", node_name);
                 Ok(ConnectionInfo::new(url.clone(), profile_config.token, None))
@@ -268,7 +278,7 @@ pub async fn authenticate_with_keychain_cache(url: &Url, keychain_key: &str, nod
                         };
                         storage.store_profile(keychain_key, &profile_config).await?;
                         println!("🔐 Tokens cached in keychain for {}", node_name);
-                        
+
                         Ok(ConnectionInfo::new(url.clone(), Some(jwt_tokens), None))
                     }
                     Err(e) => {

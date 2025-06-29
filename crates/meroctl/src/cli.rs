@@ -168,27 +168,37 @@ impl RootCommand {
 
                 // Even local nodes might require authentication - authenticate immediately since this is not a registered node
                 let keychain_key = format!("node_{}", url.host_str().unwrap_or("unknown"));
-                let connection = authenticate_with_keychain_cache(&url, &keychain_key, &format!("local node {}", node)).await?;
+                let connection = authenticate_with_keychain_cache(
+                    &url,
+                    &keychain_key,
+                    &format!("local node {}", node),
+                )
+                .await?;
                 Ok(Some(connection))
             }
             (None, Some(api_url)) => {
                 // Use specific API URL - check keychain first, then authenticate if needed
                 let keychain_key = format!("api_{}", api_url.host_str().unwrap_or("unknown"));
-                let connection = authenticate_with_keychain_cache(api_url, &keychain_key, &api_url.to_string()).await?;
+                let connection =
+                    authenticate_with_keychain_cache(api_url, &keychain_key, &api_url.to_string())
+                        .await?;
                 Ok(Some(connection))
             }
             (None, None) => {
                 // Try to use active node
                 let config = Config::load().await?;
-                
+
                 if let Some(active_node_name) = &config.active_node {
                     if let Some(conn) = config.get_connection(active_node_name).await? {
                         return Ok(Some(conn));
                     } else {
-                        bail!("Active node '{}' not found. Please check your configuration.", active_node_name);
+                        bail!(
+                            "Active node '{}' not found. Please check your configuration.",
+                            active_node_name
+                        );
                     }
                 }
-                
+
                 // No active node set
                 Ok(None)
             }

@@ -51,12 +51,7 @@ impl ConnectionInfo {
         self.request(RequestType::Delete, path, None::<()>).await
     }
 
-    async fn request<I, O>(
-        &self,
-        req_type: RequestType,
-        path: &str,
-        body: Option<I>,
-    ) -> Result<O>
+    async fn request<I, O>(&self, req_type: RequestType, path: &str, body: Option<I>) -> Result<O>
     where
         I: Serialize,
         O: DeserializeOwned,
@@ -72,8 +67,8 @@ impl ConnectionInfo {
             };
 
             if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
-                builder = builder
-                    .header("Authorization", format!("Bearer {}", tokens.access_token));
+                builder =
+                    builder.header("Authorization", format!("Bearer {}", tokens.access_token));
             }
 
             let response = builder.send().await?;
@@ -88,18 +83,28 @@ impl ConnectionInfo {
                                 Ok(new_tokens) => {
                                     // Update the in-memory tokens immediately
                                     *self.jwt_tokens.lock().unwrap() = Some(new_tokens.clone());
-                                    
+
                                     // Update the node configuration with new tokens
                                     if let Some(ref node_name) = self.node_name {
-                                        if let Err(e) = Self::update_node_tokens(node_name, &new_tokens).await {
+                                        if let Err(e) =
+                                            Self::update_node_tokens(node_name, &new_tokens).await
+                                        {
                                             println!("⚠️  Failed to update node config with new tokens: {}", e);
                                         } else {
-                                            println!("✅ Node configuration updated with new tokens");
+                                            println!(
+                                                "✅ Node configuration updated with new tokens"
+                                            );
                                         }
                                     } else {
                                         // For non-registered nodes, update keychain storage
-                                        if let Err(e) = Self::update_keychain_tokens(&self.api_url, &new_tokens).await {
-                                            println!("⚠️  Failed to update keychain with new tokens: {}", e);
+                                        if let Err(e) =
+                                            Self::update_keychain_tokens(&self.api_url, &new_tokens)
+                                                .await
+                                        {
+                                            println!(
+                                                "⚠️  Failed to update keychain with new tokens: {}",
+                                                e
+                                            );
                                         } else {
                                             println!("✅ Keychain updated with new tokens");
                                         }
@@ -109,32 +114,48 @@ impl ConnectionInfo {
                                 Err(e) => match e {
                                     TokenError::NoRefreshToken | TokenError::RefreshFailed => {
                                         println!("🔄 Attempting automatic re-authentication...");
-                                        
+
                                         // Try automatic authentication
                                         match authenticate(&self.api_url).await {
                                             Ok(new_tokens) => {
                                                 // Update the in-memory tokens immediately
-                                                *self.jwt_tokens.lock().unwrap() = Some(new_tokens.clone());
-                                                
+                                                *self.jwt_tokens.lock().unwrap() =
+                                                    Some(new_tokens.clone());
+
                                                 // Update stored tokens and continue with the request
                                                 if let Some(ref node_name) = self.node_name {
-                                                    if let Err(e) = Self::update_node_tokens(node_name, &new_tokens).await {
+                                                    if let Err(e) = Self::update_node_tokens(
+                                                        node_name,
+                                                        &new_tokens,
+                                                    )
+                                                    .await
+                                                    {
                                                         println!("⚠️  Failed to update node config with new tokens: {}", e);
                                                     } else {
                                                         println!("✅ Node configuration updated with new tokens");
                                                     }
                                                 } else {
                                                     // For non-registered nodes, update keychain storage
-                                                    if let Err(e) = Self::update_keychain_tokens(&self.api_url, &new_tokens).await {
+                                                    if let Err(e) = Self::update_keychain_tokens(
+                                                        &self.api_url,
+                                                        &new_tokens,
+                                                    )
+                                                    .await
+                                                    {
                                                         println!("⚠️  Failed to update keychain with new tokens: {}", e);
                                                     } else {
-                                                        println!("✅ Keychain updated with new tokens");
+                                                        println!(
+                                                            "✅ Keychain updated with new tokens"
+                                                        );
                                                     }
                                                 }
                                                 continue;
                                             }
                                             Err(auth_err) => {
-                                                println!("❌ Automatic re-authentication failed: {}", auth_err);
+                                                println!(
+                                                    "❌ Automatic re-authentication failed: {}",
+                                                    auth_err
+                                                );
                                                 bail!("Authentication failed. Please re-add the node or use --api with the URL to reauthenticate");
                                             }
                                         }
@@ -188,11 +209,7 @@ impl ConnectionInfo {
         Err(TokenError::NoRefreshToken)
     }
 
-    async fn try_refresh_token(
-        &self,
-        access_token: &str,
-        refresh_token: &str,
-    ) -> Result<JwtToken> {
+    async fn try_refresh_token(&self, access_token: &str, refresh_token: &str) -> Result<JwtToken> {
         let refresh_url = self.api_url.join("/auth/refresh")?;
 
         #[derive(serde::Serialize)]
@@ -280,42 +297,54 @@ impl ConnectionInfo {
 
     /// Update the stored JWT tokens for a specific node in the configuration
     async fn update_node_tokens(node_name: &str, new_tokens: &JwtToken) -> Result<()> {
-        let mut config = crate::config::Config::load().await
-            .wrap_err_with(|| format!("Failed to load config while updating tokens for node '{}'", node_name))?;
-        
+        let mut config = crate::config::Config::load().await.wrap_err_with(|| {
+            format!(
+                "Failed to load config while updating tokens for node '{}'",
+                node_name
+            )
+        })?;
+
         if let Some(node_connection) = config.nodes.get_mut(node_name) {
             match node_connection {
                 crate::config::NodeConnection::Remote { jwt_tokens, .. } => {
                     *jwt_tokens = Some(new_tokens.clone());
-                    config.save().await
-                        .wrap_err_with(|| format!("Failed to save config after updating tokens for remote node '{}'", node_name))?;
+                    config.save().await.wrap_err_with(|| {
+                        format!(
+                            "Failed to save config after updating tokens for remote node '{}'",
+                            node_name
+                        )
+                    })?;
                     return Ok(());
                 }
                 crate::config::NodeConnection::Local { jwt_tokens, .. } => {
                     // Local nodes can also have auth tokens now
                     *jwt_tokens = Some(new_tokens.clone());
-                    config.save().await
-                        .wrap_err_with(|| format!("Failed to save config after updating tokens for local node '{}'", node_name))?;
+                    config.save().await.wrap_err_with(|| {
+                        format!(
+                            "Failed to save config after updating tokens for local node '{}'",
+                            node_name
+                        )
+                    })?;
                     return Ok(());
                 }
             }
         }
-        
+
         bail!("Node '{}' not found in configuration", node_name)
     }
 
     /// Update the keychain storage with new JWT tokens for non-registered nodes
     async fn update_keychain_tokens(api_url: &Url, new_tokens: &JwtToken) -> Result<()> {
         use crate::cli::storage::{get_storage, ProfileConfig};
-        
+
         let storage = get_storage();
-        
+
         // Try both api_ and node_ prefixes to find the existing profile
         let possible_keys = [
             format!("api_{}", api_url.host_str().unwrap_or("unknown")),
             format!("node_{}", api_url.host_str().unwrap_or("unknown")),
         ];
-        
+
         for keychain_key in &possible_keys {
             if let Some(mut profile) = storage.load_profile(keychain_key).await? {
                 if profile.node_url == *api_url {
@@ -325,7 +354,7 @@ impl ConnectionInfo {
                 }
             }
         }
-        
+
         // If no existing profile found, create new one with api_ prefix
         let keychain_key = &possible_keys[0];
         let profile_config = ProfileConfig {
@@ -334,7 +363,7 @@ impl ConnectionInfo {
             token: Some(new_tokens.clone()),
         };
         storage.store_profile(keychain_key, &profile_config).await?;
-        
+
         Ok(())
     }
 }

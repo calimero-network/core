@@ -95,30 +95,31 @@ impl NodeCommand {
         match self {
             NodeCommand::Add(cmd) => {
                 let location_type = detect_location_type(&cmd.location)?;
-                
+
                 let connection = match location_type {
                     LocationType::Local(path) => {
                         let config = load_config(&path, &cmd.name).await?;
                         let multiaddr = fetch_multiaddr(&config)?;
                         let url = multiaddr_to_url(&multiaddr, "")?;
-                        
-                        let jwt_tokens = determine_auth_tokens(&cmd, &url, &format!("local node '{}'", cmd.name)).await?;
-                        
-                        NodeConnection::Local { 
-                            path,
-                            jwt_tokens,
-                        }
-                    },
+
+                        let jwt_tokens = determine_auth_tokens(
+                            &cmd,
+                            &url,
+                            &format!("local node '{}'", cmd.name),
+                        )
+                        .await?;
+
+                        NodeConnection::Local { path, jwt_tokens }
+                    }
                     LocationType::Remote(url) => {
-                        let jwt_tokens = determine_auth_tokens(&cmd, &url, &format!("node '{}'", cmd.name)).await?;
-                        
-                        NodeConnection::Remote {
-                            url,
-                            jwt_tokens,
-                        }
-                    },
+                        let jwt_tokens =
+                            determine_auth_tokens(&cmd, &url, &format!("node '{}'", cmd.name))
+                                .await?;
+
+                        NodeConnection::Remote { url, jwt_tokens }
+                    }
                 };
-                
+
                 if config.nodes.contains_key(&cmd.name) {
                     bail!(
                         "node with name '{}' already exists, to update it, remove it first",
@@ -136,7 +137,10 @@ impl NodeCommand {
             }
             NodeCommand::Use(cmd) => {
                 if !config.nodes.contains_key(&cmd.name) {
-                    bail!("Node '{}' does not exist. Add it first with 'meroctl node add'", cmd.name);
+                    bail!(
+                        "Node '{}' does not exist. Add it first with 'meroctl node add'",
+                        cmd.name
+                    );
                 }
                 config.active_node = Some(cmd.name.clone());
                 println!("✅ Set '{}' as active node", cmd.name);
@@ -148,17 +152,19 @@ impl NodeCommand {
                 for (name, conn) in &config.nodes {
                     let is_active = config.active_node.as_ref() == Some(name);
                     let active_marker = if is_active { "✓" } else { "" };
-                    
+
                     match conn {
                         NodeConnection::Local { path, .. } => {
-                            let _ignored = table.add_row(vec![name, "Local", path.as_str(), active_marker]);
+                            let _ignored =
+                                table.add_row(vec![name, "Local", path.as_str(), active_marker]);
                         }
                         NodeConnection::Remote { url, .. } => {
-                            let _ignored = table.add_row(vec![name, "Remote", url.as_str(), active_marker]);
+                            let _ignored =
+                                table.add_row(vec![name, "Remote", url.as_str(), active_marker]);
                         }
                     }
                 }
-                
+
                 if let Some(active) = &config.active_node {
                     println!("Active node: {}\n", active);
                 }
@@ -185,7 +191,7 @@ fn detect_location_type(location: &str) -> Result<LocationType> {
             return Ok(LocationType::Remote(url));
         }
     }
-    
+
     // If not a valid remote URL, treat as local path
     let path = Utf8PathBuf::from(location);
     Ok(LocationType::Local(path))
@@ -204,7 +210,7 @@ async fn determine_auth_tokens(
             refresh_token: cmd.refresh_token.clone(),
         }));
     }
-    
+
     // Otherwise, use automatic authentication
     check_authentication(url, node_description).await
 }

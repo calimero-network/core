@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use url::Url;
 
+use crate::cli::storage::JwtToken;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::connection::ConnectionInfo;
-use crate::cli::storage::JwtToken;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -20,26 +20,26 @@ pub struct Config {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum NodeConnection {
-    Local { 
+    Local {
         path: Utf8PathBuf,
         jwt_tokens: Option<JwtToken>,
     },
-    Remote { 
-        url: Url, 
+    Remote {
+        url: Url,
         jwt_tokens: Option<JwtToken>,
     },
 }
 
 impl Config {
     pub async fn load() -> Result<Self> {
-        let path = Self::config_path()
-            .wrap_err("Failed to determine config path")?;
+        let path = Self::config_path().wrap_err("Failed to determine config path")?;
 
         if !path.exists() {
             return Ok(Self::default());
         }
 
-        let contents = fs::read_to_string(&path).await
+        let contents = fs::read_to_string(&path)
+            .await
             .wrap_err_with(|| format!("Failed to read config file: {}", path.display()))?;
 
         let config = toml::from_str(&contents)
@@ -49,18 +49,19 @@ impl Config {
     }
 
     pub async fn save(&self) -> Result<()> {
-        let path = Self::config_path()
-            .wrap_err("Failed to determine config path")?;
+        let path = Self::config_path().wrap_err("Failed to determine config path")?;
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await
-                .wrap_err_with(|| format!("Failed to create config directory: {}", parent.display()))?;
+            fs::create_dir_all(parent).await.wrap_err_with(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
         }
 
-        let contents = toml::to_string_pretty(self)
-            .wrap_err("Failed to serialize config to TOML")?;
+        let contents =
+            toml::to_string_pretty(self).wrap_err("Failed to serialize config to TOML")?;
 
-        fs::write(&path, contents).await
+        fs::write(&path, contents)
+            .await
             .wrap_err_with(|| format!("Failed to write config file: {}", path.display()))?;
 
         Ok(())
@@ -79,12 +80,18 @@ impl Config {
 
         let connection_info = match connection {
             NodeConnection::Local { path, jwt_tokens } => {
-                let config = load_config(path, node).await
+                let config = load_config(path, node)
+                    .await
                     .wrap_err_with(|| format!("Failed to load config for local node '{}'", node))?;
-                let multiaddr = fetch_multiaddr(&config)
-                    .wrap_err_with(|| format!("Failed to fetch multiaddr for local node '{}'", node))?;
-                let url = multiaddr_to_url(&multiaddr, "")
-                    .wrap_err_with(|| format!("Failed to convert multiaddr to URL for local node '{}'", node))?;
+                let multiaddr = fetch_multiaddr(&config).wrap_err_with(|| {
+                    format!("Failed to fetch multiaddr for local node '{}'", node)
+                })?;
+                let url = multiaddr_to_url(&multiaddr, "").wrap_err_with(|| {
+                    format!(
+                        "Failed to convert multiaddr to URL for local node '{}'",
+                        node
+                    )
+                })?;
 
                 ConnectionInfo::new(url, jwt_tokens.clone(), Some(node.to_string()))
             }
