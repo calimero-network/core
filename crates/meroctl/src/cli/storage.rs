@@ -25,15 +25,15 @@ impl SessionTokenCache {
     /// Store tokens for an external connection (session only)
     pub fn store_tokens(&self, url: &Url, tokens: &JwtToken) {
         let key = format!("external_{}", url.host_str().unwrap_or("unknown"));
-        let mut cache = self.tokens.lock().unwrap();
-        drop(cache.insert(key, tokens.clone()));
+        if let Ok(mut cache) = self.tokens.lock() {
+            drop(cache.insert(key, tokens.clone()));
+        }
     }
 
     /// Get tokens for an external connection
     pub fn get_tokens(&self, url: &Url) -> Option<JwtToken> {
         let key = format!("external_{}", url.host_str().unwrap_or("unknown"));
-        let cache = self.tokens.lock().unwrap();
-        cache.get(&key).cloned()
+        self.tokens.lock().ok()?.get(&key).cloned()
     }
 
     /// Update tokens for an external connection
@@ -43,8 +43,9 @@ impl SessionTokenCache {
 
     /// Clear all cached tokens
     pub fn clear_all(&self) {
-        let mut cache = self.tokens.lock().unwrap();
-        cache.clear();
+        if let Ok(mut cache) = self.tokens.lock() {
+            cache.clear();
+        }
     }
 }
 

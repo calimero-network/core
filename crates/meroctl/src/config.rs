@@ -93,10 +93,10 @@ impl Config {
                     )
                 })?;
 
-                ConnectionInfo::new(url, jwt_tokens.clone(), Some(node.to_string()))
+                ConnectionInfo::new(url, jwt_tokens.clone(), Some(node.to_owned()))
             }
             NodeConnection::Remote { url, jwt_tokens } => {
-                ConnectionInfo::new(url.clone(), jwt_tokens.clone(), Some(node.to_string()))
+                ConnectionInfo::new(url.clone(), jwt_tokens.clone(), Some(node.to_owned()))
             }
         };
 
