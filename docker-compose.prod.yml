@@ -12,16 +12,6 @@ x-node-defaults: &node-defaults
     retries: 5
 
 services:
-  # Volume initialization service
-  init_volume:
-    image: debian:bookworm-slim
-    user: root
-    volumes:
-      - calimero_auth_node:/calimero
-    command: >
-      /bin/sh -c "mkdir -p /calimero/data /calimero/logic /calimero/credentials &&
-                  chmod -R 777 /calimero"
-
   # Primary node
   node:
     <<: *node-defaults
@@ -29,19 +19,18 @@ services:
       - NODE_NAME=node1
       - NODE_PORT=2428
       - SWARM_PORT=2528
+      - CALIMERO_HOME=/calimero/data
     ports:
       - "2428:2428"
       - "2528:2528"
     entrypoint: ["/bin/sh", "-c"]
     command: >
-      "mkdir -p /calimero/data &&
-      if [ ! -d /calimero/data/config ]; then
-        merod --node-name node1 --home /calimero/data init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
+      "mkdir -p $${CALIMERO_HOME} $${CALIMERO_HOME}/../logic $${CALIMERO_HOME}/../credentials &&
+      if [ ! -d $${CALIMERO_HOME}/config ]; then
+        merod --node-name node1 --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
       fi &&
-      merod --node-name node1 --home /calimero/data run"
+      merod --node-name node1 --home $${CALIMERO_HOME} run"
     depends_on:
-      init_volume:
-        condition: service_completed_successfully
       auth:
         condition: service_healthy
     networks:
@@ -80,30 +69,19 @@ services:
 
   # Auth service
   auth:
-    image: calimero/auth:dev
+    image: calimero-auth
     build:
       context: .
       dockerfile: Dockerfile.auth
-      target: dev  # Use the development stage
-      args:
-        - CALIMERO_AUTH_FRONTEND_FETCH=1
+      target: final  # Use the final production stage
     volumes:
-      - .:/usr/src/calimero:cached  # Mount the entire source code
-      - cargo-registry:/usr/local/cargo/registry  # Cache cargo registry
-      - cargo-git:/usr/local/cargo/git  # Cache git repositories
-      - target:/usr/src/calimero/target  # Cache build artifacts
-      - calimero_auth_data:/data/auth_db  # Persist RocksDB data
+      - calimero_auth_data:/data  # Persist RocksDB data
     environment:
       - RUST_LOG=debug
-      - CARGO_TARGET_DIR=/usr/src/calimero/target
-      - CALIMERO_AUTH_FRONTEND_FETCH=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/auth/health"]
       interval: 30s
       timeout: 10s
-    depends_on:
-      init_volume:
-        condition: service_completed_successfully
     networks:
       - internal
       - web
@@ -166,10 +144,4 @@ volumes:
   calimero_auth_node:
     driver: local
   calimero_auth_data:
-    driver: local
-  cargo-registry:  # Persistent cargo registry cache
-    driver: local
-  cargo-git:  # Persistent cargo git cache
-    driver: local
-  target:  # Persistent build artifacts
     driver: local
