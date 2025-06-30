@@ -164,17 +164,14 @@ impl RootCommand {
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
                 // Even local nodes might require authentication - use session cache for unregistered nodes
-                let connection = authenticate_with_session_cache(
-                    &url,
-                    &format!("local node {}", node),
-                )
-                .await?;
+                let connection =
+                    authenticate_with_session_cache(&url, &format!("local node {}", node)).await?;
                 Ok(Some(connection))
             }
             (None, Some(api_url)) => {
                 // Use specific API URL - check session cache first, then authenticate if needed
-                let connection = authenticate_with_session_cache(api_url, &api_url.to_string())
-                    .await?;
+                let connection =
+                    authenticate_with_session_cache(api_url, &api_url.to_string()).await?;
                 Ok(Some(connection))
             }
             (None, None) => {

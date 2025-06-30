@@ -73,9 +73,7 @@ impl ConnectionInfo {
 
             let response = builder.send().await?;
 
-            if response.status() == 401
-                && self.jwt_tokens.lock().unwrap().is_some()
-            {
+            if response.status() == 401 && self.jwt_tokens.lock().unwrap().is_some() {
                 if let Some(auth_error) = response.headers().get("x-auth-error") {
                     if auth_error.to_str().unwrap_or("") == "token_expired" {
                         println!("🔄 Token expired, attempting refresh...");
@@ -91,11 +89,12 @@ impl ConnectionInfo {
                                     if let Err(e) =
                                         Self::update_node_tokens(node_name, &new_tokens).await
                                     {
-                                        println!("⚠️  Failed to update node config with new tokens: {}", e);
-                                    } else {
                                         println!(
-                                            "✅ Node configuration updated with new tokens"
+                                            "⚠️  Failed to update node config with new tokens: {}",
+                                            e
                                         );
+                                    } else {
+                                        println!("✅ Node configuration updated with new tokens");
                                     }
                                 } else {
                                     // This is an external connection - update session cache
@@ -119,11 +118,9 @@ impl ConnectionInfo {
                                             // Update stored tokens based on connection type
                                             if let Some(ref node_name) = self.node_name {
                                                 // This is a registered node - update config file
-                                                if let Err(e) = Self::update_node_tokens(
-                                                    node_name,
-                                                    &new_tokens,
-                                                )
-                                                .await
+                                                if let Err(e) =
+                                                    Self::update_node_tokens(node_name, &new_tokens)
+                                                        .await
                                                 {
                                                     println!("⚠️  Failed to update node config with new tokens: {}", e);
                                                 } else {
@@ -132,8 +129,11 @@ impl ConnectionInfo {
                                             } else {
                                                 // This is an external connection - update session cache
                                                 let session_cache = get_session_cache();
-                                                session_cache.update_tokens(&self.api_url, &new_tokens);
-                                                println!("✅ Session cache updated with new tokens");
+                                                session_cache
+                                                    .update_tokens(&self.api_url, &new_tokens);
+                                                println!(
+                                                    "✅ Session cache updated with new tokens"
+                                                );
                                             }
                                             continue;
                                         }

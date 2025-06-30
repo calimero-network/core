@@ -192,10 +192,7 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
 
 /// Helper function for session-based authentication with caching for external connections
 /// Returns a ConnectionInfo with appropriate authentication tokens
-pub async fn authenticate_with_session_cache(
-    url: &Url,
-    node_name: &str,
-) -> Result<ConnectionInfo> {
+pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Result<ConnectionInfo> {
     let temp_connection = ConnectionInfo::new(url.clone(), None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
