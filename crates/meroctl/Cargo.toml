@@ -31,10 +31,8 @@ toml.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 # New dependencies for JWT auth
-keyring = "2.0"
 axum = { version = "0.7", features = ["http1"] }
 webbrowser = "0.8"
-async-trait = "0.1"
 
 calimero-config.workspace = true
 calimero-context-config.workspace = true

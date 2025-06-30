@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -7,7 +6,6 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
-use clap::{Parser, Subcommand};
 use eyre::{bail, eyre, OptionExt, Result};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -15,65 +13,13 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use url::Url;
 
-use crate::cli::storage::{get_storage, JwtToken, ProfileConfig};
-use crate::cli::Environment;
+use crate::cli::storage::{get_session_cache, JwtToken};
 use crate::connection::ConnectionInfo;
-
-#[derive(Debug, Parser)]
-pub struct AuthCommand {
-    #[command(subcommand)]
-    pub action: AuthAction,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum AuthAction {
-    /// Clear all cached authentication tokens from keychain
-    Clear(ClearCommand),
-}
-
-#[derive(Debug, Parser)]
-pub struct ClearCommand {
-    #[arg(long, short)]
-    pub force: bool,
-}
 
 #[derive(Debug, Deserialize)]
 struct AuthCallback {
     access_token: Option<String>,
     refresh_token: Option<String>,
-}
-
-impl AuthCommand {
-    pub async fn run(&self, _environment: &Environment) -> Result<()> {
-        match &self.action {
-            AuthAction::Clear(cmd) => cmd.run().await,
-        }
-    }
-}
-
-impl ClearCommand {
-    pub async fn run(&self) -> Result<()> {
-        if !self.force {
-            print!("Are you sure you want to clear all cached tokens? (y/N): ");
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            let _ = io::stdin().read_line(&mut input)?;
-
-            let input = input.trim().to_lowercase();
-            if input != "y" && input != "yes" {
-                println!("Cancelled");
-                return Ok(());
-            }
-        }
-
-        let storage = get_storage();
-        storage.clear_all().await?;
-
-        println!("✅ Successfully cleared all cached authentication tokens");
-
-        Ok(())
-    }
 }
 
 pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
@@ -210,7 +156,8 @@ fn build_auth_url(api_url: &Url, callback_port: u16) -> Result<Url> {
             "callback-url",
             &format!("http://127.0.0.1:{}/callback", callback_port),
         )
-        .append_pair("app-url", api_url.as_str().trim_end_matches('/'));
+        .append_pair("app-url", api_url.as_str().trim_end_matches('/'))
+        .append_pair("permissions", "admin");
 
     Ok(auth_url)
 }
@@ -243,47 +190,36 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
     }
 }
 
-/// Helper function for keychain-based authentication with caching
+/// Helper function for session-based authentication with caching for external connections
 /// Returns a ConnectionInfo with appropriate authentication tokens
-pub async fn authenticate_with_keychain_cache(
+pub async fn authenticate_with_session_cache(
     url: &Url,
-    keychain_key: &str,
     node_name: &str,
 ) -> Result<ConnectionInfo> {
     let temp_connection = ConnectionInfo::new(url.clone(), None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
-        // Check if we have tokens in keychain for this URL
-        let storage = get_storage();
+        // Check if we have tokens in session cache for this URL
+        let session_cache = get_session_cache();
 
-        match storage.load_profile(keychain_key).await? {
-            Some(profile_config)
-                if profile_config.node_url == *url && profile_config.token.is_some() =>
-            {
-                // We have existing tokens for this URL
-                println!("✅ Using cached authentication for {}", node_name);
-                Ok(ConnectionInfo::new(url.clone(), profile_config.token, None))
-            }
-            _ => {
-                // Need to authenticate and store in keychain
-                println!("🔐 {} requires authentication", node_name);
-                match authenticate(url).await {
-                    Ok(jwt_tokens) => {
-                        // Store in keychain for future use
-                        let profile_config = ProfileConfig {
-                            auth_profile: keychain_key.to_string(),
-                            node_url: url.clone(),
-                            token: Some(jwt_tokens.clone()),
-                        };
-                        storage.store_profile(keychain_key, &profile_config).await?;
-                        println!("🔐 Tokens cached in keychain for {}", node_name);
+        if let Some(cached_tokens) = session_cache.get_tokens(url) {
+            // We have existing tokens for this URL in session cache
+            println!("✅ Using cached authentication for {}", node_name);
+            Ok(ConnectionInfo::new(url.clone(), Some(cached_tokens), None))
+        } else {
+            // Need to authenticate and store in session cache
+            println!("🔐 {} requires authentication", node_name);
+            match authenticate(url).await {
+                Ok(jwt_tokens) => {
+                    // Store in session cache for future use during this session
+                    session_cache.store_tokens(url, &jwt_tokens);
+                    println!("🔐 Tokens cached for session for {}", node_name);
 
-                        Ok(ConnectionInfo::new(url.clone(), Some(jwt_tokens), None))
-                    }
-                    Err(e) => {
-                        bail!("Authentication failed for {}: {}", node_name, e);
-                    }
+                    Ok(ConnectionInfo::new(url.clone(), Some(jwt_tokens), None))
+                }
+                Err(e) => {
+                    bail!("Authentication failed for {}: {}", node_name, e);
                 }
             }
         }

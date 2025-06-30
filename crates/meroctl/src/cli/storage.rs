@@ -1,16 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use async_trait::async_trait;
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 use url::Url;
-
-mod file;
-mod keychain;
-
-pub use file::FileStorage;
-pub use keychain::KeychainStorage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtToken {
@@ -18,63 +10,48 @@ pub struct JwtToken {
     pub refresh_token: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfileConfig {
-    pub auth_profile: String,
-    pub node_url: Url,
-    pub token: Option<JwtToken>,
+/// Simple in-memory cache for external connection tokens
+/// These tokens are only kept for the duration of the session
+#[derive(Debug, Default)]
+pub struct SessionTokenCache {
+    tokens: Mutex<HashMap<String, JwtToken>>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct AllProfiles {
-    pub profiles: HashMap<String, ProfileConfig>,
-    pub active_profile: Option<String>,
-}
-
-#[async_trait]
-pub trait TokenStorage: Send + Sync {
-    /// Load all profiles in a single operation
-    async fn load_all_profiles(&self) -> Result<AllProfiles>;
-
-    /// Save all profiles in a single operation
-    async fn save_all_profiles(&self, profiles: &AllProfiles) -> Result<()>;
-
-    /// Get a specific profile config
-    async fn load_profile(&self, name: &str) -> Result<Option<ProfileConfig>> {
-        Ok(self.load_all_profiles().await?.profiles.get(name).cloned())
+impl SessionTokenCache {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Store a profile config
-    async fn store_profile(&self, name: &str, config: &ProfileConfig) -> Result<()>;
+    /// Store tokens for an external connection (session only)
+    pub fn store_tokens(&self, url: &Url, tokens: &JwtToken) {
+        let key = format!("external_{}", url.host_str().unwrap_or("unknown"));
+        let mut cache = self.tokens.lock().unwrap();
+        drop(cache.insert(key, tokens.clone()));
+    }
 
-    /// Remove a profile
-    async fn remove_profile(&self, name: &str) -> Result<()>;
+    /// Get tokens for an external connection
+    pub fn get_tokens(&self, url: &Url) -> Option<JwtToken> {
+        let key = format!("external_{}", url.host_str().unwrap_or("unknown"));
+        let cache = self.tokens.lock().unwrap();
+        cache.get(&key).cloned()
+    }
 
-    /// Get current active profile with its config
-    async fn get_current_profile(&self) -> Result<Option<(String, ProfileConfig)>>;
+    /// Update tokens for an external connection
+    pub fn update_tokens(&self, url: &Url, tokens: &JwtToken) {
+        self.store_tokens(url, tokens);
+    }
 
-    /// Set active profile
-    async fn set_current_profile(&self, name: &str) -> Result<()>;
-
-    /// List all profiles
-    async fn list_profiles(&self) -> Result<(Vec<String>, Option<String>)>;
-
-    /// Clear all profiles
-    async fn clear_all(&self) -> Result<()>;
+    /// Clear all cached tokens
+    pub fn clear_all(&self) {
+        let mut cache = self.tokens.lock().unwrap();
+        cache.clear();
+    }
 }
 
-/// Global storage instance to maximize cache utilization
-/// This ensures we use the same storage instance across the entire application lifecycle
-static GLOBAL_STORAGE: OnceLock<Arc<dyn TokenStorage>> = OnceLock::new();
+/// Global session cache instance
+static SESSION_CACHE: OnceLock<Arc<SessionTokenCache>> = OnceLock::new();
 
-/// Get the global storage instance - reuses the same instance for maximum cache efficiency
-pub fn get_storage() -> &'static Arc<dyn TokenStorage> {
-    GLOBAL_STORAGE.get_or_init(|| {
-        let storage: Arc<dyn TokenStorage> = if KeychainStorage::is_available() {
-            Arc::new(KeychainStorage::new())
-        } else {
-            Arc::new(FileStorage::new())
-        };
-        storage
-    })
+/// Get the global session cache instance
+pub fn get_session_cache() -> &'static Arc<SessionTokenCache> {
+    SESSION_CACHE.get_or_init(|| Arc::new(SessionTokenCache::new()))
 }

@@ -25,7 +25,7 @@ mod peers;
 pub mod storage;
 
 use app::AppCommand;
-use auth::{authenticate_with_keychain_cache, check_authentication, AuthCommand};
+use auth::{authenticate_with_session_cache, check_authentication};
 use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
@@ -58,7 +58,6 @@ pub struct RootCommand {
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
     App(AppCommand),
-    Auth(AuthCommand),
     Context(ContextCommand),
     Call(CallCommand),
     Peers(PeersCommand),
@@ -107,9 +106,8 @@ impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
 
-        // Some commands don't require a connection (like auth and node commands)
+        // Some commands don't require a connection (like node commands)
         let needs_connection = match &self.action {
-            SubCommands::Auth(_) => false,
             SubCommands::Node(_) => false,
             _ => true,
         };
@@ -131,7 +129,6 @@ impl RootCommand {
 
         let result = match self.action {
             SubCommands::App(application) => application.run(&environment).await,
-            SubCommands::Auth(auth) => auth.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
@@ -166,22 +163,18 @@ impl RootCommand {
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                // Even local nodes might require authentication - authenticate immediately since this is not a registered node
-                let keychain_key = format!("node_{}", url.host_str().unwrap_or("unknown"));
-                let connection = authenticate_with_keychain_cache(
+                // Even local nodes might require authentication - use session cache for unregistered nodes
+                let connection = authenticate_with_session_cache(
                     &url,
-                    &keychain_key,
                     &format!("local node {}", node),
                 )
                 .await?;
                 Ok(Some(connection))
             }
             (None, Some(api_url)) => {
-                // Use specific API URL - check keychain first, then authenticate if needed
-                let keychain_key = format!("api_{}", api_url.host_str().unwrap_or("unknown"));
-                let connection =
-                    authenticate_with_keychain_cache(api_url, &keychain_key, &api_url.to_string())
-                        .await?;
+                // Use specific API URL - check session cache first, then authenticate if needed
+                let connection = authenticate_with_session_cache(api_url, &api_url.to_string())
+                    .await?;
                 Ok(Some(connection))
             }
             (None, None) => {
