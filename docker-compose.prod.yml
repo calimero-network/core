@@ -95,7 +95,7 @@ services:
       - "traefik.enable=true"
       
       # Public Routes (No Auth)
-      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || PathPrefix(`/admin`)"
+      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || (PathPrefix(`/admin`) && !PathPrefix(`/admin-dashboard`))"
       - "traefik.http.routers.auth-public.entrypoints=web"
       - "traefik.http.routers.auth-public.service=auth-service"
       - "traefik.http.routers.auth-public.middlewares=cors"
