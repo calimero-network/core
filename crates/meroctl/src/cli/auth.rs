@@ -36,7 +36,11 @@ pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
     let auth_url = build_auth_url(api_url, callback_port)?;
 
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
-        bail!("Failed to open browser: {}. Please manually open this URL: {}", e, auth_url);
+        bail!(
+            "Failed to open browser: {}. Please manually open this URL: {}",
+            e,
+            auth_url
+        );
     }
 
     let auth_result = timeout(Duration::from_secs(300), callback_rx)
@@ -160,9 +164,7 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
 
     if auth_mode != "none" {
         match authenticate(url).await {
-            Ok(tokens) => {
-                Ok(Some(tokens))
-            }
+            Ok(tokens) => Ok(Some(tokens)),
             Err(e) => {
                 bail!("Authentication failed for {}: {}", node_name, e);
             }

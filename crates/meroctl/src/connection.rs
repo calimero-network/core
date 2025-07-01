@@ -104,7 +104,8 @@ impl ConnectionInfo {
                                         // Update stored tokens based on connection type
                                         if let Some(ref node_name) = self.node_name {
                                             // This is a registered node - update config file
-                                            Self::update_node_tokens(node_name, &new_tokens).await?;
+                                            Self::update_node_tokens(node_name, &new_tokens)
+                                                .await?;
                                         } else {
                                             // This is an external connection - update session cache
                                             let session_cache = get_session_cache();
