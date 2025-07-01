@@ -13,10 +13,12 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 url = { workspace = true, features = ["serde"] }
+base64.workspace = true
 
 calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true
 calimero-primitives.workspace = true
+tokio-util.workspace = true
 
 [lints]
 workspace = true

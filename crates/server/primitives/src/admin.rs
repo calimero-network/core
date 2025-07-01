@@ -35,6 +35,70 @@ impl InstallApplicationRequest {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallApplicationStreamRequest {
+    pub expected_size: Option<u64>,
+    pub expected_hash: Option<Hash>,
+    pub metadata: Option<String>,
+}
+
+impl InstallApplicationStreamRequest {
+    pub const fn new(
+        expected_size: Option<u64>,
+        expected_hash: Option<Hash>,
+        metadata: Option<String>,
+    ) -> Self {
+        Self {
+            expected_size,
+            expected_hash,
+            metadata,
+        }
+    }
+
+    pub fn decode_metadata(&self) -> eyre::Result<Vec<u8>> {
+        match &self.metadata {
+            Some(base64_metadata) => {
+                use base64::engine::general_purpose::STANDARD;
+                use base64::Engine;
+                STANDARD
+                    .decode(base64_metadata)
+                    .map_err(|e| eyre::eyre!("Failed to decode metadata: {}", e))
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallApplicationStreamJsonRequest {
+    /// Base64 encoding of the application data
+    pub application_data: String,
+    /// Application metadata
+    pub metadata: Vec<u8>,
+    /// Expected size in bytes for validation
+    pub expected_size: Option<u64>,
+    /// Expected hash for integrity validation
+    pub expected_hash: Option<Hash>,
+}
+
+impl InstallApplicationStreamJsonRequest {
+    pub const fn new(
+        application_data: String,
+        expected_size: Option<u64>,
+        expected_hash: Option<Hash>,
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            application_data,
+            expected_size,
+            expected_hash,
+            metadata,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationInstallResponseData {

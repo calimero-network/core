@@ -17,6 +17,45 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
+    pub async fn post_binary<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        content_type: &str,
+    ) -> EyreResult<T> {
+        let mut url = self.api_url.clone();
+        url.set_path(path);
+
+        let mut builder = self
+            .client
+            .post(url)
+            .header("Content-Type", content_type)
+            .body(data);
+
+        if let Some(keypair) = &self.auth_key {
+            let timestamp = Utc::now().timestamp().to_string();
+            let signature = keypair.sign(timestamp.as_bytes())?;
+
+            builder = builder
+                .header("X-Signature", bs58::encode(signature).into_string())
+                .header("X-Timestamp", timestamp);
+        }
+
+        let response = builder.send().await?;
+
+        if !response.status().is_success() {
+            bail!(ApiError {
+                status_code: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|e| eyre!("Failed to get response text: {e}"))?,
+            });
+        }
+
+        response.json::<T>().await.map_err(Into::into)
+    }
+
     pub async fn new(api_url: Url, auth_key: Option<Keypair>) -> Self {
         Self {
             api_url,

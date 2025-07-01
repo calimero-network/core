@@ -32,8 +32,8 @@ use crate::admin::handlers::add_client_key::{
     add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
 };
 use crate::admin::handlers::applications::{
-    get_application, install_application, install_dev_application, list_applications,
-    uninstall_application,
+    get_application, install_application, install_application_stream, install_dev_application,
+    list_applications, uninstall_application,
 };
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
@@ -210,6 +210,14 @@ pub(crate) fn setup(
         .route(
             "/dev/install-application",
             post(install_application::handler),
+        )
+        .route(
+            "/dev/install-application-stream",
+            post(install_application_stream::handler),
+        )
+        .route(
+            "/dev/install-application-json",
+            post(install_application_stream::json_handler),
         )
         .route("/dev/applications", get(list_applications::handler))
         .route(
