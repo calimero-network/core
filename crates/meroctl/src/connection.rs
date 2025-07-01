@@ -12,9 +12,9 @@ use crate::cli::ApiError;
 use crate::common::RequestType;
 
 #[derive(Debug)]
-pub enum TokenError {
-    RefreshFailed,
+enum RefreshError {
     NoRefreshToken,
+    RefreshFailed,
 }
 
 #[derive(Clone, Debug)]
@@ -22,7 +22,7 @@ pub struct ConnectionInfo {
     pub api_url: Url,
     pub client: Client,
     pub jwt_tokens: Arc<Mutex<Option<JwtToken>>>,
-    pub node_name: Option<String>, // Track which node this connection belongs to
+    pub node_name: Option<String>,
 }
 
 impl ConnectionInfo {
@@ -75,9 +75,9 @@ impl ConnectionInfo {
 
             if response.status() == 401 && self.jwt_tokens.lock().unwrap().is_some() {
                 if let Some(auth_error) = response.headers().get("x-auth-error") {
+                    println!("Auth error: {}", auth_error.to_str().unwrap_or(""));
                     if auth_error.to_str().unwrap_or("") == "token_expired" {
-                        println!("🔄 Token expired, attempting refresh...");
-
+                        // Try token refresh first, then fall back to full authentication
                         match self.refresh_token().await {
                             Ok(new_tokens) => {
                                 // Update the in-memory tokens immediately
@@ -86,67 +86,41 @@ impl ConnectionInfo {
                                 // Update stored tokens based on connection type
                                 if let Some(ref node_name) = self.node_name {
                                     // This is a registered node - update config file
-                                    if let Err(e) =
-                                        Self::update_node_tokens(node_name, &new_tokens).await
-                                    {
-                                        println!(
-                                            "⚠️  Failed to update node config with new tokens: {}",
-                                            e
-                                        );
-                                    } else {
-                                        println!("✅ Node configuration updated with new tokens");
-                                    }
+                                    Self::update_node_tokens(node_name, &new_tokens).await?;
                                 } else {
                                     // This is an external connection - update session cache
                                     let session_cache = get_session_cache();
                                     session_cache.update_tokens(&self.api_url, &new_tokens);
-                                    println!("✅ Session cache updated with new tokens");
                                 }
                                 continue;
                             }
-                            Err(e) => match e {
-                                TokenError::NoRefreshToken | TokenError::RefreshFailed => {
-                                    println!("🔄 Attempting automatic re-authentication...");
+                            Err(RefreshError::RefreshFailed) => {
+                                // Token refresh failed, try full re-authentication
+                                match authenticate(&self.api_url).await {
+                                    Ok(new_tokens) => {
+                                        // Update the in-memory tokens immediately
+                                        *self.jwt_tokens.lock().unwrap() = Some(new_tokens.clone());
 
-                                    // Try automatic authentication
-                                    match authenticate(&self.api_url).await {
-                                        Ok(new_tokens) => {
-                                            // Update the in-memory tokens immediately
-                                            *self.jwt_tokens.lock().unwrap() =
-                                                Some(new_tokens.clone());
-
-                                            // Update stored tokens based on connection type
-                                            if let Some(ref node_name) = self.node_name {
-                                                // This is a registered node - update config file
-                                                if let Err(e) =
-                                                    Self::update_node_tokens(node_name, &new_tokens)
-                                                        .await
-                                                {
-                                                    println!("⚠️  Failed to update node config with new tokens: {}", e);
-                                                } else {
-                                                    println!("✅ Node configuration updated with new tokens");
-                                                }
-                                            } else {
-                                                // This is an external connection - update session cache
-                                                let session_cache = get_session_cache();
-                                                session_cache
-                                                    .update_tokens(&self.api_url, &new_tokens);
-                                                println!(
-                                                    "✅ Session cache updated with new tokens"
-                                                );
-                                            }
-                                            continue;
+                                        // Update stored tokens based on connection type
+                                        if let Some(ref node_name) = self.node_name {
+                                            // This is a registered node - update config file
+                                            Self::update_node_tokens(node_name, &new_tokens).await?;
+                                        } else {
+                                            // This is an external connection - update session cache
+                                            let session_cache = get_session_cache();
+                                            session_cache.update_tokens(&self.api_url, &new_tokens);
                                         }
-                                        Err(auth_err) => {
-                                            println!(
-                                                "❌ Automatic re-authentication failed: {}",
-                                                auth_err
-                                            );
-                                            bail!("Authentication failed. Please re-add the node or use --api with the URL to reauthenticate");
-                                        }
+                                        continue;
+                                    }
+                                    Err(auth_err) => {
+                                        bail!("Authentication failed: {}", auth_err);
                                     }
                                 }
-                            },
+                            }
+                            Err(RefreshError::NoRefreshToken) => {
+                                // No refresh token available, don't try re-authentication
+                                bail!("No refresh token available for authentication");
+                            }
                         }
                     }
                 }
@@ -172,26 +146,27 @@ impl ConnectionInfo {
         }
     }
 
-    async fn refresh_token(&self) -> Result<JwtToken, TokenError> {
+    async fn refresh_token(&self) -> Result<JwtToken, RefreshError> {
         if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
             let refresh_token = tokens
                 .refresh_token
                 .clone()
-                .ok_or(TokenError::NoRefreshToken)?;
+                .ok_or(RefreshError::NoRefreshToken)?;
 
             match self
                 .try_refresh_token(&tokens.access_token, &refresh_token)
                 .await
             {
                 Ok(new_token) => {
-                    println!("✅ Token refreshed successfully");
                     return Ok(new_token);
                 }
-                Err(_) => return Err(TokenError::RefreshFailed),
+                Err(_) => {
+                    return Err(RefreshError::RefreshFailed);
+                }
             }
         }
 
-        Err(TokenError::NoRefreshToken)
+        Err(RefreshError::NoRefreshToken)
     }
 
     async fn try_refresh_token(&self, access_token: &str, refresh_token: &str) -> Result<JwtToken> {

@@ -32,18 +32,12 @@ pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
 
     // Set up callback server
     let (callback_port, callback_rx) = start_callback_server().await?;
-    println!("🌐 Started local callback server on port {}", callback_port);
 
     let auth_url = build_auth_url(api_url, callback_port)?;
-    println!("🔗 Opening browser to: {}", auth_url);
 
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
-        println!("⚠️  Failed to open browser automatically: {}", e);
-        println!("📋 Please manually open this URL in your browser:");
-        println!("   {}", auth_url);
+        bail!("Failed to open browser: {}. Please manually open this URL: {}", e, auth_url);
     }
-
-    println!("⏳ Waiting for authentication callback (timeout: 300s)...");
 
     let auth_result = timeout(Duration::from_secs(300), callback_rx)
         .await
@@ -131,14 +125,10 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
     let _server_handle = tokio::spawn(async move {
         let result = axum::serve(listener, app).await;
 
-        match result {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Callback server error: {}", e);
-                if let Ok(mut guard) = tx.lock() {
-                    if let Some(sender) = guard.take() {
-                        drop(sender.send(Err(format!("Server error: {}", e))));
-                    }
+        if let Err(e) = result {
+            if let Ok(mut guard) = tx.lock() {
+                if let Some(sender) = guard.take() {
+                    drop(sender.send(Err(format!("Server error: {}", e))));
                 }
             }
         }
@@ -169,15 +159,8 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
-        println!(
-            "🔐 {} requires authentication (mode: {})",
-            node_name, auth_mode
-        );
-        println!("🚀 Starting authentication process...");
-
         match authenticate(url).await {
             Ok(tokens) => {
-                println!("✅ Authentication successful for {}", node_name);
                 Ok(Some(tokens))
             }
             Err(e) => {
@@ -185,7 +168,6 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
             }
         }
     } else {
-        println!("ℹ️ {} does not require authentication", node_name);
         Ok(None)
     }
 }
@@ -202,16 +184,13 @@ pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Resu
 
         if let Some(cached_tokens) = session_cache.get_tokens(url) {
             // We have existing tokens for this URL in session cache
-            println!("✅ Using cached authentication for {}", node_name);
             Ok(ConnectionInfo::new(url.clone(), Some(cached_tokens), None))
         } else {
             // Need to authenticate and store in session cache
-            println!("🔐 {} requires authentication", node_name);
             match authenticate(url).await {
                 Ok(jwt_tokens) => {
                     // Store in session cache for future use during this session
                     session_cache.store_tokens(url, &jwt_tokens);
-                    println!("🔐 Tokens cached for session for {}", node_name);
 
                     Ok(ConnectionInfo::new(url.clone(), Some(jwt_tokens), None))
                 }

@@ -143,7 +143,6 @@ impl NodeCommand {
                     );
                 }
                 config.active_node = Some(cmd.name.clone());
-                println!("✅ Set '{}' as active node", cmd.name);
             }
             NodeCommand::List => {
                 let mut table = Table::new();
@@ -163,10 +162,6 @@ impl NodeCommand {
                                 table.add_row(vec![name, "Remote", url.as_str(), active_marker]);
                         }
                     }
-                }
-
-                if let Some(active) = &config.active_node {
-                    println!("Active node: {}\n", active);
                 }
                 println!("{table}");
                 return Ok(());
@@ -204,7 +199,6 @@ async fn determine_auth_tokens(
 ) -> Result<Option<JwtToken>> {
     // If access token is provided, use direct JWT tokens (skip automatic auth)
     if let Some(access_token) = &cmd.access_token {
-        println!("🔐 Using provided JWT tokens for {}", node_description);
         return Ok(Some(JwtToken {
             access_token: access_token.clone(),
             refresh_token: cmd.refresh_token.clone(),
