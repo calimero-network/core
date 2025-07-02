@@ -246,19 +246,3 @@ impl InstallCommand {
         Ok(())
     }
 }
-
-// TODO:IMPLTEST
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_stream_upload_preparation() {
-        // Test preparing stream data for upload
-    }
-
-    #[tokio::test]
-    async fn test_stream_connection_handling() {
-        // Test connection and stream transmission
-    }
-}
