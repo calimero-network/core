@@ -17,6 +17,27 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
+    pub async fn new(api_url: Url, auth_key: Option<Keypair>) -> Self {
+        Self {
+            api_url,
+            auth_key,
+            client: Client::new(),
+        }
+    }
+
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> EyreResult<T> {
+        self.request(RequestType::Get, path, None::<()>).await
+    }
+
+    pub async fn post<I, O>(&self, path: &str, body: I) -> EyreResult<O>
+    where
+        I: Serialize,
+        O: DeserializeOwned,
+    {
+        self.request(RequestType::Post, path, Some(body)).await
+    }
+
+    /// Send binary data as HTTP POST to the specified path.
     pub async fn post_binary<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -54,26 +75,6 @@ impl ConnectionInfo {
         }
 
         response.json::<T>().await.map_err(Into::into)
-    }
-
-    pub async fn new(api_url: Url, auth_key: Option<Keypair>) -> Self {
-        Self {
-            api_url,
-            auth_key,
-            client: Client::new(),
-        }
-    }
-
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> EyreResult<T> {
-        self.request(RequestType::Get, path, None::<()>).await
-    }
-
-    pub async fn post<I, O>(&self, path: &str, body: I) -> EyreResult<O>
-    where
-        I: Serialize,
-        O: DeserializeOwned,
-    {
-        self.request(RequestType::Post, path, Some(body)).await
     }
 
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> EyreResult<T> {

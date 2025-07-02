@@ -63,6 +63,13 @@ impl InstallCommand {
         Ok(())
     }
 
+    /// Install an application by reading data from standard input.
+    ///
+    /// Example usage:
+    /// `cat app.wasm | meroctl app install --stdin`
+    ///
+    /// The implementation reads all available data from stdin, encodes its metadata as base64 and sends the binary data
+    /// as an HTTP POST request to the server's stream endpoint.
     async fn install_from_stdin(&self, environment: &Environment) -> EyreResult<ApplicationId> {
         use base64::engine::general_purpose::STANDARD;
         use base64::Engine;
