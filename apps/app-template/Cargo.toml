@@ -1,19 +1,21 @@
 [package]
 name = "app-template"
 version = "0.1.0"
-authors.workspace = true
-edition.workspace = true
-repository.workspace = true
-license.workspace = true
-license-file.workspace = true
+edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-thiserror.workspace = true
-calimero-sdk.workspace = true
-calimero-storage.workspace = true
+thiserror = "2.0.12"
+calimero-sdk = { git = "https://github.com/calimero-network/core" }
+calimero-storage = { git = "https://github.com/calimero-network/core" }
 
-[lints]
-workspace = true
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
