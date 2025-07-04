@@ -1,5 +1,6 @@
 pub use {borsh, serde, serde_json};
 
+pub mod blob;
 pub mod env;
 pub mod event;
 mod macros;

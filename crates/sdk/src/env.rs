@@ -10,6 +10,7 @@ use crate::sys::{
 pub mod ext;
 
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
+const BLOB_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 2);
 
 #[track_caller]
 #[inline]
@@ -203,4 +204,61 @@ pub fn time_now() -> u64 {
     }
 
     u64::from_le_bytes(bytes)
+}
+
+/// Reserves a register for blob operations
+pub fn register_reserve() -> Result<RegisterId, crate::types::Error> {
+    Ok(BLOB_REGISTER)
+}
+
+/// Gets data from a register as a fixed-size array
+pub fn register_get<const N: usize>(
+    register_id: RegisterId,
+) -> Result<[u8; N], crate::types::Error> {
+    read_register_sized(register_id)
+        .ok_or_else(|| crate::types::Error::msg("Failed to read data from register"))
+}
+
+/// Store blob data and return the blob ID
+pub fn store_blob_bytes(data: &[u8]) -> Result<[u8; 32], String> {
+    let register_id =
+        register_reserve().map_err(|e| format!("Failed to reserve register: {:?}", e))?;
+
+    let success = unsafe {
+        sys::store_blob(Buffer::from(data), register_id)
+            .try_into()
+            .unwrap_or(false)
+    };
+
+    if success {
+        // Blob was stored successfully, get the blob ID from register
+        register_get(register_id).map_err(|e| format!("Failed to get blob ID: {:?}", e))
+    } else {
+        Err("Failed to store blob".to_owned())
+    }
+}
+
+/// Load blob data by blob ID
+pub fn load_blob_bytes(blob_id: &[u8]) -> Result<Vec<u8>, String> {
+    if blob_id.len() != 32 {
+        return Err("Blob ID must be 32 bytes".to_owned());
+    }
+
+    let register_id =
+        register_reserve().map_err(|e| format!("Failed to reserve register: {:?}", e))?;
+
+    let success = unsafe {
+        sys::load_blob(Buffer::from(blob_id), register_id)
+            .try_into()
+            .unwrap_or(false)
+    };
+
+    if success {
+        // Blob was found, get the data from register
+        let data = read_register(register_id)
+            .ok_or_else(|| "Failed to read blob data from register".to_owned())?;
+        Ok(data)
+    } else {
+        Err("Blob not found".to_owned())
+    }
 }

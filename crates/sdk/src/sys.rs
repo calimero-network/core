@@ -39,6 +39,10 @@ wasm_imports! {
         // --
         fn send_proposal(value: Buffer<'_>, buf: BufferMut<'_>);
         fn approve_proposal(value: Buffer<'_>);
+        // --
+        // Simplified blob functions
+        fn store_blob(data: Buffer<'_>, register_id: RegisterId) -> Bool;
+        fn load_blob(blob_id: Buffer<'_>, register_id: RegisterId) -> Bool;
     }
 }
 
