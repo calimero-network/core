@@ -7,9 +7,11 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
+bytes.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, optional = true }
+hex.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
