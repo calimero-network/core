@@ -14,9 +14,6 @@ pub const EXAMPLES: &str = r"
 
   # Generate ABI
   $ cargo mero abi
-
-  # Publish app
-  $ cargo mero publish
 ";
 
 #[derive(Debug, Parser)]
