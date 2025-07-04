@@ -4,17 +4,13 @@
     reason = "TODO: Check if this is necessary"
 )]
 
-use std::collections::BTreeMap;
 use std::pin::pin;
-use std::sync::Arc;
 
 use actix::{Actor, AsyncContext, WrapFuture};
 use calimero_blobstore::BlobManager;
 use calimero_context_primitives::client::ContextClient;
 use calimero_node_primitives::client::NodeClient;
-use calimero_primitives::blobs::BlobId;
 use futures_util::StreamExt;
-use tokio::sync::Mutex;
 use tracing::error;
 
 pub mod handlers;
@@ -33,12 +29,6 @@ pub struct NodeManager {
 
     context_client: ContextClient,
     node_client: NodeClient,
-
-    // -- blobs --
-    // todo! potentially make this a dashmap::DashMap
-    // todo! use cached::TimedSizedCache with a gc task
-    blob_cache: BTreeMap<BlobId, Arc<Mutex<Option<Arc<[u8]>>>>>,
-    // fixme! this should be opaque, so we can permit mmapping blobs
 }
 
 impl NodeManager {
@@ -53,8 +43,6 @@ impl NodeManager {
             sync_manager,
             context_client,
             node_client,
-
-            blob_cache: BTreeMap::new(),
         }
     }
 }
