@@ -367,7 +367,16 @@ async fn internal_execute(
 ) -> eyre::Result<Outcome> {
     let storage = ContextStorage::from(datastore, context.id);
 
-    let (outcome, storage) = execute(guard, module, executor, method, input, storage).await?;
+    let (outcome, storage) = execute(
+        guard,
+        module,
+        executor,
+        method,
+        input,
+        storage,
+        node_client.clone(),
+    )
+    .await?;
 
     if outcome.returns.is_err() {
         return Ok(outcome);
@@ -433,17 +442,29 @@ pub async fn execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     mut storage: ContextStorage,
+    node_client: NodeClient,
 ) -> eyre::Result<(Outcome, ContextStorage)> {
     let context_id = **context;
 
-    global_runtime()
+    // Run WASM execution in blocking context
+    let (outcome, storage) = global_runtime()
         .spawn_blocking(move || {
-            let outcome = module.run(context_id, executor, &method, &input, &mut storage)?;
+            // Run the module - blob operations will be handled on-demand via actor messages
+            let outcome = module.run(
+                context_id,
+                executor,
+                &method,
+                &input,
+                &mut storage,
+                Some(node_client),
+            )?;
 
-            Ok((outcome, storage))
+            Ok::<(Outcome, ContextStorage), eyre::Error>((outcome, storage))
         })
         .await
-        .wrap_err("failed to receive execution response")?
+        .wrap_err("failed to receive execution response")??;
+
+    Ok((outcome, storage))
 }
 
 fn substitute_aliases_in_payload(
