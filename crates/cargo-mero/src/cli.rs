@@ -12,6 +12,9 @@ pub const EXAMPLES: &str = r"
   # Build app
   $ cargo mero build
 
+  # build app with additional cargo arguments
+  $ cargo mero build --verbose
+
   # Generate ABI
   $ cargo mero abi
 ";
@@ -28,7 +31,7 @@ pub struct RootCommand {
 #[derive(Debug, Subcommand)]
 enum SubCommands {
     New(NewCommand),
-    Build,
+    Build(BuildCommand),
     Abi,
 }
 
@@ -37,12 +40,17 @@ pub struct NewCommand {
     pub name: PathBuf,
 }
 
+#[derive(Debug, Parser)]
+pub struct BuildCommand {
+    pub args: Vec<String>,
+}
+
 impl RootCommand {
     pub async fn run(self) -> eyre::Result<()> {
         match self.command {
             SubCommands::Abi => abi::run().await,
             SubCommands::New(args) => new::run(args).await,
-            SubCommands::Build => build::run().await,
+            SubCommands::Build(args) => build::run(args.args).await,
         }
     }
 }

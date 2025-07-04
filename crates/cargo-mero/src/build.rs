@@ -7,7 +7,7 @@ use eyre::{bail, Context};
 
 use crate::utils::new_command;
 
-pub async fn run() -> eyre::Result<()> {
+pub async fn run(args: Vec<String>) -> eyre::Result<()> {
     let output = new_command("rustup")
         .arg("target")
         .arg("add")
@@ -20,15 +20,20 @@ pub async fn run() -> eyre::Result<()> {
         bail!("Adding wasm32-unknown-unknown target command failed");
     }
 
-    let output = new_command("cargo")
+    let mut build_cmd = new_command("cargo");
+    let _ = build_cmd
         .arg("build")
         .arg("--target")
-        .arg("wasm32-unknown-unknown ")
+        .arg("wasm32-unknown-unknown")
         .arg("--profile")
-        .arg("app-release")
-        .output()
-        .await
-        .wrap_err("cargo build failed")?;
+        .arg("app-release");
+
+    // Add additional pass-through cargo arguments
+    for arg in args {
+        let _ = build_cmd.arg(arg);
+    }
+
+    let output = build_cmd.output().await.wrap_err("cargo build failed")?;
 
     if !output.status.success() {
         bail!("cargo build command failed");
