@@ -1407,6 +1407,7 @@ dependencies = [
  "matchit 0.7.3",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "rustversion",
@@ -1701,6 +1702,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
 dependencies = [
  "digest 0.10.7",
+]
+
+[[package]]
+name = "blob-test"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "hex",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2213,15 +2224,20 @@ version = "0.1.0"
 dependencies = [
  "assert-json-diff",
  "borsh",
+ "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
  "fragile",
+ "futures-util",
+ "hex",
  "ouroboros",
  "owo-colors",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+ "tracing",
  "ureq",
  "wasmer",
  "wasmer-types",
@@ -2233,6 +2249,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
+ "calimero-primitives",
  "calimero-sdk-macros",
  "cfg-if",
  "serde",
@@ -2280,6 +2297,7 @@ dependencies = [
  "color-eyre",
  "eyre",
  "futures-util",
+ "hex",
  "libp2p",
  "multiaddr",
  "rand 0.8.5",
@@ -6359,6 +6377,23 @@ name = "more-asserts"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7843ec2de400bcbc6a6328c958dc38e5359da6e93e72e37bc5246bf1ae776389"
+
+[[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http 1.1.0",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin 0.9.8",
+ "version_check",
+]
 
 [[package]]
 name = "multiaddr"
