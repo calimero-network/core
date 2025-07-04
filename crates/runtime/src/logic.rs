@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
+use calimero_node_primitives::client::NodeClient;
 use ouroboros::self_referencing;
 use rand::RngCore;
 use serde::Serialize;
@@ -50,7 +51,7 @@ impl<'a> VMContext<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -94,7 +95,10 @@ impl Default for VMLimits {
     }
 }
 
-#[expect(missing_debug_implementations, reason = "storage can't impl Debug")]
+#[expect(
+    missing_debug_implementations,
+    reason = "storage and node_client can't impl Debug"
+)]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,
@@ -108,10 +112,18 @@ pub struct VMLogic<'a> {
     artifact: Vec<u8>,
     proposals: BTreeMap<[u8; 32], Vec<u8>>,
     approvals: Vec<[u8; 32]>,
+
+    // Blob functionality - just keep the node client
+    node_client: Option<NodeClient>,
 }
 
 impl<'a> VMLogic<'a> {
-    pub fn new(storage: &'a mut dyn Storage, context: VMContext<'a>, limits: &'a VMLimits) -> Self {
+    pub fn new(
+        storage: &'a mut dyn Storage,
+        context: VMContext<'a>,
+        limits: &'a VMLimits,
+        node_client: Option<NodeClient>,
+    ) -> Self {
         VMLogic {
             storage,
             memory: None,
@@ -125,6 +137,9 @@ impl<'a> VMLogic<'a> {
             artifact: vec![],
             proposals: BTreeMap::new(),
             approvals: vec![],
+
+            // Blob functionality
+            node_client,
         }
     }
 
@@ -610,5 +625,83 @@ impl VMHostFunctions<'_> {
         let _ = self.with_logic_mut(|logic| logic.approvals.push(approval));
 
         Ok(())
+    }
+
+    // ========== SIMPLIFIED BLOB HOST FUNCTIONS ==========
+
+    /// Store blob data and return the blob ID in a register
+    /// Returns: 1 if successful, 0 if failed
+    pub fn store_blob(
+        &mut self,
+        data_ptr: u64,
+        data_len: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        // Check if blob functionality is available
+        let node_client = match &self.borrow_logic().node_client {
+            Some(client) => client.clone(),
+            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
+        };
+
+        let data = self.read_guest_memory(data_ptr, data_len)?;
+
+        // Use the existing add_blob method
+        let blob_id = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let result = node_client.add_blob(&data[..], None, None).await;
+                result.map(|(blob_id, _size)| blob_id)
+            })
+        })
+        .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+
+        // Store the blob ID in the register
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(logic.limits, register_id, blob_id.as_ref().to_vec())
+        })?;
+
+        Ok(1)
+    }
+
+    /// Load blob data by ID into a register
+    /// Returns: 1 if blob was found and loaded, 0 if not found
+    pub fn load_blob(
+        &mut self,
+        blob_id_ptr: u64,
+        blob_id_len: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        // Check if blob functionality is available
+        let node_client = match &self.borrow_logic().node_client {
+            Some(client) => client.clone(),
+            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
+        };
+
+        if blob_id_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let blob_id_bytes = self.read_guest_memory_sized::<32>(blob_id_ptr, blob_id_len)?;
+        let blob_id = calimero_primitives::blobs::BlobId::from(blob_id_bytes);
+
+        // Use the existing get_blob_bytes method
+        let blob_data_opt = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async { node_client.get_blob_bytes(&blob_id).await })
+        })
+        .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+
+        // If blob exists, store it in the register
+        if let Some(blob_data) = blob_data_opt {
+            self.with_logic_mut(|logic| {
+                logic
+                    .registers
+                    .set(logic.limits, register_id, blob_data.to_vec())
+            })?;
+            Ok(1)
+        } else {
+            Ok(0)
+        }
     }
 }
