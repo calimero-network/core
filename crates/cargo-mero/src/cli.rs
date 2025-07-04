@@ -7,7 +7,7 @@ use crate::{abi, build, new};
 
 pub const EXAMPLES: &str = r"
   # Create a new application
-  $ cargo mero new --name gitter
+  $ cargo mero new gitter
 
   # Build app
   $ cargo mero build
@@ -37,7 +37,6 @@ enum SubCommands {
 
 #[derive(Debug, Parser)]
 pub struct NewCommand {
-    #[arg(long)]
     pub name: PathBuf,
 }
 
