@@ -28,7 +28,12 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
-    pub fn new(api_url: Url, jwt_tokens: Option<JwtToken>, node_name: Option<String>, output: Option<Output>) -> Self {
+    pub fn new(
+        api_url: Url,
+        jwt_tokens: Option<JwtToken>,
+        node_name: Option<String>,
+        output: Option<Output>,
+    ) -> Self {
         Self {
             api_url,
             client: Client::new(),

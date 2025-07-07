@@ -165,7 +165,8 @@ impl RootCommand {
 
                 // Even local nodes might require authentication - use session cache for unregistered nodes
                 let connection =
-                    authenticate_with_session_cache(&url, &format!("local node {}", node), output).await?;
+                    authenticate_with_session_cache(&url, &format!("local node {}", node), output)
+                        .await?;
                 Ok(Some(connection))
             }
             (None, Some(api_url)) => {

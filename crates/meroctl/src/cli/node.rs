@@ -5,9 +5,8 @@ use const_format::concatcp;
 use eyre::{bail, Result};
 use url::Url;
 
-use crate::cli::Environment;
-use crate::cli::check_authentication;
 use crate::cli::storage::JwtToken;
+use crate::cli::{check_authentication, Environment};
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::{Config, NodeConnection};
 use crate::output::Output;
@@ -117,9 +116,13 @@ impl NodeCommand {
                         NodeConnection::Local { path, jwt_tokens }
                     }
                     LocationType::Remote(url) => {
-                        let jwt_tokens =
-                            determine_auth_tokens(&cmd, &url, &format!("node '{}'", cmd.name), output)
-                                .await?;
+                        let jwt_tokens = determine_auth_tokens(
+                            &cmd,
+                            &url,
+                            &format!("node '{}'", cmd.name),
+                            output,
+                        )
+                        .await?;
 
                         NodeConnection::Remote { url, jwt_tokens }
                     }

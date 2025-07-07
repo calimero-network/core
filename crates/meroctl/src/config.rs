@@ -74,7 +74,11 @@ impl Config {
         Ok(config_dir.join("calimero/meroctl/nodes.toml"))
     }
 
-    pub async fn get_connection(&self, node: &str, output: Output) -> Result<Option<ConnectionInfo>> {
+    pub async fn get_connection(
+        &self,
+        node: &str,
+        output: Output,
+    ) -> Result<Option<ConnectionInfo>> {
         let Some(connection) = self.nodes.get(node) else {
             return Ok(None);
         };
@@ -96,9 +100,12 @@ impl Config {
 
                 ConnectionInfo::new(url, jwt_tokens.clone(), Some(node.to_owned()), Some(output))
             }
-            NodeConnection::Remote { url, jwt_tokens } => {
-                ConnectionInfo::new(url.clone(), jwt_tokens.clone(), Some(node.to_owned()), Some(output))
-            }
+            NodeConnection::Remote { url, jwt_tokens } => ConnectionInfo::new(
+                url.clone(),
+                jwt_tokens.clone(),
+                Some(node.to_owned()),
+                Some(output),
+            ),
         };
 
         Ok(Some(connection_info))
