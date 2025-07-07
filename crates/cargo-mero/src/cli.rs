@@ -25,7 +25,13 @@ pub const EXAMPLES: &str = r"
 #[command(after_help = concatcp!("Examples: ", EXAMPLES))]
 pub struct RootCommand {
     #[command(subcommand)]
-    command: SubCommands,
+    command: MeroCmd,
+}
+
+#[derive(Debug, Parser)]
+enum MeroCmd {
+    #[command(subcommand)]
+    Mero(SubCommands),
 }
 
 #[derive(Debug, Subcommand)]
@@ -48,9 +54,11 @@ pub struct BuildCommand {
 impl RootCommand {
     pub async fn run(self) -> eyre::Result<()> {
         match self.command {
-            SubCommands::Abi => abi::run().await,
-            SubCommands::New(args) => new::run(args).await,
-            SubCommands::Build(args) => build::run(args.args).await,
+            MeroCmd::Mero(command) => match command {
+                SubCommands::Abi => abi::run().await,
+                SubCommands::New(args) => new::run(args).await,
+                SubCommands::Build(args) => build::run(args.args).await,
+            },
         }
     }
 }
