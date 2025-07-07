@@ -10,6 +10,7 @@ use url::Url;
 use crate::cli::storage::JwtToken;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::connection::ConnectionInfo;
+use crate::output::Output;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -73,7 +74,7 @@ impl Config {
         Ok(config_dir.join("calimero/meroctl/nodes.toml"))
     }
 
-    pub async fn get_connection(&self, node: &str) -> Result<Option<ConnectionInfo>> {
+    pub async fn get_connection(&self, node: &str, output: Output) -> Result<Option<ConnectionInfo>> {
         let Some(connection) = self.nodes.get(node) else {
             return Ok(None);
         };
@@ -93,10 +94,10 @@ impl Config {
                     )
                 })?;
 
-                ConnectionInfo::new(url, jwt_tokens.clone(), Some(node.to_owned()))
+                ConnectionInfo::new(url, jwt_tokens.clone(), Some(node.to_owned()), Some(output))
             }
             NodeConnection::Remote { url, jwt_tokens } => {
-                ConnectionInfo::new(url.clone(), jwt_tokens.clone(), Some(node.to_owned()))
+                ConnectionInfo::new(url.clone(), jwt_tokens.clone(), Some(node.to_owned()), Some(output))
             }
         };
 

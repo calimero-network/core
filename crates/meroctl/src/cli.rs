@@ -113,7 +113,7 @@ impl RootCommand {
         };
 
         let connection = if needs_connection {
-            match self.prepare_connection().await {
+            match self.prepare_connection(output).await {
                 Ok(conn) => conn,
                 Err(err) => {
                     let err = CliError::Other(err);
@@ -132,7 +132,7 @@ impl RootCommand {
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
-            SubCommands::Node(node) => node.run().await,
+            SubCommands::Node(node) => node.run(&environment).await,
         };
 
         if let Err(err) = result {
@@ -148,13 +148,13 @@ impl RootCommand {
         Ok(())
     }
 
-    async fn prepare_connection(&self) -> Result<Option<ConnectionInfo>> {
+    async fn prepare_connection(&self, output: Output) -> Result<Option<ConnectionInfo>> {
         match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
                 // Use specific node - first check if it's registered
                 let config = Config::load().await?;
 
-                if let Some(conn) = config.get_connection(node).await? {
+                if let Some(conn) = config.get_connection(node, output).await? {
                     return Ok(Some(conn));
                 }
 
@@ -165,13 +165,13 @@ impl RootCommand {
 
                 // Even local nodes might require authentication - use session cache for unregistered nodes
                 let connection =
-                    authenticate_with_session_cache(&url, &format!("local node {}", node)).await?;
+                    authenticate_with_session_cache(&url, &format!("local node {}", node), output).await?;
                 Ok(Some(connection))
             }
             (None, Some(api_url)) => {
                 // Use specific API URL - check session cache first, then authenticate if needed
                 let connection =
-                    authenticate_with_session_cache(api_url, &api_url.to_string()).await?;
+                    authenticate_with_session_cache(api_url, &api_url.to_string(), output).await?;
                 Ok(Some(connection))
             }
             (None, None) => {
@@ -179,7 +179,7 @@ impl RootCommand {
                 let config = Config::load().await?;
 
                 if let Some(active_node_name) = &config.active_node {
-                    if let Some(conn) = config.get_connection(active_node_name).await? {
+                    if let Some(conn) = config.get_connection(active_node_name, output).await? {
                         return Ok(Some(conn));
                     } else {
                         bail!(

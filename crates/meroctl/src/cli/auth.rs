@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::cli::storage::{get_session_cache, JwtToken};
 use crate::connection::ConnectionInfo;
-use crate::output::{InfoLine, Report, WarnLine};
+use crate::output::{InfoLine, WarnLine, Output};
 
 #[derive(Debug, Deserialize)]
 struct AuthCallback {
@@ -23,8 +23,8 @@ struct AuthCallback {
     refresh_token: Option<String>,
 }
 
-pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
-    let temp_connection = ConnectionInfo::new(api_url.clone(), None, None);
+pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
+    let temp_connection = ConnectionInfo::new(api_url.clone(), None, None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode == "none" {
@@ -36,15 +36,15 @@ pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
 
     let auth_url = build_auth_url(api_url, callback_port)?;
 
-    let info_msg = format!("Trying to open browser to start authentication");
-    InfoLine(&info_msg).report();
+    let info_msg = format!("Opening browser to start authentication");
+    output.write(&InfoLine(&info_msg));
 
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
         let warning_msg = format!(
             "Failed to open browser: {}. Please manually open this URL: {}",
             e, auth_url
         );
-        WarnLine(&warning_msg).report();
+        output.write(&WarnLine(&warning_msg));
     }
 
     let auth_result = timeout(Duration::from_secs(300), callback_rx)
@@ -313,12 +313,12 @@ fn build_auth_url(api_url: &Url, callback_port: u16) -> Result<Url> {
 
 /// Helper function to authenticate against a URL if required
 /// Returns Some(tokens) if authentication was needed and successful, None if no auth required
-pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<JwtToken>> {
-    let temp_connection = ConnectionInfo::new(url.clone(), None, None);
+pub async fn check_authentication(url: &Url, node_name: &str, output: Output) -> Result<Option<JwtToken>> {
+    let temp_connection = ConnectionInfo::new(url.clone(), None, None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
-        match authenticate(url).await {
+        match authenticate(url, output).await {
             Ok(tokens) => Ok(Some(tokens)),
             Err(e) => {
                 bail!("Authentication failed for {}: {}", node_name, e);
@@ -331,8 +331,8 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
 
 /// Helper function for session-based authentication with caching for external connections
 /// Returns a ConnectionInfo with appropriate authentication tokens
-pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Result<ConnectionInfo> {
-    let temp_connection = ConnectionInfo::new(url.clone(), None, None);
+pub async fn authenticate_with_session_cache(url: &Url, node_name: &str, output: Output) -> Result<ConnectionInfo> {
+    let temp_connection = ConnectionInfo::new(url.clone(), None, None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
@@ -341,15 +341,15 @@ pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Resu
 
         if let Some(cached_tokens) = session_cache.get_tokens(url) {
             // We have existing tokens for this URL in session cache
-            Ok(ConnectionInfo::new(url.clone(), Some(cached_tokens), None))
+            Ok(ConnectionInfo::new(url.clone(), Some(cached_tokens), None, Some(output)))
         } else {
             // Need to authenticate and store in session cache
-            match authenticate(url).await {
+            match authenticate(url, output).await {
                 Ok(jwt_tokens) => {
                     // Store in session cache for future use during this session
                     session_cache.store_tokens(url, &jwt_tokens);
 
-                    Ok(ConnectionInfo::new(url.clone(), Some(jwt_tokens), None))
+                    Ok(ConnectionInfo::new(url.clone(), Some(jwt_tokens), None, Some(output)))
                 }
                 Err(e) => {
                     bail!("Authentication failed for {}: {}", node_name, e);
@@ -358,6 +358,6 @@ pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Resu
         }
     } else {
         // No authentication required
-        Ok(ConnectionInfo::new(url.clone(), None, None))
+        Ok(ConnectionInfo::new(url.clone(), None, None, Some(output)))
     }
 }
