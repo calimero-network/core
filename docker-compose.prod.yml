@@ -95,7 +95,7 @@ services:
       - "traefik.enable=true"
       
       # Public Routes (No Auth)
-      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || (PathPrefix(`/admin`)"
+      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || PathPrefix(`/admin`)"
       - "traefik.http.routers.auth-public.entrypoints=web"
       - "traefik.http.routers.auth-public.service=auth-service"
       - "traefik.http.routers.auth-public.middlewares=cors"
@@ -121,7 +121,7 @@ services:
       - "--accesslog=true"
       - "--log.level=DEBUG"
       - "--providers.docker.exposedByDefault=false"
-      - "--providers.docker.network=web"
+      - "--providers.docker.network=${COMPOSE_PROJECT_NAME:-calimero}_web"
       - "--serversTransport.forwardingTimeouts.dialTimeout=30s"
       - "--serversTransport.forwardingTimeouts.responseHeaderTimeout=30s"
       - "--serversTransport.forwardingTimeouts.idleConnTimeout=30s"
@@ -136,7 +136,7 @@ services:
 
 networks:
   web:
-    external: true
+    driver: bridge
   internal:
     internal: true
 
