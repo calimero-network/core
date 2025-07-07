@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::cli::storage::{get_session_cache, JwtToken};
 use crate::connection::ConnectionInfo;
-use crate::output::{InfoLine, WarnLine, Report};
+use crate::output::{InfoLine, Report, WarnLine};
 
 #[derive(Debug, Deserialize)]
 struct AuthCallback {
@@ -42,8 +42,7 @@ pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
         let warning_msg = format!(
             "Failed to open browser: {}. Please manually open this URL: {}",
-            e,
-            auth_url
+            e, auth_url
         );
         WarnLine(&warning_msg).report();
     }
