@@ -23,6 +23,7 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
     let mut build_cmd = new_command("cargo");
     let _ = build_cmd
         .arg("build")
+        .arg("--locked")
         .arg("--target")
         .arg("wasm32-unknown-unknown")
         .arg("--profile")
