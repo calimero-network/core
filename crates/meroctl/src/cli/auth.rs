@@ -15,6 +15,7 @@ use url::Url;
 
 use crate::cli::storage::{get_session_cache, JwtToken};
 use crate::connection::ConnectionInfo;
+use crate::output::{InfoLine, WarnLine, Report};
 
 #[derive(Debug, Deserialize)]
 struct AuthCallback {
@@ -35,12 +36,16 @@ pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
 
     let auth_url = build_auth_url(api_url, callback_port)?;
 
+    let info_msg = format!("Trying to open browser to start authentication");
+    InfoLine(&info_msg).report();
+
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
-        bail!(
+        let warning_msg = format!(
             "Failed to open browser: {}. Please manually open this URL: {}",
             e,
             auth_url
         );
+        WarnLine(&warning_msg).report();
     }
 
     let auth_result = timeout(Duration::from_secs(300), callback_rx)
@@ -112,12 +117,163 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
 
                 Html(
                     r#"
-                <html>
-                    <head><title>Authentication Complete</title></head>
+                <!DOCTYPE html>
+                <html lang="en">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>Authentication Complete</title>
+                        <style>
+                            * {
+                                margin: 0;
+                                padding: 0;
+                                box-sizing: border-box;
+                            }
+                            
+                            body {
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                min-height: 100vh;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                color: white;
+                            }
+                            
+                            .container {
+                                text-align: center;
+                                background: rgba(255, 255, 255, 0.1);
+                                backdrop-filter: blur(10px);
+                                border-radius: 20px;
+                                padding: 3rem 2rem;
+                                border: 1px solid rgba(255, 255, 255, 0.2);
+                                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                                max-width: 400px;
+                                width: 90%;
+                            }
+                            
+                            .emoji {
+                                font-size: 4rem;
+                                margin-bottom: 1rem;
+                                animation: bounce 2s infinite;
+                            }
+                            
+                            @keyframes bounce {
+                                0%, 20%, 50%, 80%, 100% {
+                                    transform: translateY(0);
+                                }
+                                40% {
+                                    transform: translateY(-10px);
+                                }
+                                60% {
+                                    transform: translateY(-5px);
+                                }
+                            }
+                            
+                            h1 {
+                                font-size: 2rem;
+                                margin-bottom: 1rem;
+                                font-weight: 600;
+                            }
+                            
+                            p {
+                                font-size: 1.1rem;
+                                margin-bottom: 1.5rem;
+                                opacity: 0.9;
+                                line-height: 1.5;
+                            }
+                            
+                            .countdown {
+                                font-size: 1rem;
+                                opacity: 0.8;
+                                font-weight: 500;
+                            }
+                            
+                            .progress-bar {
+                                width: 100%;
+                                height: 4px;
+                                background: rgba(255, 255, 255, 0.2);
+                                border-radius: 2px;
+                                overflow: hidden;
+                                margin-top: 1rem;
+                            }
+                            
+                            .progress-fill {
+                                height: 100%;
+                                background: linear-gradient(90deg, #4CAF50, #45a049);
+                                border-radius: 2px;
+                                animation: countdown 5s linear forwards;
+                            }
+                            
+                            @keyframes countdown {
+                                from {
+                                    width: 100%;
+                                }
+                                to {
+                                    width: 0%;
+                                }
+                            }
+                        </style>
+                    </head>
                     <body>
-                        <h1>🎉 Authentication Complete!</h1>
-                        <p>You can now close this browser window and return to the terminal.</p>
-                        <script>window.close();</script>
+                        <div class="container">
+                            <div class="emoji">🎉</div>
+                            <h1>Authentication Complete!</h1>
+                            <p>You can now close this browser window and return to the terminal.</p>
+                            <div class="countdown">This window will close automatically in <span id="timer">5</span> seconds</div>
+                            <div class="progress-bar">
+                                <div class="progress-fill"></div>
+                            </div>
+                        </div>
+                        
+                        <script>
+                            let countdown = 5;
+                            const timerElement = document.getElementById('timer');
+                            const countdownElement = document.querySelector('.countdown');
+                            
+                            const interval = setInterval(() => {
+                                countdown--;
+                                timerElement.textContent = countdown;
+                                
+                                if (countdown <= 0) {
+                                    clearInterval(interval);
+                                    
+                                    // Try to close the window
+                                    const closed = window.close();
+                                    
+                                    // If window.close() didn't work, show a message
+                                    setTimeout(() => {
+                                        countdownElement.innerHTML = 'You can safely close this window now';
+                                        countdownElement.style.fontSize = '1.1rem';
+                                        countdownElement.style.opacity = '1';
+                                        countdownElement.style.fontWeight = '600';
+                                    }, 100);
+                                }
+                            }, 1000);
+                            
+                            // Fallback: try to close after delay and show message if it fails
+                            setTimeout(() => {
+                                window.close();
+                                setTimeout(() => {
+                                    countdownElement.innerHTML = 'You can safely close this window now';
+                                    countdownElement.style.fontSize = '1.1rem';
+                                    countdownElement.style.opacity = '1';
+                                    countdownElement.style.fontWeight = '600';
+                                }, 100);
+                            }, 5000);
+                            
+                            // Add keyboard listener for easy closing
+                            document.addEventListener('keydown', (e) => {
+                                if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
+                                    window.close();
+                                }
+                            });
+                            
+                            // Add click listener to close on click
+                            document.addEventListener('click', () => {
+                                window.close();
+                            });
+                        </script>
                     </body>
                 </html>
                 "#,

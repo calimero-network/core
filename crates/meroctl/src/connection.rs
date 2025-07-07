@@ -75,7 +75,6 @@ impl ConnectionInfo {
 
             if response.status() == 401 && self.jwt_tokens.lock().unwrap().is_some() {
                 if let Some(auth_error) = response.headers().get("x-auth-error") {
-                    println!("Auth error: {}", auth_error.to_str().unwrap_or(""));
                     if auth_error.to_str().unwrap_or("") == "token_expired" {
                         // Try token refresh first, then fall back to full authentication
                         match self.refresh_token().await {
