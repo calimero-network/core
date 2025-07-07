@@ -1,7 +1,8 @@
-version: '3.8'
-
 x-node-defaults: &node-defaults
-  image: merod:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
   user: root
   volumes:
     - calimero_auth_node:/calimero
@@ -16,7 +17,7 @@ services:
   node:
     <<: *node-defaults
     environment:
-      - NODE_NAME=node1
+      - NODE_NAME=auth-node
       - NODE_PORT=2428
       - SWARM_PORT=2528
       - CALIMERO_HOME=/calimero/data
@@ -27,9 +28,9 @@ services:
     command: >
       "mkdir -p $${CALIMERO_HOME} $${CALIMERO_HOME}/../logic $${CALIMERO_HOME}/../credentials &&
       if [ ! -d $${CALIMERO_HOME}/config ]; then
-        merod --node-name node1 --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
+        merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
       fi &&
-      merod --node-name node1 --home $${CALIMERO_HOME} run"
+      merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} run"
     depends_on:
       auth:
         condition: service_healthy
@@ -69,7 +70,6 @@ services:
 
   # Auth service
   auth:
-    image: calimero-auth
     build:
       context: .
       dockerfile: Dockerfile.auth
@@ -95,7 +95,7 @@ services:
       - "traefik.enable=true"
       
       # Public Routes (No Auth)
-      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || (PathPrefix(`/admin`) && !PathPrefix(`/admin-dashboard`) && !PathPrefix(`/admin-api`))"
+      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || (PathPrefix(`/admin`)"
       - "traefik.http.routers.auth-public.entrypoints=web"
       - "traefik.http.routers.auth-public.service=auth-service"
       - "traefik.http.routers.auth-public.middlewares=cors"
