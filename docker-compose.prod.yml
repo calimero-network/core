@@ -73,9 +73,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.auth
-      target: final  # Use the final production stage
+      target: final
     volumes:
-      - calimero_auth_data:/data  # Persist RocksDB data
+      - calimero_auth_data:/data
     environment:
       - RUST_LOG=debug
     healthcheck:
@@ -95,7 +95,7 @@ services:
       - "traefik.enable=true"
       
       # Public Routes (No Auth)
-      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || (PathPrefix(`/admin`) && !PathPrefix(`/admin-dashboard`))"
+      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || (PathPrefix(`/admin`) && !PathPrefix(`/admin-dashboard`) && !PathPrefix(`/admin-api`))"
       - "traefik.http.routers.auth-public.entrypoints=web"
       - "traefik.http.routers.auth-public.service=auth-service"
       - "traefik.http.routers.auth-public.middlewares=cors"
