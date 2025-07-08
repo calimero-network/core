@@ -40,12 +40,15 @@ jobs:
 
       - name: Create PR Comment Payload
         if: ${{ !cancelled() }}
-        run: >-
+        run: |
+          # Some commit messages may contain single quotes, which can break the JSON format.
+          echo "${{ env.ERR_MSG }}" > error_msg.md
+
           jq -n
           --arg pr '${{ github.event.number }}'
           --arg tag pr-lint-check
           --arg mode "${{ steps.lint_pr_title.outputs.error_message != null && 'recreate' || 'delete' }}"
-          --arg message '${{ env.ERR_MSG }}'
+          --rawfile message error_msg.md
           '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
 
       - name: Upload Comment
