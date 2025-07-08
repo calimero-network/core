@@ -30,7 +30,7 @@ jobs:
           \<type\>(\<scope\>): \<subject\>
 
         Common errors to avoid:
-        1. The commit header <type>(<scope>): \<subject\> must be in lower case.
+        1. The commit header \<type\>(\<scope\>): \<subject\> must be in lower case.
         2. Allowed type values are: build, ci, docs, feat, fix, perf, refactor, test.
 
     steps:
