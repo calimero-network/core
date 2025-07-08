@@ -22,15 +22,15 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ERR_MSG: |-
-        The PR title `${{ github.event.pull_request.title }}` does not follow the Calimero-Network Commit Message Convention
-        https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style
+        Your PR title does not adhere to the [Conventional Commits](https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style) convention:
 
-        Our PR title should have the following structure:
-
-          <type>(<scope>): <subject>
+        ```
+        <type>(<scope>): <subject>
+        ```
 
         Common errors to avoid:
-        1. The commit header <type>(<scope>): <subject> must be in lower case.
+
+        1. The title must be in lower case.
         2. Allowed type values are: build, ci, docs, feat, fix, perf, refactor, test.
 
     steps:
@@ -39,13 +39,13 @@ jobs:
 
       - name: Create PR Comment Payload
         if: ${{ !cancelled() }}
-        run: >-
-          jq -n
-          --arg pr '${{ github.event.number }}'
-          --arg tag pr-lint-check
-          --arg mode "${{ steps.lint_pr_title.outputs.error_message != null && 'recreate' || 'delete' }}"
-          --arg message "${{ env.ERR_MSG }}"
-          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
+        run: |
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag pr-lint-check \
+            --arg mode "${{ steps.lint_pr_title.outputs.error_message != null && 'recreate' || 'delete' }}" \
+            --arg message '${{ env.ERR_MSG }}' \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
 
       - name: Upload Comment
         if: ${{ !cancelled() }}
