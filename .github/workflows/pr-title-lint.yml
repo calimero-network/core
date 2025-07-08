@@ -42,7 +42,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           # Some commit messages may contain single quotes, which can break the JSON format.
-          echo "${{ env.ERR_MSG }}" > error_msg.md
+          echo "$ERR_MSG" > error_msg.md
 
           jq -n \
             --arg pr '${{ github.event.number }}' \
