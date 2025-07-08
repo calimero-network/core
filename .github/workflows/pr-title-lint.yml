@@ -22,14 +22,17 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ERR_MSG: |-
-        Your PR title `${{ github.event.pull_request.title }}` does not follow the [Calimero-Network Commit Message Convention](https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style):
+        Your PR title does not adhere to the [Conventional Commits](https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style) convention:
+
+        Expected:
 
         ```
         <type>(<scope>): <subject>
         ```
 
         Common errors to avoid:
-        1. The commit header must be in lower case.
+
+        1. The title must be in lower case.
         2. Allowed type values are: build, ci, docs, feat, fix, perf, refactor, test.
 
     steps:
