@@ -44,7 +44,7 @@ jobs:
           --arg pr '${{ github.event.number }}'
           --arg tag pr-lint-check
           --arg mode "${{ steps.lint_pr_title.outputs.error_message != null && 'recreate' || 'delete' }}"
-          --arg message "${{ env.ERR_MSG }}"
+          --arg message '${{ env.ERR_MSG }}'
           '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
 
       - name: Upload Comment
