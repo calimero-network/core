@@ -22,10 +22,9 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ERR_MSG: |-
-        The PR title `${{ github.event.pull_request.title }}` does not follow the Calimero-Network Commit Message Convention
-        https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style
+        The PR title `${{ github.event.pull_request.title }}` does not follow the [Calimero-Network Commit Message Convention](https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style)
 
-        Our PR title should have the following structure:
+        Your PR title should have the following structure:
         ```
         <type>(<scope>): <subject>
         ```
