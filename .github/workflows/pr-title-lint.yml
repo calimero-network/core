@@ -44,12 +44,12 @@ jobs:
           # Some commit messages may contain single quotes, which can break the JSON format.
           echo "${{ env.ERR_MSG }}" > error_msg.md
 
-          jq -n
-          --arg pr '${{ github.event.number }}'
-          --arg tag pr-lint-check
-          --arg mode "${{ steps.lint_pr_title.outputs.error_message != null && 'recreate' || 'delete' }}"
-          --rawfile message error_msg.md
-          '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag pr-lint-check \
+            --arg mode "${{ steps.lint_pr_title.outputs.error_message != null && 'recreate' || 'delete' }}" \
+            --rawfile message error_msg.md \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
 
       - name: Upload Comment
         if: ${{ !cancelled() }}
