@@ -77,6 +77,10 @@ README.md
 # Environment variables
 **/.env*
 **/.envrc
-**/secrets.*
+**/secrets.json
+**/secrets.yaml
+**/secrets.yml
+**/secrets.toml
+**/secrets.txt
 **/*.pem
 **/*.key

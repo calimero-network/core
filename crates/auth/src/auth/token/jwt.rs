@@ -166,29 +166,11 @@ impl TokenManager {
 
                 Ok((access_token, refresh_token))
             }
-            // For client tokens, rotate the key ID
+            // For client tokens, use the same key ID - no rotation during initial generation
             KeyType::Client => {
-                // Generate new client ID
-                let timestamp = Utc::now().timestamp();
-                let mut hasher = Sha256::new();
-                hasher.update(format!("refresh:{}:{}", key_id, timestamp).as_bytes());
-                let new_client_id = hex::encode(hasher.finalize());
-
-                // Store key with new ID and delete old one
-                self.key_manager
-                    .set_key(&new_client_id, &key)
-                    .await
-                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
-
-                self.key_manager
-                    .delete_key(&key_id)
-                    .await
-                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
-
-                // Generate new tokens with the new ID
                 let access_token = self
                     .generate_token(
-                        new_client_id.clone(),
+                        key_id.clone(),
                         permissions.clone(),
                         Duration::seconds(self.config.access_token_expiry as i64),
                     )
@@ -196,7 +178,7 @@ impl TokenManager {
 
                 let refresh_token = self
                     .generate_token(
-                        new_client_id,
+                        key_id,
                         permissions,
                         Duration::seconds(self.config.refresh_token_expiry as i64),
                     )
@@ -340,8 +322,14 @@ impl TokenManager {
             .key_manager
             .get_key(&claims.sub)
             .await
-            .map_err(|e| AuthError::StorageError(e.to_string()))?
-            .ok_or_else(|| AuthError::InvalidToken("Key not found".to_string()))?;
+            .map_err(|e| {
+                tracing::error!("Storage error while getting key {}: {}", claims.sub, e);
+                AuthError::StorageError(e.to_string())
+            })?
+            .ok_or_else(|| {
+                tracing::error!("Key not found: {}", claims.sub);
+                AuthError::InvalidToken(format!("Key not found: {}", claims.sub))
+            })?;
 
         if !key.is_valid() {
             return Err(AuthError::InvalidToken("Key is not valid".to_string()));
@@ -358,20 +346,59 @@ impl TokenManager {
                 hasher.update(format!("refresh:{}:{}", claims.sub, timestamp).as_bytes());
                 let new_client_id = hex::encode(hasher.finalize());
 
-                // Store key with new ID and delete old one
-                self.key_manager
-                    .set_key(&new_client_id, &key)
-                    .await
-                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
+                tracing::debug!(
+                    "Rotating client key from {} to {}",
+                    claims.sub,
+                    new_client_id
+                );
 
-                self.key_manager
-                    .delete_key(&claims.sub)
-                    .await
-                    .map_err(|e| AuthError::StorageError(e.to_string()))?;
+                // First store the key with the new ID to ensure we don't lose it
+                if let Err(e) = self.key_manager.set_key(&new_client_id, &key).await {
+                    tracing::error!(
+                        "Failed to store new client key {} during rotation: {}",
+                        new_client_id,
+                        e
+                    );
+                    return Err(AuthError::StorageError(format!(
+                        "Failed to store new client key during rotation: {}",
+                        e
+                    )));
+                }
 
-                // Generate new tokens with the new ID
-                self.generate_token_pair(new_client_id, key.permissions)
-                    .await
+                tracing::debug!("Successfully stored new client key: {}", new_client_id);
+
+                // Generate new tokens with the new ID first (before deleting old key)
+                let token_result = self
+                    .generate_token_pair(new_client_id.clone(), key.permissions)
+                    .await;
+
+                // Only delete the old key if token generation was successful
+                match token_result {
+                    Ok(tokens) => {
+                        // Now safely delete the old key
+                        if let Err(e) = self.key_manager.delete_key(&claims.sub).await {
+                            // Log the error but don't fail the refresh - tokens are already generated
+                            tracing::warn!(
+                                "Failed to delete old client key {} after successful rotation: {}",
+                                claims.sub,
+                                e
+                            );
+                        }
+                        Ok(tokens)
+                    }
+                    Err(e) => {
+                        // Token generation failed, clean up the new key we created
+                        if let Err(cleanup_err) = self.key_manager.delete_key(&new_client_id).await
+                        {
+                            tracing::error!(
+                                "Failed to cleanup new client key {} after token generation failure: {}",
+                                new_client_id,
+                                cleanup_err
+                            );
+                        }
+                        Err(e)
+                    }
+                }
             }
         }
     }

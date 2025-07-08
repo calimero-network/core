@@ -29,10 +29,6 @@ struct Cli {
     #[clap(short, long, value_parser)]
     bind: Option<String>,
 
-    /// Node URL to forward authenticated requests to
-    #[clap(short, long, value_parser)]
-    node_url: Option<String>,
-
     /// Enable verbose logging (can be specified multiple times)
     #[clap(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -45,7 +41,6 @@ fn create_default_config() -> AuthConfig {
 
     AuthConfig {
         listen_addr: "127.0.0.1:3001".parse().unwrap(),
-        node_url: "http://localhost:2428".to_string(),
         jwt: JwtConfig {
             issuer: "calimero-auth".to_string(),
             access_token_expiry: 3600,
@@ -120,10 +115,6 @@ async fn main() -> Result<()> {
     // Override configuration with command line arguments
     if let Some(bind) = cli.bind {
         config.listen_addr = bind.parse()?;
-    }
-
-    if let Some(node_url) = cli.node_url {
-        config.node_url = node_url;
     }
 
     // Create the storage backend

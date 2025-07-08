@@ -33,6 +33,7 @@ impl KeyManager {
         let client_key = format!("{}{}", prefixes::CLIENT_KEY, key_id);
         if let Some(data) = self.storage.get(&client_key).await? {
             let key: Key = deserialize(&data)?;
+            println!("get_key: {:?}", key);
             if key.is_valid() {
                 return Ok(Some(key));
             }

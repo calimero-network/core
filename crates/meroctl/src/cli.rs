@@ -5,8 +5,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{OptionExt, Report as EyreReport, WrapErr};
-use libp2p::identity::Keypair;
+use eyre::{bail, OptionExt, Report as EyreReport, Result};
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
@@ -17,11 +16,20 @@ use crate::connection::ConnectionInfo;
 use crate::defaults;
 use crate::output::{Format, Output, Report};
 
-pub mod app;
-pub mod call;
-pub mod context;
-pub mod node;
-pub mod peers;
+mod app;
+pub mod auth;
+mod call;
+mod context;
+mod node;
+mod peers;
+pub mod storage;
+
+use app::AppCommand;
+use auth::{authenticate_with_session_cache, check_authentication};
+use call::CallCommand;
+use context::ContextCommand;
+use node::NodeCommand;
+use peers::PeersCommand;
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -49,12 +57,12 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    App(app::AppCommand),
-    Context(context::ContextCommand),
-    Call(call::CallCommand),
-    Peers(peers::PeersCommand),
+    App(AppCommand),
+    Context(ContextCommand),
+    Call(CallCommand),
+    Peers(PeersCommand),
     #[command(subcommand)]
-    Node(node::NodeCommand),
+    Node(NodeCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -87,10 +95,10 @@ impl Environment {
         Self { output, connection }
     }
 
-    pub fn connection(&self) -> eyre::Result<&ConnectionInfo> {
+    pub fn connection(&self) -> Result<&ConnectionInfo> {
         self.connection
             .as_ref()
-            .ok_or_eyre("No node connection: either `--node` or `--api` must be set")
+            .ok_or_eyre("No node selected: set default node by running `meroctl node set <node_name>` or use `--node` or `--api` to manually select a node")
     }
 }
 
@@ -98,13 +106,23 @@ impl RootCommand {
     pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
 
-        let connection = match self.prepare_connection().await {
-            Ok(conn) => conn,
-            Err(err) => {
-                let err = CliError::Other(err);
-                output.write(&err);
-                return Err(err);
+        // Some commands don't require a connection (like node commands)
+        let needs_connection = match &self.action {
+            SubCommands::Node(_) => false,
+            _ => true,
+        };
+
+        let connection = if needs_connection {
+            match self.prepare_connection(output).await {
+                Ok(conn) => conn,
+                Err(err) => {
+                    let err = CliError::Other(err);
+                    output.write(&err);
+                    return Err(err);
+                }
             }
+        } else {
+            None
         };
 
         let environment = Environment::new(output, connection);
@@ -114,7 +132,7 @@ impl RootCommand {
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
-            SubCommands::Node(node) => node.run().await,
+            SubCommands::Node(node) => node.run(&environment).await,
         };
 
         if let Err(err) = result {
@@ -130,42 +148,53 @@ impl RootCommand {
         Ok(())
     }
 
-    async fn prepare_connection(&self) -> eyre::Result<Option<ConnectionInfo>> {
-        let connection = match (&self.args.node, &self.args.api) {
+    async fn prepare_connection(&self, output: Output) -> Result<Option<ConnectionInfo>> {
+        match (&self.args.node, &self.args.api) {
             (Some(node), None) => {
+                // Use specific node - first check if it's registered
                 let config = Config::load().await?;
 
-                if let Some(conn) = config.get_connection(node).await? {
+                if let Some(conn) = config.get_connection(node, output).await? {
                     return Ok(Some(conn));
                 }
 
+                // Check if it's a local node at <home>/<node>
                 let config = load_config(&self.args.home, node).await?;
                 let multiaddr = fetch_multiaddr(&config)?;
                 let url = multiaddr_to_url(&multiaddr, "")?;
 
-                ConnectionInfo::new(url, Some(config.identity)).await
+                // Even local nodes might require authentication - use session cache for unregistered nodes
+                let connection =
+                    authenticate_with_session_cache(&url, &format!("local node {}", node), output)
+                        .await?;
+                Ok(Some(connection))
             }
             (None, Some(api_url)) => {
-                let mut auth_key = None;
+                // Use specific API URL - check session cache first, then authenticate if needed
+                let connection =
+                    authenticate_with_session_cache(api_url, &api_url.to_string(), output).await?;
+                Ok(Some(connection))
+            }
+            (None, None) => {
+                // Try to use active node
+                let config = Config::load().await?;
 
-                if let Ok(node_key) = std::env::var("MEROCTL_NODE_KEY") {
-                    let bytes = bs58::decode(node_key)
-                        .into_vec()
-                        .wrap_err("failed to decode node key from environment variable")?;
-
-                    let node_key = Keypair::from_protobuf_encoding(&bytes)
-                        .wrap_err("failed to decode node key from environment variable")?;
-
-                    auth_key = Some(node_key);
+                if let Some(active_node_name) = &config.active_node {
+                    if let Some(conn) = config.get_connection(active_node_name, output).await? {
+                        return Ok(Some(conn));
+                    } else {
+                        bail!(
+                            "Active node '{}' not found. Please check your configuration.",
+                            active_node_name
+                        );
+                    }
                 }
 
-                ConnectionInfo::new(api_url.clone(), auth_key).await
+                // No active node set
+                Ok(None)
             }
-            // todo! if neither is selected, we should load the "default" config
-            _ => return Ok(None),
-        };
-
-        Ok(Some(connection))
+            _ => Ok(None),
+        }
     }
 }
 

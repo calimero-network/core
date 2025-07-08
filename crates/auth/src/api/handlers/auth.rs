@@ -50,19 +50,14 @@ pub async fn login_handler(
     state: Extension<Arc<AppState>>,
     Query(_params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    // Get enabled providers
     let enabled_providers = state.0.auth_service.providers();
 
-    // If we have any providers available
     if !enabled_providers.is_empty() {
         info!("Loading authentication UI");
 
-        // Get the index.html file from embedded assets
         if let Some(file) = AuthUiStaticFiles::get("index.html") {
-            // Convert the file content to a string
             let html_content = String::from_utf8_lossy(&file.data);
 
-            // The assets are already prefixed with /public/ from the Vite build
             return (
                 StatusCode::OK,
                 [("Content-Type", "text/html")],
@@ -74,7 +69,7 @@ pub async fn login_handler(
     }
 
     warn!("No authentication providers available");
-    // Fall back to a simple error message if no provider is available
+
     let html = "<html><body><h1>No authentication provider is available</h1></body></html>";
     (
         StatusCode::OK,
