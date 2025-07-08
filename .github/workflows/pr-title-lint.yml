@@ -24,8 +24,6 @@ jobs:
       ERR_MSG: |-
         Your PR title does not adhere to the [Conventional Commits](https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style) convention:
 
-        Expected:
-
         ```
         <type>(<scope>): <subject>
         ```
