@@ -26,9 +26,9 @@ jobs:
         https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style
 
         Our PR title should have the following structure:
-        \`\`\`
+        ```
         <type>(<scope>): <subject>
-        \`\`\`
+        ```
 
         Common errors to avoid:
         1. The commit header \<type\>(\<scope\>): \<subject\> must be in lower case.
