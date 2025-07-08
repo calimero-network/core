@@ -25,7 +25,7 @@ jobs:
         The PR title `${{ github.event.pull_request.title }}` does not follow the Calimero-Network Commit Message Convention
         https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style
 
-        Our PR title should have the followingstructure:
+        Our PR title should have the following structure:
         ```
         <type>(<scope>): <subject>
         ```
