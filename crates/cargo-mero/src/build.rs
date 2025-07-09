@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use cargo_metadata::MetadataCommand;
@@ -41,7 +41,9 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
     }
 
     // Copy wasm to res folder
-    fs::create_dir("res")?;
+    if !Path::new("res/").exists() {
+        fs::create_dir("res")?;
+    }
 
     let package_name = MetadataCommand::new().exec()?.packages[0]
         .name
