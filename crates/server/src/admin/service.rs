@@ -5,6 +5,7 @@ use std::str;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -173,8 +174,11 @@ pub(crate) fn setup(
         )
         // Network info
         .route("/peers", get(get_peers_count_handler))
-        // Blob management
-        .route("/blobs/upload", post(blob::handler))
+        // Blob management - with increased body limit for large file uploads
+        .route(
+            "/blobs/upload-raw",
+            post(blob::handler).layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
+        ) // 500MB limit for streaming
         .route("/blobs/:blob_id", get(blob::download_handler))
         .route("/blobs/:blob_id/info", get(blob::metadata_handler))
         // Alias management
