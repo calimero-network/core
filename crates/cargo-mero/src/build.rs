@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use cargo_metadata::MetadataCommand;
@@ -50,9 +50,9 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
         .into_inner()
         .replace("-", "_");
     let wasm_file = format!("{}.wasm", package_name);
-    let wasm_path = build_path("./target/wasm32-unknown-unknown/app-release/", &wasm_file);
+    let wasm_path = Path::new("./target/wasm32-unknown-unknown/app-release/").join(&wasm_file);
 
-    let _ = fs::copy(wasm_path, build_path("./res/", &wasm_file))?;
+    let _ = fs::copy(wasm_path, Path::new("./res/").join(&wasm_file))?;
 
     // Optimize wasm if wasm-opt is present
     if wasm_opt_installed().await {
@@ -60,9 +60,9 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
 
         let output = Command::new("wasm-opt")
             .arg("-Oz")
-            .arg(build_path("./res/", &wasm_file))
+            .arg(Path::new("./res/").join(&wasm_file))
             .arg("-o")
-            .arg(build_path("./res/", &wasm_file))
+            .arg(Path::new("./res/").join(&wasm_file))
             .output()
             .await?;
 
@@ -88,11 +88,4 @@ async fn wasm_opt_installed() -> bool {
         .status()
         .await
         .is_ok()
-}
-
-/// Builds a path from two `&str`s
-fn build_path(a: &str, b: &str) -> PathBuf {
-    let mut path = PathBuf::from(a);
-    path.push(b);
-    path
 }
