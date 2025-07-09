@@ -6,7 +6,9 @@ use cargo_metadata::MetadataCommand;
 use eyre::{bail, Context};
 use tokio::process::Command;
 
-pub async fn run(args: Vec<String>) -> eyre::Result<()> {
+use crate::cli::BuildOpts;
+
+pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     let output = Command::new("rustup")
         .arg("target")
         .arg("add")
@@ -22,15 +24,29 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
     let mut build_cmd = Command::new("cargo");
     let _ = build_cmd
         .arg("build")
-        .arg("--locked")
         .arg("--target")
-        .arg("wasm32-unknown-unknown")
-        .arg("--profile")
-        .arg("app-release");
+        .arg("wasm32-unknown-unknown");
 
     // Add additional pass-through cargo arguments
-    for arg in args {
-        let _ = build_cmd.arg(arg);
+    if !args.no_locked {
+        let _ = build_cmd.arg("--locked");
+    }
+    if !args.no_release {
+        let _ = build_cmd.arg("--profile");
+        let _ = build_cmd.arg("app-release");
+    }
+    if args.verbose {
+        let _ = build_cmd.arg("--verbose");
+    }
+    if args.quiet {
+        let _ = build_cmd.arg("--quiet");
+    }
+    if let Some(features) = args.features {
+        let _ = build_cmd.arg("--features");
+        let _ = build_cmd.arg(features);
+    }
+    if args.no_default_features {
+        let _ = build_cmd.arg("--no-default-features");
     }
 
     let output = build_cmd
@@ -60,7 +76,7 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
 
     // Optimize wasm if wasm-opt is present
     if wasm_opt_installed().await {
-        println!("wasm-opt found, optimizing...");
+        println!("Optimizing...");
 
         let output = Command::new("wasm-opt")
             .arg("-Oz")
@@ -78,7 +94,7 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
                 output.stdout
             );
         }
-        println!("wasm optimization complete");
+        println!("WASM optimization complete");
     } else {
         println!("wasm-opt not found, skipping optimization");
     }

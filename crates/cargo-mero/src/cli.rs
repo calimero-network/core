@@ -34,7 +34,7 @@ enum MeroCmd {
 #[derive(Debug, Subcommand)]
 enum SubCommands {
     New(NewCommand),
-    Build(BuildCommand),
+    Build(BuildOpts),
 }
 
 #[derive(Debug, Parser)]
@@ -43,8 +43,25 @@ pub struct NewCommand {
 }
 
 #[derive(Debug, Parser)]
-pub struct BuildCommand {
-    pub args: Vec<String>,
+pub struct BuildOpts {
+    /// Disable implicit `--locked` flag
+    #[clap(long)]
+    pub no_locked: bool,
+    /// Build app in `dev` profile, without optimizations
+    #[clap(long)]
+    pub no_release: bool,
+    /// Use verbose output
+    #[clap(long, short)]
+    pub verbose: bool,
+    /// Do not print cargo log messages
+    #[clap(long, short)]
+    pub quiet: bool,
+    /// Space or comma separated list of features to activate
+    #[clap(long, short = 'F')]
+    pub features: Option<String>,
+    /// No default features
+    #[clap(long)]
+    pub no_default_features: bool,
 }
 
 impl RootCommand {
@@ -52,7 +69,7 @@ impl RootCommand {
         match self.command {
             MeroCmd::Mero(command) => match command {
                 SubCommands::New(args) => new::run(args).await,
-                SubCommands::Build(args) => build::run(args.args).await,
+                SubCommands::Build(args) => build::run(args).await,
             },
         }
     }
