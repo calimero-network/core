@@ -18,7 +18,7 @@ pub const EXAMPLES: &str = r"
 
 #[derive(Debug, Parser)]
 #[command(name = "mero")]
-#[command(bin_name = "cargo mero")]
+#[command(bin_name = "cargo")]
 #[command(after_help = concatcp!("Examples: ", EXAMPLES))]
 pub struct RootCommand {
     #[command(subcommand)]
