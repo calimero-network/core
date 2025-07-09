@@ -11,8 +11,8 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 
 mkdir -p res
 
-cp $TARGET/wasm32-unknown-unknown/app-release/blob_test.wasm ./res/
+cp $TARGET/wasm32-unknown-unknown/app-release/chat_app.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/blob_test.wasm -o ./res/blob_test.wasm
+  wasm-opt -Oz ./res/chat_app.wasm -o ./res/chat_app.wasm
 fi 

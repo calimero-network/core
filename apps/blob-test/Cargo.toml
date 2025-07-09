@@ -1,5 +1,5 @@
 [package]
-name = "blob-test"
+name = "chat-app"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -10,7 +10,11 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-thiserror.workspace = true
 calimero-sdk.workspace = true
-calimero-storage.workspace = true 
-hex.workspace = true
+calimero-primitives.workspace = true
+calimero-storage.workspace = true
+bs58 = "0.5"
+flate2 = "1.0"
+
+[lints]
+workspace = true

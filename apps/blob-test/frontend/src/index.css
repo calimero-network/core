@@ -17,3 +17,7 @@ code {
 * {
   box-sizing: border-box;
 } 
+
+.message-text {
+  color: #000000;
+}

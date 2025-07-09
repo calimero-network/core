@@ -1,11 +1,11 @@
 import React from 'react';
 import { ProtectedRoutesWrapper } from '@calimero-network/calimero-client';
-import BlobTestPage from './pages/BlobTestPage';
+import ChatPage from './pages/ChatPage';
 
 export default function App() {
   return (
     <ProtectedRoutesWrapper>
-      <BlobTestPage />
+      <ChatPage />
     </ProtectedRoutesWrapper>
   );
-} 
+}

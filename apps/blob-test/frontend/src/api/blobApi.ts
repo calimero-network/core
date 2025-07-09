@@ -12,116 +12,86 @@ export interface BlobMetadataResponse {
   exists: boolean;
 }
 
-// JSON RPC interfaces for blob registration and management
-export interface RegisterBlobRequest {
-  name: string;
-  blob_id: string;
-  size: number;
+// Chat API interfaces
+export interface Message {
+  id: number;
+  sender: string;
+  text: string;
+  attachments: Attachment[];
+  timestamp: number;
+}
+
+export interface Attachment {
+  original_name: string;
+  original_blob_id: string;
+  original_size: number;
+  compressed_blob_id: string;
+  compressed_size: number;
   content_type?: string;
+  compression_ratio: number;
 }
 
-export interface GetBlobIdRequest {
-  name: string;
+export interface SendMessageRequest {
+  sender: string;
+  text: string;
+  attachment_blob_ids: string[];
+  attachment_names: string[];
+  attachment_sizes: number[];
+  attachment_content_types: (string | null)[];
 }
 
-export interface GetBlobIdResponse {
-  // Returns the blob_id as a string directly
+export interface ChatStats extends Record<string, number> {
+  total_messages: number;
+  total_attachments: number;
+  total_original_size_bytes: number;
+  total_compressed_size_bytes: number;
+  compression_savings_percent: number;
 }
 
-export interface GetBlobMetadataRequest {
-  name: string;
-}
-
-export interface BlobMetadata {
-  blob_id: string;
-  size: number;
-  content_type?: string;
-  uploaded_at: number;
-}
-
-export interface ListBlobsResponse extends Record<string, BlobMetadata> {
-  // BTreeMap<String, BlobMetadata> returned directly as key-value pairs
-}
-
-// Legacy JSON RPC interfaces (backward compatibility)
-export interface CreateBlobRequest {
-  name: string;
-  data: number[]; // Vec<u8> as array of numbers
-}
-
-export interface CreateBlobResponse {
-  blob_id: string;
-}
-
-export interface ReadBlobRequest {
-  name: string;
-}
-
-export interface ReadBlobResponse extends Array<number> {
-  // Vec<u8> returned directly as array of numbers
-}
-
-export interface TestBasicOperationsResponse {
-  result: string;
-}
-
-export interface TestRestApiWorkflowResponse {
-  result: string;
-}
-
-export interface TestMultipartBlobRequest {
-  chunks: number[][]; // Vec<Vec<u8>>
-}
-
-export interface TestMultipartBlobResponse {
-  result: string;
-}
-
-export interface GetStatsResponse extends Record<string, number> {
-  // BTreeMap<String, u32> returned directly as key-value pairs
-}
-
-// Method names that match the Rust backend
-export enum BlobMethod {
-  // New REST API workflow methods
-  REGISTER_BLOB = 'register_blob',
-  GET_BLOB_ID = 'get_blob_id',
-  GET_BLOB_METADATA = 'get_blob_metadata',
-  LIST_BLOBS = 'list_blobs',
-  UNREGISTER_BLOB = 'unregister_blob',
-  
-  // Legacy methods (backward compatibility)
-  CREATE_BLOB = 'create_blob',
-  READ_BLOB = 'read_blob',
-  
-  // Test methods
-  TEST_BASIC_OPERATIONS = 'test_basic_operations',
-  TEST_REST_API_WORKFLOW = 'test_rest_api_workflow',
-  TEST_MULTIPART_BLOB = 'test_multipart_blob',
+// Method names that match the Rust backend  
+export enum ChatMethod {
+  SEND_MESSAGE = 'send_message',
+  GET_MESSAGES = 'get_messages',
+  GET_MESSAGE = 'get_message',
+  GET_DECOMPRESSED_BLOB_ID = 'get_decompressed_blob_id',
   GET_STATS = 'get_stats',
+  CLEAR_MESSAGES = 'clear_messages',
+}
+
+// File upload interface for immediate upload
+export interface FileUpload {
+  file: File;
+  blob_id?: string;
+  uploading: boolean;
+  uploaded: boolean;
+  progress: number;
+  error?: string;
+}
+
+// Attachment download helper
+export interface AttachmentDownload {
+  attachment: Attachment;
+  requesting_decompressed_id: boolean;
+  downloading: boolean;
+  completed: boolean;
+  progress: number;
+  error?: string;
+  decompressed_blob_id?: string; // For HTTP download
+  blobUrl?: string; // For browser download/display
 }
 
 // Main API interface
-export interface BlobApi {
-  // REST API methods (to be implemented in data source)
-  uploadBlob(file: File, expectedHash?: string): Promise<ApiResponse<BlobUploadResponse>>;
+export interface ChatApi {
+  // REST API methods (direct HTTP upload/download)
+  uploadBlob(file: File, onProgress?: (progress: number) => void, expectedHash?: string): Promise<ApiResponse<BlobUploadResponse>>;
   downloadBlob(blobId: string): Promise<Blob>;
   getBlobMetadata(blobId: string): Promise<ApiResponse<BlobMetadataResponse>>;
   
-  // JSON RPC methods for blob management
-  registerBlob(request: RegisterBlobRequest): ApiResponse<void>;
-  getBlobId(request: GetBlobIdRequest): ApiResponse<string>;
-  getBlobMetadataByName(request: GetBlobMetadataRequest): ApiResponse<BlobMetadata>;
-  listBlobs(): ApiResponse<ListBlobsResponse>;
-  unregisterBlob(name: string): ApiResponse<void>;
-  
-  // Legacy JSON RPC methods (backward compatibility)
-  createBlob(request: CreateBlobRequest): ApiResponse<CreateBlobResponse>;
-  readBlob(request: ReadBlobRequest): ApiResponse<ReadBlobResponse>;
-  
-  // Test methods
-  testBasicOperations(): ApiResponse<TestBasicOperationsResponse>;
-  testRestApiWorkflow(): ApiResponse<TestRestApiWorkflowResponse>;
-  testMultipartBlob(request: TestMultipartBlobRequest): ApiResponse<TestMultipartBlobResponse>;
-  getStats(): ApiResponse<GetStatsResponse>;
+  // JSON RPC methods for chat functionality  
+  sendMessage(request: SendMessageRequest): ApiResponse<number>; // Returns message_id
+  getMessages(): ApiResponse<Message[]>;
+  getMessage(messageId: number): ApiResponse<Message>;
+  getDecompressedBlobId(compressedBlobId: string): ApiResponse<string>; // Returns decompressed blob ID
+  getStats(): ApiResponse<ChatStats>;
+  clearMessages(): ApiResponse<void>;
 } 
