@@ -33,9 +33,13 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
         let _ = build_cmd.arg(arg);
     }
 
-    let output = build_cmd.output().await.wrap_err("cargo build failed")?;
+    let output = build_cmd
+        .spawn()?
+        .wait()
+        .await
+        .wrap_err("cargo build failed")?;
 
-    if !output.status.success() {
+    if !output.success() {
         bail!("cargo build command failed");
     }
 
