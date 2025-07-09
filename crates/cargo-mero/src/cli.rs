@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
 
-use crate::{abi, build, new};
+use crate::{build, new};
 
 pub const EXAMPLES: &str = r"
   # Create a new application
@@ -14,9 +14,6 @@ pub const EXAMPLES: &str = r"
 
   # build app with additional cargo arguments
   $ cargo mero build --verbose
-
-  # Generate ABI
-  $ cargo mero abi
 ";
 
 #[derive(Debug, Parser)]
@@ -38,7 +35,6 @@ enum MeroCmd {
 enum SubCommands {
     New(NewCommand),
     Build(BuildCommand),
-    Abi,
 }
 
 #[derive(Debug, Parser)]
@@ -55,7 +51,6 @@ impl RootCommand {
     pub async fn run(self) -> eyre::Result<()> {
         match self.command {
             MeroCmd::Mero(command) => match command {
-                SubCommands::Abi => abi::run().await,
                 SubCommands::New(args) => new::run(args).await,
                 SubCommands::Build(args) => build::run(args.args).await,
             },
