@@ -2,7 +2,7 @@ name: PR Comment
 
 on:
   workflow_run:
-    workflows: ['e2e-tests', 'PR Description']
+    workflows: ['e2e-tests', 'PR Description', 'PR Title']
     types:
       - completed
 
