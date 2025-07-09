@@ -9,6 +9,7 @@ use tokio::process::Command;
 use crate::cli::BuildOpts;
 
 pub async fn run(args: BuildOpts) -> eyre::Result<()> {
+    println!("🏗️ \x1b[1;32mBuilding\x1b[0m...");
     let output = Command::new("rustup")
         .arg("target")
         .arg("add")
@@ -76,7 +77,7 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
 
     // Optimize wasm if wasm-opt is present
     if wasm_opt_installed().await {
-        println!("Optimizing...");
+        println!("⚙️ \x1b[1;32mOptimizing\x1b[0m...");
 
         let output = Command::new("wasm-opt")
             .arg("-Oz")
@@ -94,7 +95,7 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
                 output.stdout
             );
         }
-        println!("WASM optimization complete");
+        println!("✅ \x1b[1;32mOptimization complete\x1b[0m");
     } else {
         println!("wasm-opt not found, skipping optimization");
     }

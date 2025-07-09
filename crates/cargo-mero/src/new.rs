@@ -12,7 +12,10 @@ use crate::cli::NewCommand;
 struct AppTemplate;
 
 pub async fn run(args: NewCommand) -> eyre::Result<()> {
-    println!("Creating a new project {:?} from template...", args.name);
+    println!(
+        "🔧 \x1b[1;32mCreating\x1b[0m a new project \x1b[1;35m{:?}\x1b[0m from template...",
+        args.name
+    );
     let path = args.name;
 
     fs::create_dir_all(&path)?;
