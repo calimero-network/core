@@ -4,11 +4,10 @@ use std::process::Stdio;
 
 use cargo_metadata::MetadataCommand;
 use eyre::{bail, Context};
-
-use crate::utils::new_command;
+use tokio::process::Command;
 
 pub async fn run(args: Vec<String>) -> eyre::Result<()> {
-    let output = new_command("rustup")
+    let output = Command::new("rustup")
         .arg("target")
         .arg("add")
         .arg("wasm32-unknown-unknown")
@@ -20,7 +19,7 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
         bail!("Adding wasm32-unknown-unknown target command failed");
     }
 
-    let mut build_cmd = new_command("cargo");
+    let mut build_cmd = Command::new("cargo");
     let _ = build_cmd
         .arg("build")
         .arg("--locked")
@@ -59,7 +58,7 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
     if wasm_opt_installed().await {
         println!("wasm-opt found, optimizing...");
 
-        let output = new_command("wasm-opt")
+        let output = Command::new("wasm-opt")
             .arg("-Oz")
             .arg(build_path("./res/", &wasm_file))
             .arg("-o")
@@ -83,7 +82,7 @@ pub async fn run(args: Vec<String>) -> eyre::Result<()> {
 }
 
 async fn wasm_opt_installed() -> bool {
-    new_command("wasm-opt")
+    Command::new("wasm-opt")
         .arg("--version")
         .stdout(Stdio::null())
         .status()
