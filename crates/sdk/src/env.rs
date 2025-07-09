@@ -10,7 +10,6 @@ use crate::sys::{
 pub mod ext;
 
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
-const BLOB_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 2);
 
 #[track_caller]
 #[inline]
@@ -206,59 +205,55 @@ pub fn time_now() -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-/// Reserves a register for blob operations
-pub fn register_reserve() -> Result<RegisterId, crate::types::Error> {
-    Ok(BLOB_REGISTER)
+// ========================================
+// STREAMING BLOB API
+// ========================================
+
+/// Create a new blob write handle for streaming data.
+/// Returns a file descriptor that can be used with blob_write() and blob_close().
+pub fn blob_create() -> u64 {
+    unsafe { sys::blob_create() }.as_usize() as u64
 }
 
-/// Gets data from a register as a fixed-size array
-pub fn register_get<const N: usize>(
-    register_id: RegisterId,
-) -> Result<[u8; N], crate::types::Error> {
-    read_register_sized(register_id)
-        .ok_or_else(|| crate::types::Error::msg("Failed to read data from register"))
+/// Write data to a blob handle created with blob_create().
+/// Returns the number of bytes written.
+pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
+    unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Buffer::from(data)) }.as_usize() as u64
 }
 
-/// Store blob data and return the blob ID
-pub fn store_blob_bytes(data: &[u8]) -> Result<[u8; 32], String> {
-    let register_id =
-        register_reserve().map_err(|e| format!("Failed to reserve register: {:?}", e))?;
-
-    let success = unsafe {
-        sys::store_blob(Buffer::from(data), register_id)
-            .try_into()
-            .unwrap_or(false)
-    };
+/// Close a blob handle and finalize the blob.
+/// For write handles: Finalizes the blob and returns its 32-byte ID.
+/// For read handles: Returns the original blob's ID and cleans up the handle.
+/// Returns an error if the operation fails (e.g. blob finalization fails for write handles).
+pub fn blob_close(fd: u64) -> Result<[u8; 32], &'static str> {
+    let mut blob_id_buf = [0u8; 32];
+    let success: bool = unsafe {
+        sys::blob_close(
+            PtrSizedInt::new(fd as usize),
+            BufferMut::new(&mut blob_id_buf),
+        )
+        .try_into()
+    }
+    .unwrap_or_else(expected_boolean);
 
     if success {
-        // Blob was stored successfully, get the blob ID from register
-        register_get(register_id).map_err(|e| format!("Failed to get blob ID: {:?}", e))
+        Ok(blob_id_buf)
     } else {
-        Err("Failed to store blob".to_owned())
+        Err("Blob creation failed")
     }
 }
 
-/// Load blob data by blob ID
-pub fn load_blob_bytes(blob_id: &[u8]) -> Result<Vec<u8>, String> {
-    if blob_id.len() != 32 {
-        return Err("Blob ID must be 32 bytes".to_owned());
-    }
+/// Open a blob for reading by its 32-byte ID.
+/// Returns a file descriptor that can be used with blob_read() and blob_close().
+/// Returns 0 if the blob is not found.
+pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
+    unsafe { sys::blob_open(Buffer::from(&blob_id[..])) }.as_usize() as u64
+}
 
-    let register_id =
-        register_reserve().map_err(|e| format!("Failed to reserve register: {:?}", e))?;
-
-    let success = unsafe {
-        sys::load_blob(Buffer::from(blob_id), register_id)
-            .try_into()
-            .unwrap_or(false)
-    };
-
-    if success {
-        // Blob was found, get the data from register
-        let data = read_register(register_id)
-            .ok_or_else(|| "Failed to read blob data from register".to_owned())?;
-        Ok(data)
-    } else {
-        Err("Blob not found".to_owned())
-    }
+/// Read data from a blob handle opened with blob_open().
+/// Reads into the provided buffer and returns the number of bytes read.
+/// Returns 0 when end of blob is reached.
+pub fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
+    unsafe { sys::blob_read(PtrSizedInt::new(fd as usize), BufferMut::new(buffer)) }.as_usize()
+        as u64
 }
