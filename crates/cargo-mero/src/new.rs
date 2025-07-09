@@ -8,7 +8,7 @@ use rust_embed::RustEmbed;
 use crate::cli::NewCommand;
 
 #[derive(RustEmbed)]
-#[folder = "../../apps/app-template/"]
+#[folder = "./app-template/"]
 struct AppTemplate;
 
 pub async fn run(args: NewCommand) -> eyre::Result<()> {

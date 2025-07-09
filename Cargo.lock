@@ -944,15 +944,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
 
 [[package]]
-name = "app-template"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk 0.1.0 (git+https://github.com/calimero-network/core)",
- "calimero-storage 0.1.0 (git+https://github.com/calimero-network/core)",
- "thiserror 2.0.12",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2103,7 +2094,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
- "calimero-sdk-macros 0.1.0",
+ "calimero-sdk-macros",
  "cfg-if",
  "serde",
  "serde_json",
@@ -2111,33 +2102,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-sdk"
-version = "0.1.0"
-source = "git+https://github.com/calimero-network/core#35c21784e3e785eee482c9f1cf5a59b66d1e2314"
-dependencies = [
- "borsh",
- "bs58 0.5.1",
- "calimero-sdk-macros 0.1.0 (git+https://github.com/calimero-network/core)",
- "cfg-if",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "calimero-sdk-macros"
 version = "0.1.0"
-dependencies = [
- "prettyplease 0.2.25",
- "proc-macro2",
- "quote",
- "syn 2.0.100",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "calimero-sdk-macros"
-version = "0.1.0"
-source = "git+https://github.com/calimero-network/core#35c21784e3e785eee482c9f1cf5a59b66d1e2314"
 dependencies = [
  "prettyplease 0.2.25",
  "proc-macro2",
@@ -2151,7 +2117,7 @@ name = "calimero-sdk-near"
 version = "0.1.0"
 dependencies = [
  "calimero-primitives",
- "calimero-sdk 0.1.0",
+ "calimero-sdk",
  "near-account-id",
  "serde",
  "serde_json",
@@ -2225,8 +2191,8 @@ name = "calimero-storage"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "calimero-sdk 0.1.0",
- "calimero-storage-macros 0.1.0",
+ "calimero-sdk",
+ "calimero-storage-macros",
  "claims",
  "eyre",
  "fixedstr",
@@ -2240,43 +2206,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-storage"
-version = "0.1.0"
-source = "git+https://github.com/calimero-network/core#35c21784e3e785eee482c9f1cf5a59b66d1e2314"
-dependencies = [
- "borsh",
- "calimero-sdk 0.1.0 (git+https://github.com/calimero-network/core)",
- "calimero-storage-macros 0.1.0 (git+https://github.com/calimero-network/core)",
- "eyre",
- "fixedstr",
- "hex",
- "indexmap 2.6.0",
- "rand 0.8.5",
- "serde",
- "sha2 0.10.8",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "calimero-storage-macros"
 version = "0.1.0"
 dependencies = [
  "borsh",
- "calimero-sdk 0.1.0",
- "calimero-storage 0.1.0",
+ "calimero-sdk",
+ "calimero-storage",
  "quote",
  "syn 2.0.100",
  "trybuild",
-]
-
-[[package]]
-name = "calimero-storage-macros"
-version = "0.1.0"
-source = "git+https://github.com/calimero-network/core#35c21784e3e785eee482c9f1cf5a59b66d1e2314"
-dependencies = [
- "borsh",
- "quote",
- "syn 2.0.100",
 ]
 
 [[package]]
@@ -5343,8 +5281,8 @@ dependencies = [
 name = "kv-store"
 version = "0.1.0"
 dependencies = [
- "calimero-sdk 0.1.0",
- "calimero-storage 0.1.0",
+ "calimero-sdk",
+ "calimero-storage",
  "thiserror 1.0.69",
 ]
 
