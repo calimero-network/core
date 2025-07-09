@@ -40,9 +40,12 @@ wasm_imports! {
         fn send_proposal(value: Buffer<'_>, buf: BufferMut<'_>);
         fn approve_proposal(value: Buffer<'_>);
         // --
-        // Simplified blob functions
-        fn store_blob(data: Buffer<'_>, register_id: RegisterId) -> Bool;
-        fn load_blob(blob_id: Buffer<'_>, register_id: RegisterId) -> Bool;
+        // Streaming blob functions
+        fn blob_create() -> PtrSizedInt;
+        fn blob_write(fd: PtrSizedInt, data: Buffer<'_>) -> PtrSizedInt;
+        fn blob_close(fd: PtrSizedInt, blob_id_buf: BufferMut<'_>) -> Bool;
+        fn blob_open(blob_id: Buffer<'_>) -> PtrSizedInt;
+        fn blob_read(fd: PtrSizedInt, buf: BufferMut<'_>) -> PtrSizedInt;
     }
 }
 
