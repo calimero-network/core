@@ -75,7 +75,7 @@ impl<'a> VMLogic<'a> {
             // Chunked blob functions
             fn blob_create() -> u64;
             fn blob_write(fd: u64, data_ptr: u64, data_len: u64) -> u64;
-            fn blob_close(fd: u64, blob_id_ptr: u64) -> u32;
+            fn blob_close(fd: u64, blob_id_ptr: u64, blob_id_len: u64) -> u32;
             fn blob_open(blob_id_ptr: u64, blob_id_len: u64) -> u64;
             fn blob_read(fd: u64, data_ptr: u64, data_len: u64) -> u64;
         }
