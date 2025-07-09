@@ -6,7 +6,10 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use calimero_primitives::blobs::BlobId;
+use futures_util::{AsyncRead, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio_util::compat::TokioAsyncReadCompatExt;
+use tokio_util::io::StreamReader;
 
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::AdminState;
@@ -86,17 +89,29 @@ fn detect_mime_type(data: &[u8]) -> &'static str {
     "application/octet-stream"
 }
 
-/// Upload a blob via streaming
+/// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader
+/// This allows streaming large files without loading them entirely into memory
+fn body_to_async_read(body: Body) -> impl AsyncRead {
+    // Convert Body to a stream of Result<Bytes, Error>
+    let byte_stream = body
+        .into_data_stream()
+        .map(|result| result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
+
+    // Use StreamReader to convert Stream<Item = Result<Bytes, Error>> to tokio AsyncRead
+    // Then convert to futures AsyncRead using compat()
+    StreamReader::new(byte_stream).compat()
+}
+
+/// Upload a blob via raw binary data (streaming version)
 ///
-/// This endpoint accepts raw binary data as the request body and stores it as a blob.
-/// The blob can then be referenced by its returned ID in application calls.
+/// This endpoint accepts raw binary data in the request body and streams it
+/// directly to blob storage without loading it all into memory first.
+/// Perfect for large file uploads with minimal memory usage.
 pub async fn upload_handler(
     Query(query): Query<BlobUploadQuery>,
     Extension(state): Extension<Arc<AdminState>>,
     body: Body,
 ) -> impl IntoResponse {
-    use axum::body::to_bytes;
-
     // Parse expected hash if provided
     let expected_hash = if let Some(hash_str) = query.hash {
         match hash_str.parse() {
@@ -113,33 +128,34 @@ pub async fn upload_handler(
         None
     };
 
-    // Convert body to bytes then to a slice for add_blob
-    let bytes = match to_bytes(body, usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: format!("Failed to read request body: {}", err),
-            }
-            .into_response();
-        }
-    };
+    tracing::info!("Starting streaming raw blob upload");
 
-    // Store the blob using the node client
+    // Create streaming reader from the body
+    let reader = body_to_async_read(body);
+
+    // Store the blob using the node client with streaming
     match state
         .node_client
-        .add_blob(&bytes[..], None, expected_hash.as_ref())
+        .add_blob(reader, None, expected_hash.as_ref())
         .await
     {
-        Ok((blob_id, size)) => ApiResponse {
-            payload: BlobUploadResponse {
-                blob_id: blob_id.to_string(),
+        Ok((blob_id, size)) => {
+            tracing::info!(
+                "Successfully uploaded streaming blob {} with size {} bytes ({:.1} MB)",
+                blob_id,
                 size,
-            },
+                size as f64 / (1024.0 * 1024.0)
+            );
+            ApiResponse {
+                payload: BlobUploadResponse {
+                    blob_id: blob_id.to_string(),
+                    size,
+                },
+            }
+            .into_response()
         }
-        .into_response(),
         Err(err) => {
-            tracing::error!("Failed to upload blob: {:?}", err);
+            tracing::error!("Failed to upload streaming blob: {:?}", err);
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
                 message: format!("Failed to store blob: {}", err),
@@ -264,5 +280,5 @@ pub async fn metadata_handler(
     }
 }
 
-// Keep the old handler name for backward compatibility
+// Export the handler with the old name for backward compatibility
 pub use upload_handler as handler;

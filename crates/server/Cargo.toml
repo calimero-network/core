@@ -8,10 +8,8 @@ license.workspace = true
 
 [dependencies]
 axum = { workspace = true, features = ["multipart"] }
-bytes.workspace = true
 eyre.workspace = true
-futures-util = { workspace = true, optional = true }
-hex.workspace = true
+futures-util.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
@@ -20,7 +18,7 @@ rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-p
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
-tower.workspace = true
+tokio-util.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
@@ -50,7 +48,7 @@ serde_json.workspace = true
 [features]
 jsonrpc = []
 host_layer = []
-websocket = ["axum/ws", "dep:futures-util"]
+websocket = ["axum/ws"]
 admin = ["dep:tower-sessions"]
 
 [lints]
