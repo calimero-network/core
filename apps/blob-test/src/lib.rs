@@ -1,4 +1,7 @@
-#![allow(clippy::len_without_is_empty, reason = "BTreeMap and Vec don't need is_empty for this app")]
+#![allow(
+    clippy::len_without_is_empty,
+    reason = "BTreeMap and Vec don't need is_empty for this app"
+)]
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -191,20 +194,23 @@ fn stream_compress_blob(blob_id: &BlobId) -> Result<Option<([u8; 32], u64, u64)>
         fd: u64,
         total_written: u64,
     }
-    
+
     impl Write for BlobWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let written = env::blob_write(self.fd, buf);
             self.total_written += written;
             Ok(written as usize)
         }
-        
+
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(()) // blob_write is immediate
         }
     }
 
-    let blob_writer = BlobWriter { fd: write_fd, total_written: 0 };
+    let blob_writer = BlobWriter {
+        fd: write_fd,
+        total_written: 0,
+    };
     let mut encoder = GzEncoder::new(blob_writer, Compression::default());
     let mut read_buffer = [0u8; 8192];
     let mut original_size = 0u64;
@@ -231,16 +237,14 @@ fn stream_compress_blob(blob_id: &BlobId) -> Result<Option<([u8; 32], u64, u64)>
     let _ = env::blob_close(read_fd);
 
     // Finish compression (flushes remaining compressed data to blob)
-    let blob_writer = encoder
-        .finish()
-        .map_err(|e| {
-            let _ = env::blob_close(write_fd);
-            format!("Compression finish error: {}", e)
-        })?;
+    let blob_writer = encoder.finish().map_err(|e| {
+        let _ = env::blob_close(write_fd);
+        format!("Compression finish error: {}", e)
+    })?;
 
     let compressed_size = blob_writer.total_written;
 
-    // Check if compression helped (> 10% savings) 
+    // Check if compression helped (> 10% savings)
     let compression_ratio = compressed_size as f64 / original_size as f64;
     if compression_ratio >= 0.9 {
         // Compression didn't help, clean up and return original
@@ -253,8 +257,6 @@ fn stream_compress_blob(blob_id: &BlobId) -> Result<Option<([u8; 32], u64, u64)>
 
     Ok(Some((compressed_blob_id, original_size, compressed_size)))
 }
-
-
 
 /// Decompress data (handles both gzip and uncompressed)
 fn decompress_data(compressed: &[u8]) -> Result<Vec<u8>, String> {
@@ -328,7 +330,7 @@ impl ChatApp {
                 .map_err(|_| app::err!("Invalid blob ID: {}", blob_id_str))?;
 
             // Stream compress the blob without loading into memory
-            let (compressed_blob_id_bytes, original_size, compressed_size) = 
+            let (compressed_blob_id_bytes, original_size, compressed_size) =
                 stream_compress_blob(&blob_id)
                     .map_err(|_| app::err!("Failed to compress blob: {}", blob_id_str))?
                     .ok_or_else(|| app::err!("Blob not found: {}", blob_id_str))?;
@@ -365,7 +367,7 @@ impl ChatApp {
         self.message_count += 1;
 
         let attachment_count = attachments.len();
-        
+
         let message = Message {
             id: message_id,
             sender: sender.clone(),
@@ -523,7 +525,8 @@ impl ChatApp {
 
         let compression_savings = if total_original_size > 0 {
             if total_compressed_size <= total_original_size {
-                ((total_original_size - total_compressed_size) as f64 * 100.0 / total_original_size as f64) as u64
+                ((total_original_size - total_compressed_size) as f64 * 100.0
+                    / total_original_size as f64) as u64
             } else {
                 0
             }
