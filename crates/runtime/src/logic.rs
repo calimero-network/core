@@ -5,10 +5,12 @@ use core::fmt;
 use core::num::NonZeroU64;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
+use std::io::{Cursor, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
+use bytes;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
 use futures_util::{StreamExt, TryStreamExt};
@@ -104,8 +106,6 @@ impl Default for VMLimits {
     }
 }
 
-// Blob descriptor management structures
-#[derive(Debug)]
 enum BlobHandle {
     Write(BlobWriteHandle),
     Read(BlobReadHandle),
@@ -117,9 +117,14 @@ struct BlobWriteHandle {
     completion_handle: tokio::task::JoinHandle<eyre::Result<(BlobId, u64)>>,
 }
 
-#[derive(Debug)]
 struct BlobReadHandle {
     blob_id: BlobId,
+    // Stream state
+    stream:
+        Option<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin>>,
+    // Cursor for current storage chunk - automatic position tracking!
+    current_chunk_cursor: Option<Cursor<Vec<u8>>>,
+    position: u64,
 }
 
 #[expect(
@@ -658,7 +663,7 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    // ========== CHUNKED BLOB HOST FUNCTIONS ==========
+    // ========== BLOB FUNCTIONS ==========
 
     /// Create a new blob for writing
     /// Returns: file descriptor (u64) for writing operations
@@ -675,13 +680,15 @@ impl VMHostFunctions<'_> {
             }));
         }
 
-        let fd = self.with_logic_mut(|logic| {
+        let fd = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
+            let Some(node_client) = logic.node_client.clone() else {
+                return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+            };
+
             let fd = logic.next_blob_fd;
             logic.next_blob_fd += 1;
 
             let (data_sender, data_receiver) = mpsc::unbounded_channel();
-
-            let node_client = logic.node_client.clone().unwrap();
 
             let completion_handle = tokio::spawn(async move {
                 let stream = UnboundedReceiverStream::new(data_receiver);
@@ -699,8 +706,8 @@ impl VMHostFunctions<'_> {
             });
 
             drop(logic.blob_handles.insert(fd, handle));
-            fd
-        });
+            Ok(fd)
+        })?;
 
         Ok(fd)
     }
@@ -736,14 +743,17 @@ impl VMHostFunctions<'_> {
 
         let data_len = data.len() as u64;
         self.with_logic_mut(|logic| {
-            let handle = logic.blob_handles.get_mut(&fd).unwrap(); // We already validated it exists
+            let handle = logic
+                .blob_handles
+                .get_mut(&fd)
+                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
             match handle {
                 BlobHandle::Write(w) => {
                     w.sender
                         .send(data.clone())
                         .map_err(|_| VMLogicError::HostError(HostError::InvalidBlobHandle))?;
                 }
-                _ => unreachable!(),
+                _ => return Err(VMLogicError::HostError(HostError::InvalidBlobHandle)),
             }
             Ok::<(), VMLogicError>(())
         })?;
@@ -821,7 +831,12 @@ impl VMHostFunctions<'_> {
             let fd = logic.next_blob_fd;
             logic.next_blob_fd += 1;
 
-            let handle = BlobHandle::Read(BlobReadHandle { blob_id });
+            let handle = BlobHandle::Read(BlobReadHandle {
+                blob_id,
+                stream: None,
+                current_chunk_cursor: None,
+                position: 0,
+            });
             drop(logic.blob_handles.insert(fd, handle));
             fd
         });
@@ -830,7 +845,7 @@ impl VMHostFunctions<'_> {
     }
 
     /// Read a chunk of data from a blob
-    /// Returns: number of bytes read (u64)
+    /// Returns: number of bytes read (u64)  
     pub fn blob_read(&mut self, fd: u64, data_ptr: u64, data_len: u64) -> VMLogicResult<u64> {
         // Check if blob functionality is available
         let node_client = match &self.borrow_logic().node_client {
@@ -846,51 +861,123 @@ impl VMHostFunctions<'_> {
             }));
         }
 
-        // Get blob_id and validate handle once upfront
-        let blob_id = self.with_logic_mut(|logic| {
-            let handle = logic
-                .blob_handles
-                .get(&fd)
-                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
-
-            match handle {
-                BlobHandle::Read(r) => Ok(r.blob_id),
-                BlobHandle::Write(_) => Err(VMLogicError::HostError(HostError::InvalidBlobHandle)),
-            }
-        })?;
-
-        // Stream blob data directly - just get next chunk
-        let blob_data = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                // Get the blob stream using the proper blobstore API
-                let blob_stream = node_client
-                    .get_blob(&blob_id)
-                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
-
-                let Some(mut blob_stream) = blob_stream else {
-                    return Ok::<Vec<u8>, VMLogicError>(Vec::new()); // Blob not found, return empty
-                };
-
-                // Just get the next chunk from the stream
-                if let Some(chunk_result) = blob_stream.next().await {
-                    let chunk = chunk_result
-                        .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
-                    Ok(chunk.to_vec())
-                } else {
-                    Ok(Vec::new()) // End of stream
-                }
-            })
-        })?;
-
-        // Determine how much to copy (limited by requested length)
-        let to_read = std::cmp::min(data_len as usize, blob_data.len());
-
-        // Copy data to guest memory
-        if to_read > 0 {
-            self.borrow_memory()
-                .write(data_ptr, &blob_data[..to_read])?;
+        if data_len == 0 {
+            return Ok(0);
         }
 
-        Ok(to_read as u64)
+        let mut output_buffer = Vec::with_capacity(data_len as usize);
+
+        let bytes_read = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
+            let handle = logic
+                .blob_handles
+                .get_mut(&fd)
+                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
+
+            let read_handle = match handle {
+                BlobHandle::Read(r) => r,
+                BlobHandle::Write(_) => {
+                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                }
+            };
+
+            let needed = data_len as usize;
+
+            // First, try to read from current chunk cursor if available
+            if let Some(cursor) = &mut read_handle.current_chunk_cursor {
+                let mut temp_buffer = vec![0u8; needed];
+                match cursor.read(&mut temp_buffer) {
+                    Ok(bytes_from_cursor) => {
+                        output_buffer.extend_from_slice(&temp_buffer[..bytes_from_cursor]);
+
+                        // If cursor is exhausted, remove it
+                        if bytes_from_cursor == 0
+                            || cursor.position() >= cursor.get_ref().len() as u64
+                        {
+                            read_handle.current_chunk_cursor = None;
+                        }
+
+                        // If we satisfied the request entirely from cursor, we're done
+                        if output_buffer.len() >= needed {
+                            read_handle.position += output_buffer.len() as u64;
+                            return Ok(output_buffer.len() as u64);
+                        }
+                    }
+                    Err(_) => {
+                        // Cursor error, remove it
+                        read_handle.current_chunk_cursor = None;
+                    }
+                }
+            }
+
+            if read_handle.stream.is_none() {
+                let blob_stream = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        node_client
+                            .get_blob(&read_handle.blob_id)
+                            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
+                    })
+                })?;
+
+                match blob_stream {
+                    Some(stream) => {
+                        let mapped_stream = stream.map(|result| match result {
+                            Ok(chunk) => Ok(bytes::Bytes::copy_from_slice(&chunk)),
+                            Err(_) => Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "blob read error",
+                            )),
+                        });
+                        read_handle.stream = Some(Box::new(mapped_stream));
+                    }
+                    None => {
+                        read_handle.position += output_buffer.len() as u64;
+                        return Ok(output_buffer.len() as u64);
+                    }
+                }
+            }
+
+            if let Some(stream) = &mut read_handle.stream {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        while output_buffer.len() < needed {
+                            match stream.next().await {
+                                Some(Ok(chunk)) => {
+                                    let chunk_bytes = chunk.as_ref();
+                                    let remaining_needed = needed - output_buffer.len();
+
+                                    if chunk_bytes.len() <= remaining_needed {
+                                        output_buffer.extend_from_slice(chunk_bytes);
+                                    } else {
+                                        // Use part of chunk, save rest in cursor for next time
+                                        output_buffer
+                                            .extend_from_slice(&chunk_bytes[..remaining_needed]);
+
+                                        // Create cursor with remaining data
+                                        let remaining_data =
+                                            chunk_bytes[remaining_needed..].to_vec();
+                                        read_handle.current_chunk_cursor =
+                                            Some(Cursor::new(remaining_data));
+                                        break;
+                                    }
+                                }
+                                Some(Err(_)) | None => {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok::<(), VMLogicError>(())
+                    })
+                })?;
+            }
+
+            read_handle.position += output_buffer.len() as u64;
+            Ok(output_buffer.len() as u64)
+        })?;
+
+        if bytes_read > 0 {
+            self.borrow_memory().write(data_ptr, &output_buffer)?;
+        }
+
+        Ok(bytes_read)
     }
 }
