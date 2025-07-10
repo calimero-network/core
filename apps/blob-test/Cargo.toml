@@ -12,7 +12,6 @@ crate-type = ["cdylib"]
 [dependencies]
 calimero-sdk.workspace = true
 calimero-primitives.workspace = true
-calimero-storage.workspace = true
 bs58 = "0.5"
 flate2 = "1.0"
 

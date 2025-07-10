@@ -81,8 +81,8 @@ pub enum Event {
     },
 }
 
-/// Helper function to load blob data using streaming API
-fn load_blob_streaming(blob_id: &BlobId) -> Result<Option<Vec<u8>>, String> {
+/// Load complete blob data into memory (uses chunked reading internally)
+fn load_blob_full(blob_id: &BlobId) -> Result<Option<Vec<u8>>, String> {
     app::log!("Loading blob (32 bytes)");
 
     let blob_id_bytes: [u8; 32] = *blob_id.as_ref();
@@ -111,13 +111,13 @@ fn load_blob_streaming(blob_id: &BlobId) -> Result<Option<Vec<u8>>, String> {
 
     app::log!("Loaded blob: {} bytes", total_read);
 
-    let _blob_id_result = env::blob_close(fd);
+    let _ = env::blob_close(fd);
 
     Ok(Some(result))
 }
 
-/// Helper function to store blob data using streaming API
-fn store_blob_streaming(data: &[u8]) -> Result<BlobId, String> {
+/// Store blob data using chunked writing
+fn store_blob_chunked(data: &[u8]) -> Result<BlobId, String> {
     app::log!("Creating blob for {} bytes", data.len());
 
     let fd = env::blob_create();
@@ -168,17 +168,93 @@ fn store_blob_streaming(data: &[u8]) -> Result<BlobId, String> {
     Ok(blob_id)
 }
 
-/// Compress data using gzip (much better than RLE for binary data)
-fn compress_data(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(data)
-        .map_err(|e| format!("Gzip write error: {}", e))?;
-    let compressed_data = encoder
+/// Stream compress a blob without loading it entirely into memory
+/// Returns (compressed_blob_id, original_size, compressed_size) or None if blob not found
+fn stream_compress_blob(blob_id: &BlobId) -> Result<Option<([u8; 32], u64, u64)>, String> {
+    let blob_id_bytes: [u8; 32] = *blob_id.as_ref();
+
+    // Open source blob for reading
+    let read_fd = env::blob_open(&blob_id_bytes);
+    if read_fd == 0 {
+        return Ok(None);
+    }
+
+    // Create destination blob for compressed data
+    let write_fd = env::blob_create();
+    if write_fd == 0 {
+        let _ = env::blob_close(read_fd);
+        return Err("Failed to create compressed blob handle".to_owned());
+    }
+
+    // True streaming compression: read chunk → write to encoder → encoder writes compressed to blob
+    struct BlobWriter {
+        fd: u64,
+        total_written: u64,
+    }
+    
+    impl Write for BlobWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let written = env::blob_write(self.fd, buf);
+            self.total_written += written;
+            Ok(written as usize)
+        }
+        
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(()) // blob_write is immediate
+        }
+    }
+
+    let blob_writer = BlobWriter { fd: write_fd, total_written: 0 };
+    let mut encoder = GzEncoder::new(blob_writer, Compression::default());
+    let mut read_buffer = [0u8; 8192];
+    let mut original_size = 0u64;
+
+    // Stream: read chunk → write to encoder → encoder automatically writes compressed to blob
+    loop {
+        let bytes_read = env::blob_read(read_fd, &mut read_buffer);
+        if bytes_read == 0 {
+            break;
+        }
+
+        original_size += bytes_read;
+
+        // Write chunk to compressor (it automatically writes compressed data to blob)
+        encoder
+            .write_all(&read_buffer[..bytes_read as usize])
+            .map_err(|e| {
+                let _ = env::blob_close(read_fd);
+                let _ = env::blob_close(write_fd);
+                format!("Compression write error: {}", e)
+            })?;
+    }
+
+    let _ = env::blob_close(read_fd);
+
+    // Finish compression (flushes remaining compressed data to blob)
+    let blob_writer = encoder
         .finish()
-        .map_err(|e| format!("Gzip finish error: {}", e))?;
-    Ok(compressed_data)
+        .map_err(|e| {
+            let _ = env::blob_close(write_fd);
+            format!("Compression finish error: {}", e)
+        })?;
+
+    let compressed_size = blob_writer.total_written;
+
+    // Check if compression helped (> 10% savings) 
+    let compression_ratio = compressed_size as f64 / original_size as f64;
+    if compression_ratio >= 0.9 {
+        // Compression didn't help, clean up and return original
+        let _ = env::blob_close(write_fd);
+        return Ok(Some((blob_id_bytes, original_size, original_size)));
+    }
+
+    // Close and get blob ID
+    let compressed_blob_id = env::blob_close(write_fd);
+
+    Ok(Some((compressed_blob_id, original_size, compressed_size)))
 }
+
+
 
 /// Decompress data (handles both gzip and uncompressed)
 fn decompress_data(compressed: &[u8]) -> Result<Vec<u8>, String> {
@@ -251,45 +327,25 @@ impl ChatApp {
                 .parse::<BlobId>()
                 .map_err(|_| app::err!("Invalid blob ID: {}", blob_id_str))?;
 
-            // Load original blob data
-            let original_data = load_blob_streaming(&blob_id)
-                .map_err(|_| app::err!("Failed to load blob data for ID: {}", blob_id_str))?
-                .ok_or_else(|| app::err!("Blob not found: {}", blob_id_str))?;
+            // Stream compress the blob without loading into memory
+            let (compressed_blob_id_bytes, original_size, compressed_size) = 
+                stream_compress_blob(&blob_id)
+                    .map_err(|_| app::err!("Failed to compress blob: {}", blob_id_str))?
+                    .ok_or_else(|| app::err!("Blob not found: {}", blob_id_str))?;
 
-            app::log!("Loaded original data: {} bytes", original_data.len());
+            let compression_ratio = compressed_size as f64 / original_size as f64;
 
-            // Try to compress the data
-            let compressed_data = compress_data(&original_data)
-                .map_err(|_| app::err!("Failed to compress attachment data"))?;
-
-            let compression_ratio = compressed_data.len() as f64 / original_data.len() as f64;
-
-            // If compression didn't help (ratio >= 0.9), just use the original blob
-            let (compressed_blob_id_bytes, compressed_size) = if compression_ratio >= 0.9 {
-                app::log!(
-                    "Compression didn't help ({:.2} ratio), using original blob",
-                    compression_ratio
-                );
-                (*blob_id.as_ref(), original_data.len() as u64)
-            } else {
-                app::log!(
-                    "Compressed {} bytes to {} bytes (ratio: {:.2})",
-                    original_data.len(),
-                    compressed_data.len(),
-                    compression_ratio
-                );
-
-                // Store compressed data as new blob
-                let compressed_blob_id = store_blob_streaming(&compressed_data)
-                    .map_err(|_| app::err!("Failed to store compressed data"))?;
-
-                (*compressed_blob_id.as_ref(), compressed_data.len() as u64)
-            };
+            app::log!(
+                "Compressed {} bytes to {} bytes (ratio: {:.2})",
+                original_size,
+                compressed_size,
+                compression_ratio
+            );
 
             app::emit!(Event::AttachmentCompressed {
                 original_blob_id: *blob_id.as_ref(),
                 compressed_blob_id: compressed_blob_id_bytes,
-                original_size: original_data.len() as u64,
+                original_size,
                 compressed_size,
                 compression_ratio,
             });
@@ -297,7 +353,7 @@ impl ChatApp {
             attachments.push(Attachment {
                 original_name: attachment_names[i].clone(),
                 original_blob_id: *blob_id.as_ref(),
-                original_size: attachment_sizes[i],
+                original_size,
                 compressed_blob_id: compressed_blob_id_bytes,
                 compressed_size,
                 content_type: attachment_content_types[i].clone(),
@@ -405,7 +461,7 @@ impl ChatApp {
         app::log!("Cache miss: performing lazy decompression");
 
         // Load compressed data
-        let compressed_data = load_blob_streaming(&compressed_blob_id)
+        let compressed_data = load_blob_full(&compressed_blob_id)
             .map_err(|err| app::err!("Failed to load compressed blob: {}", err))?
             .ok_or_else(|| app::err!("Compressed blob not found: {}", compressed_blob_id_str))?;
 
@@ -422,7 +478,7 @@ impl ChatApp {
         );
 
         // Store decompressed data as new blob (chunk by chunk)
-        let decompressed_blob_id = store_blob_streaming(&decompressed_data)
+        let decompressed_blob_id = store_blob_chunked(&decompressed_data)
             .map_err(|err| app::err!("Failed to store decompressed data: {}", err))?;
 
         let decompressed_blob_id_bytes = *decompressed_blob_id.as_ref();
