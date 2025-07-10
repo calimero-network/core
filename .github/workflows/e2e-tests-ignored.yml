@@ -1,0 +1,40 @@
+name: e2e-tests
+# ^~~ We run this workflow in-place to ensure that PRs are merged
+# without the e2e-tests workflow being run as it is a required check.
+
+on:
+  pull_request:
+    paths-ignore:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Ignored"
+
+  test:
+    name: ${{ matrix.protocol }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        protocol: [near, icp, stellar, ethereum]
+      fail-fast: false
+    steps:
+      - run: echo "Ignored"
+
+  comment:
+    name: Submit Report
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - run: echo "Ignored"
