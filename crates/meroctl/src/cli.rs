@@ -98,7 +98,7 @@ impl Environment {
     pub fn connection(&self) -> Result<&ConnectionInfo> {
         self.connection
             .as_ref()
-            .ok_or_eyre("No node selected: set default node by running `meroctl node set <node_name>` or use `--node` or `--api` to manually select a node")
+            .ok_or_eyre("No node selected: set default node by running `meroctl node use <node_name>` or use `--node` or `--api` to manually select a node")
     }
 }
 
