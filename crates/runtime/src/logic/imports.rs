@@ -72,7 +72,6 @@ impl<'a> VMLogic<'a> {
             fn send_proposal(actions_ptr: u64, actions_len: u64, id_ptr: u64, id_len: u64);
             fn approve_proposal(approval_ptr: u64, approval_len: u64);
 
-            // Chunked blob functions
             fn blob_create() -> u64;
             fn blob_write(fd: u64, data_ptr: u64, data_len: u64) -> u64;
             fn blob_close(fd: u64, blob_id_ptr: u64, blob_id_len: u64) -> u32;
