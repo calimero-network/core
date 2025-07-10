@@ -18,7 +18,6 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
 use crate::store::Storage;
@@ -100,7 +99,7 @@ impl Default for VMLimits {
             max_storage_key_size: is_valid((1 << 20).try_into()),    // 1 MiB
             max_storage_value_size: is_valid((10 << 20).try_into()), // 10 MiB
             max_blob_handles: 100,                                   // Max blob handles
-            max_blob_chunk_size: 10 << 20,                          // 10 MiB max chunk size
+            max_blob_chunk_size: 10 << 20,                           // 10 MiB max chunk size
         }
     }
 }
@@ -715,9 +714,9 @@ impl VMHostFunctions<'_> {
 
         // Validate chunk size
         if data_len > self.borrow_logic().limits.max_blob_chunk_size {
-            return Err(VMLogicError::HostError(HostError::BlobWriteTooLarge { 
-                size: data_len, 
-                max: self.borrow_logic().limits.max_blob_chunk_size 
+            return Err(VMLogicError::HostError(HostError::BlobWriteTooLarge {
+                size: data_len,
+                max: self.borrow_logic().limits.max_blob_chunk_size,
             }));
         }
 
@@ -822,9 +821,7 @@ impl VMHostFunctions<'_> {
             let fd = logic.next_blob_fd;
             logic.next_blob_fd += 1;
 
-            let handle = BlobHandle::Read(BlobReadHandle {
-                blob_id,
-            });
+            let handle = BlobHandle::Read(BlobReadHandle { blob_id });
             drop(logic.blob_handles.insert(fd, handle));
             fd
         });
@@ -843,15 +840,17 @@ impl VMHostFunctions<'_> {
 
         // Validate buffer size
         if data_len > self.borrow_logic().limits.max_blob_chunk_size {
-            return Err(VMLogicError::HostError(HostError::BlobBufferTooLarge { 
-                size: data_len, 
-                max: self.borrow_logic().limits.max_blob_chunk_size 
+            return Err(VMLogicError::HostError(HostError::BlobBufferTooLarge {
+                size: data_len,
+                max: self.borrow_logic().limits.max_blob_chunk_size,
             }));
         }
 
         // Get blob_id and validate handle once upfront
         let blob_id = self.with_logic_mut(|logic| {
-            let handle = logic.blob_handles.get(&fd)
+            let handle = logic
+                .blob_handles
+                .get(&fd)
                 .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
 
             match handle {
@@ -864,7 +863,8 @@ impl VMHostFunctions<'_> {
         let blob_data = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 // Get the blob stream using the proper blobstore API
-                let blob_stream = node_client.get_blob(&blob_id)
+                let blob_stream = node_client
+                    .get_blob(&blob_id)
                     .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
                 let Some(mut blob_stream) = blob_stream else {
@@ -873,7 +873,8 @@ impl VMHostFunctions<'_> {
 
                 // Just get the next chunk from the stream
                 if let Some(chunk_result) = blob_stream.next().await {
-                    let chunk = chunk_result.map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+                    let chunk = chunk_result
+                        .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
                     Ok(chunk.to_vec())
                 } else {
                     Ok(Vec::new()) // End of stream
@@ -883,14 +884,13 @@ impl VMHostFunctions<'_> {
 
         // Determine how much to copy (limited by requested length)
         let to_read = std::cmp::min(data_len as usize, blob_data.len());
-        
+
         // Copy data to guest memory
         if to_read > 0 {
-            self.borrow_memory().write(data_ptr, &blob_data[..to_read])?;
+            self.borrow_memory()
+                .write(data_ptr, &blob_data[..to_read])?;
         }
 
         Ok(to_read as u64)
     }
-
-
 }

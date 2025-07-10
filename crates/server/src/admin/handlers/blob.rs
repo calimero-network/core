@@ -20,22 +20,12 @@ pub struct BlobUploadQuery {
     hash: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct BlobUploadResponse {
+#[derive(Debug, Serialize, Copy, Clone)]
+pub struct BlobInfo {
     /// The unique blob ID
-    blob_id: String,
-    /// Size of the uploaded blob in bytes
-    size: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BlobMetadata {
-    /// The blob ID
-    blob_id: String,
+    blob_id: BlobId,
     /// Size of the blob in bytes
     size: u64,
-    /// Whether the blob exists
-    exists: bool,
 }
 
 /// Detect MIME type from file content
@@ -147,10 +137,7 @@ pub async fn upload_handler(
                 size as f64 / (1024.0 * 1024.0)
             );
             ApiResponse {
-                payload: BlobUploadResponse {
-                    blob_id: blob_id.to_string(),
-                    size,
-                },
+                payload: BlobInfo { blob_id, size },
             }
             .into_response()
         }
@@ -232,10 +219,10 @@ pub async fn download_handler(
     }
 }
 
-/// Get blob metadata
+/// Get blob info
 ///
-/// Returns information about the blob including its size and existence.
-pub async fn metadata_handler(
+/// Returns information about the blob including its size.
+pub async fn info_handler(
     Path(blob_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
@@ -254,19 +241,15 @@ pub async fn metadata_handler(
     // Check if blob exists and get its size
     match state.node_client.get_blob_bytes(&blob_id).await {
         Ok(Some(blob_data)) => ApiResponse {
-            payload: BlobMetadata {
-                blob_id: blob_id.to_string(),
+            payload: BlobInfo {
+                blob_id,
                 size: blob_data.len() as u64,
-                exists: true,
             },
         }
         .into_response(),
-        Ok(None) => ApiResponse {
-            payload: BlobMetadata {
-                blob_id: blob_id.to_string(),
-                size: 0,
-                exists: false,
-            },
+        Ok(None) => ApiError {
+            status_code: StatusCode::NOT_FOUND,
+            message: "Blob not found".to_owned(),
         }
         .into_response(),
         Err(err) => {
