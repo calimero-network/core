@@ -17,9 +17,9 @@ services:
   node:
     <<: *node-defaults
     environment:
-      - NODE_NAME=auth-node
-      - NODE_PORT=2428
-      - SWARM_PORT=2528
+      - NODE_NAME=authnode
+      - SWARM_PORT=2428
+      - NODE_PORT=2528
       - CALIMERO_HOME=/calimero/data
     ports:
       - "2428:2428"
@@ -28,7 +28,7 @@ services:
     command: >
       "mkdir -p $${CALIMERO_HOME} $${CALIMERO_HOME}/../logic $${CALIMERO_HOME}/../credentials &&
       if [ ! -d $${CALIMERO_HOME}/config ]; then
-        merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
+        merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2528 --swarm-port 2428
       fi &&
       merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} run"
     networks:
@@ -63,7 +63,7 @@ services:
       - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
 
       # Define the service
-      - "traefik.http.services.node-core.loadbalancer.server.port=2428"
+      - "traefik.http.services.node-core.loadbalancer.server.port=2528"
 
   # Auth service
   auth:
