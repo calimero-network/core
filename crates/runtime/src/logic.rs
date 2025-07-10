@@ -4,14 +4,21 @@
 use core::fmt;
 use core::num::NonZeroU64;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::io::{Cursor, Read};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
+use bytes;
+use calimero_node_primitives::client::NodeClient;
+use calimero_primitives::blobs::BlobId;
+use futures_util::{StreamExt, TryStreamExt};
 use ouroboros::self_referencing;
 use rand::RngCore;
 use serde::Serialize;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
@@ -50,7 +57,7 @@ impl<'a> VMContext<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -66,6 +73,9 @@ pub struct VMLimits {
     pub max_event_data_size: u64,
     pub max_storage_key_size: NonZeroU64,
     pub max_storage_value_size: NonZeroU64,
+    // Blob limits
+    pub max_blob_handles: u64,
+    pub max_blob_chunk_size: u64,
     // pub max_execution_time: u64,
     // number of functions per contract
 }
@@ -90,11 +100,37 @@ impl Default for VMLimits {
             max_event_data_size: 16 << 10,                           // 16 KiB
             max_storage_key_size: is_valid((1 << 20).try_into()),    // 1 MiB
             max_storage_value_size: is_valid((10 << 20).try_into()), // 10 MiB
+            max_blob_handles: 100,                                   // Max blob handles
+            max_blob_chunk_size: 10 << 20,                           // 10 MiB max chunk size
         }
     }
 }
 
-#[expect(missing_debug_implementations, reason = "storage can't impl Debug")]
+enum BlobHandle {
+    Write(BlobWriteHandle),
+    Read(BlobReadHandle),
+}
+
+#[derive(Debug)]
+struct BlobWriteHandle {
+    sender: mpsc::UnboundedSender<Vec<u8>>,
+    completion_handle: tokio::task::JoinHandle<eyre::Result<(BlobId, u64)>>,
+}
+
+struct BlobReadHandle {
+    blob_id: BlobId,
+    // Stream state
+    stream:
+        Option<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin>>,
+    // Cursor for current storage chunk - automatic position tracking!
+    current_chunk_cursor: Option<Cursor<Vec<u8>>>,
+    position: u64,
+}
+
+#[expect(
+    missing_debug_implementations,
+    reason = "storage and node_client can't impl Debug"
+)]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,
@@ -108,10 +144,20 @@ pub struct VMLogic<'a> {
     artifact: Vec<u8>,
     proposals: BTreeMap<[u8; 32], Vec<u8>>,
     approvals: Vec<[u8; 32]>,
+
+    // Blob functionality
+    node_client: Option<NodeClient>,
+    blob_handles: HashMap<u64, BlobHandle>,
+    next_blob_fd: u64,
 }
 
 impl<'a> VMLogic<'a> {
-    pub fn new(storage: &'a mut dyn Storage, context: VMContext<'a>, limits: &'a VMLimits) -> Self {
+    pub fn new(
+        storage: &'a mut dyn Storage,
+        context: VMContext<'a>,
+        limits: &'a VMLimits,
+        node_client: Option<NodeClient>,
+    ) -> Self {
         VMLogic {
             storage,
             memory: None,
@@ -125,6 +171,11 @@ impl<'a> VMLogic<'a> {
             artifact: vec![],
             proposals: BTreeMap::new(),
             approvals: vec![],
+
+            // Blob functionality
+            node_client,
+            blob_handles: HashMap::new(),
+            next_blob_fd: 1,
         }
     }
 
@@ -610,5 +661,318 @@ impl VMHostFunctions<'_> {
         let _ = self.with_logic_mut(|logic| logic.approvals.push(approval));
 
         Ok(())
+    }
+
+    // ========== BLOB FUNCTIONS ==========
+
+    /// Create a new blob for writing
+    /// Returns: file descriptor (u64) for writing operations
+    pub fn blob_create(&mut self) -> VMLogicResult<u64> {
+        if self.borrow_logic().node_client.is_none() {
+            return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+        }
+
+        if self.borrow_logic().blob_handles.len()
+            >= self.borrow_logic().limits.max_blob_handles as usize
+        {
+            return Err(VMLogicError::HostError(HostError::TooManyBlobHandles {
+                max: self.borrow_logic().limits.max_blob_handles,
+            }));
+        }
+
+        let fd = self.with_logic_mut(|logic| {
+            let fd = logic.next_blob_fd;
+            logic.next_blob_fd += 1;
+
+            let (data_sender, data_receiver) = mpsc::unbounded_channel();
+
+            let node_client = logic.node_client.clone().unwrap();
+
+            let completion_handle = tokio::spawn(async move {
+                let stream = UnboundedReceiverStream::new(data_receiver);
+
+                let byte_stream =
+                    stream.map(|data: Vec<u8>| Ok::<bytes::Bytes, std::io::Error>(data.into()));
+                let reader = byte_stream.into_async_read();
+
+                node_client.add_blob(reader, None, None).await
+            });
+
+            let handle = BlobHandle::Write(BlobWriteHandle {
+                sender: data_sender,
+                completion_handle,
+            });
+
+            drop(logic.blob_handles.insert(fd, handle));
+            fd
+        });
+
+        Ok(fd)
+    }
+
+    /// Write a chunk of data to a blob
+    /// Returns: number of bytes written (u64)
+    pub fn blob_write(&mut self, fd: u64, data_ptr: u64, data_len: u64) -> VMLogicResult<u64> {
+        if self.borrow_logic().node_client.is_none() {
+            return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+        }
+
+        // Validate chunk size
+        if data_len > self.borrow_logic().limits.max_blob_chunk_size {
+            return Err(VMLogicError::HostError(HostError::BlobWriteTooLarge {
+                size: data_len,
+                max: self.borrow_logic().limits.max_blob_chunk_size,
+            }));
+        }
+
+        let data = self.read_guest_memory(data_ptr, data_len)?;
+
+        self.with_logic_mut(|logic| {
+            let handle = logic
+                .blob_handles
+                .get(&fd)
+                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
+
+            match handle {
+                BlobHandle::Write(_) => Ok(()),
+                BlobHandle::Read(_) => Err(VMLogicError::HostError(HostError::InvalidBlobHandle)),
+            }
+        })?;
+
+        let data_len = data.len() as u64;
+        self.with_logic_mut(|logic| {
+            let handle = logic.blob_handles.get_mut(&fd).unwrap(); // We already validated it exists
+            match handle {
+                BlobHandle::Write(w) => {
+                    w.sender
+                        .send(data.clone())
+                        .map_err(|_| VMLogicError::HostError(HostError::InvalidBlobHandle))?;
+                }
+                _ => unreachable!(),
+            }
+            Ok::<(), VMLogicError>(())
+        })?;
+
+        Ok(data_len)
+    }
+
+    /// Close a blob handle and get the resulting blob ID
+    /// Returns: 1 on success
+    pub fn blob_close(
+        &mut self,
+        fd: u64,
+        blob_id_ptr: u64,
+        blob_id_len: u64,
+    ) -> VMLogicResult<u32> {
+        if self.borrow_logic().node_client.is_none() {
+            return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+        }
+
+        if blob_id_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let handle = self.with_logic_mut(|logic| {
+            logic
+                .blob_handles
+                .remove(&fd)
+                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))
+        })?;
+
+        match handle {
+            BlobHandle::Write(write_handle) => {
+                drop(write_handle.sender);
+
+                let (blob_id, _size) = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(write_handle.completion_handle)
+                })
+                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?
+                .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+
+                self.borrow_memory().write(blob_id_ptr, blob_id.as_ref())?;
+            }
+            BlobHandle::Read(read_handle) => {
+                self.borrow_memory()
+                    .write(blob_id_ptr, read_handle.blob_id.as_ref())?;
+            }
+        }
+
+        Ok(1)
+    }
+
+    /// Open a blob for reading
+    /// Returns: file descriptor (u64) for reading operations  
+    pub fn blob_open(&mut self, blob_id_ptr: u64, blob_id_len: u64) -> VMLogicResult<u64> {
+        if self.borrow_logic().node_client.is_none() {
+            return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+        }
+
+        if self.borrow_logic().blob_handles.len()
+            >= self.borrow_logic().limits.max_blob_handles as usize
+        {
+            return Err(VMLogicError::HostError(HostError::TooManyBlobHandles {
+                max: self.borrow_logic().limits.max_blob_handles,
+            }));
+        }
+
+        if blob_id_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let blob_id_bytes = self.read_guest_memory_sized::<32>(blob_id_ptr, blob_id_len)?;
+        let blob_id = BlobId::from(blob_id_bytes);
+
+        let fd = self.with_logic_mut(|logic| {
+            let fd = logic.next_blob_fd;
+            logic.next_blob_fd += 1;
+
+            let handle = BlobHandle::Read(BlobReadHandle {
+                blob_id,
+                stream: None,
+                current_chunk_cursor: None,
+                position: 0,
+            });
+            drop(logic.blob_handles.insert(fd, handle));
+            fd
+        });
+
+        Ok(fd)
+    }
+
+    /// Read a chunk of data from a blob
+    /// Returns: number of bytes read (u64)  
+    pub fn blob_read(&mut self, fd: u64, data_ptr: u64, data_len: u64) -> VMLogicResult<u64> {
+        // Check if blob functionality is available
+        let node_client = match &self.borrow_logic().node_client {
+            Some(client) => client.clone(),
+            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
+        };
+
+        // Validate buffer size
+        if data_len > self.borrow_logic().limits.max_blob_chunk_size {
+            return Err(VMLogicError::HostError(HostError::BlobBufferTooLarge {
+                size: data_len,
+                max: self.borrow_logic().limits.max_blob_chunk_size,
+            }));
+        }
+
+        if data_len == 0 {
+            return Ok(0);
+        }
+
+        let mut output_buffer = Vec::with_capacity(data_len as usize);
+
+        let bytes_read = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
+            let handle = logic
+                .blob_handles
+                .get_mut(&fd)
+                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
+
+            let read_handle = match handle {
+                BlobHandle::Read(r) => r,
+                BlobHandle::Write(_) => {
+                    return Err(VMLogicError::HostError(HostError::InvalidBlobHandle))
+                }
+            };
+
+            let needed = data_len as usize;
+
+            // First, try to read from current chunk cursor if available
+            if let Some(cursor) = &mut read_handle.current_chunk_cursor {
+                let mut temp_buffer = vec![0u8; needed];
+                match cursor.read(&mut temp_buffer) {
+                    Ok(bytes_from_cursor) => {
+                        output_buffer.extend_from_slice(&temp_buffer[..bytes_from_cursor]);
+
+                        // If cursor is exhausted, remove it
+                        if bytes_from_cursor == 0
+                            || cursor.position() >= cursor.get_ref().len() as u64
+                        {
+                            read_handle.current_chunk_cursor = None;
+                        }
+
+                        // If we satisfied the request entirely from cursor, we're done
+                        if output_buffer.len() >= needed {
+                            read_handle.position += output_buffer.len() as u64;
+                            return Ok(output_buffer.len() as u64);
+                        }
+                    }
+                    Err(_) => {
+                        // Cursor error, remove it
+                        read_handle.current_chunk_cursor = None;
+                    }
+                }
+            }
+
+            if read_handle.stream.is_none() {
+                let blob_stream = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        node_client
+                            .get_blob(&read_handle.blob_id)
+                            .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
+                    })
+                })?;
+
+                match blob_stream {
+                    Some(stream) => {
+                        let mapped_stream = stream.map(|result| match result {
+                            Ok(chunk) => Ok(bytes::Bytes::copy_from_slice(&chunk)),
+                            Err(_) => Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "blob read error",
+                            )),
+                        });
+                        read_handle.stream = Some(Box::new(mapped_stream));
+                    }
+                    None => {
+                        read_handle.position += output_buffer.len() as u64;
+                        return Ok(output_buffer.len() as u64);
+                    }
+                }
+            }
+
+            if let Some(stream) = &mut read_handle.stream {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        while output_buffer.len() < needed {
+                            match stream.next().await {
+                                Some(Ok(chunk)) => {
+                                    let chunk_bytes = chunk.as_ref();
+                                    let remaining_needed = needed - output_buffer.len();
+
+                                    if chunk_bytes.len() <= remaining_needed {
+                                        output_buffer.extend_from_slice(chunk_bytes);
+                                    } else {
+                                        // Use part of chunk, save rest in cursor for next time
+                                        output_buffer
+                                            .extend_from_slice(&chunk_bytes[..remaining_needed]);
+
+                                        // Create cursor with remaining data
+                                        let remaining_data =
+                                            chunk_bytes[remaining_needed..].to_vec();
+                                        read_handle.current_chunk_cursor =
+                                            Some(Cursor::new(remaining_data));
+                                        break;
+                                    }
+                                }
+                                Some(Err(_)) | None => {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok::<(), VMLogicError>(())
+                    })
+                })?;
+            }
+
+            read_handle.position += output_buffer.len() as u64;
+            Ok(output_buffer.len() as u64)
+        })?;
+
+        if bytes_read > 0 {
+            self.borrow_memory().write(data_ptr, &output_buffer)?;
+        }
+
+        Ok(bytes_read)
     }
 }

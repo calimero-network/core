@@ -13,7 +13,7 @@ thread_local! {
     static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
 }
 
-impl VMLogic<'_> {
+impl<'a> VMLogic<'a> {
     #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
     pub fn imports(&mut self, store: &mut Store) -> Imports {
         imports! {
@@ -63,7 +63,7 @@ impl VMLogic<'_> {
                 headers_len: u64,
                 body_ptr: u64,
                 body_len: u64,
-                register_id: u64
+                register_id: u64,
             ) -> u32;
 
             fn random_bytes(ptr: u64, len: u64);
@@ -71,6 +71,13 @@ impl VMLogic<'_> {
 
             fn send_proposal(actions_ptr: u64, actions_len: u64, id_ptr: u64, id_len: u64);
             fn approve_proposal(approval_ptr: u64, approval_len: u64);
+
+            // Chunked blob functions
+            fn blob_create() -> u64;
+            fn blob_write(fd: u64, data_ptr: u64, data_len: u64) -> u64;
+            fn blob_close(fd: u64, blob_id_ptr: u64, blob_id_len: u64) -> u32;
+            fn blob_open(blob_id_ptr: u64, blob_id_len: u64) -> u64;
+            fn blob_read(fd: u64, data_ptr: u64, data_len: u64) -> u64;
         }
     }
 }
