@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, DragEvent } from 'react';
-import { ChatApiDataSource } from '../api/dataSource/BlobApiDataSource';
-import { Message, FileUpload, Attachment } from '../api/blobApi';
+import { blobClient } from '@calimero-network/calimero-client';
+import { ChatApi, Message, FileUpload, Attachment } from '../api/chatApi';
 
-const chatApi = new ChatApiDataSource();
+const chatApi = new ChatApi();
 
 interface MessageWithFiles extends Message {
   isExpanded?: boolean;
@@ -103,9 +103,9 @@ export default function ChatPage() {
     try {
       appendOutput(`Starting upload of ${fileUpload.file.name}...`);
       
-      const response = await chatApi.uploadBlob(
+      const response = await blobClient.uploadBlob(
         fileUpload.file,
-        (progress) => {
+        (progress: number) => {
           setFiles(prev => prev.map((f, i) => 
             i === index ? { ...f, progress } : f
           ));
@@ -197,7 +197,7 @@ export default function ChatPage() {
       
       // Step 2: Download the original file via HTTP
       appendOutput(`Downloading original file via HTTP...`);
-      const blob = await chatApi.downloadBlob(decompressedBlobId);
+      const blob = await blobClient.downloadBlob(decompressedBlobId);
       
       // Step 3: Create download link
       const url = URL.createObjectURL(blob);
@@ -442,7 +442,7 @@ export default function ChatPage() {
         </div>
       </div>
 
-      <style jsx>{`
+      <style>{`
         .chat-container {
           max-width: 1400px;
           margin: 0 auto;
