@@ -121,7 +121,14 @@ pub async fn generate_client_key_handler(
     let context_id = sanitize_identifier(&request.context_id);
     let context_identity = sanitize_identifier(&request.context_identity);
 
-    if context_id.is_empty() || context_identity.is_empty() {
+    // Check if admin permission is requested
+    let has_admin_permission = request.permissions
+        .as_ref()
+        .map(|perms| perms.contains(&"admin".to_string()))
+        .unwrap_or(false);
+
+    // Allow empty context_id and context_identity only if admin permission is requested
+    if !has_admin_permission && (context_id.is_empty() || context_identity.is_empty()) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "Context ID and context identity must contain valid characters",
@@ -156,9 +163,13 @@ pub async fn generate_client_key_handler(
     let client_id = hex::encode(hash);
 
     // Build permissions list starting with required context permission
-    let default_permission = format!("context[{},{}]", context_id, context_identity);
-
-    let mut all_permissions = vec![default_permission.clone()];
+    // Only add context permission if context_id and context_identity are not empty
+    let mut all_permissions = Vec::new();
+    
+    if !context_id.is_empty() && !context_identity.is_empty() {
+        let default_permission = format!("context[{},{}]", context_id, context_identity);
+        all_permissions.push(default_permission);
+    }
 
     // Add and validate additional permissions
     if let Some(additional_perms) = request.permissions {
