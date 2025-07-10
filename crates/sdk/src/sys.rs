@@ -42,10 +42,10 @@ wasm_imports! {
         // --
         // Streaming blob functions
         fn blob_create() -> PtrSizedInt;
-        fn blob_write(fd: PtrSizedInt, data: Buffer<'_>) -> PtrSizedInt;
-        fn blob_close(fd: PtrSizedInt, blob_id_buf: BufferMut<'_>) -> Bool;
         fn blob_open(blob_id: Buffer<'_>) -> PtrSizedInt;
         fn blob_read(fd: PtrSizedInt, buf: BufferMut<'_>) -> PtrSizedInt;
+        fn blob_write(fd: PtrSizedInt, data: Buffer<'_>) -> PtrSizedInt;
+        fn blob_close(fd: PtrSizedInt, blob_id_buf: BufferMut<'_>) -> Bool;
     }
 }
 

@@ -176,11 +176,11 @@ pub(crate) fn setup(
         .route("/peers", get(get_peers_count_handler))
         // Blob management - with increased body limit for large file uploads
         .route(
-            "/blobs/upload-raw",
+            "/blobs/upload",
             post(blob::handler).layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
         ) // 500MB limit for streaming
         .route("/blobs/:blob_id", get(blob::download_handler))
-        .route("/blobs/:blob_id/info", get(blob::metadata_handler))
+        .route("/blobs/:blob_id/info", get(blob::info_handler))
         // Alias management
         .nest("/alias", alias::service())
         // Health endpoints (previously unprotected)
