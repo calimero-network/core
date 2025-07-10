@@ -182,35 +182,10 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
                                 line-height: 1.5;
                             }
                             
-                            .countdown {
-                                font-size: 1rem;
-                                opacity: 0.8;
-                                font-weight: 500;
-                            }
-                            
-                            .progress-bar {
-                                width: 100%;
-                                height: 4px;
-                                background: rgba(255, 255, 255, 0.2);
-                                border-radius: 2px;
-                                overflow: hidden;
-                                margin-top: 1rem;
-                            }
-                            
-                            .progress-fill {
-                                height: 100%;
-                                background: linear-gradient(90deg, #4CAF50, #45a049);
-                                border-radius: 2px;
-                                animation: countdown 5s linear forwards;
-                            }
-                            
-                            @keyframes countdown {
-                                from {
-                                    width: 100%;
-                                }
-                                to {
-                                    width: 0%;
-                                }
+                            .message {
+                                font-size: 1.1rem;
+                                opacity: 1;
+                                font-weight: 600;
                             }
                         </style>
                     </head>
@@ -219,60 +194,8 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
                             <div class="emoji">🎉</div>
                             <h1>Authentication Complete!</h1>
                             <p>You can now close this browser window and return to the terminal.</p>
-                            <div class="countdown">This window will close automatically in <span id="timer">5</span> seconds</div>
-                            <div class="progress-bar">
-                                <div class="progress-fill"></div>
-                            </div>
+                            <div class="message">You can now close this page</div>
                         </div>
-                        
-                        <script>
-                            let countdown = 5;
-                            const timerElement = document.getElementById('timer');
-                            const countdownElement = document.querySelector('.countdown');
-                            
-                            const interval = setInterval(() => {
-                                countdown--;
-                                timerElement.textContent = countdown;
-                                
-                                if (countdown <= 0) {
-                                    clearInterval(interval);
-                                    
-                                    // Try to close the window
-                                    const closed = window.close();
-                                    
-                                    // If window.close() didn't work, show a message
-                                    setTimeout(() => {
-                                        countdownElement.innerHTML = 'You can safely close this window now';
-                                        countdownElement.style.fontSize = '1.1rem';
-                                        countdownElement.style.opacity = '1';
-                                        countdownElement.style.fontWeight = '600';
-                                    }, 100);
-                                }
-                            }, 1000);
-                            
-                            // Fallback: try to close after delay and show message if it fails
-                            setTimeout(() => {
-                                window.close();
-                                setTimeout(() => {
-                                    countdownElement.innerHTML = 'You can safely close this window now';
-                                    countdownElement.style.fontSize = '1.1rem';
-                                    countdownElement.style.opacity = '1';
-                                    countdownElement.style.fontWeight = '600';
-                                }, 100);
-                            }, 5000);
-                            
-                            // Add keyboard listener for easy closing
-                            document.addEventListener('keydown', (e) => {
-                                if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
-                                    window.close();
-                                }
-                            });
-                            
-                            // Add click listener to close on click
-                            document.addEventListener('click', () => {
-                                window.close();
-                            });
-                        </script>
                     </body>
                 </html>
                 "#,
