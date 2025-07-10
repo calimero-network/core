@@ -1,0 +1,21 @@
+name: CI
+# ^~~ We run this workflow in-place to ensure that PRs are merged
+# without the ci-checks workflow being run as it is a required check.
+
+on:
+  pull_request:
+    paths-ignore:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests/**"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Ignored"
