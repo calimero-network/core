@@ -680,13 +680,15 @@ impl VMHostFunctions<'_> {
             }));
         }
 
-        let fd = self.with_logic_mut(|logic| {
+        let fd = self.with_logic_mut(|logic| -> VMLogicResult<u64> {
+            let Some(node_client) = logic.node_client.clone() else {
+                return Err(VMLogicError::HostError(HostError::BlobsNotSupported));
+            };
+
             let fd = logic.next_blob_fd;
             logic.next_blob_fd += 1;
 
             let (data_sender, data_receiver) = mpsc::unbounded_channel();
-
-            let node_client = logic.node_client.clone().unwrap();
 
             let completion_handle = tokio::spawn(async move {
                 let stream = UnboundedReceiverStream::new(data_receiver);
@@ -704,8 +706,8 @@ impl VMHostFunctions<'_> {
             });
 
             drop(logic.blob_handles.insert(fd, handle));
-            fd
-        });
+            Ok(fd)
+        })?;
 
         Ok(fd)
     }
@@ -741,14 +743,17 @@ impl VMHostFunctions<'_> {
 
         let data_len = data.len() as u64;
         self.with_logic_mut(|logic| {
-            let handle = logic.blob_handles.get_mut(&fd).unwrap(); // We already validated it exists
+            let handle = logic
+                .blob_handles
+                .get_mut(&fd)
+                .ok_or(VMLogicError::HostError(HostError::InvalidBlobHandle))?;
             match handle {
                 BlobHandle::Write(w) => {
                     w.sender
                         .send(data.clone())
                         .map_err(|_| VMLogicError::HostError(HostError::InvalidBlobHandle))?;
                 }
-                _ => unreachable!(),
+                _ => return Err(VMLogicError::HostError(HostError::InvalidBlobHandle)),
             }
             Ok::<(), VMLogicError>(())
         })?;
