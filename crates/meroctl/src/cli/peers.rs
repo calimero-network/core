@@ -2,7 +2,7 @@ use calimero_server_primitives::admin::GetPeersCountResponse;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::Result as EyreResult;
+use eyre::Result;
 
 use crate::cli::Environment;
 use crate::output::Report;
@@ -29,10 +29,10 @@ impl Report for GetPeersCountResponse {
 }
 
 impl PeersCommand {
-    pub async fn run(&self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(&self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
-        let response: GetPeersCountResponse = connection.get("admin-api/dev/peers").await?;
+        let response: GetPeersCountResponse = connection.get("admin-api/peers").await?;
 
         environment.output.write(&response);
 
