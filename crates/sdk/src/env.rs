@@ -215,34 +215,6 @@ pub fn blob_create() -> u64 {
     unsafe { sys::blob_create() }.as_usize() as u64
 }
 
-/// Write data to a blob handle created with blob_create().
-/// Returns the number of bytes written.
-pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
-    unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Buffer::from(data)) }.as_usize() as u64
-}
-
-/// Close a blob handle and finalize the blob.
-/// For write handles: Finalizes the blob and returns its 32-byte ID.
-/// For read handles: Returns the original blob's ID and cleans up the handle.
-/// Returns an error if the operation fails (e.g. blob finalization fails for write handles).
-pub fn blob_close(fd: u64) -> Result<[u8; 32], &'static str> {
-    let mut blob_id_buf = [0u8; 32];
-    let success: bool = unsafe {
-        sys::blob_close(
-            PtrSizedInt::new(fd as usize),
-            BufferMut::new(&mut blob_id_buf),
-        )
-        .try_into()
-    }
-    .unwrap_or_else(expected_boolean);
-
-    if success {
-        Ok(blob_id_buf)
-    } else {
-        Err("Blob creation failed")
-    }
-}
-
 /// Open a blob for reading by its 32-byte ID.
 /// Returns a file descriptor that can be used with blob_read() and blob_close().
 /// Returns 0 if the blob is not found.
@@ -256,4 +228,32 @@ pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
 pub fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
     unsafe { sys::blob_read(PtrSizedInt::new(fd as usize), BufferMut::new(buffer)) }.as_usize()
         as u64
+}
+
+/// Write data to a blob handle created with blob_create().
+/// Returns the number of bytes written.
+pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
+    unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Buffer::from(data)) }.as_usize() as u64
+}
+
+/// Close a blob handle and finalize the blob.
+/// For write handles: Finalizes the blob and returns its 32-byte ID.
+/// For read handles: Returns the original blob's ID and cleans up the handle.
+/// Panics if the operation fails (e.g. blob finalization fails for write handles).
+pub fn blob_close(fd: u64) -> [u8; 32] {
+    let mut blob_id_buf = [0u8; 32];
+    let success: bool = unsafe {
+        sys::blob_close(
+            PtrSizedInt::new(fd as usize),
+            BufferMut::new(&mut blob_id_buf),
+        )
+        .try_into()
+    }
+    .unwrap_or_else(expected_boolean);
+
+    if success {
+        blob_id_buf
+    } else {
+        panic_str("Blob operation failed")
+    }
 }
