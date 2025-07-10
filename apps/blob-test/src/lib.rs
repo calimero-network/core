@@ -1,4 +1,4 @@
-#![allow(clippy::len_without_is_empty)]
+#![allow(clippy::len_without_is_empty, reason = "BTreeMap and Vec don't need is_empty for this app")]
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -15,7 +15,7 @@ use flate2::Compression;
 fn encode_blob_id_base58(blob_id_bytes: &[u8; 32]) -> String {
     let mut buf = [0u8; 44];
     let len = bs58::encode(blob_id_bytes).onto(&mut buf[..]).unwrap();
-    std::str::from_utf8(&buf[..len]).unwrap().to_string()
+    std::str::from_utf8(&buf[..len]).unwrap().to_owned()
 }
 
 #[app::state(emits = Event)]
@@ -155,7 +155,7 @@ fn store_blob_streaming(data: &[u8]) -> Result<BlobId, String> {
         ));
     }
 
-    let blob_id_buf = env::blob_close(fd).map_err(|err| format!("blob_close failed: {}", err))?;
+    let blob_id_buf = env::blob_close(fd);
 
     // Check if we got a valid blob ID (not all zeros)
     if blob_id_buf == [0u8; 32] {
@@ -308,6 +308,8 @@ impl ChatApp {
         let message_id = self.message_count;
         self.message_count += 1;
 
+        let attachment_count = attachments.len();
+        
         let message = Message {
             id: message_id,
             sender: sender.clone(),
@@ -322,7 +324,7 @@ impl ChatApp {
             message_id,
             sender: sender,
             text: text,
-            attachment_count: self.messages.last().unwrap().attachments.len(),
+            attachment_count,
         });
 
         app::log!("Message {} sent successfully", message_id);
@@ -439,10 +441,10 @@ impl ChatApp {
     pub fn get_stats(&self) -> app::Result<BTreeMap<String, u64>> {
         let mut stats = BTreeMap::new();
 
-        let _ = stats.insert("total_messages".to_string(), self.messages.len() as u64);
+        let _ = stats.insert("total_messages".to_owned(), self.messages.len() as u64);
 
         let total_attachments: usize = self.messages.iter().map(|m| m.attachments.len()).sum();
-        let _ = stats.insert("total_attachments".to_string(), total_attachments as u64);
+        let _ = stats.insert("total_attachments".to_owned(), total_attachments as u64);
 
         let total_original_size: u64 = self
             .messages
@@ -450,7 +452,7 @@ impl ChatApp {
             .flat_map(|m| &m.attachments)
             .map(|a| a.original_size)
             .sum();
-        let _ = stats.insert("total_original_size_bytes".to_string(), total_original_size);
+        let _ = stats.insert("total_original_size_bytes".to_owned(), total_original_size);
 
         let total_compressed_size: u64 = self
             .messages
@@ -459,13 +461,13 @@ impl ChatApp {
             .map(|a| a.compressed_size)
             .sum();
         let _ = stats.insert(
-            "total_compressed_size_bytes".to_string(),
+            "total_compressed_size_bytes".to_owned(),
             total_compressed_size,
         );
 
         let compression_savings = if total_original_size > 0 {
             if total_compressed_size <= total_original_size {
-                ((total_original_size - total_compressed_size) * 100) / total_original_size
+                ((total_original_size - total_compressed_size) as f64 * 100.0 / total_original_size as f64) as u64
             } else {
                 0
             }
@@ -473,18 +475,18 @@ impl ChatApp {
             0
         };
         let _ = stats.insert(
-            "compression_savings_percent".to_string(),
+            "compression_savings_percent".to_owned(),
             compression_savings,
         );
 
         // Add compression efficiency metric (values > 100 mean expansion, < 100 mean compression)
         let compression_efficiency = if total_original_size > 0 {
-            (total_compressed_size * 100) / total_original_size
+            (total_compressed_size as f64 * 100.0 / total_original_size as f64) as u64
         } else {
             100
         };
         let _ = stats.insert(
-            "compression_efficiency_percent".to_string(),
+            "compression_efficiency_percent".to_owned(),
             compression_efficiency,
         );
 
