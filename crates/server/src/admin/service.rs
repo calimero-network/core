@@ -5,10 +5,9 @@ use std::str;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -175,10 +174,7 @@ pub(crate) fn setup(
         // Network info
         .route("/peers", get(get_peers_count_handler))
         // Blob management - with increased body limit for large file uploads
-        .route(
-            "/blobs/upload",
-            post(blob::handler).layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
-        ) // 500MB limit for streaming
+        .route("/blobs/upload", put(blob::handler))
         .route("/blobs/:blob_id", get(blob::download_handler))
         .route("/blobs/:blob_id/info", get(blob::info_handler))
         // Alias management

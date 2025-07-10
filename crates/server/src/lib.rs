@@ -102,7 +102,7 @@ pub async fn start(
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, router)) = jsonrpc::service(&config, ctx_client.clone()) {
+        if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
             app = app.nest(path, router);
             serviced = true;
         }

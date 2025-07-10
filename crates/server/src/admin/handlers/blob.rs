@@ -28,57 +28,6 @@ pub struct BlobInfo {
     size: u64,
 }
 
-/// Detect MIME type from file content
-fn detect_mime_type(data: &[u8]) -> &'static str {
-    // Check for common file signatures
-    if data.len() >= 4 {
-        match &data[0..4] {
-            [0x89, 0x50, 0x4E, 0x47] => return "image/png",
-            [0xFF, 0xD8, 0xFF, _] => return "image/jpeg",
-            [0x47, 0x49, 0x46, 0x38] => return "image/gif",
-            [0x52, 0x49, 0x46, 0x46] if data.len() >= 12 && &data[8..12] == b"WEBP" => {
-                return "image/webp"
-            }
-            [0x25, 0x50, 0x44, 0x46] => return "application/pdf",
-            _ => {}
-        }
-    }
-
-    if data.len() >= 3 && &data[0..3] == [0xFF, 0xD8, 0xFF] {
-        return "image/jpeg";
-    }
-
-    if data.len() >= 8 {
-        // Check for ZIP files
-        if &data[0..4] == [0x50, 0x4B, 0x03, 0x04] || &data[0..4] == [0x50, 0x4B, 0x05, 0x06] {
-            return "application/zip";
-        }
-    }
-
-    // Check if it's valid UTF-8 text
-    if let Ok(text) = std::str::from_utf8(data) {
-        // Check for common text file patterns
-        if text.trim_start().starts_with("<!DOCTYPE html") || text.trim_start().starts_with("<html")
-        {
-            return "text/html";
-        }
-        if text.trim_start().starts_with("{") || text.trim_start().starts_with("[") {
-            // Basic JSON detection
-            if serde_json::from_str::<serde_json::Value>(text).is_ok() {
-                return "application/json";
-            }
-        }
-        if text.contains("<?xml") {
-            return "application/xml";
-        }
-        // Default to plain text for valid UTF-8
-        return "text/plain";
-    }
-
-    // Default to binary
-    "application/octet-stream"
-}
-
 /// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader
 /// This allows streaming large files without loading them entirely into memory
 fn body_to_async_read(body: Body) -> impl AsyncRead {
@@ -154,7 +103,7 @@ pub async fn upload_handler(
 
 /// Download a blob by its ID
 ///
-/// Returns the raw binary data of the blob with appropriate content headers.
+/// Returns the raw binary data of the blob as application/octet-stream.
 pub async fn download_handler(
     Path(blob_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -173,36 +122,12 @@ pub async fn download_handler(
 
     // Get blob data
     match state.node_client.get_blob_bytes(&blob_id).await {
-        Ok(Some(blob_data)) => {
-            // Detect MIME type from content
-            let content_type = detect_mime_type(&blob_data);
-
-            // Generate a more descriptive filename based on content type
-            let filename = match content_type {
-                "image/png" => format!("blob-{}.png", &blob_id.to_string()[..8]),
-                "image/jpeg" => format!("blob-{}.jpg", &blob_id.to_string()[..8]),
-                "image/gif" => format!("blob-{}.gif", &blob_id.to_string()[..8]),
-                "image/webp" => format!("blob-{}.webp", &blob_id.to_string()[..8]),
-                "application/pdf" => format!("blob-{}.pdf", &blob_id.to_string()[..8]),
-                "application/zip" => format!("blob-{}.zip", &blob_id.to_string()[..8]),
-                "text/html" => format!("blob-{}.html", &blob_id.to_string()[..8]),
-                "application/json" => format!("blob-{}.json", &blob_id.to_string()[..8]),
-                "application/xml" => format!("blob-{}.xml", &blob_id.to_string()[..8]),
-                "text/plain" => format!("blob-{}.txt", &blob_id.to_string()[..8]),
-                _ => format!("blob-{}", &blob_id.to_string()[..8]),
-            };
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, content_type)
-                .header(header::CONTENT_LENGTH, blob_data.len())
-                .header(
-                    header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{}\"", filename),
-                )
-                .body(Body::from(blob_data.to_vec()))
-                .unwrap()
-        }
+        Ok(Some(blob_data)) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .header(header::CONTENT_LENGTH, blob_data.len())
+            .body(Body::from(blob_data.to_vec()))
+            .unwrap(),
         Ok(None) => ApiError {
             status_code: StatusCode::NOT_FOUND,
             message: "Blob not found".to_owned(),
