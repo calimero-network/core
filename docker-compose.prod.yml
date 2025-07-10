@@ -31,9 +31,6 @@ services:
         merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
       fi &&
       merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} run"
-    depends_on:
-      auth:
-        condition: service_healthy
     networks:
       - internal
       - web
