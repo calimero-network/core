@@ -122,7 +122,8 @@ pub async fn generate_client_key_handler(
     let context_identity = sanitize_identifier(&request.context_identity);
 
     // Check if admin permission is requested
-    let has_admin_permission = request.permissions
+    let has_admin_permission = request
+        .permissions
         .as_ref()
         .map(|perms| perms.contains(&"admin".to_string()))
         .unwrap_or(false);
@@ -165,7 +166,7 @@ pub async fn generate_client_key_handler(
     // Build permissions list starting with required context permission
     // Only add context permission if context_id and context_identity are not empty
     let mut all_permissions = Vec::new();
-    
+
     if !context_id.is_empty() && !context_identity.is_empty() {
         let default_permission = format!("context[{},{}]", context_id, context_identity);
         all_permissions.push(default_permission);
