@@ -6,7 +6,7 @@ use calimero_server_primitives::admin::{
 };
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
 use crate::common::resolve_alias;
@@ -106,7 +106,7 @@ impl Report for GetContextIdentitiesResponse {
 }
 
 impl GetCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;
@@ -119,22 +119,19 @@ impl GetCommand {
         match self.command {
             GetSubcommand::Info => {
                 let response: GetContextResponse = connection
-                    .get(&format!("admin-api/dev/contexts/{}", context_id))
+                    .get(&format!("admin-api/contexts/{}", context_id))
                     .await?;
                 environment.output.write(&response);
             }
             GetSubcommand::ClientKeys => {
                 let response: GetContextClientKeysResponse = connection
-                    .get(&format!(
-                        "admin-api/dev/contexts/{}/client-keys",
-                        context_id
-                    ))
+                    .get(&format!("admin-api/contexts/{}/client-keys", context_id))
                     .await?;
                 environment.output.write(&response);
             }
             GetSubcommand::Storage => {
                 let response: GetContextStorageResponse = connection
-                    .get(&format!("admin-api/dev/contexts/{}/storage", context_id))
+                    .get(&format!("admin-api/contexts/{}/storage", context_id))
                     .await?;
                 environment.output.write(&response);
             }

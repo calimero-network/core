@@ -8,7 +8,7 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::{bail, OptionExt, Result as EyreResult};
+use eyre::{bail, OptionExt, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::runtime::Handle;
@@ -68,7 +68,7 @@ pub struct UpdateCommand {
 }
 
 impl UpdateCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
@@ -145,11 +145,11 @@ async fn install_app(
     connection: &ConnectionInfo,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
-) -> EyreResult<ApplicationId> {
+) -> Result<ApplicationId> {
     let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let response: InstallApplicationResponse = connection
-        .post("admin-api/dev/install-dev-application", request)
+        .post("admin-api/install-dev-application", request)
         .await?;
 
     environment.output.write(&response);
@@ -163,12 +163,12 @@ async fn update_context_application(
     context_id: ContextId,
     application_id: ApplicationId,
     member_public_key: PublicKey,
-) -> EyreResult<()> {
+) -> Result<()> {
     let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
 
     let response: UpdateContextApplicationResponse = connection
         .post(
-            &format!("admin-api/dev/contexts/{}/application", context_id),
+            &format!("admin-api/contexts/{}/application", context_id),
             request,
         )
         .await?;
@@ -185,7 +185,7 @@ async fn watch_app_and_update_context(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     member_public_key: PublicKey,
-) -> EyreResult<()> {
+) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
     let handle = Handle::current();

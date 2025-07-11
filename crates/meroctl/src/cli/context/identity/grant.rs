@@ -4,7 +4,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GrantPermissionResponse;
 use clap::Parser;
-use eyre::OptionExt;
+use eyre::{OptionExt, Result};
 
 use super::Capability;
 use crate::cli::Environment;
@@ -31,7 +31,7 @@ pub struct GrantPermissionCommand {
 }
 
 impl GrantPermissionCommand {
-    pub async fn run(self, environment: &Environment) -> eyre::Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
@@ -51,7 +51,7 @@ impl GrantPermissionCommand {
 
         let response: GrantPermissionResponse = connection
             .post(
-                &format!("admin-api/dev/contexts/{}/capabilities/grant", context_id),
+                &format!("admin-api/contexts/{}/capabilities/grant", context_id),
                 request,
             )
             .await?;

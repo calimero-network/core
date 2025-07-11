@@ -8,6 +8,7 @@ license-file = "LICENSE.md"
 [workspace]
 resolver = "2"
 members = [
+    "./crates/auth",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
