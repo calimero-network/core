@@ -2,7 +2,7 @@ use calimero_primitives::application::Application;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::Result as EyreResult;
+use eyre::Result;
 
 use crate::cli::Environment;
 use crate::output::Report;
@@ -59,7 +59,7 @@ impl Report for Application {
 }
 
 impl AppCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         match self.subcommand {
             AppSubCommands::Get(get) => get.run(environment).await,
             AppSubCommands::Install(install) => install.run(environment).await,

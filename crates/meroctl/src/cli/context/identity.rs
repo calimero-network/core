@@ -4,7 +4,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::{Parser, ValueEnum};
-use eyre::{OptionExt, Result as EyreResult, WrapErr};
+use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
 use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
@@ -70,7 +70,7 @@ pub enum ContextIdentitySubcommand {
 }
 
 impl ContextIdentityCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         match self.command {
@@ -140,7 +140,7 @@ async fn list_identities(
     connection: &ConnectionInfo,
     context: Option<Alias<ContextId>>,
     owned: bool,
-) -> EyreResult<()> {
+) -> Result<()> {
     let resolve_response = resolve_alias(
         connection,
         context.unwrap_or_else(|| "default".parse().expect("valid alias")),
@@ -160,9 +160,9 @@ async fn list_identities(
     };
 
     let endpoint = if owned {
-        format!("admin-api/dev/contexts/{}/identities-owned", context_id)
+        format!("admin-api/contexts/{}/identities-owned", context_id)
     } else {
-        format!("admin-api/dev/contexts/{}/identities", context_id)
+        format!("admin-api/contexts/{}/identities", context_id)
     };
 
     let response: GetContextIdentitiesResponse = connection.get(&endpoint).await?;
