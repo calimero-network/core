@@ -1,0 +1,19 @@
+[package]
+name = "chat-app"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk.workspace = true
+calimero-primitives.workspace = true
+bs58 = "0.5"
+flate2 = "1.0"
+
+[lints]
+workspace = true
