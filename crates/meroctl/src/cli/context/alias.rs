@@ -1,7 +1,7 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use clap::Parser;
-use eyre::{eyre, OptionExt, Result as EyreResult, WrapErr};
+use eyre::{eyre, OptionExt, Result, WrapErr};
 
 use crate::cli::{ApiError, Environment};
 use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
@@ -46,7 +46,7 @@ pub enum ContextAliasSubcommand {
 }
 
 impl ContextAliasCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         match self.command {
@@ -126,7 +126,7 @@ pub struct UseCommand {
 }
 
 impl UseCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let default_alias: Alias<ContextId> = "default"
@@ -176,9 +176,9 @@ impl UseCommand {
     }
 }
 
-async fn context_exists(connection: &ConnectionInfo, target_id: &ContextId) -> EyreResult<bool> {
+async fn context_exists(connection: &ConnectionInfo, target_id: &ContextId) -> Result<bool> {
     let result = connection
-        .get::<serde_json::Value>(&format!("admin-api/dev/contexts/{}", target_id))
+        .get::<serde_json::Value>(&format!("admin-api/contexts/{}", target_id))
         .await;
 
     match result {

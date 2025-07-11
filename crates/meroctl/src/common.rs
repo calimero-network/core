@@ -13,7 +13,7 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8Path;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, eyre, Result as EyreResult, WrapErr};
+use eyre::{bail, eyre, Result, WrapErr};
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
 use reqwest::Url;
@@ -23,7 +23,7 @@ use serde::Serialize;
 use crate::connection::ConnectionInfo;
 use crate::output::Report;
 
-pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
+pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> Result<Url> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
     let (ip, port, scheme) = multiaddr.iter().fold(
         (None, None, None),
@@ -47,7 +47,7 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url
     Ok(url)
 }
 
-pub async fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigFile> {
+pub async fn load_config(home: &Utf8Path, node_name: &str) -> Result<ConfigFile> {
     let path = home.join(node_name);
 
     if !ConfigFile::exists(&path) {
@@ -61,7 +61,7 @@ pub async fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigF
     Ok(config)
 }
 
-pub fn fetch_multiaddr(config: &ConfigFile) -> EyreResult<&Multiaddr> {
+pub fn fetch_multiaddr(config: &ConfigFile) -> Result<&Multiaddr> {
     let Some(multiaddr) = config.network.server.listen.first() else {
         bail!("No address.")
     };
@@ -141,12 +141,12 @@ pub(crate) async fn create_alias<T>(
     alias: Alias<T>,
     scope: Option<T::Scope>,
     value: T,
-) -> EyreResult<CreateAliasResponse>
+) -> Result<CreateAliasResponse>
 where
     T: UrlFragment + Serialize,
     T::Value: Serialize,
 {
-    let prefix = "admin-api/dev/alias/create";
+    let prefix = "admin-api/alias/create";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
@@ -174,11 +174,11 @@ pub(crate) async fn delete_alias<T>(
     connection: &ConnectionInfo,
     alias: Alias<T>,
     scope: Option<T::Scope>,
-) -> EyreResult<DeleteAliasResponse>
+) -> Result<DeleteAliasResponse>
 where
     T: UrlFragment,
 {
-    let prefix = "admin-api/dev/alias/delete";
+    let prefix = "admin-api/alias/delete";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
@@ -210,11 +210,11 @@ impl<T: fmt::Display> Report for ListAliasesResponse<T> {
 pub(crate) async fn list_aliases<T>(
     connection: &ConnectionInfo,
     scope: Option<T::Scope>,
-) -> EyreResult<ListAliasesResponse<T>>
+) -> Result<ListAliasesResponse<T>>
 where
     T: Ord + UrlFragment + DeserializeOwned,
 {
-    let prefix = "admin-api/dev/alias/list";
+    let prefix = "admin-api/alias/list";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
@@ -226,11 +226,11 @@ pub(crate) async fn lookup_alias<T>(
     connection: &ConnectionInfo,
     alias: Alias<T>,
     scope: Option<T::Scope>,
-) -> EyreResult<LookupAliasResponse<T>>
+) -> Result<LookupAliasResponse<T>>
 where
     T: UrlFragment + DeserializeOwned,
 {
-    let prefix = "admin-api/dev/alias/lookup";
+    let prefix = "admin-api/alias/lookup";
     let kind = T::KIND;
     let scope =
         T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
@@ -307,7 +307,7 @@ pub(crate) async fn resolve_alias<T>(
     connection: &ConnectionInfo,
     alias: Alias<T>,
     scope: Option<T::Scope>,
-) -> EyreResult<ResolveResponse<T>>
+) -> Result<ResolveResponse<T>>
 where
     T: UrlFragment + FromStr + DeserializeOwned,
 {

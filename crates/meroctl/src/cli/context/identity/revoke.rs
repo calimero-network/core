@@ -4,7 +4,7 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::RevokePermissionResponse;
 use clap::Parser;
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 
 use super::Capability;
 use crate::cli::Environment;
@@ -35,7 +35,7 @@ pub struct RevokePermissionCommand {
 }
 
 impl RevokePermissionCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
@@ -55,7 +55,7 @@ impl RevokePermissionCommand {
 
         let response: RevokePermissionResponse = connection
             .post(
-                &format!("admin-api/dev/contexts/{}/capabilities/revoke", context_id),
+                &format!("admin-api/contexts/{}/capabilities/revoke", context_id),
                 request,
             )
             .await?;

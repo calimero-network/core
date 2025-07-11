@@ -3,7 +3,7 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
 use comfy_table::{Cell, Table};
-use eyre::{OptionExt, Result as EyreResult};
+use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
 use crate::common::resolve_alias;
@@ -32,7 +32,7 @@ impl Report for DeleteContextResponse {
 }
 
 impl DeleteCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
@@ -42,7 +42,7 @@ impl DeleteCommand {
             .ok_or_eyre("unable to resolve")?;
 
         let response: DeleteContextResponse = connection
-            .delete(&format!("admin-api/dev/contexts/{}", context_id))
+            .delete(&format!("admin-api/contexts/{}", context_id))
             .await?;
 
         environment.output.write(&response);

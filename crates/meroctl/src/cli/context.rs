@@ -2,7 +2,7 @@ use calimero_primitives::context::Context;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Table};
 use const_format::concatcp;
-use eyre::Result as EyreResult;
+use eyre::Result;
 
 use crate::cli::Environment;
 use crate::output::Report;
@@ -85,7 +85,7 @@ impl Report for Context {
 }
 
 impl ContextCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         match self.subcommand {
             ContextSubCommands::Create(create) => create.run(environment).await,
             ContextSubCommands::Delete(delete) => delete.run(environment).await,

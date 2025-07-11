@@ -1,7 +1,6 @@
 use core::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
 use axum::Router;
 use calimero_context_primitives::client::ContextClient;
@@ -9,7 +8,6 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
-use libp2p::identity::Keypair;
 use multiaddr::Protocol;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -25,7 +23,6 @@ pub mod config;
 pub mod jsonrpc;
 #[cfg(feature = "admin")]
 mod middleware;
-mod verifywalletsignatures;
 #[cfg(feature = "websocket")]
 pub mod ws;
 
@@ -33,22 +30,15 @@ pub mod ws;
 #[non_exhaustive]
 pub struct AdminState {
     pub store: Store,
-    pub keypair: Keypair,
     pub ctx_client: ContextClient,
     pub node_client: NodeClient,
 }
 
 impl AdminState {
     #[must_use]
-    pub const fn new(
-        store: Store,
-        keypair: Keypair,
-        ctx_client: ContextClient,
-        node_client: NodeClient,
-    ) -> Self {
+    pub const fn new(store: Store, ctx_client: ContextClient, node_client: NodeClient) -> Self {
         Self {
             store,
-            keypair,
             ctx_client,
             node_client,
         }
@@ -68,11 +58,6 @@ pub async fn start(
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
-
-    if let Err(e) = get_or_create_jwt_secret(&datastore) {
-        eprintln!("Failed to get JWT key: {e:?}");
-        return Err(e);
-    }
 
     while let Some(addr) = want_listeners.next() {
         let mut components = addr.iter();
@@ -111,14 +96,13 @@ pub async fn start(
 
     let shared_state = Arc::new(AdminState::new(
         datastore.clone(),
-        config.identity.clone(),
         ctx_client.clone(),
         node_client.clone(),
     ));
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, router)) = jsonrpc::service(&config, ctx_client, datastore.clone()) {
+        if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
             app = app.nest(path, router);
             serviced = true;
         }
@@ -135,7 +119,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = setup(&config, datastore.clone(), shared_state) {
+        if let Some((api_path, router)) = setup(&config, shared_state) {
             if let Some((site_path, serve_dir)) = site(&config) {
                 app = app.nest_service(site_path, serve_dir);
             }
