@@ -38,6 +38,7 @@ members = [
     "./apps/kv-store",
 
     "./e2e-tests",
+    "./crates/sandbox",
 ]
 
 [workspace.dependencies]
@@ -46,6 +47,7 @@ alloy = { version = "0.11.1", features = ["full"] }
 alloy-sol-types = "0.8.22"
 assert-json-diff = "2.0.2"
 async-stream = "0.3.5"
+async-trait = "0.1.77"
 axum = "0.7.4"
 base64 = "0.22.0"
 bincode = "1.3.3"
@@ -165,6 +167,7 @@ calimero-sdk-near = { path = "./crates/sdk/libs/near" }
 calimero-sdk-macros = { path = "./crates/sdk/macros" }
 calimero-server = { path = "./crates/server" }
 calimero-server-primitives = { path = "./crates/server/primitives" }
+calimero-sandbox = { path = "./crates/sandbox" }
 calimero-storage = { path = "./crates/storage" }
 calimero-storage-macros = { path = "./crates/storage/macros" }
 calimero-store = { path = "./crates/store" }

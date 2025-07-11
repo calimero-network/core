@@ -7,11 +7,13 @@ use eyre::Result as EyreResult;
 use crate::defaults;
 
 mod config;
+mod devnet;
 mod init;
 mod relay;
 mod run;
 
 use config::ConfigCommand;
+use devnet::DevnetCommand;
 use init::InitCommand;
 use relay::RelayCommand;
 use run::RunCommand;
@@ -55,6 +57,7 @@ pub enum SubCommands {
     Run(RunCommand),
     #[command(alias = "call")]
     Relay(RelayCommand),
+    Devnet(DevnetCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -76,6 +79,7 @@ impl RootCommand {
             SubCommands::Init(init) => init.run(self.args).await,
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Relay(relay) => relay.run(self.args).await,
+            SubCommands::Devnet(devnet) => devnet.run(Some(self.args)).await,
         }
     }
 }
