@@ -16,6 +16,7 @@ members = [
     "./crates/crypto",
     "./crates/meroctl",
     "./crates/merod",
+    "./crates/cargo-mero",
     "./crates/network",
     "./crates/network/primitives",
     "./crates/node",
@@ -55,6 +56,7 @@ bytes = "1.6.0"
 cached-path = "0.7.0"
 camino = "1.1.6"
 candid = "0.10.10"
+cargo_metadata = "0.20.0"
 cfg-if = "1.0.0"
 chrono = "0.4.37"
 claims = "0.7.1"
