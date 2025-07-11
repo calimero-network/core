@@ -1,15 +1,8 @@
-<<<<<<< HEAD
-version: '3.8'
-
-x-node-defaults: &node-defaults
-  image: merod:latest
-=======
 x-node-defaults: &node-defaults
   build:
     context: .
     dockerfile: Dockerfile
     target: runtime
->>>>>>> feat/blob-api-runtime
   user: root
   volumes:
     - calimero_auth_node:/calimero
@@ -24,15 +17,9 @@ services:
   node:
     <<: *node-defaults
     environment:
-<<<<<<< HEAD
-      - NODE_NAME=node1
-      - NODE_PORT=2428
-      - SWARM_PORT=2528
-=======
       - NODE_NAME=authnode
       - SWARM_PORT=2428
       - NODE_PORT=2528
->>>>>>> feat/blob-api-runtime
       - CALIMERO_HOME=/calimero/data
     ports:
       - "2428:2428"
@@ -41,18 +28,9 @@ services:
     command: >
       "mkdir -p $${CALIMERO_HOME} $${CALIMERO_HOME}/../logic $${CALIMERO_HOME}/../credentials &&
       if [ ! -d $${CALIMERO_HOME}/config ]; then
-<<<<<<< HEAD
-        merod --node-name node1 --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
-      fi &&
-      merod --node-name node1 --home $${CALIMERO_HOME} run"
-    depends_on:
-      auth:
-        condition: service_healthy
-=======
         merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2528 --swarm-port 2428
       fi &&
       merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} run"
->>>>>>> feat/blob-api-runtime
     networks:
       - internal
       - web
@@ -60,11 +38,7 @@ services:
       - "traefik.enable=true"
 
       # JSON-RPC route
-<<<<<<< HEAD
-      - "traefik.http.routers.node-api.rule=PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api`)"
-=======
       - "traefik.http.routers.node-api.rule=PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api/`)"
->>>>>>> feat/blob-api-runtime
       - "traefik.http.routers.node-api.entrypoints=web"
       - "traefik.http.routers.node-api.service=node-core"
       - "traefik.http.routers.node-api.middlewares=cors,auth-node"
@@ -89,19 +63,6 @@ services:
       - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
 
       # Define the service
-<<<<<<< HEAD
-      - "traefik.http.services.node-core.loadbalancer.server.port=2428"
-
-  # Auth service
-  auth:
-    image: calimero-auth
-    build:
-      context: .
-      dockerfile: Dockerfile.auth
-      target: final  # Use the final production stage
-    volumes:
-      - calimero_auth_data:/data  # Persist RocksDB data
-=======
       - "traefik.http.services.node-core.loadbalancer.server.port=2528"
 
   # Auth service
@@ -112,7 +73,6 @@ services:
       target: final
     volumes:
       - calimero_auth_data:/data
->>>>>>> feat/blob-api-runtime
     environment:
       - RUST_LOG=debug
     healthcheck:
@@ -132,11 +92,7 @@ services:
       - "traefik.enable=true"
       
       # Public Routes (No Auth)
-<<<<<<< HEAD
-      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth`) || (PathPrefix(`/admin`) && !PathPrefix(`/admin-dashboard`))"
-=======
       - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth/`) || PathPrefix(`/admin/`)"
->>>>>>> feat/blob-api-runtime
       - "traefik.http.routers.auth-public.entrypoints=web"
       - "traefik.http.routers.auth-public.service=auth-service"
       - "traefik.http.routers.auth-public.middlewares=cors"
@@ -162,11 +118,7 @@ services:
       - "--accesslog=true"
       - "--log.level=DEBUG"
       - "--providers.docker.exposedByDefault=false"
-<<<<<<< HEAD
-      - "--providers.docker.network=web"
-=======
       - "--providers.docker.network=${COMPOSE_PROJECT_NAME:-calimero}_web"
->>>>>>> feat/blob-api-runtime
       - "--serversTransport.forwardingTimeouts.dialTimeout=30s"
       - "--serversTransport.forwardingTimeouts.responseHeaderTimeout=30s"
       - "--serversTransport.forwardingTimeouts.idleConnTimeout=30s"
@@ -181,11 +133,7 @@ services:
 
 networks:
   web:
-<<<<<<< HEAD
-    external: true
-=======
     driver: bridge
->>>>>>> feat/blob-api-runtime
   internal:
     internal: true
 
