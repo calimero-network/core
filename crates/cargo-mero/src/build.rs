@@ -29,7 +29,7 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
         .arg("wasm32-unknown-unknown");
 
     // Add additional pass-through cargo arguments
-    if !args.no_locked {
+    if args.locked {
         let _ = build_cmd.arg("--locked");
     }
     if !args.no_release {

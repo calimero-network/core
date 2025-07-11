@@ -44,9 +44,9 @@ pub struct NewCommand {
 
 #[derive(Debug, Parser)]
 pub struct BuildOpts {
-    /// Disable implicit `--locked` flag
+    /// Assert that `Cargo.lock` will remain unchanged
     #[clap(long)]
-    pub no_locked: bool,
+    pub locked: bool,
     /// Build app in `dev` profile, without optimizations
     #[clap(long)]
     pub no_release: bool,
