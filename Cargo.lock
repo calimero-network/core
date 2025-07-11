@@ -1705,16 +1705,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blob-test"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "calimero-storage",
- "hex",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "block-buffer"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2250,7 +2240,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
- "calimero-primitives",
  "calimero-sdk-macros",
  "cfg-if",
  "serde",
@@ -2298,7 +2287,6 @@ dependencies = [
  "color-eyre",
  "eyre",
  "futures-util",
- "hex",
  "libp2p",
  "multiaddr",
  "rand 0.8.5",
@@ -2308,7 +2296,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tower 0.4.13",
+ "tokio-util",
  "tower-http",
  "tower-sessions",
  "tracing",
@@ -2515,6 +2503,16 @@ dependencies = [
  "cipher",
  "poly1305",
  "zeroize",
+]
+
+[[package]]
+name = "chat-app"
+version = "0.1.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-primitives",
+ "calimero-sdk",
+ "flate2",
 ]
 
 [[package]]

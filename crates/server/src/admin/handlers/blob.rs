@@ -31,13 +31,10 @@ pub struct BlobInfo {
 /// Convert axum Body to futures AsyncRead using tokio_util::io::StreamReader
 /// This allows streaming large files without loading them entirely into memory
 fn body_to_async_read(body: Body) -> impl AsyncRead {
-    // Convert Body to a stream of Result<Bytes, Error>
     let byte_stream = body
         .into_data_stream()
         .map(|result| result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
 
-    // Use StreamReader to convert Stream<Item = Result<Bytes, Error>> to tokio AsyncRead
-    // Then convert to futures AsyncRead using compat()
     StreamReader::new(byte_stream).compat()
 }
 
@@ -51,7 +48,6 @@ pub async fn upload_handler(
     Extension(state): Extension<Arc<AdminState>>,
     body: Body,
 ) -> impl IntoResponse {
-    // Parse expected hash if provided
     let expected_hash = if let Some(hash_str) = query.hash {
         match hash_str.parse() {
             Ok(hash) => Some(hash),
@@ -69,10 +65,8 @@ pub async fn upload_handler(
 
     tracing::info!("Starting streaming raw blob upload");
 
-    // Create streaming reader from the body
     let reader = body_to_async_read(body);
 
-    // Store the blob using the node client with streaming
     match state
         .node_client
         .add_blob(reader, None, expected_hash.as_ref())
@@ -108,7 +102,6 @@ pub async fn download_handler(
     Path(blob_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    // Parse blob ID
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
         Err(_) => {
@@ -120,14 +113,20 @@ pub async fn download_handler(
         }
     };
 
-    // Get blob data
-    match state.node_client.get_blob_bytes(&blob_id).await {
-        Ok(Some(blob_data)) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .header(header::CONTENT_LENGTH, blob_data.len())
-            .body(Body::from(blob_data.to_vec()))
-            .unwrap(),
+    match state.node_client.get_blob(&blob_id) {
+        Ok(Some(blob)) => {
+            tracing::debug!("Serving blob {} via streaming", blob_id);
+
+            let stream = blob.map(|result| {
+                result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+            });
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .body(Body::from_stream(stream))
+                .unwrap()
+        }
         Ok(None) => ApiError {
             status_code: StatusCode::NOT_FOUND,
             message: "Blob not found".to_owned(),
@@ -151,7 +150,6 @@ pub async fn info_handler(
     Path(blob_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    // Parse blob ID
     let blob_id: BlobId = match blob_id.parse() {
         Ok(id) => id,
         Err(_) => {
@@ -163,7 +161,6 @@ pub async fn info_handler(
         }
     };
 
-    // Check if blob exists and get its size
     match state.node_client.get_blob_bytes(&blob_id).await {
         Ok(Some(blob_data)) => ApiResponse {
             payload: BlobInfo {
@@ -188,5 +185,4 @@ pub async fn info_handler(
     }
 }
 
-// Export the handler with the old name for backward compatibility
 pub use upload_handler as handler;
