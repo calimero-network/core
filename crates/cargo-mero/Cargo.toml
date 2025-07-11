@@ -11,12 +11,12 @@ license.workspace = true
 license-file.workspace = true
 
 [dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }
-eyre.workspace = true
+cargo_metadata.workspace = true
 clap = { workspace = true, features = ["derive"] }
 const_format.workspace = true
+eyre.workspace = true
 rust-embed.workspace = true
-cargo_metadata.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }
 
 [lints]
 workspace = true
