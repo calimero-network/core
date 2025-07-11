@@ -6,13 +6,13 @@ listen_addr = "0.0.0.0:3001"
 # JWT token settings
 [jwt]
 issuer = "calimero-auth"
-access_token_expiry = 10          # 10 seconds (changed from 3600)
+access_token_expiry = 1800          # 30 minutes
 refresh_token_expiry = 2592000    # 30 days
 
 # Storage configuration
 [storage]
 type = "rocksdb"
-path = "/data/auth_db"
+path = "./data/auth_db_local"
 
 # CORS configuration
 [cors]
@@ -30,8 +30,8 @@ max_body_size = 1048576          # 1MB default request body size limit
 
 # Rate limiting settings
 [security.rate_limit]
-rate_limit_rpm = 50              # Requests per minute
-rate_limit_burst = 5             # Burst size for rate limiting
+rate_limit_rpm = 300             # Requests per minute (increased from 50)
+rate_limit_burst = 50            # Burst size for rate limiting (increased from 20)
 
 # Security headers configuration
 [security.headers]

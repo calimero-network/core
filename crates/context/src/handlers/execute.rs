@@ -447,9 +447,8 @@ pub async fn execute(
     let context_id = **context;
 
     // Run WASM execution in blocking context
-    let (outcome, storage) = global_runtime()
+    global_runtime()
         .spawn_blocking(move || {
-            // Run the module - blob operations will be handled on-demand via actor messages
             let outcome = module.run(
                 context_id,
                 executor,
@@ -458,13 +457,10 @@ pub async fn execute(
                 &mut storage,
                 Some(node_client),
             )?;
-
-            Ok::<(Outcome, ContextStorage), eyre::Error>((outcome, storage))
+            Ok((outcome, storage))
         })
         .await
-        .wrap_err("failed to receive execution response")??;
-
-    Ok((outcome, storage))
+        .wrap_err("failed to receive execution response")?
 }
 
 fn substitute_aliases_in_payload(

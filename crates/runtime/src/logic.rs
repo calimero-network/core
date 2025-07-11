@@ -10,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
-use bytes;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
 use futures_util::{StreamExt, TryStreamExt};
@@ -73,11 +72,8 @@ pub struct VMLimits {
     pub max_event_data_size: u64,
     pub max_storage_key_size: NonZeroU64,
     pub max_storage_value_size: NonZeroU64,
-    // Blob limits
     pub max_blob_handles: u64,
     pub max_blob_chunk_size: u64,
-    // pub max_execution_time: u64,
-    // number of functions per contract
 }
 
 impl Default for VMLimits {
@@ -100,8 +96,8 @@ impl Default for VMLimits {
             max_event_data_size: 16 << 10,                           // 16 KiB
             max_storage_key_size: is_valid((1 << 20).try_into()),    // 1 MiB
             max_storage_value_size: is_valid((10 << 20).try_into()), // 10 MiB
-            max_blob_handles: 100,                                   // Max blob handles
-            max_blob_chunk_size: 10 << 20,                           // 10 MiB max chunk size
+            max_blob_handles: 100,
+            max_blob_chunk_size: 10 << 20, // 10 MiB
         }
     }
 }

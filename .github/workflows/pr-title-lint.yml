@@ -1,0 +1,55 @@
+name: PR Title
+# ^~~ if changed, update comment.yml as well
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ERR_MSG: |-
+        Your PR title does not adhere to the [Conventional Commits](https://github.com/calimero-network/core/blob/master/CONTRIBUTING.md#commit-message-style) convention:
+
+        ```
+        <type>(<scope>): <subject>
+        ```
+
+        Common errors to avoid:
+
+        1. The title must be in lower case.
+        2. Allowed type values are: build, ci, docs, feat, fix, perf, refactor, test.
+
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        id: lint_pr_title
+
+      - name: Create PR Comment Payload
+        if: ${{ !cancelled() }}
+        run: |
+          jq -n \
+            --arg pr '${{ github.event.number }}' \
+            --arg tag pr-lint-check \
+            --arg mode "${{ steps.lint_pr_title.outputs.error_message != null && 'recreate' || 'delete' }}" \
+            --arg message '${{ env.ERR_MSG }}' \
+            '{pr: $pr, tag: $tag, mode: $mode, message: $message}' | tee payload.json
+
+      - name: Upload Comment
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-comment-payload
+          path: payload.json

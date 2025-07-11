@@ -15,6 +15,7 @@ use url::Url;
 
 use crate::cli::storage::{get_session_cache, JwtToken};
 use crate::connection::ConnectionInfo;
+use crate::output::{InfoLine, Output, WarnLine};
 
 #[derive(Debug, Deserialize)]
 struct AuthCallback {
@@ -22,8 +23,8 @@ struct AuthCallback {
     refresh_token: Option<String>,
 }
 
-pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
-    let temp_connection = ConnectionInfo::new(api_url.clone(), None, None);
+pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
+    let temp_connection = ConnectionInfo::new(api_url.clone(), None, None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode == "none" {
@@ -35,12 +36,15 @@ pub async fn authenticate(api_url: &Url) -> Result<JwtToken> {
 
     let auth_url = build_auth_url(api_url, callback_port)?;
 
+    let info_msg = format!("Opening browser to start authentication");
+    output.write(&InfoLine(&info_msg));
+
     if let Err(e) = webbrowser::open(&auth_url.to_string()) {
-        bail!(
+        let warning_msg = format!(
             "Failed to open browser: {}. Please manually open this URL: {}",
-            e,
-            auth_url
+            e, auth_url
         );
+        output.write(&WarnLine(&warning_msg));
     }
 
     let auth_result = timeout(Duration::from_secs(300), callback_rx)
@@ -112,12 +116,86 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
 
                 Html(
                     r#"
-                <html>
-                    <head><title>Authentication Complete</title></head>
+                <!DOCTYPE html>
+                <html lang="en">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>Authentication Complete</title>
+                        <style>
+                            * {
+                                margin: 0;
+                                padding: 0;
+                                box-sizing: border-box;
+                            }
+                            
+                            body {
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                min-height: 100vh;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                color: white;
+                            }
+                            
+                            .container {
+                                text-align: center;
+                                background: rgba(255, 255, 255, 0.1);
+                                backdrop-filter: blur(10px);
+                                border-radius: 20px;
+                                padding: 3rem 2rem;
+                                border: 1px solid rgba(255, 255, 255, 0.2);
+                                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                                max-width: 400px;
+                                width: 90%;
+                            }
+                            
+                            .emoji {
+                                font-size: 4rem;
+                                margin-bottom: 1rem;
+                                animation: bounce 2s infinite;
+                            }
+                            
+                            @keyframes bounce {
+                                0%, 20%, 50%, 80%, 100% {
+                                    transform: translateY(0);
+                                }
+                                40% {
+                                    transform: translateY(-10px);
+                                }
+                                60% {
+                                    transform: translateY(-5px);
+                                }
+                            }
+                            
+                            h1 {
+                                font-size: 2rem;
+                                margin-bottom: 1rem;
+                                font-weight: 600;
+                            }
+                            
+                            p {
+                                font-size: 1.1rem;
+                                margin-bottom: 1.5rem;
+                                opacity: 0.9;
+                                line-height: 1.5;
+                            }
+                            
+                            .message {
+                                font-size: 1.1rem;
+                                opacity: 1;
+                                font-weight: 600;
+                            }
+                        </style>
+                    </head>
                     <body>
-                        <h1>🎉 Authentication Complete!</h1>
-                        <p>You can now close this browser window and return to the terminal.</p>
-                        <script>window.close();</script>
+                        <div class="container">
+                            <div class="emoji">🎉</div>
+                            <h1>Authentication Complete!</h1>
+                            <p>You can now close this browser window and return to the terminal.</p>
+                            <div class="message">You can now close this page</div>
+                        </div>
                     </body>
                 </html>
                 "#,
@@ -158,12 +236,16 @@ fn build_auth_url(api_url: &Url, callback_port: u16) -> Result<Url> {
 
 /// Helper function to authenticate against a URL if required
 /// Returns Some(tokens) if authentication was needed and successful, None if no auth required
-pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<JwtToken>> {
-    let temp_connection = ConnectionInfo::new(url.clone(), None, None);
+pub async fn check_authentication(
+    url: &Url,
+    node_name: &str,
+    output: Output,
+) -> Result<Option<JwtToken>> {
+    let temp_connection = ConnectionInfo::new(url.clone(), None, None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
-        match authenticate(url).await {
+        match authenticate(url, output).await {
             Ok(tokens) => Ok(Some(tokens)),
             Err(e) => {
                 bail!("Authentication failed for {}: {}", node_name, e);
@@ -176,8 +258,12 @@ pub async fn check_authentication(url: &Url, node_name: &str) -> Result<Option<J
 
 /// Helper function for session-based authentication with caching for external connections
 /// Returns a ConnectionInfo with appropriate authentication tokens
-pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Result<ConnectionInfo> {
-    let temp_connection = ConnectionInfo::new(url.clone(), None, None);
+pub async fn authenticate_with_session_cache(
+    url: &Url,
+    node_name: &str,
+    output: Output,
+) -> Result<ConnectionInfo> {
+    let temp_connection = ConnectionInfo::new(url.clone(), None, None, None);
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
@@ -186,15 +272,25 @@ pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Resu
 
         if let Some(cached_tokens) = session_cache.get_tokens(url) {
             // We have existing tokens for this URL in session cache
-            Ok(ConnectionInfo::new(url.clone(), Some(cached_tokens), None))
+            Ok(ConnectionInfo::new(
+                url.clone(),
+                Some(cached_tokens),
+                None,
+                Some(output),
+            ))
         } else {
             // Need to authenticate and store in session cache
-            match authenticate(url).await {
+            match authenticate(url, output).await {
                 Ok(jwt_tokens) => {
                     // Store in session cache for future use during this session
                     session_cache.store_tokens(url, &jwt_tokens);
 
-                    Ok(ConnectionInfo::new(url.clone(), Some(jwt_tokens), None))
+                    Ok(ConnectionInfo::new(
+                        url.clone(),
+                        Some(jwt_tokens),
+                        None,
+                        Some(output),
+                    ))
                 }
                 Err(e) => {
                     bail!("Authentication failed for {}: {}", node_name, e);
@@ -203,6 +299,6 @@ pub async fn authenticate_with_session_cache(url: &Url, node_name: &str) -> Resu
         }
     } else {
         // No authentication required
-        Ok(ConnectionInfo::new(url.clone(), None, None))
+        Ok(ConnectionInfo::new(url.clone(), None, None, Some(output)))
     }
 }

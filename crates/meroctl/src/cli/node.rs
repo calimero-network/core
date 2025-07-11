@@ -5,10 +5,11 @@ use const_format::concatcp;
 use eyre::{bail, Result};
 use url::Url;
 
-use crate::cli::check_authentication;
 use crate::cli::storage::JwtToken;
+use crate::cli::{check_authentication, Environment};
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::{Config, NodeConnection};
+use crate::output::Output;
 
 #[derive(Debug, Parser)]
 pub struct AddNodeCommand {
@@ -89,12 +90,14 @@ pub enum NodeCommand {
 }
 
 impl NodeCommand {
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let mut config = Config::load().await?;
 
         match self {
             NodeCommand::Add(cmd) => {
                 let location_type = detect_location_type(&cmd.location)?;
+
+                let output = environment.output.clone();
 
                 let connection = match location_type {
                     LocationType::Local(path) => {
@@ -106,15 +109,20 @@ impl NodeCommand {
                             &cmd,
                             &url,
                             &format!("local node '{}'", cmd.name),
+                            output,
                         )
                         .await?;
 
                         NodeConnection::Local { path, jwt_tokens }
                     }
                     LocationType::Remote(url) => {
-                        let jwt_tokens =
-                            determine_auth_tokens(&cmd, &url, &format!("node '{}'", cmd.name))
-                                .await?;
+                        let jwt_tokens = determine_auth_tokens(
+                            &cmd,
+                            &url,
+                            &format!("node '{}'", cmd.name),
+                            output,
+                        )
+                        .await?;
 
                         NodeConnection::Remote { url, jwt_tokens }
                     }
@@ -196,6 +204,7 @@ async fn determine_auth_tokens(
     cmd: &AddNodeCommand,
     url: &Url,
     node_description: &str,
+    output: Output,
 ) -> Result<Option<JwtToken>> {
     // If access token is provided, use direct JWT tokens (skip automatic auth)
     if let Some(access_token) = &cmd.access_token {
@@ -206,5 +215,5 @@ async fn determine_auth_tokens(
     }
 
     // Otherwise, use automatic authentication
-    check_authentication(url, node_description).await
+    check_authentication(url, node_description, output).await
 }

@@ -10,6 +10,7 @@ use crate::cli::auth::authenticate;
 use crate::cli::storage::{get_session_cache, JwtToken};
 use crate::cli::ApiError;
 use crate::common::RequestType;
+use crate::output::Output;
 
 #[derive(Debug)]
 enum RefreshError {
@@ -23,15 +24,22 @@ pub struct ConnectionInfo {
     pub client: Client,
     pub jwt_tokens: Arc<Mutex<Option<JwtToken>>>,
     pub node_name: Option<String>,
+    pub output: Option<Output>,
 }
 
 impl ConnectionInfo {
-    pub fn new(api_url: Url, jwt_tokens: Option<JwtToken>, node_name: Option<String>) -> Self {
+    pub fn new(
+        api_url: Url,
+        jwt_tokens: Option<JwtToken>,
+        node_name: Option<String>,
+        output: Option<Output>,
+    ) -> Self {
         Self {
             api_url,
             client: Client::new(),
             jwt_tokens: Arc::new(Mutex::new(jwt_tokens)),
             node_name,
+            output: output.clone(),
         }
     }
 
@@ -75,7 +83,6 @@ impl ConnectionInfo {
 
             if response.status() == 401 && self.jwt_tokens.lock().unwrap().is_some() {
                 if let Some(auth_error) = response.headers().get("x-auth-error") {
-                    println!("Auth error: {}", auth_error.to_str().unwrap_or(""));
                     if auth_error.to_str().unwrap_or("") == "token_expired" {
                         // Try token refresh first, then fall back to full authentication
                         match self.refresh_token().await {
@@ -95,8 +102,9 @@ impl ConnectionInfo {
                                 continue;
                             }
                             Err(RefreshError::RefreshFailed) => {
+                                let output = self.output.unwrap();
                                 // Token refresh failed, try full re-authentication
-                                match authenticate(&self.api_url).await {
+                                match authenticate(&self.api_url, output).await {
                                     Ok(new_tokens) => {
                                         // Update the in-memory tokens immediately
                                         *self.jwt_tokens.lock().unwrap() = Some(new_tokens.clone());
