@@ -233,7 +233,7 @@ pub struct Blob {
 
     // blob_mgr: BlobManager,
     #[expect(clippy::type_complexity, reason = "Acceptable here")]
-    stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>>>>,
+    stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>> + Send>>,
 }
 
 impl Blob {

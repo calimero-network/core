@@ -367,7 +367,16 @@ async fn internal_execute(
 ) -> eyre::Result<Outcome> {
     let storage = ContextStorage::from(datastore, context.id);
 
-    let (outcome, storage) = execute(guard, module, executor, method, input, storage).await?;
+    let (outcome, storage) = execute(
+        guard,
+        module,
+        executor,
+        method,
+        input,
+        storage,
+        node_client.clone(),
+    )
+    .await?;
 
     if outcome.returns.is_err() {
         return Ok(outcome);
@@ -433,13 +442,21 @@ pub async fn execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     mut storage: ContextStorage,
+    node_client: NodeClient,
 ) -> eyre::Result<(Outcome, ContextStorage)> {
     let context_id = **context;
 
+    // Run WASM execution in blocking context
     global_runtime()
         .spawn_blocking(move || {
-            let outcome = module.run(context_id, executor, &method, &input, &mut storage)?;
-
+            let outcome = module.run(
+                context_id,
+                executor,
+                &method,
+                &input,
+                &mut storage,
+                Some(node_client),
+            )?;
             Ok((outcome, storage))
         })
         .await

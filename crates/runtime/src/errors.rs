@@ -102,6 +102,24 @@ pub enum HostError {
     EventKindSizeOverflow,
     #[error("event data size overflow")]
     EventDataSizeOverflow,
+    #[error("blob operations not supported (NodeClient not available)")]
+    BlobsNotSupported,
+    #[error("invalid blob handle")]
+    InvalidBlobHandle,
+    #[error("too many blob handles (max: {max})")]
+    TooManyBlobHandles { max: u64 },
+    #[error("blob buffer too large (size: {size}, max: {max})")]
+    BlobBufferTooLarge { size: u64, max: u64 },
+    #[error("total blob memory exceeded (current: {current}, max: {max})")]
+    TotalBlobMemoryExceeded { current: u64, max: u64 },
+    #[error("blob write too large (size: {size}, max: {max})")]
+    BlobWriteTooLarge { size: u64, max: u64 },
+    #[error("context does not have permission to access this blob handle")]
+    BlobContextMismatch,
+    #[error("too many blob handles open")]
+    BlobHandleLimitExceeded,
+    #[error("total blob memory usage exceeds limit")]
+    BlobMemoryLimitExceeded,
 }
 
 #[derive(Copy, Clone, Debug, Serialize)]

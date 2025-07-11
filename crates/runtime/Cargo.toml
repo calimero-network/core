@@ -8,17 +8,23 @@ license.workspace = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
+bytes.workspace = true
+eyre.workspace = true
 fragile.workspace = true
+futures-util = { workspace = true, features = ["io"] }
 ouroboros.workspace = true
 owo-colors = { workspace = true, optional = true }
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+tokio-stream.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
 
 calimero-primitives.workspace = true
+calimero-node-primitives.workspace = true
 
 [[example]]
 name = "demo"

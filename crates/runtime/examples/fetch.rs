@@ -42,6 +42,7 @@ fn main() -> EyreResult<()> {
         "view_account",
         &input,
         &mut storage,
+        None,
     )?;
 
     let returns = String::from_utf8(outcome.returns.unwrap().unwrap()).unwrap();

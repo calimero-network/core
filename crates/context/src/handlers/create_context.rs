@@ -260,6 +260,7 @@ async fn create_context(
         "init".into(),
         init_params.into(),
         storage,
+        node_client.clone(),
     )
     .await?;
 
