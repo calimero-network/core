@@ -1,12 +1,15 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
+use std::collections::HashSet;
 use std::env::temp_dir;
 use std::str::FromStr;
 
 use calimero_config::{ConfigFile, CONFIG_FILE};
 use camino::Utf8PathBuf;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use color_eyre::owo_colors::OwoColorize;
 use eyre::{bail, eyre, Result as EyreResult};
+use serde_json::{json, Map, Value as JsonValue};
 use tokio::fs::{read_to_string, write};
 use toml_edit::{Item, Value};
 use tracing::info;
@@ -14,11 +17,55 @@ use tracing::info;
 use crate::cli;
 
 /// Configure the node
+///
+/// Examples:
+///   # Print full config in default format (TOML)
+///   $ merod config
+///
+///   # Print full config in JSON format
+///   $ merod config --print json
+///
+///   # Print specific sections
+///   $ merod config sync server.admin
+///
+///   # Print specific sections in JSON
+///   $ merod config sync server.admin --print json
+///
+///   # Show hints for configuration keys
+///   $ merod config discovery? discovery.relay?
+///
+///   # Modify configuration values (shows diff)
+///   $ merod config discovery.mdns=false sync.interval_ms=50000
+///
+///   # Modify and save configuration
+///   $ merod config discovery.mdns=false sync.interval_ms=50000 --save
 #[derive(Debug, Parser)]
 pub struct ConfigCommand {
     /// Key-value pairs to be added or updated in the TOML file
     #[clap(value_name = "ARGS")]
-    args: Vec<KeyValuePair>,
+    args: Vec<KeyValueOrHint>,
+
+    /// Output format for printing
+    #[clap(long, value_enum, default_value_t = PrintFormat::Default)]
+    print: PrintFormat,
+
+    /// Save modifications to config file
+    #[clap(short, long)]
+    save: bool,
+}
+
+#[derive(Clone, Debug)]
+enum KeyValueOrHint {
+    KeyValue(KeyValuePair),
+    Hint(String),
+}
+
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
+enum PrintFormat {
+    Default,
+    Toml,
+    Json,
+    Human,
 }
 
 #[derive(Clone, Debug)]
@@ -27,17 +74,24 @@ struct KeyValuePair {
     value: Value,
 }
 
-impl FromStr for KeyValuePair {
+impl FromStr for KeyValueOrHint {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.splitn(2, '=');
-        let key = parts.next().ok_or("Missing key")?.to_owned();
+        if s.ends_with('?') {
+            Ok(KeyValueOrHint::Hint(s.trim_end_matches('?').to_owned()))
+        } else {
+            let mut parts = s.splitn(2, '=');
+            let key = parts.next().ok_or("Missing key")?.to_owned();
 
-        let value = parts.next().ok_or("Missing value")?;
-        let value = Value::from_str(value).map_err(|e| e.to_string())?;
+            let value = if let Some(value_part) = parts.next() {
+                Value::from_str(value_part).map_err(|e| e.to_string())?
+            } else {
+                return Err("Missing value".to_owned());
+            };
 
-        Ok(Self { key, value })
+            Ok(KeyValueOrHint::KeyValue(KeyValuePair { key, value }))
+        }
     }
 }
 
@@ -50,38 +104,254 @@ impl ConfigCommand {
         }
 
         let path = path.join(CONFIG_FILE);
-
-        // Load the existing TOML file
         let toml_str = read_to_string(&path)
             .await
             .map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
 
         let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
-        // Update the TOML document
-        for kv in self.args.iter() {
-            let key_parts: Vec<&str> = kv.key.split('.').collect();
+        // Check for hint requests first
+        let hint_keys: Vec<_> = self
+            .args
+            .iter()
+            .filter_map(|arg| match arg {
+                KeyValueOrHint::Hint(key) => Some(key),
+                _ => None,
+            })
+            .collect();
 
-            let mut current = doc.as_item_mut();
-
-            for key in &key_parts[..key_parts.len() - 1] {
-                current = &mut current[key];
+        if !hint_keys.is_empty() {
+            // Print schema hints and ignore any key-value pairs
+            for key in hint_keys {
+                self.print_hint(&doc, key)?;
             }
-
-            current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+            return Ok(());
         }
 
+        // Process key-value modifications
+        let mut modified_keys = HashSet::new();
+        let original_doc = doc.clone();
+
+        for arg in &self.args {
+            if let KeyValueOrHint::KeyValue(kv) = arg {
+                let key_parts: Vec<&str> = kv.key.split('.').collect();
+                let mut current = doc.as_item_mut();
+
+                for key in &key_parts[..key_parts.len() - 1] {
+                    current = &mut current[key];
+                }
+
+                current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+                modified_keys.insert(kv.key.clone());
+            }
+        }
+
+        // Validate before proceeding
         self.validate_toml(&doc).await?;
 
-        // Save the updated TOML back to the file
-        write(&path, doc.to_string()).await?;
+        if modified_keys.is_empty() {
+            // No modifications, just print the config
+            self.print_config(&doc, &[])?;
+        } else {
+            // Show diff between original and modified config
+            if self.print == PrintFormat::Default {
+                self.show_diff(&original_doc, &doc, &modified_keys)?;
+            } else {
+                self.print_config(&doc, &[])?;
+            }
 
-        info!("Node configuration has been updated");
+            if self.save {
+                write(&path, doc.to_string()).await?;
+                info!("Node configuration has been updated");
+            } else {
+                eprintln!(
+                    "\nnote: if this looks right, use `-s, --save` to persist these modifications"
+                );
+            }
+        }
 
         Ok(())
     }
 
-    pub async fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
+    fn print_config(&self, doc: &toml_edit::DocumentMut, keys: &[&str]) -> EyreResult<()> {
+        match self.print {
+            PrintFormat::Default | PrintFormat::Toml => {
+                if keys.is_empty() {
+                    println!("{}", doc.to_string());
+                } else {
+                    for key in keys {
+                        if let Some(item) = doc.as_item().get(key) {
+                            println!("[{}]\n{}", key, item);
+                        }
+                    }
+                }
+            }
+            PrintFormat::Json => {
+                let value = if keys.is_empty() {
+                    from_item(doc.as_item().clone())?
+                } else {
+                    let mut map = Map::new();
+                    for key in keys {
+                        if let Some(item) = doc.as_item().get(key) {
+                            map.insert(key.to_string(), from_item(item.clone())?);
+                        }
+                    }
+                    serde_json::Value::Object(map)
+                };
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            }
+            PrintFormat::Human => {
+                self.print_human_format(doc, keys)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn print_human_format(&self, doc: &toml_edit::DocumentMut, keys: &[&str]) -> EyreResult<()> {
+        let value = if keys.is_empty() {
+            from_item(doc.as_item().clone())?
+        } else {
+            let mut map = Map::new();
+            for key in keys {
+                if let Some(item) = doc.as_item().get(key) {
+                    map.insert(key.to_string(), from_item(item.clone())?);
+                }
+            }
+            serde_json::Value::Object(map)
+        };
+
+        fn print_value(value: &serde_json::Value, indent: usize) {
+            match value {
+                serde_json::Value::String(s) => {
+                    println!("{:indent$}\"{}\"", "", s, indent = indent)
+                }
+                serde_json::Value::Number(i) => println!("{:indent$}{}", "", i, indent = indent),
+                serde_json::Value::Bool(b) => println!("{:indent$}{}", "", b, indent = indent),
+                serde_json::Value::Array(arr) => {
+                    println!("{:indent$}[", "", indent = indent);
+                    for item in arr {
+                        print_value(item, indent + 2);
+                    }
+                    println!("{:indent$}]", "", indent = indent);
+                }
+                serde_json::Value::Object(table) => {
+                    for (k, v) in table {
+                        println!("{:indent$}{}:", "", k.bold(), indent = indent);
+                        print_value(v, indent + 2);
+                    }
+                }
+                serde_json::Value::Null => println!("{:indent$}null", "", indent = indent),
+            }
+        }
+
+        print_value(&value, 0);
+        Ok(())
+    }
+
+    fn show_diff(
+        &self,
+        original: &toml_edit::DocumentMut,
+        modified: &toml_edit::DocumentMut,
+        modified_keys: &HashSet<String>,
+    ) -> EyreResult<()> {
+        for key in modified_keys {
+            let key_parts: Vec<&str> = key.split('.').collect();
+            let table_name = key_parts[0];
+
+            println!("[{}]", table_name);
+
+            let original_value = original.as_item().get(key);
+            let modified_value = modified.as_item().get(key);
+
+            if let Some(orig) = original_value {
+                println!("-{} = {}", key, orig);
+            }
+            if let Some(modif) = modified_value {
+                println!("+{} = {}", key, modif);
+            }
+        }
+        Ok(())
+    }
+
+    fn print_hint(&self, doc: &toml_edit::DocumentMut, key: &str) -> EyreResult<()> {
+        let key_parts: Vec<&str> = key.split('.').collect();
+        let current = doc.as_item().get(key_parts[0]);
+
+        if let Some(item) = current {
+            match self.print {
+                PrintFormat::Default | PrintFormat::Human => {
+                    println!("{}: {}", key_parts[0].bold(), "object".cyan());
+                    if let Some(table) = item.as_table() {
+                        for (k, v) in table.iter() {
+                            let type_str = match v {
+                                Item::Value(Value::String(_)) => "string".to_string(),
+                                Item::Value(Value::Integer(_)) => "integer".to_string(),
+                                Item::Value(Value::Float(_)) => "float".to_string(),
+                                Item::Value(Value::Boolean(_)) => "boolean".to_string(),
+                                Item::Value(Value::Datetime(_)) => "datetime".to_string(),
+                                Item::Value(Value::Array(_)) => "array".to_string(),
+                                Item::Table(_) => "object".to_string(),
+                                _ => "unknown".to_string(),
+                            };
+                            println!("  .{}: {} # {}", k, type_str.cyan(), "description");
+                        }
+                    }
+                }
+                PrintFormat::Toml => {
+                    println!("# Schema for {}", key_parts[0]);
+                    println!("# Type: object");
+                    if let Some(table) = item.as_table() {
+                        for (k, v) in table.iter() {
+                            println!(
+                                "#   .{}: {}",
+                                k,
+                                match v {
+                                    Item::Value(Value::String(_)) => "string",
+                                    Item::Value(Value::Integer(_)) => "integer",
+                                    Item::Value(Value::Float(_)) => "float",
+                                    Item::Value(Value::Boolean(_)) => "boolean",
+                                    Item::Value(Value::Datetime(_)) => "datetime",
+                                    Item::Value(Value::Array(_)) => "array",
+                                    Item::Table(_) => "object",
+                                    _ => "unknown",
+                                }
+                            );
+                        }
+                    }
+                }
+                PrintFormat::Json => {
+                    let mut schema = Map::new();
+                    schema.insert("type".to_string(), "object".into());
+
+                    if let Some(table) = item.as_table() {
+                        let mut properties = Map::new();
+                        for (k, v) in table.iter() {
+                            let type_str = match v {
+                                Item::Value(Value::String(_)) => "string",
+                                Item::Value(Value::Integer(_)) => "integer",
+                                Item::Value(Value::Float(_)) => "number",
+                                Item::Value(Value::Boolean(_)) => "boolean",
+                                Item::Value(Value::Datetime(_)) => "string",
+                                Item::Value(Value::Array(_)) => "array",
+                                Item::Table(_) => "object",
+                                _ => "unknown",
+                            };
+                            properties.insert(k.to_string(), json!({ "type": type_str }));
+                        }
+                        schema.insert("properties".to_string(), properties.into());
+                    }
+
+                    println!("{}", serde_json::to_string_pretty(&schema)?);
+                }
+            }
+        } else {
+            eprintln!("Warning: Key '{}' not found in config", key);
+        }
+
+        Ok(())
+    }
+
+    pub async fn validate_toml(&self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
         let tmp_dir = temp_dir();
         let tmp_path = tmp_dir.join(CONFIG_FILE);
 
@@ -93,4 +363,59 @@ impl ConfigCommand {
 
         Ok(())
     }
+}
+
+fn from_item(item: Item) -> EyreResult<JsonValue> {
+    match item {
+        Item::Value(value) => from_value(value),
+        Item::Table(table) => {
+            let mut map = Map::new();
+            for (k, v) in table.iter() {
+                map.insert(k.to_string(), from_item(v.clone())?);
+            }
+            Ok(JsonValue::Object(map))
+        }
+        Item::None => Ok(JsonValue::Null),
+        Item::ArrayOfTables(array) => {
+            let mut vec = Vec::new();
+            for table in array.iter() {
+                let mut map = Map::new();
+                for (k, v) in table.iter() {
+                    map.insert(k.to_string(), from_item(v.clone())?);
+                }
+                vec.push(JsonValue::Object(map));
+            }
+            Ok(JsonValue::Array(vec))
+        }
+    }
+}
+
+fn from_value(value: Value) -> EyreResult<JsonValue> {
+    Ok(match value {
+        Value::String(s) => JsonValue::String(s.value().to_string()),
+        Value::Integer(i) => JsonValue::Number((*i.value()).into()),
+        Value::Float(f) => {
+            if let Some(n) = serde_json::Number::from_f64(*f.value()) {
+                JsonValue::Number(n)
+            } else {
+                return Err(eyre!("Invalid float value"));
+            }
+        }
+        Value::Boolean(b) => JsonValue::Bool(*b.value()),
+        Value::Datetime(dt) => JsonValue::String(dt.to_string()),
+        Value::Array(arr) => {
+            let mut vec = Vec::new();
+            for v in arr.iter() {
+                vec.push(from_value(v.clone())?);
+            }
+            JsonValue::Array(vec)
+        }
+        Value::InlineTable(table) => {
+            let mut map = Map::new();
+            for (k, v) in table.iter() {
+                map.insert(k.to_string(), from_value(v.clone())?);
+            }
+            JsonValue::Object(map)
+        }
+    })
 }
