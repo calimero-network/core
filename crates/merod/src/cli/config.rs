@@ -284,14 +284,14 @@ impl ConfigCommand {
                     if let Some(table) = item.as_table() {
                         for (k, v) in table.iter() {
                             let type_str = match v {
-                                Item::Value(Value::String(_)) => "string".to_string(),
-                                Item::Value(Value::Integer(_)) => "integer".to_string(),
-                                Item::Value(Value::Float(_)) => "float".to_string(),
-                                Item::Value(Value::Boolean(_)) => "boolean".to_string(),
-                                Item::Value(Value::Datetime(_)) => "datetime".to_string(),
-                                Item::Value(Value::Array(_)) => "array".to_string(),
-                                Item::Table(_) => "object".to_string(),
-                                _ => "unknown".to_string(),
+                                Item::Value(Value::String(_)) => "string".to_owned(),
+                                Item::Value(Value::Integer(_)) => "integer".to_owned(),
+                                Item::Value(Value::Float(_)) => "float".to_owned(),
+                                Item::Value(Value::Boolean(_)) => "boolean".to_owned(),
+                                Item::Value(Value::Datetime(_)) => "datetime".to_owned(),
+                                Item::Value(Value::Array(_)) => "array".to_owned(),
+                                Item::Table(_) => "object".to_owned(),
+                                _ => "unknown".to_owned(),
                             };
                             println!("  .{}: {} # {}", k, type_str.cyan(), "description");
                         }
@@ -321,7 +321,7 @@ impl ConfigCommand {
                 }
                 PrintFormat::Json => {
                     let mut schema = Map::new();
-                    schema.insert("type".to_string(), "object".into());
+                    schema.insert("type".to_owned(), "object".into());
 
                     if let Some(table) = item.as_table() {
                         let mut properties = Map::new();
@@ -336,9 +336,9 @@ impl ConfigCommand {
                                 Item::Table(_) => "object",
                                 _ => "unknown",
                             };
-                            properties.insert(k.to_string(), json!({ "type": type_str }));
+                            properties.insert(k.to_owned(), json!({ "type": type_str }));
                         }
-                        schema.insert("properties".to_string(), properties.into());
+                        schema.insert("properties".to_owned(), properties.into());
                     }
 
                     println!("{}", serde_json::to_string_pretty(&schema)?);
@@ -371,7 +371,7 @@ fn from_item(item: Item) -> EyreResult<JsonValue> {
         Item::Table(table) => {
             let mut map = Map::new();
             for (k, v) in table.iter() {
-                map.insert(k.to_string(), from_item(v.clone())?);
+                map.insert(k.to_owned(), from_item(v.clone())?);
             }
             Ok(JsonValue::Object(map))
         }
@@ -381,7 +381,7 @@ fn from_item(item: Item) -> EyreResult<JsonValue> {
             for table in array.iter() {
                 let mut map = Map::new();
                 for (k, v) in table.iter() {
-                    map.insert(k.to_string(), from_item(v.clone())?);
+                    map.insert(k.to_owned(), from_item(v.clone())?);
                 }
                 vec.push(JsonValue::Object(map));
             }
@@ -413,7 +413,7 @@ fn from_value(value: Value) -> EyreResult<JsonValue> {
         Value::InlineTable(table) => {
             let mut map = Map::new();
             for (k, v) in table.iter() {
-                map.insert(k.to_string(), from_value(v.clone())?);
+                map.insert(k.to_owned(), from_value(v.clone())?);
             }
             JsonValue::Object(map)
         }
