@@ -1,3 +1,4 @@
+use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use wasmer::{CompileError, DeserializeError, Instance, NativeEngineExt, SerializeError, Store};
@@ -91,10 +92,11 @@ impl Module {
         method: &str,
         input: &[u8],
         storage: &mut dyn Storage,
+        node_client: Option<NodeClient>,
     ) -> RuntimeResult<Outcome> {
         let context = VMContext::new(input.into(), *context, *executor);
 
-        let mut logic = VMLogic::new(storage, context, &self.limits);
+        let mut logic = VMLogic::new(storage, context, &self.limits, node_client);
 
         let mut store = Store::new(self.engine.clone());
 

@@ -9,6 +9,7 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+axum = { version = "0.7", features = ["http1"] }
 camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
@@ -29,9 +30,6 @@ tokio = { workspace = true, features = ["io-std", "macros", "fs", "net", "rt-mul
 tokio-tungstenite.workspace = true
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
-
-# New dependencies for JWT auth
-axum = { version = "0.7", features = ["http1"] }
 webbrowser = "0.8"
 
 calimero-config.workspace = true
