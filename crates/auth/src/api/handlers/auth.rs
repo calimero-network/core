@@ -69,7 +69,6 @@ pub async fn login_handler(
     }
 
     warn!("No authentication providers available");
-
     let html = "<html><body><h1>No authentication provider is available</h1></body></html>";
     (
         StatusCode::OK,
