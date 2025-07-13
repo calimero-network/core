@@ -2024,7 +2024,6 @@ dependencies = [
  "ouroboros",
  "rand 0.8.5",
  "serde",
- "serde_json",
  "tokio",
  "tracing",
 ]
@@ -2510,8 +2509,8 @@ name = "chat-app"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
- "calimero-primitives",
  "calimero-sdk",
+ "calimero-storage",
  "flate2",
 ]
 
