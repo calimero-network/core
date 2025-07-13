@@ -16,7 +16,6 @@ memchr.workspace = true
 ouroboros.workspace = true
 rand.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true
 
