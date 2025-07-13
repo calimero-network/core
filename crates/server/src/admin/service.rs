@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Router};
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
@@ -16,7 +16,6 @@ use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use super::handlers::alias;
 use super::handlers::context::{grant_capabilities, revoke_capabilities};
 use super::handlers::proposals::{
     get_context_storage_entries_handler, get_context_value_handler,
@@ -24,6 +23,7 @@ use super::handlers::proposals::{
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
     get_proxy_contract_handler,
 };
+use super::handlers::{alias, blob};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
@@ -173,6 +173,10 @@ pub(crate) fn setup(
         )
         // Network info
         .route("/peers", get(get_peers_count_handler))
+        // Blob management - with increased body limit for large file uploads
+        .route("/blobs/upload", put(blob::handler))
+        .route("/blobs/:blob_id", get(blob::download_handler))
+        .route("/blobs/:blob_id/info", get(blob::info_handler))
         // Alias management
         .nest("/alias", alias::service())
         // Health endpoints (previously unprotected)
