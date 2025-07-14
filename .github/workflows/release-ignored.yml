@@ -9,19 +9,9 @@ on:
       - Cargo.lock
       - "crates/**"
 
-permissions:
-  contents: read
-
 jobs:
-  prepare:
-    name: Prepare
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "Ignored"
-
   build-binaries:
     name: Build Binaries
-    needs: prepare
     strategy:
       matrix:
         include:
@@ -33,7 +23,6 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-      fail-fast: false
     runs-on: ${{ matrix.os }}
 
     steps:

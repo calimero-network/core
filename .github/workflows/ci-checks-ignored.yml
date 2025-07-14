@@ -10,9 +10,6 @@ on:
       - "crates/**"
       - "e2e-tests/**"
 
-permissions:
-  contents: read
-
 jobs:
   rust:
     name: Rust
