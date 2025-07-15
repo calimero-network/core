@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use const_format::concatcp;
 
 use crate::{build, new};
@@ -57,8 +57,9 @@ pub struct BuildOpts {
     #[clap(long, short)]
     pub quiet: bool,
     /// Space or comma separated list of features to activate
-    #[clap(long, short = 'F')]
-    pub features: Option<String>,
+    /// Supports multiple --features flags
+    #[clap(long, short = 'F', action = ArgAction::Append)]
+    pub features: Vec<String>,
     /// No default features
     #[clap(long)]
     pub no_default_features: bool,

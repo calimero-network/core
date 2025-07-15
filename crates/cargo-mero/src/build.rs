@@ -41,9 +41,9 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     if args.quiet {
         let _ = build_cmd.arg("--quiet");
     }
-    if let Some(features) = args.features {
+    if !args.features.is_empty() {
         let _ = build_cmd.arg("--features");
-        let _ = build_cmd.arg(features);
+        let _ = build_cmd.arg(args.features.join(","));
     }
     if args.no_default_features {
         let _ = build_cmd.arg("--no-default-features");
