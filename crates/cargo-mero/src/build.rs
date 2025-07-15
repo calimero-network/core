@@ -1,10 +1,9 @@
 use std::fs;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
-use cargo_metadata::MetadataCommand;
-use eyre::{bail, Context};
-use tokio::process::Command;
+use cargo_metadata::Message;
+use eyre::{bail, Context, ContextCompat};
 
 use crate::cli::BuildOpts;
 
@@ -15,7 +14,6 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
         .arg("add")
         .arg("wasm32-unknown-unknown")
         .output()
-        .await
         .wrap_err("Adding wasm32-unknown-unknown target failed")?;
 
     if !output.status.success() {
@@ -26,7 +24,8 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     let _ = build_cmd
         .arg("build")
         .arg("--target")
-        .arg("wasm32-unknown-unknown");
+        .arg("wasm32-unknown-unknown")
+        .arg("--message-format=json-render-diagnostics");
 
     // Add additional pass-through cargo arguments
     if args.locked {
@@ -50,11 +49,30 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
         let _ = build_cmd.arg("--no-default-features");
     }
 
-    let output = build_cmd
-        .spawn()?
-        .wait()
-        .await
-        .wrap_err("cargo build failed")?;
+    let mut child = build_cmd.stdout(Stdio::piped()).spawn()?;
+
+    let child_stdout = child
+        .stdout
+        .take()
+        .wrap_err("could not attach to child stdout")?;
+
+    // Extract wasm path from cargo build output
+    let mut artifacts = vec![];
+    let stdout_reader = std::io::BufReader::new(child_stdout);
+    for message in Message::parse_stream(stdout_reader) {
+        match message? {
+            Message::CompilerArtifact(artifact) => {
+                artifacts.push(artifact);
+            }
+            _ => {}
+        }
+    }
+
+    let wasm_path = artifacts.last().unwrap().filenames[0].clone();
+    let wasm_path_str = wasm_path.clone().into_string();
+    let wasm_file = wasm_path_str.split("/").last().unwrap();
+
+    let output = child.wait().wrap_err("cargo build failed")?;
 
     if !output.success() {
         bail!("cargo build command failed");
@@ -64,15 +82,6 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     if !Path::new("res/").exists() {
         fs::create_dir("res")?;
     }
-
-    let package_name = MetadataCommand::new().exec()?.packages[0]
-        .name
-        .clone()
-        .into_inner()
-        .replace("-", "_");
-    let wasm_file = format!("{}.wasm", package_name);
-    let wasm_path = Path::new("./target/wasm32-unknown-unknown/app-release/").join(&wasm_file);
-
     let _ = fs::copy(wasm_path, Path::new("./res/").join(&wasm_file))?;
 
     // Optimize wasm if wasm-opt is present
@@ -84,8 +93,7 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
             .arg(Path::new("./res/").join(&wasm_file))
             .arg("-o")
             .arg(Path::new("./res/").join(&wasm_file))
-            .output()
-            .await?;
+            .output()?;
 
         if !output.status.success() {
             bail!(
@@ -107,6 +115,5 @@ async fn wasm_opt_installed() -> bool {
         .arg("--version")
         .stdout(Stdio::null())
         .status()
-        .await
         .is_ok()
 }

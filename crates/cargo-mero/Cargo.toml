@@ -16,7 +16,7 @@ clap = { workspace = true, features = ["derive"] }
 const_format.workspace = true
 eyre.workspace = true
 rust-embed.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
 
 [lints]
 workspace = true
