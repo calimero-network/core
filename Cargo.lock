@@ -2286,6 +2286,7 @@ dependencies = [
  "color-eyre",
  "eyre",
  "futures-util",
+ "hex",
  "libp2p",
  "multiaddr",
  "rand 0.8.5",
@@ -2502,16 +2503,6 @@ dependencies = [
  "cipher",
  "poly1305",
  "zeroize",
-]
-
-[[package]]
-name = "chat-app"
-version = "0.1.0"
-dependencies = [
- "bs58 0.5.1",
- "calimero-sdk",
- "calimero-storage",
- "flate2",
 ]
 
 [[package]]
