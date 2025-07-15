@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use calimero_version::CalimeroVersion;
-use eyre::Result as EyreResult;
+use eyre::Result;
 use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
@@ -25,7 +25,7 @@ pub async fn check_for_update() {
     }
 }
 
-async fn _check_for_update() -> EyreResult<()> {
+async fn _check_for_update() -> Result<()> {
     let url = "https://api.github.com/repos/calimero-network/core/releases/latest";
     let client = Client::new();
 

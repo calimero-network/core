@@ -1,0 +1,73 @@
+# syntax=docker/dockerfile:1.6
+
+ARG RUST_VERSION=1.85.0
+ARG APP_NAME=calimero-auth
+
+################################################################################
+# Build Stage - compile the binary
+FROM rust:${RUST_VERSION}-slim-bookworm AS build
+ARG APP_NAME
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    clang \
+    libclang-dev \
+    libzstd-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy source code
+COPY . .
+
+# Build the release binary
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin ${APP_NAME} && \
+    cp target/release/${APP_NAME} /bin/server
+
+################################################################################
+# Final Production Stage
+FROM debian:bookworm-slim AS final
+
+# Add labels for container metadata
+LABEL org.opencontainers.image.description="Calimero Authentication Service"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Create a non-privileged user
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/user" \
+    --shell "/sbin/nologin" \
+    --uid "${UID}" \
+    user
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates libssl-dev libsnappy1v5 liblz4-1 libzstd1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the executable and configs
+COPY --from=build /bin/server /usr/local/bin/calimero-auth
+COPY crates/auth/config/config.toml /etc/calimero/auth.toml
+
+# Create data directory and set permissions
+RUN mkdir -p /data/auth_db && \
+    chown -R user:user /data
+
+# Switch to non-root user
+USER user
+WORKDIR /data
+ENV CALIMERO_HOME=/data
+
+VOLUME ["/data"]
+EXPOSE 3001
+
+ENTRYPOINT ["calimero-auth"]
+CMD ["--config", "/etc/calimero/auth.toml", "--verbose"]

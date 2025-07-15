@@ -9,9 +9,8 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bs58.workspace = true
+axum = { version = "0.7", features = ["http1"] }
 camino = { workspace = true, features = ["serde1"] }
-chrono.workspace = true
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 comfy-table.workspace = true
@@ -27,10 +26,11 @@ semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros"] }
-tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+tokio = { workspace = true, features = ["io-std", "macros", "fs", "net", "rt-multi-thread", "process"] }
+tokio-tungstenite.workspace = true
 toml.workspace = true
 url = { workspace = true, features = ["serde"] }
+webbrowser = "0.8"
 
 calimero-config.workspace = true
 calimero-context-config.workspace = true

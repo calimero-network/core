@@ -1,7 +1,7 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
-use eyre::Result as EyreResult;
+use eyre::Result;
 
 use crate::cli::Environment;
 use crate::output::Report;
@@ -28,11 +28,11 @@ impl Report for GetApplicationResponse {
 }
 
 impl GetCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let response: GetApplicationResponse = connection
-            .get(&format!("admin-api/dev/applications/{}", self.app_id))
+            .get(&format!("admin-api/applications/{}", self.app_id))
             .await?;
 
         environment.output.write(&response);
