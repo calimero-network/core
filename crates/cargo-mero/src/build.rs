@@ -57,20 +57,19 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
         .wrap_err("could not attach to child stdout")?;
 
     // Extract wasm path from cargo build output
-    let mut artifacts = vec![];
+    let mut artifact = None;
     let stdout_reader = std::io::BufReader::new(child_stdout);
     for message in Message::parse_stream(stdout_reader) {
         match message? {
-            Message::CompilerArtifact(artifact) => {
-                artifacts.push(artifact);
+            Message::CompilerArtifact(a) => {
+                let _old = artifact.replace(a);
             }
             _ => {}
         }
     }
 
-    let wasm_path = artifacts.last().unwrap().filenames[0].clone();
-    let wasm_path_str = wasm_path.clone().into_string();
-    let wasm_file = wasm_path_str.split("/").last().unwrap();
+    let wasm_path = &artifact.unwrap().filenames[0];
+    let wasm_file = wasm_path.file_name().unwrap();
 
     let output = child.wait().wrap_err("cargo build failed")?;
 
