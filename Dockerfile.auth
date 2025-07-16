@@ -74,5 +74,6 @@ WORKDIR /data
 VOLUME /data
 EXPOSE 3001
 
-ENTRYPOINT ["${APP_NAME}"]
+ENV APP_NAME=${APP_NAME}
+ENTRYPOINT $APP_NAME
 CMD ["--config", "/etc/calimero/auth.toml", "--verbose"]
