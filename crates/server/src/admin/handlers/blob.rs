@@ -108,62 +108,89 @@ pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl 
     let handle = state.store.clone().handle();
 
     let iter_result = handle.iter::<BlobMetaKey>();
-
-    match iter_result {
-        Ok(mut iter) => {
-            let mut all_blobs = Vec::new();
-            let mut chunk_blob_ids = std::collections::HashSet::new();
-
-            for result in iter.entries() {
-                match result {
-                    (Ok(blob_key), Ok(blob_meta)) => {
-                        let blob_id = blob_key.blob_id();
-
-                        all_blobs.push((blob_id, blob_meta.size));
-
-                        for link in blob_meta.links.iter() {
-                            let _ = chunk_blob_ids.insert(link.blob_id());
-                        }
-                    }
-                    (Err(err), _) | (_, Err(err)) => {
-                        tracing::error!("Failed to read blob entry: {:?}", err);
-                        return ApiError {
-                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: "Failed to read blob entries".to_owned(),
-                        }
-                        .into_response();
-                    }
-                }
-            }
-
-            let root_blobs: Vec<BlobInfo> = all_blobs
-                .into_iter()
-                .filter(|(blob_id, _)| !chunk_blob_ids.contains(blob_id))
-                .map(|(blob_id, size)| BlobInfo { blob_id, size })
-                .collect();
-
-            tracing::debug!(
-                "Filtered {} chunk blobs, returning {} root/standalone blobs",
-                chunk_blob_ids.len(),
-                root_blobs.len()
-            );
-
-            ApiResponse {
-                payload: BlobListResponse {
-                    data: BlobListResponseData { blobs: root_blobs },
-                },
-            }
-            .into_response()
-        }
+    let mut iter = match iter_result {
+        Ok(iter) => iter,
         Err(err) => {
-            tracing::error!("Failed to iterate blob entries: {:?}", err);
-            ApiError {
+            tracing::error!("Failed to create blob iterator: {:?}", err);
+            return ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
                 message: "Failed to iterate blob entries".to_owned(),
             }
-            .into_response()
+            .into_response();
+        }
+    };
+
+    let mut chunk_blob_ids = std::collections::HashSet::new();
+
+    tracing::debug!("Starting first pass: collecting chunk blob IDs");
+    for result in iter.entries() {
+        match result {
+            (Ok(_blob_key), Ok(blob_meta)) => {
+                // Only collect chunk IDs, not full blob info
+                for link in blob_meta.links.iter() {
+                    let _ =chunk_blob_ids.insert(link.blob_id());
+                }
+            }
+            (Err(err), _) | (_, Err(err)) => {
+                tracing::error!("Failed to read blob entry during chunk collection: {:?}", err);
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to read blob entries".to_owned(),
+                }
+                .into_response();
+            }
         }
     }
+
+    let iter_result2 = handle.iter::<BlobMetaKey>();
+    let mut iter2 = match iter_result2 {
+        Ok(iter) => iter,
+        Err(err) => {
+            tracing::error!("Failed to create second blob iterator: {:?}", err);
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to iterate blob entries".to_owned(),
+            }
+            .into_response();
+        }
+    };
+
+    let mut root_blobs = Vec::new();
+
+    tracing::debug!("Starting second pass: collecting root blobs (filtering {} chunks)", chunk_blob_ids.len());
+    for result in iter2.entries() {
+        match result {
+            (Ok(blob_key), Ok(blob_meta)) => {
+                let blob_id = blob_key.blob_id();
+                
+                // Only include if it's not a chunk blob
+                if !chunk_blob_ids.contains(&blob_id) {
+                    root_blobs.push(BlobInfo { blob_id, size: blob_meta.size });
+                }
+            }
+            (Err(err), _) | (_, Err(err)) => {
+                tracing::error!("Failed to read blob entry during root collection: {:?}", err);
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to read blob entries".to_owned(),
+                }
+                .into_response();
+            }
+        }
+    }
+
+    tracing::debug!(
+        "Listing complete: found {} chunks, returning {} root/standalone blobs",
+        chunk_blob_ids.len(),
+        root_blobs.len()
+    );
+
+    ApiResponse {
+        payload: BlobListResponse {
+            data: BlobListResponseData { blobs: root_blobs },
+        },
+    }
+    .into_response()
 }
 
 #[derive(Debug, Serialize)]
@@ -355,17 +382,20 @@ pub async fn info_handler(
             let content_type = detect_mime_type(&state, &blob_id)
                 .await
                 .unwrap_or_else(|| "application/octet-stream".to_string());
+            let etag = format!("\"{}\"", hex::encode(blob_meta.hash));
 
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Length", blob_meta.size.to_string())
                 .header("Content-Type", &content_type)
+                .header("ETag", &etag)
+                .header("Cache-Control", "public, max-age=3600") // 1 hour cache
                 .header("X-Blob-ID", blob_id.to_string())
                 .header("X-Blob-Hash", hex::encode(blob_meta.hash))
                 .header("X-Blob-MIME-Type", &content_type)
                 .header(
                     "Access-Control-Expose-Headers",
-                    "X-Blob-ID, X-Blob-Hash, X-Blob-MIME-Type",
+                    "X-Blob-ID, X-Blob-Hash, X-Blob-MIME-Type, ETag",
                 )
                 .body(Body::empty())
                 .unwrap_or_else(|_| {
