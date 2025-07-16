@@ -128,11 +128,14 @@ pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl 
             (Ok(_blob_key), Ok(blob_meta)) => {
                 // Only collect chunk IDs, not full blob info
                 for link in blob_meta.links.iter() {
-                    let _ =chunk_blob_ids.insert(link.blob_id());
+                    let _ = chunk_blob_ids.insert(link.blob_id());
                 }
             }
             (Err(err), _) | (_, Err(err)) => {
-                tracing::error!("Failed to read blob entry during chunk collection: {:?}", err);
+                tracing::error!(
+                    "Failed to read blob entry during chunk collection: {:?}",
+                    err
+                );
                 return ApiError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
                     message: "Failed to read blob entries".to_owned(),
@@ -157,19 +160,28 @@ pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl 
 
     let mut root_blobs = Vec::new();
 
-    tracing::debug!("Starting second pass: collecting root blobs (filtering {} chunks)", chunk_blob_ids.len());
+    tracing::debug!(
+        "Starting second pass: collecting root blobs (filtering {} chunks)",
+        chunk_blob_ids.len()
+    );
     for result in iter2.entries() {
         match result {
             (Ok(blob_key), Ok(blob_meta)) => {
                 let blob_id = blob_key.blob_id();
-                
+
                 // Only include if it's not a chunk blob
                 if !chunk_blob_ids.contains(&blob_id) {
-                    root_blobs.push(BlobInfo { blob_id, size: blob_meta.size });
+                    root_blobs.push(BlobInfo {
+                        blob_id,
+                        size: blob_meta.size,
+                    });
                 }
             }
             (Err(err), _) | (_, Err(err)) => {
-                tracing::error!("Failed to read blob entry during root collection: {:?}", err);
+                tracing::error!(
+                    "Failed to read blob entry during root collection: {:?}",
+                    err
+                );
                 return ApiError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
                     message: "Failed to read blob entries".to_owned(),
