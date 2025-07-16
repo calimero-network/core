@@ -1,43 +1,59 @@
-# syntax=docker/dockerfile:1.6
+# syntax=docker/dockerfile:1
 
 ARG RUST_VERSION=1.85.0
+# ^~~ keep this in sync with rust-toolchain.toml
+
 ARG APP_NAME=calimero-auth
 
 ################################################################################
-# Build Stage - compile the binary
 FROM rust:${RUST_VERSION}-slim-bookworm AS build
 ARG APP_NAME
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
     pkg-config \
     libssl-dev \
-    clang \
-    libclang-dev \
-    libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy source code
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY apps ./apps
+COPY e2e-tests ./e2e-tests
 
-# Build the release binary
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+ARG CALIMERO_AUTH_FRONTEND_SRC
+ARG CALIMERO_AUTH_FRONTEND_REPO
+ARG CALIMERO_AUTH_FRONTEND_VERSION
+ARG CALIMERO_AUTH_FRONTEND_FETCH
+
+# ^~~ docker build
+#        --build-arg CALIMERO_AUTH_FRONTEND_FETCH=1
+#   env: --secret id=gh-token,env=CALIMERO_AUTH_FRONTEND_FETCH_TOKEN
+#  file: --secret id=gh-token,src=./gh_token.txt
+
+RUN --mount=type=cache,target=/app/target \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --bin ${APP_NAME} && \
-    cp target/release/${APP_NAME} /bin/server
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=secret,id=gh-token,env=CALIMERO_AUTH_FRONTEND_FETCH_TOKEN \
+    [ -n "$CALIMERO_AUTH_FRONTEND_FETCH_TOKEN" ] || unset CALIMERO_AUTH_FRONTEND_FETCH_TOKEN && \
+    cargo build --locked --release -p ${APP_NAME} && \
+    cp target/release/${APP_NAME} /usr/local/bin/
 
 ################################################################################
-# Final Production Stage
-FROM debian:bookworm-slim AS final
+FROM debian:bookworm-slim AS runtime
+ARG APP_NAME
 
-# Add labels for container metadata
-LABEL org.opencontainers.image.description="Calimero Authentication Service"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.description="Calimero Authentication Service" \
+    org.opencontainers.image.licenses="MIT OR Apache-2.0" \
+    org.opencontainers.image.authors="Calimero Limited <info@calimero.network>" \
+    org.opencontainers.image.source="https://github.com/calimero-network/core" \
+    org.opencontainers.image.url="https://calimero.network"
 
-# Create a non-privileged user
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 ARG UID=10001
 RUN adduser \
     --disabled-password \
@@ -47,27 +63,16 @@ RUN adduser \
     --uid "${UID}" \
     user
 
-# Install runtime dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ca-certificates libssl-dev libsnappy1v5 liblz4-1 libzstd1 curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the executable and configs
-COPY --from=build /bin/server /usr/local/bin/calimero-auth
+COPY --from=build \
+    /usr/local/bin/${APP_NAME} \
+    /usr/local/bin/
 COPY crates/auth/config/config.toml /etc/calimero/auth.toml
 
-# Create data directory and set permissions
-RUN mkdir -p /data/auth_db && \
-    chown -R user:user /data
-
-# Switch to non-root user
 USER user
 WORKDIR /data
-ENV CALIMERO_HOME=/data
 
-VOLUME ["/data"]
+VOLUME /data
 EXPOSE 3001
 
-ENTRYPOINT ["calimero-auth"]
+ENTRYPOINT ["${APP_NAME}"]
 CMD ["--config", "/etc/calimero/auth.toml", "--verbose"]

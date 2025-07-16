@@ -2,10 +2,9 @@
 
 # Dockerfile for prebuilt binaries
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y \
-    libssl3 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -19,7 +18,6 @@ RUN adduser \
     user
 
 ARG TARGETARCH
-ARG BINARY_NAME
 
 # Copy the prebuilt binary from the CI workflow artifacts
 COPY \
@@ -33,5 +31,8 @@ USER user
 WORKDIR /data
 ENV CALIMERO_HOME=/data
 
-ENTRYPOINT ["/usr/local/bin/merod"]
+VOLUME /data
+EXPOSE 2428 2528
+
+ENTRYPOINT ["merod"]
 CMD ["--help"]
