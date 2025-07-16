@@ -25,7 +25,7 @@ use crate::providers::core::provider::{AuthProvider, AuthRequestVerifier, AuthVe
 use crate::providers::core::provider_data_registry::AuthDataType;
 use crate::providers::core::provider_registry::ProviderRegistration;
 use crate::providers::ProviderContext;
-use crate::storage::models::Key;
+use crate::storage::models::{Key, KeyType};
 use crate::storage::{KeyManager, Storage};
 use crate::{register_auth_data_type, register_auth_provider, AuthResponse};
 
@@ -409,8 +409,16 @@ impl NearWalletProvider {
                 (key_id, root_key)
             }
             None => {
-                // Create a new root key
-                self.create_root_key(account_id, public_key).await?
+                // Check if this is bootstrap case
+                let existing_keys = self.key_manager.list_keys(KeyType::Root).await?;
+                
+                if existing_keys.is_empty() {
+                    // Bootstrap: create first root key
+                    self.create_root_key(account_id, public_key).await?
+                } else {
+                    // Root keys exist - this account is not authorized
+                    return Err(eyre::eyre!("NEAR account {} is not authorized", account_id));
+                }
             }
         };
 
