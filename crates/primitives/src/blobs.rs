@@ -70,3 +70,21 @@ impl FromStr for BlobId {
         Ok(Self(s.parse().map_err(InvalidBlobId)?))
     }
 }
+
+/// Core blob information
+#[derive(Debug, Serialize, Clone, Copy)]
+pub struct BlobInfo {
+    /// The unique blob ID
+    pub blob_id: BlobId,
+    /// Size of the blob in bytes
+    pub size: u64,
+}
+
+/// Detailed blob metadata
+#[derive(Debug, Serialize)]
+pub struct BlobMetadata {
+    pub blob_id: BlobId,
+    pub size: u64,
+    pub hash: [u8; 32],
+    pub mime_type: String,
+}
