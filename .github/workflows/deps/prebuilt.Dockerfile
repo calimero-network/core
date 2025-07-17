@@ -9,10 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG UID=10001
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/user" \
+RUN useradd \
+    --home-dir "/user" \
+    --create-home \
     --shell "/sbin/nologin" \
     --uid "${UID}" \
     user
