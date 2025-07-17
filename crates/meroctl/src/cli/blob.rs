@@ -46,4 +46,4 @@ impl BlobCommand {
             BlobSubCommands::List(list) => list.run(environment).await,
         }
     }
-} 
+}

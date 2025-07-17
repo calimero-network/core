@@ -24,7 +24,10 @@ impl Report for BlobDeleteResponse {
         if self.deleted {
             println!("Successfully deleted blob '{}'", self.blob_id);
         } else {
-            println!("Failed to delete blob '{}' (blob may not exist)", self.blob_id);
+            println!(
+                "Failed to delete blob '{}' (blob may not exist)",
+                self.blob_id
+            );
         }
     }
 }
@@ -41,4 +44,4 @@ impl DeleteCommand {
 
         Ok(())
     }
-} 
+}

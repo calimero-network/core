@@ -63,15 +63,18 @@ impl ConnectionInfo {
         let mut url = self.api_url.clone();
         url.set_path(path);
 
-        let response = self.execute_request_with_auth_retry(|| {
-            let mut builder = self.client.head(url.clone());
+        let response = self
+            .execute_request_with_auth_retry(|| {
+                let mut builder = self.client.head(url.clone());
 
-            if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
-                builder = builder.header("Authorization", format!("Bearer {}", tokens.access_token));
-            }
+                if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
+                    builder =
+                        builder.header("Authorization", format!("Bearer {}", tokens.access_token));
+                }
 
-            builder.send()
-        }).await?;
+                builder.send()
+            })
+            .await?;
 
         Ok(response.headers().clone())
     }
@@ -84,24 +87,30 @@ impl ConnectionInfo {
         let mut url = self.api_url.clone();
         url.set_path(path);
 
-        let response = self.execute_request_with_auth_retry(|| {
-            let mut builder = match req_type {
-                RequestType::Get => self.client.get(url.clone()),
-                RequestType::Post => self.client.post(url.clone()).json(&body),
-                RequestType::Delete => self.client.delete(url.clone()),
-            };
+        let response = self
+            .execute_request_with_auth_retry(|| {
+                let mut builder = match req_type {
+                    RequestType::Get => self.client.get(url.clone()),
+                    RequestType::Post => self.client.post(url.clone()).json(&body),
+                    RequestType::Delete => self.client.delete(url.clone()),
+                };
 
-            if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
-                builder = builder.header("Authorization", format!("Bearer {}", tokens.access_token));
-            }
+                if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
+                    builder =
+                        builder.header("Authorization", format!("Bearer {}", tokens.access_token));
+                }
 
-            builder.send()
-        }).await?;
+                builder.send()
+            })
+            .await?;
 
         response.json::<O>().await.map_err(Into::into)
     }
 
-    async fn execute_request_with_auth_retry<F, Fut>(&self, request_builder: F) -> Result<reqwest::Response>
+    async fn execute_request_with_auth_retry<F, Fut>(
+        &self,
+        request_builder: F,
+    ) -> Result<reqwest::Response>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,

@@ -44,7 +44,9 @@ impl InfoCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
-        let headers = connection.head(&format!("admin-api/blobs/{}", self.blob_id)).await?;
+        let headers = connection
+            .head(&format!("admin-api/blobs/{}", self.blob_id))
+            .await?;
 
         let size = headers
             .get("content-length")
@@ -63,8 +65,8 @@ impl InfoCommand {
             .and_then(|h| h.to_str().ok())
             .unwrap_or("");
 
-        let hash = hex::decode(hash_hex)
-            .map_err(|_| eyre::eyre!("Invalid hash in response headers"))?;
+        let hash =
+            hex::decode(hash_hex).map_err(|_| eyre::eyre!("Invalid hash in response headers"))?;
 
         let hash_array: [u8; 32] = hash
             .try_into()
@@ -83,4 +85,4 @@ impl InfoCommand {
 
         Ok(())
     }
-} 
+}
