@@ -411,7 +411,7 @@ impl NearWalletProvider {
             None => {
                 // Check if this is bootstrap case
                 let existing_keys = self.key_manager.list_keys(KeyType::Root).await?;
-                
+
                 if existing_keys.is_empty() {
                     // Bootstrap: create first root key
                     self.create_root_key(account_id, public_key).await?

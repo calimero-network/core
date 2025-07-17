@@ -135,11 +135,7 @@ impl UserPasswordProvider {
     /// # Returns
     ///
     /// * `eyre::Result<(String, Key)>` - The created key ID and root key
-    async fn create_root_key(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> eyre::Result<(String, Key)> {
+    async fn create_root_key(&self, username: &str, password: &str) -> eyre::Result<(String, Key)> {
         // Generate key ID from username/password
         let key_id = self.generate_key_id(username, password);
 
@@ -186,8 +182,11 @@ impl UserPasswordProvider {
         }
 
         // Check if this is the bootstrap case (no root keys exist)
-        let existing_keys = self.key_manager.list_keys(crate::storage::models::KeyType::Root).await?;
-        
+        let existing_keys = self
+            .key_manager
+            .list_keys(crate::storage::models::KeyType::Root)
+            .await?;
+
         if existing_keys.is_empty() {
             // Bootstrap case - create the first root key
             let (key_id, root_key) = self.create_root_key(username, password).await?;
@@ -372,7 +371,7 @@ impl AuthProvider for UserPasswordProvider {
     ) -> eyre::Result<bool> {
         let username = provider_data.get("username").unwrap().as_str().unwrap();
         let password = provider_data.get("password").unwrap().as_str().unwrap();
-        
+
         // Generate key ID from username/password
         let key_id = self.generate_key_id(username, password);
 
@@ -429,4 +428,4 @@ impl ProviderRegistration for UserPasswordProviderRegistration {
 register_auth_provider!(UserPasswordProviderRegistration);
 
 // Register the username/password auth data type
-register_auth_data_type!(UserPasswordAuthDataType); 
+register_auth_data_type!(UserPasswordAuthDataType);
