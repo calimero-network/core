@@ -202,11 +202,7 @@ impl NodeClient {
                     tracing::debug!("Blob file {} was already missing", current_blob_id);
                 }
                 Err(err) => {
-                    tracing::warn!(
-                        "Failed to delete blob file {}: {}",
-                        current_blob_id,
-                        err
-                    );
+                    tracing::warn!("Failed to delete blob file {}: {}", current_blob_id, err);
                     // Continue with metadata deletion even if file deletion fails
                 }
             }
@@ -219,10 +215,7 @@ impl NodeClient {
             match handle.delete(&current_key) {
                 Ok(()) => {
                     deleted_metadata_count += 1;
-                    tracing::debug!(
-                        "Successfully deleted metadata for blob {}",
-                        current_blob_id
-                    );
+                    tracing::debug!("Successfully deleted metadata for blob {}", current_blob_id);
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -246,7 +239,7 @@ impl NodeClient {
         }
     }
 
-    /// Get blob metadata 
+    /// Get blob metadata
     ///
     /// Returns blob metadata including size, hash, and detected MIME type.
     /// This is efficient for checking blob existence and getting metadata info.
@@ -256,9 +249,10 @@ impl NodeClient {
 
         match handle.get(&blob_key) {
             Ok(Some(blob_meta)) => {
-                let mime_type = self.detect_blob_mime_type(blob_id)
+                let mime_type = self
+                    .detect_blob_mime_type(blob_id)
                     .await
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                    .unwrap_or_else(|| "application/octet-stream".to_owned());
 
                 Ok(Some(BlobMetadata {
                     blob_id,
@@ -304,8 +298,8 @@ impl NodeClient {
 /// Detect MIME type from file bytes using the infer crate
 fn detect_mime_from_bytes(bytes: &[u8]) -> String {
     if let Some(kind) = infer::get(bytes) {
-        return kind.mime_type().to_string();
+        return kind.mime_type().to_owned();
     }
 
-    "application/octet-stream".to_string()
+    "application/octet-stream".to_owned()
 }

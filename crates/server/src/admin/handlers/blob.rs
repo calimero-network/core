@@ -125,7 +125,10 @@ pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl 
 }
 
 /// Helper function to build response headers from blob metadata
-fn build_blob_response_headers(blob_metadata: &calimero_primitives::blobs::BlobMetadata, blob_id: BlobId) -> Builder {
+fn build_blob_response_headers(
+    blob_metadata: &calimero_primitives::blobs::BlobMetadata,
+    blob_id: BlobId,
+) -> Builder {
     let etag = format!("\"{}\"", hex::encode(blob_metadata.hash));
 
     Response::builder()
@@ -185,7 +188,10 @@ pub async fn download_handler(
     // Get blob stream
     match state.node_client.get_blob(&blob_id) {
         Ok(Some(blob)) => {
-            tracing::debug!("Serving blob {} via streaming with metadata headers", blob_id);
+            tracing::debug!(
+                "Serving blob {} via streaming with metadata headers",
+                blob_id
+            );
 
             let stream = blob.map(|result| {
                 result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
@@ -266,17 +272,15 @@ pub async fn info_handler(
     };
 
     match state.node_client.get_blob_info(blob_id).await {
-        Ok(Some(blob_metadata)) => {
-            build_blob_response_headers(&blob_metadata, blob_id)
-                .body(Body::empty())
-                .unwrap_or_else(|_| {
-                    ApiError {
-                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: "Failed to build response".to_owned(),
-                    }
-                    .into_response()
-                })
-        }
+        Ok(Some(blob_metadata)) => build_blob_response_headers(&blob_metadata, blob_id)
+            .body(Body::empty())
+            .unwrap_or_else(|_| {
+                ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to build response".to_owned(),
+                }
+                .into_response()
+            }),
         Ok(None) => ApiError {
             status_code: StatusCode::NOT_FOUND,
             message: "Blob not found".to_owned(),
