@@ -65,7 +65,7 @@ impl InstallCommand {
 
     /// Install an application by reading data from standard input.
     ///
-    ///  Eg:
+    /// Example usage:
     /// `cat app.wasm | meroctl app install --stdin`
     ///
     /// The implementation reads all available data from stdin, encodes its metadata as base64 and sends the binary data
