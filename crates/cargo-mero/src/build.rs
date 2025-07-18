@@ -49,6 +49,11 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
         let _ = build_cmd.arg("--no-default-features");
     }
 
+    if !args.package.is_empty() {
+        let _ = build_cmd.arg("--package");
+        let _ = build_cmd.arg(args.package);
+    }
+
     let mut child = build_cmd.stdout(Stdio::piped()).spawn()?;
 
     let child_stdout = child
