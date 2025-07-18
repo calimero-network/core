@@ -1,7 +1,7 @@
 use calimero_server_primitives::admin::GetContextsResponse;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::Result as EyreResult;
+use eyre::Result;
 
 use crate::cli::Environment;
 use crate::output::Report;
@@ -29,10 +29,10 @@ impl Report for GetContextsResponse {
 }
 
 impl ListCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
-        let response: GetContextsResponse = connection.get("admin-api/dev/contexts").await?;
+        let response: GetContextsResponse = connection.get("admin-api/contexts").await?;
 
         environment.output.write(&response);
 

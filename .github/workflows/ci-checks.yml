@@ -12,6 +12,7 @@ on:
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 permissions:
   contents: read

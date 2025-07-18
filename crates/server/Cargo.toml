@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 base64.workspace = true
 tokio-util = { workspace = true, features = ["io"] }
 borsh = { workspace = true, features = ["derive"] }
@@ -16,11 +16,7 @@ candid.workspace = true
 chrono.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
-futures-util = { workspace = true, optional = true }
-hex = { workspace = true, features = ["serde"] }
-ic-canister-sig-creation.workspace = true
-ic-signature-verification.workspace = true
-jsonwebtoken.workspace = true
+futures-util.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
@@ -28,15 +24,10 @@ reqwest.workspace = true
 rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sha2.workspace = true
-starknet.workspace = true
-starknet-crypto.workspace = true
 tokio.workspace = true
-tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
-web3.workspace = true
 
 calimero-context-config.workspace = true
 calimero-context-primitives.workspace = true
@@ -64,7 +55,7 @@ serde_json.workspace = true
 [features]
 jsonrpc = []
 host_layer = []
-websocket = ["axum/ws", "dep:futures-util"]
+websocket = ["axum/ws"]
 admin = ["dep:tower-sessions"]
 
 [lints]

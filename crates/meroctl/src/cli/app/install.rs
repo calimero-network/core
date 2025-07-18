@@ -6,7 +6,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8PathBuf;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::io::{stdin, AsyncReadExt};
@@ -55,7 +55,7 @@ impl Report for InstallApplicationResponse {
 }
 
 impl InstallCommand {
-    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let _ignored = self.install_app(environment).await?;
         if self.watch {
             self.watch_app(environment).await?;
@@ -175,16 +175,13 @@ impl InstallCommand {
             let request =
                 InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
             connection
-                .post::<_, InstallApplicationResponse>(
-                    "admin-api/dev/install-dev-application",
-                    request,
-                )
+                .post::<_, InstallApplicationResponse>("admin-api/install-dev-application", request)
                 .await?
         } else if let Some(app_url) = self.url.as_ref() {
             let request =
                 InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
             connection
-                .post::<_, InstallApplicationResponse>("admin-api/dev/install-application", request)
+                .post::<_, InstallApplicationResponse>("admin-api/install-application", request)
                 .await?
         } else if self.stdin {
             return self.install_from_stdin(environment).await;
@@ -196,7 +193,7 @@ impl InstallCommand {
         Ok(response.data.application_id)
     }
 
-    pub async fn watch_app(&self, environment: &Environment) -> EyreResult<()> {
+    pub async fn watch_app(&self, environment: &Environment) -> Result<()> {
         let Some(path) = self.path.as_ref() else {
             bail!("The path must be provided");
         };
