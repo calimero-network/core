@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use calimero_blobstore::{Blob, Size};
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
+use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::BlobMeta;
 use calimero_store::layer::LayerExt;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
 use infer;
+use libp2p::PeerId;
 use tokio::sync::oneshot;
 
 use super::NodeClient;
@@ -41,12 +43,157 @@ impl NodeClient {
         Ok((blob_id, size))
     }
 
+    /// Add a blob and optionally announce it to the network for a specific context
+    pub async fn add_blob_with_context<S: AsyncRead>(
+        &self,
+        stream: S,
+        expected_size: Option<u64>,
+        expected_hash: Option<&Hash>,
+        context_id: Option<ContextId>,
+    ) -> eyre::Result<(BlobId, u64)> {
+        let (blob_id, size) = self.add_blob(stream, expected_size, expected_hash).await?;
+
+        // Announce to network if context is provided
+        if let Some(context_id) = context_id {
+            tracing::info!(
+                blob_id = %hex::encode(&*blob_id),
+                context_id = %hex::encode(&*context_id),
+                "About to announce blob to network"
+            );
+            
+            match self
+                .network_client
+                .announce_blob(blob_id, context_id, size)
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!(
+                        blob_id = %hex::encode(&*blob_id),
+                        context_id = %hex::encode(&*context_id),
+                        "Successfully announced blob to network"
+                    );
+                }
+                Err(e) => {
+                    // Log the error but don't fail the blob storage
+                    tracing::warn!(
+                        blob_id = %hex::encode(&*blob_id),
+                        context_id = %hex::encode(&*context_id),
+                        error = %e,
+                        "Failed to announce blob to network"
+                    );
+                }
+            }
+        }
+
+        Ok((blob_id, size))
+    }
+
     pub fn get_blob(&self, blob_id: &BlobId) -> eyre::Result<Option<Blob>> {
         let Some(stream) = self.blobstore.get(*blob_id)? else {
             return Ok(None);
         };
 
         Ok(Some(stream))
+    }
+
+    /// Get blob with network discovery fallback - returns a streaming Blob
+    /// If not found locally, attempts to download from the network
+    pub async fn get_blob_with_discovery(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<Blob>> {
+        // First try to get locally
+        if let Some(blob) = self.get_blob(blob_id)? {
+            tracing::debug!(
+                blob_id = %hex::encode(&**blob_id),
+                "Found blob locally"
+            );
+            return Ok(Some(blob));
+        }
+
+        // If not found locally, query the network
+        tracing::info!(
+            blob_id = %hex::encode(&**blob_id),
+            context_id = %hex::encode(&**context_id),
+            "Blob not found locally, attempting network discovery"
+        );
+
+        let peers = self
+            .network_client
+            .query_blob(*blob_id, Some(*context_id))
+            .await?;
+
+        if peers.is_empty() {
+            tracing::info!(
+                blob_id = %hex::encode(&**blob_id),
+                context_id = %hex::encode(&**context_id),
+                "No peers found with blob"
+            );
+            return Ok(None);
+        }
+
+        tracing::info!(
+            blob_id = %hex::encode(&**blob_id),
+            context_id = %hex::encode(&**context_id),
+            peer_count = peers.len(),
+            "Found {} peers with blob, attempting download", peers.len()
+        );
+
+        // Try to get the blob from the first available peer
+        for peer_id in peers {
+            tracing::debug!(
+                peer_id = %peer_id,
+                "Attempting to download blob from peer"
+            );
+
+            match self
+                .network_client
+                .request_blob(*blob_id, *context_id, peer_id)
+                .await
+            {
+                Ok(Some(data)) => {
+                    tracing::info!(
+                        blob_id = %hex::encode(&**blob_id),
+                        peer_id = %peer_id,
+                        size = data.len(),
+                        "Successfully downloaded blob from network"
+                    );
+
+                    // Store the blob locally for future use and return a stream to it
+                    let (blob_id_stored, _size) = self.add_blob(data.as_slice(), Some(data.len() as u64), None).await?;
+                    
+                    // Verify we stored the correct blob
+                    if blob_id_stored != *blob_id {
+                        tracing::warn!(
+                            expected = %hex::encode(&**blob_id),
+                            actual = %hex::encode(&*blob_id_stored),
+                            "Downloaded blob ID mismatch"
+                        );
+                        continue;
+                    }
+
+                    // Return the newly stored blob as a stream
+                    return self.get_blob(blob_id);
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        peer_id = %peer_id,
+                        "Peer doesn't have the blob"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        peer_id = %peer_id,
+                        error = %e,
+                        "Failed to download blob from peer"
+                    );
+                }
+            }
+        }
+
+        tracing::debug!("Failed to download blob from any peer");
+        Ok(None)
     }
 
     pub async fn get_blob_bytes(&self, blob_id: &BlobId) -> eyre::Result<Option<Arc<[u8]>>> {
@@ -67,6 +214,107 @@ impl NodeClient {
         let res = rx.await.expect("Mailbox not to be dropped")?;
 
         Ok(res.bytes)
+    }
+
+    /// Get blob bytes with network fallback - if not found locally, query the network
+    pub async fn get_blob_bytes_with_discovery(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<Option<Arc<[u8]>>> {
+        // First try to get locally
+        if let Some(bytes) = self.get_blob_bytes(blob_id).await? {
+            return Ok(Some(bytes));
+        }
+
+        // If not found locally, query the network
+        tracing::debug!(
+            blob_id = %hex::encode(&**blob_id),
+            context_id = %hex::encode(&**context_id),
+            "Blob not found locally, querying network"
+        );
+
+        let peers = self
+            .network_client
+            .query_blob(*blob_id, Some(*context_id))
+            .await?;
+
+        if peers.is_empty() {
+            tracing::debug!("No peers found with blob");
+            return Ok(None);
+        }
+
+        // Try to get the blob from the first available peer
+        for peer_id in peers {
+            tracing::debug!(
+                peer_id = %peer_id,
+                "Requesting blob from peer"
+            );
+
+            match self
+                .network_client
+                .request_blob(*blob_id, *context_id, peer_id)
+                .await
+            {
+                Ok(Some(data)) => {
+                    tracing::info!(
+                        blob_id = %hex::encode(&**blob_id),
+                        peer_id = %peer_id,
+                        size = data.len(),
+                        "Successfully retrieved blob from network"
+                    );
+
+                    // Store the blob locally for future use
+                    if let Err(e) = self.add_blob(data.as_slice(), Some(data.len() as u64), None).await {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to store retrieved blob locally"
+                        );
+                    }
+
+                    return Ok(Some(data.into()));
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        peer_id = %peer_id,
+                        "Peer doesn't have the blob"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        peer_id = %peer_id,
+                        error = %e,
+                        "Failed to request blob from peer"
+                    );
+                }
+            }
+        }
+
+        tracing::debug!("Failed to retrieve blob from any peer");
+        Ok(None)
+    }
+
+    /// Query the network for peers that have a specific blob
+    pub async fn find_blob_providers(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+    ) -> eyre::Result<Vec<PeerId>> {
+        self.network_client
+            .query_blob(*blob_id, Some(*context_id))
+            .await
+    }
+
+    /// Announce a blob to the network for discovery
+    pub async fn announce_blob_to_network(
+        &self,
+        blob_id: &BlobId,
+        context_id: &ContextId,
+        size: u64,
+    ) -> eyre::Result<()> {
+        self.network_client
+            .announce_blob(*blob_id, *context_id, size)
+            .await
     }
 
     pub fn has_blob(&self, blob_id: &BlobId) -> eyre::Result<bool> {
