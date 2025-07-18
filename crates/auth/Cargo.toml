@@ -1,0 +1,70 @@
+[package]
+name = "calimero-auth"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+description = "Forward Authentication Service for Calimero Network"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+aes-gcm = "0.10.3"
+async-trait = "0.1.88"
+axum = { workspace = true, features = ["macros"] }
+axum-extra = { version = "0.10.1", features = ["cookie", "cookie-signed", "cookie-private"] }
+base64.workspace = true
+borsh.workspace = true
+bs58.workspace = true
+calimero-primitives = { path = "../primitives" }
+calimero-store = { path = "../store" }
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive", "env"] }
+config = { version = "0.13", features = ["yaml"] }
+ctor = "0.1"
+dashmap = "5.5.3"
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+eyre.workspace = true
+hex.workspace = true
+ic-agent = { workspace = true, optional = true }
+jsonwebtoken.workspace = true
+lazy_static = "1.4"
+near-crypto.workspace = true
+near-jsonrpc-client.workspace = true
+near-primitives.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+regex = "1.10.2"
+rocksdb.workspace = true
+rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-path"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+starknet.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+toml.workspace = true
+tower = { workspace = true, features = ["util", "limit"] }
+tower-http = { workspace = true, features = ["cors", "trace", "catch-panic", "limit", "set-header"] }
+tower-sessions.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url.workspace = true
+uuid = { version = "1.6", features = ["v4", "serde"] }
+validator = { version = "0.20.0", features = ["derive"] }
+web3.workspace = true
+
+[dev-dependencies]
+mockall = "0.11"
+reqwest = { workspace = true, features = ["json"] }
+tempfile = "3.8"
+tokio-test = "0.4"
+
+[build-dependencies]
+bytes.workspace = true
+cached-path.workspace = true
+eyre.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+# cached-path compat
+reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

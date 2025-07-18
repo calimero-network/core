@@ -6,11 +6,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
-use axum::middleware::from_fn;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Router};
-use calimero_store::Store;
 use eyre::Report;
 use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
@@ -18,35 +16,25 @@ use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use super::handlers::alias;
 use super::handlers::context::{grant_capabilities, revoke_capabilities};
-use super::handlers::did::delete_did_handler;
 use super::handlers::proposals::{
     get_context_storage_entries_handler, get_context_value_handler,
     get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler,
     get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
     get_proxy_contract_handler,
 };
+use super::handlers::{alias, blob};
 use super::storage::ssl::get_ssl;
-use crate::admin::handlers::add_client_key::{
-    add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
-};
 use crate::admin::handlers::applications::{
     get_application, install_application, install_dev_application, list_applications,
-    uninstall_application,
 };
-use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
-    create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
-    get_context_storage, get_contexts, invite_to_context, join_context, update_context_application,
+    create_context, delete_context, get_context, get_context_identities, get_context_storage,
+    get_contexts, invite_to_context, join_context, update_context_application,
 };
-use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::peers::get_peers_count_handler;
-use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
-use crate::middleware::auth::AuthSignatureLayer;
-use crate::middleware::dev_auth::dev_mode_auth;
 #[cfg(feature = "host_layer")]
 use crate::middleware::host::HostLayer;
 use crate::AdminState;
@@ -56,17 +44,12 @@ use crate::AdminState;
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
-    #[serde(skip)]
-    pub auth_enabled: bool,
 }
 
 impl AdminConfig {
     #[must_use]
     pub const fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            auth_enabled: false,
-        }
+        Self { enabled }
     }
 }
 
@@ -81,7 +64,6 @@ struct NodeUiStaticFiles;
 )]
 pub(crate) fn setup(
     config: &ServerConfig,
-    store: Store,
     shared_state: Arc<AdminState>,
 ) -> Option<(&'static str, Router)> {
     let _ = match &config.admin {
@@ -104,25 +86,32 @@ pub(crate) fn setup(
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
-    let protected_router = Router::new()
-        .route("/root-key", post(create_root_key_handler))
+    let router = Router::new()
+        // Application management
         .route("/install-application", post(install_application::handler))
         .route(
-            "/uninstall-application",
-            post(uninstall_application::handler),
+            "/install-dev-application",
+            post(install_dev_application::handler),
         )
         .route("/applications", get(list_applications::handler))
         .route(
             "/applications/:application_id",
             get(get_application::handler),
         )
-        .route("/did", get(fetch_did_handler).delete(delete_did_handler))
-        .route("/contexts", post(create_context::handler))
-        .route("/contexts/:context_id", delete(delete_context::handler))
-        .route("/contexts/:context_id", get(get_context::handler))
+        // Context management
         .route(
-            "/contexts/:context_id/client-keys",
-            get(get_context_client_keys::handler),
+            "/contexts",
+            get(get_contexts::handler).post(create_context::handler),
+        )
+        .route("/contexts/invite", post(invite_to_context::handler))
+        .route("/contexts/join", post(join_context::handler))
+        .route(
+            "/contexts/:context_id",
+            get(get_context::handler).delete(delete_context::handler),
+        )
+        .route(
+            "/contexts/:context_id/application",
+            post(update_context_application::handler),
         )
         .route(
             "/contexts/:context_id/storage",
@@ -144,31 +133,12 @@ pub(crate) fn setup(
             "/contexts/:context_id/capabilities/revoke",
             post(revoke_capabilities::handler),
         )
-        .route("/contexts/invite", post(invite_to_context::handler))
-        .route("/contexts/join", post(join_context::handler))
-        .route("/contexts", get(get_contexts::handler))
+        // Identity management
         .route(
             "/identity/context",
             post(generate_context_identity::handler),
         )
-        .route("/identity/keys", delete(delete_auth_keys_handler))
-        .route("/generate-jwt-token", post(generate_jwt_token_handler))
-        .route("/peers", get(get_peers_count_handler))
-        .nest("/alias", alias::service())
-        .layer(Extension(Arc::clone(&shared_state)));
-
-    let protected_router = if config.admin.as_ref().map_or(false, |c| c.auth_enabled) {
-        protected_router.layer(AuthSignatureLayer::new(store))
-    } else {
-        protected_router
-    };
-
-    let unprotected_router = Router::new()
-        .route("/health", get(health_check_handler))
-        .route("/certificate", get(certificate_handler))
-        .route("/request-challenge", post(request_challenge_handler))
-        .route("/add-client-key", post(add_client_key_handler))
-        .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
+        // Proposals
         .route(
             "/contexts/:context_id/proposals/:proposal_id/approvals/count",
             get(get_number_of_proposal_approvals_handler),
@@ -200,87 +170,22 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/proxy-contract",
             get(get_proxy_contract_handler),
-        );
-
-    let dev_router = Router::new()
-        .route(
-            "/dev/install-dev-application",
-            post(install_dev_application::handler),
         )
-        .route(
-            "/dev/install-application",
-            post(install_application::handler),
-        )
-        .route("/dev/applications", get(list_applications::handler))
-        .route(
-            "/dev/applications/:application_id",
-            get(get_application::handler),
-        )
-        .route(
-            "/dev/contexts",
-            get(get_contexts::handler).post(create_context::handler),
-        )
-        .route("/dev/contexts/invite", post(invite_to_context::handler))
-        .route("/dev/contexts/join", post(join_context::handler))
-        .route(
-            "/dev/contexts/:context_id/application",
-            post(update_context_application::handler),
-        )
-        .route("/dev/contexts/:context_id", get(get_context::handler))
-        .route(
-            "/dev/contexts/:context_id/client-keys",
-            get(get_context_client_keys::handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/storage",
-            get(get_context_storage::handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/identities",
-            get(get_context_identities::handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/identities-owned",
-            get(get_context_identities::handler),
-        )
-        .route("/dev/contexts/:context_id", delete(delete_context::handler))
-        .route(
-            "/dev/identity/context",
-            post(generate_context_identity::handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/proposals/:proposal_id/approvals/count",
-            get(get_number_of_proposal_approvals_handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/proposals/:proposal_id/approvals/users",
-            get(get_proposal_approvers_handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/proposals/count",
-            get(get_number_of_active_proposals_handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/proposals",
-            post(get_proposals_handler),
-        )
-        .route(
-            "/dev/contexts/:context_id/proposals/:proposal_id",
-            get(get_proposal_handler),
-        )
-        .route("/dev/peers", get(get_peers_count_handler))
-        .nest("/dev/alias", alias::service());
-
-    let dev_router = if config.admin.as_ref().map_or(false, |c| c.auth_enabled) {
-        dev_router.route_layer(from_fn(dev_mode_auth))
-    } else {
-        dev_router
-    };
+        // Network info
+        .route("/peers", get(get_peers_count_handler))
+        // Blob management - with increased body limit for large file uploads
+        .route("/blobs/upload", put(blob::handler))
+        .route("/blobs/:blob_id", get(blob::download_handler))
+        .route("/blobs/:blob_id/info", get(blob::info_handler))
+        // Alias management
+        .nest("/alias", alias::service())
+        // Health endpoints (previously unprotected)
+        .route("/health", get(health_check_handler))
+        .route("/certificate", get(certificate_handler))
+        .layer(Extension(Arc::clone(&shared_state)));
 
     let admin_router = Router::new()
-        .merge(unprotected_router)
-        .merge(protected_router)
-        .merge(dev_router)
+        .merge(router)
         .layer(Extension(shared_state))
         .layer(session_layer);
 

@@ -1,0 +1,156 @@
+x-node-defaults: &node-defaults
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+    secrets:
+      - gh-token
+  user: root
+  volumes:
+    - calimero_auth_node:/calimero
+  healthcheck:
+    test:
+      [
+        "CMD-SHELL",
+        "curl -f http://localhost:$${NODE_PORT}/admin-api/peers || exit 0",
+      ]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+
+services:
+  # Primary node
+  node:
+    <<: *node-defaults
+    environment:
+      - NODE_NAME=authnode
+      - SWARM_PORT=2428
+      - NODE_PORT=2528
+      - CALIMERO_HOME=/calimero/data
+    ports:
+      - "2428:2428"
+      - "2528:2528"
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "mkdir -p $${CALIMERO_HOME} $${CALIMERO_HOME}/../logic $${CALIMERO_HOME}/../credentials &&
+      if [ ! -d $${CALIMERO_HOME}/config ]; then
+        merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2528 --swarm-port 2428
+      fi &&
+      merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} run"
+    networks:
+      - internal
+      - web
+    labels:
+      - "traefik.enable=true"
+
+      # JSON-RPC route
+      - "traefik.http.routers.node-api.rule=PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api/`)"
+      - "traefik.http.routers.node-api.entrypoints=web"
+      - "traefik.http.routers.node-api.service=node-core"
+      - "traefik.http.routers.node-api.middlewares=cors,auth-node"
+
+      # Admin dashboard route
+      - "traefik.http.routers.node-dashboard.rule=PathPrefix(`/admin-dashboard`)"
+      - "traefik.http.routers.node-dashboard.entrypoints=web"
+      - "traefik.http.routers.node-dashboard.service=node-core"
+      - "traefik.http.routers.node-dashboard.middlewares=cors"
+
+      # Forward Auth middleware for node service
+      - "traefik.http.middlewares.auth-node.forwardauth.address=http://auth:3001/auth/validate"
+      - "traefik.http.middlewares.auth-node.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.auth-node.forwardauth.authResponseHeaders=X-Auth-User,X-Auth-Permissions"
+
+      # CORS middleware
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST,DELETE"
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.cors.headers.accesscontrolalloworiginlist=*"
+      - "traefik.http.middlewares.cors.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.cors.headers.addvaryheader=true"
+      - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
+
+      # Define the service
+      - "traefik.http.services.node-core.loadbalancer.server.port=2528"
+
+  # Auth service
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth
+      target: runtime
+      secrets:
+        - gh-token
+    volumes:
+      - calimero_auth_data:/data
+    environment:
+      - RUST_LOG=debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/auth/health"]
+      interval: 30s
+      timeout: 10s
+    networks:
+      - internal
+      - web
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+
+      # Public Routes (No Auth)
+      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth/`) || PathPrefix(`/admin/`)"
+      - "traefik.http.routers.auth-public.entrypoints=web"
+      - "traefik.http.routers.auth-public.service=auth-service"
+      - "traefik.http.routers.auth-public.middlewares=cors"
+
+      # Define the service
+      - "traefik.http.services.auth-service.loadbalancer.server.port=3001"
+
+      # CORS middleware
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST,DELETE"
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.cors.headers.accesscontrolalloworiginlist=*"
+      - "traefik.http.middlewares.cors.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.cors.headers.addvaryheader=true"
+      - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
+
+  # Reverse proxy
+  proxy:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--accesslog=true"
+      - "--log.level=DEBUG"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.docker.network=${COMPOSE_PROJECT_NAME:-calimero}_web"
+      - "--serversTransport.forwardingTimeouts.dialTimeout=30s"
+      - "--serversTransport.forwardingTimeouts.responseHeaderTimeout=30s"
+      - "--serversTransport.forwardingTimeouts.idleConnTimeout=30s"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - web
+    restart: unless-stopped
+
+networks:
+  web:
+    driver: bridge
+  internal:
+    internal: true
+
+volumes:
+  calimero_auth_node:
+    driver: local
+  calimero_auth_data:
+    driver: local
+
+secrets:
+  gh-token:
+    environment: GH_TOKEN
