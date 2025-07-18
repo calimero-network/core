@@ -19,12 +19,10 @@ use crate::storage::models::{Key, KeyType};
 #[derive(Debug, Deserialize, Validate)]
 pub struct GenerateClientKeyRequest {
     /// Context ID selected by user
-    #[validate(length(min = 1, message = "Context ID is required"))]
-    pub context_id: String,
+    pub context_id: Option<String>,
 
     /// Context identity selected by user
-    #[validate(length(min = 1, message = "Context identity is required"))]
-    pub context_identity: String,
+    pub context_identity: Option<String>,
 
     /// Additional permissions requested
     pub permissions: Option<Vec<String>>,
@@ -118,8 +116,14 @@ pub async fn generate_client_key_handler(
     let root_key_id = auth_response.key_id;
 
     // Sanitize identifiers to prevent injection attacks
-    let context_id = sanitize_identifier(&request.context_id);
-    let context_identity = sanitize_identifier(&request.context_identity);
+    let context_id = match request.context_id {
+        Some(id) => sanitize_identifier(&id),
+        None => "".to_string(),
+    };
+    let context_identity = match request.context_identity {
+        Some(id) => sanitize_identifier(&id),
+        None => "".to_string(),
+    };
 
     // Check if admin permission is requested
     let has_admin_permission = request

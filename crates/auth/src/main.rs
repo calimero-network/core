@@ -5,7 +5,7 @@ use std::sync::Arc;
 use calimero_auth::auth::token::TokenManager;
 use calimero_auth::config::{
     load_config, AuthConfig, ContentSecurityPolicyConfig, JwtConfig, NearWalletConfig,
-    RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig,
+    RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
 };
 use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
@@ -75,6 +75,7 @@ fn create_default_config() -> AuthConfig {
         },
         providers,
         near: NearWalletConfig::default(),
+        user_password: UserPasswordConfig::default(),
     }
 }
 
