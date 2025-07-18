@@ -8,6 +8,13 @@ license.workspace = true
 
 [dependencies]
 axum = { workspace = true, features = ["multipart"] }
+base64.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
+borsh = { workspace = true, features = ["derive"] }
+bs58.workspace = true
+candid.workspace = true
+chrono.workspace = true
+ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 libp2p.workspace = true
@@ -18,7 +25,6 @@ rust-embed = { workspace = true, features = ["mime-guess", "interpolate-folder-p
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
@@ -29,6 +35,7 @@ calimero-node-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-store = { workspace = true, features = ["serde"] }
+bytes.workspace = true
 
 [dev-dependencies]
 color-eyre.workspace = true
