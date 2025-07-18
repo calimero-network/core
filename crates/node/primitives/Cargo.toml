@@ -13,6 +13,7 @@ borsh.workspace = true
 camino.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+infer.workspace = true
 libp2p = { workspace = true, features = ["gossipsub"] }
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
