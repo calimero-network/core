@@ -18,7 +18,6 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 use super::NodeClient;
 
 impl NodeClient {
-    /// Installs an application from a stream of data.
     pub async fn install_application_from_stream<R>(
         &self,
         stream: R,
