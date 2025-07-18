@@ -2123,6 +2123,9 @@ name = "calimero-server"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
+ "base64 0.22.1",
+ "borsh",
+ "bs58 0.5.1",
  "bytes",
  "cached-path",
  "calimero-context-config",
@@ -2131,7 +2134,10 @@ dependencies = [
  "calimero-primitives",
  "calimero-server-primitives",
  "calimero-store",
+ "candid",
+ "chrono",
  "color-eyre",
+ "ed25519-dalek",
  "eyre",
  "futures-util",
  "libp2p",
@@ -2144,7 +2150,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
- "tower 0.4.13",
  "tower-http",
  "tower-sessions",
  "tracing",
@@ -6017,15 +6022,16 @@ dependencies = [
 name = "meroctl"
 version = "0.1.0"
 dependencies = [
+ "axum 0.7.9",
  "base64 0.22.1",
  "bs58 0.5.1",
- "axum 0.7.9",
  "calimero-config",
  "calimero-context-config",
  "calimero-primitives",
  "calimero-server-primitives",
  "calimero-version",
  "camino",
+ "chrono",
  "clap",
  "color-eyre",
  "comfy-table",

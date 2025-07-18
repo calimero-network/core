@@ -220,6 +220,7 @@ pub(crate) fn setup(
 
     let admin_router = Router::new()
         .merge(router)
+        .merge(dev_router)  
         .layer(Extension(shared_state))
         .layer(session_layer);
 

@@ -1,3 +1,4 @@
+use bs58;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
@@ -6,7 +7,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8PathBuf;
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
-use eyre::{bail, Result};
+use eyre::{bail, Result as EyreResult};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::io::{stdin, AsyncReadExt};
@@ -55,7 +56,7 @@ impl Report for InstallApplicationResponse {
 }
 
 impl InstallCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         let _ignored = self.install_app(environment).await?;
         if self.watch {
             self.watch_app(environment).await?;
@@ -125,14 +126,9 @@ impl InstallCommand {
             .header("Content-Type", "application/octet-stream")
             .body(buffer);
 
-        // Add authentication headers if present
-        if let Some(keypair) = &connection.auth_key {
-            let timestamp = Utc::now().timestamp().to_string();
-            let signature = keypair.sign(timestamp.as_bytes())?;
-
-            builder = builder
-                .header("X-Signature", bs58::encode(signature).into_string())
-                .header("X-Timestamp", timestamp);
+        // // Add authentication headers if present
+        if let Some(ref tokens) = *connection.jwt_tokens.lock().unwrap() {
+            builder = builder.header("Authorization", format!("Bearer {}", tokens.access_token));
         }
 
         // Send the request
@@ -193,7 +189,7 @@ impl InstallCommand {
         Ok(response.data.application_id)
     }
 
-    pub async fn watch_app(&self, environment: &Environment) -> Result<()> {
+    pub async fn watch_app(&self, environment: &Environment) -> EyreResult<()> {
         let Some(path) = self.path.as_ref() else {
             bail!("The path must be provided");
         };

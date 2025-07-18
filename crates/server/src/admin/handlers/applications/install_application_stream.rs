@@ -98,4 +98,3 @@ pub async fn json_handler(
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
-

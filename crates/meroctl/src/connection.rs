@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use eyre::{bail, eyre, Result, WrapErr};
+use chrono::Utc;
+use eyre::{bail, eyre, Result as EyreResult, WrapErr};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -43,11 +44,11 @@ impl ConnectionInfo {
         }
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> EyreResult<T> {
         self.request(RequestType::Get, path, None::<()>).await
     }
 
-    pub async fn post<I, O>(&self, path: &str, body: I) -> Result<O>
+    pub async fn post<I, O>(&self, path: &str, body: I) -> EyreResult<O>
     where
         I: Serialize,
         O: DeserializeOwned,
@@ -71,13 +72,9 @@ impl ConnectionInfo {
             .header("Content-Type", content_type)
             .body(data);
 
-        if let Some(keypair) = &self.auth_key {
-            let timestamp = Utc::now().timestamp().to_string();
-            let signature = keypair.sign(timestamp.as_bytes())?;
-
-            builder = builder
-                .header("X-Signature", bs58::encode(signature).into_string())
-                .header("X-Timestamp", timestamp);
+        // Use JWT tokens instead of auth_key
+        if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
+            builder = builder.header("Authorization", format!("Bearer {}", tokens.access_token));
         }
 
         let response = builder.send().await?;
@@ -99,7 +96,12 @@ impl ConnectionInfo {
         self.request(RequestType::Delete, path, None::<()>).await
     }
 
-    async fn request<I, O>(&self, req_type: RequestType, path: &str, body: Option<I>) -> Result<O>
+    async fn request<I, O>(
+        &self,
+        req_type: RequestType,
+        path: &str,
+        body: Option<I>,
+    ) -> EyreResult<O>
     where
         I: Serialize,
         O: DeserializeOwned,
@@ -195,7 +197,7 @@ impl ConnectionInfo {
         }
     }
 
-    async fn refresh_token(&self) -> Result<JwtToken, RefreshError> {
+    async fn refresh_token(&self) -> EyreResult<JwtToken, RefreshError> {
         if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
             let refresh_token = tokens
                 .refresh_token
@@ -218,7 +220,11 @@ impl ConnectionInfo {
         Err(RefreshError::NoRefreshToken)
     }
 
-    async fn try_refresh_token(&self, access_token: &str, refresh_token: &str) -> Result<JwtToken> {
+    async fn try_refresh_token(
+        &self,
+        access_token: &str,
+        refresh_token: &str,
+    ) -> EyreResult<JwtToken> {
         let refresh_url = self.api_url.join("/auth/refresh")?;
 
         #[derive(serde::Serialize)]
@@ -272,7 +278,7 @@ impl ConnectionInfo {
         })
     }
 
-    pub async fn detect_auth_mode(&self) -> Result<String> {
+    pub async fn detect_auth_mode(&self) -> EyreResult<String> {
         let identity_url = self
             .api_url
             .join("/admin-api/health")
@@ -305,7 +311,7 @@ impl ConnectionInfo {
     }
 
     /// Update the stored JWT tokens for a specific node in the configuration
-    async fn update_node_tokens(node_name: &str, new_tokens: &JwtToken) -> Result<()> {
+    async fn update_node_tokens(node_name: &str, new_tokens: &JwtToken) -> EyreResult<()> {
         let mut config = crate::config::Config::load().await.wrap_err_with(|| {
             format!(
                 "Failed to load config while updating tokens for node '{}'",
