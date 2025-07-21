@@ -17,7 +17,7 @@ pub enum BlobSubCommand {
     List,
     #[command(about = "Get information about a specific blob")]
     Info { blob_id: BlobId },
-    #[command(about = "Delete a specific blob")]
+    #[command(about = "Delete a specific blob", alias = "rm")]
     Delete { blob_id: BlobId },
 }
 
@@ -62,7 +62,7 @@ impl BlobCommand {
                     );
                     println!("  {}", "-".repeat(130));
                     println!(
-                        "  {:<44} | {:<22} | {:<20} | {}",
+                        "{ind}{:<44} | {:<22} | {:<20} | {}",
                         metadata.blob_id.to_string().cyan(),
                         format!("{}", metadata.size).cyan(),
                         metadata.mime_type.cyan(),

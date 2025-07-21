@@ -30,14 +30,11 @@ impl Report for BlobListResponse {
             let _ = table.set_header(vec![
                 Cell::new("Blob ID").fg(Color::Blue),
                 Cell::new("Size").fg(Color::Blue),
-                Cell::new("Size (MB)").fg(Color::Blue),
             ]);
             for blob in &self.data.blobs {
-                let size_mb = blob.size as f64 / (1024.0 * 1024.0);
                 let _ = table.add_row(vec![
                     blob.blob_id.to_string(),
                     format!("{} bytes", blob.size),
-                    format!("{:.2} MB", size_mb),
                 ]);
             }
             println!("{table}");

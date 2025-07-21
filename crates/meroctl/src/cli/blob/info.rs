@@ -31,7 +31,7 @@ impl Report for BlobInfoResponse {
 
         let _ = table.add_row(vec![
             &self.data.blob_id.to_string(),
-            &format!("{}", self.data.size),
+            &self.data.size.to_string(),
             &self.data.mime_type,
             &hex::encode(self.data.hash),
         ]);

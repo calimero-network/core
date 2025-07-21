@@ -32,10 +32,12 @@ pub struct BlobCommand {
 
 #[derive(Debug, Subcommand, Copy, Clone)]
 pub enum BlobSubCommands {
-    Delete(delete::DeleteCommand),
-    Info(info::InfoCommand),
-    #[command(alias = "ls")]
+    #[command(about = "List all blobs", alias = "ls")]
     List(list::ListCommand),
+    #[command(about = "Get information about a specific blob")]
+    Info(info::InfoCommand),
+    #[command(about = "Delete a specific blob", alias = "rm")]
+    Delete(delete::DeleteCommand),
 }
 
 impl BlobCommand {
