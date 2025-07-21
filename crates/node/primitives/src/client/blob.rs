@@ -3,11 +3,10 @@ use std::sync::Arc;
 use calimero_blobstore::{Blob, Size};
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::hash::Hash;
-use calimero_store::key::BlobMeta;
+use calimero_store::key;
 use calimero_store::layer::LayerExt;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
-use infer;
 use tokio::sync::oneshot;
 
 use super::NodeClient;
@@ -82,7 +81,7 @@ impl NodeClient {
     pub fn list_blobs(&self) -> eyre::Result<Vec<BlobInfo>> {
         let handle = self.datastore.clone().handle();
 
-        let iter_result = handle.iter::<BlobMeta>();
+        let iter_result = handle.iter::<key::BlobMeta>();
         let mut iter = match iter_result {
             Ok(iter) => iter,
             Err(err) => {
@@ -113,7 +112,7 @@ impl NodeClient {
         }
 
         let handle2 = self.datastore.clone().handle();
-        let iter_result2 = handle2.iter::<BlobMeta>();
+        let iter_result2 = handle2.iter::<key::BlobMeta>();
         let mut iter2 = match iter_result2 {
             Ok(iter) => iter,
             Err(err) => {
@@ -166,7 +165,7 @@ impl NodeClient {
     /// This includes all associated chunk files for large blobs.
     pub async fn delete_blob(&self, blob_id: BlobId) -> eyre::Result<bool> {
         let mut handle = self.datastore.clone().handle();
-        let blob_key = BlobMeta::new(blob_id);
+        let blob_key = key::BlobMeta::new(blob_id);
 
         let blob_meta = match handle.get(&blob_key) {
             Ok(Some(meta)) => meta,
@@ -210,7 +209,7 @@ impl NodeClient {
 
         // Delete metadata
         for current_blob_id in blobs_to_delete {
-            let current_key = BlobMeta::new(current_blob_id);
+            let current_key = key::BlobMeta::new(current_blob_id);
 
             match handle.delete(&current_key) {
                 Ok(()) => {
@@ -245,7 +244,7 @@ impl NodeClient {
     /// This is efficient for checking blob existence and getting metadata info.
     pub async fn get_blob_info(&self, blob_id: BlobId) -> eyre::Result<Option<BlobMetadata>> {
         let handle = self.datastore.clone().handle();
-        let blob_key = BlobMeta::new(blob_id);
+        let blob_key = key::BlobMeta::new(blob_id);
 
         match handle.get(&blob_key) {
             Ok(Some(blob_meta)) => {
@@ -275,8 +274,8 @@ impl NodeClient {
             Ok(Some(mut blob_stream)) => {
                 if let Some(Ok(first_chunk)) = blob_stream.next().await {
                     let bytes = first_chunk.as_ref();
-                    let sample_size = std::cmp::min(bytes.len(), 512); // Read more bytes for better detection
-                    return Some(detect_mime_from_bytes(&bytes[..sample_size]));
+                    let sample_size = std::cmp::min(bytes.len(), 512);
+                    return Some(detect_mime_from_bytes(&bytes[..sample_size]).to_owned());
                 }
             }
             Ok(None) => {
@@ -296,10 +295,10 @@ impl NodeClient {
 }
 
 /// Detect MIME type from file bytes using the infer crate
-fn detect_mime_from_bytes(bytes: &[u8]) -> String {
+fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
     if let Some(kind) = infer::get(bytes) {
-        return kind.mime_type().to_owned();
+        return kind.mime_type();
     }
 
-    "application/octet-stream".to_owned()
+    "application/octet-stream"
 }

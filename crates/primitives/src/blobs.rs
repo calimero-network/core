@@ -72,7 +72,7 @@ impl FromStr for BlobId {
 }
 
 /// Core blob information
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Clone, Copy)]
 pub struct BlobInfo {
     /// The unique blob ID
     pub blob_id: BlobId,
@@ -81,7 +81,7 @@ pub struct BlobInfo {
 }
 
 /// Detailed blob metadata
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct BlobMetadata {
     pub blob_id: BlobId,
     pub size: u64,
