@@ -2030,6 +2030,7 @@ dependencies = [
  "camino",
  "eyre",
  "futures-util",
+ "infer",
  "libp2p",
  "rand 0.8.5",
  "reqwest 0.12.9",
@@ -2134,6 +2135,7 @@ dependencies = [
  "color-eyre",
  "eyre",
  "futures-util",
+ "hex",
  "libp2p",
  "multiaddr",
  "rand 0.8.5",
@@ -2314,6 +2316,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
 dependencies = [
  "nom",
+]
+
+[[package]]
+name = "cfb"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d38f2da7a0a2c4ccf0065be06397cc26a81f4e528be095826eee9d4adbb8c60f"
+dependencies = [
+ "byteorder",
+ "fnv",
+ "uuid 1.11.0",
 ]
 
 [[package]]
@@ -4898,6 +4911,15 @@ dependencies = [
  "lazy_static",
  "number_prefix",
  "regex",
+]
+
+[[package]]
+name = "infer"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a588916bfdfd92e71cacef98a63d9b1f0d74d6599980d11894290e7ddefffcf7"
+dependencies = [
+ "cfb",
 ]
 
 [[package]]
