@@ -73,7 +73,9 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
         }
     }
 
-    let wasm_path = &artifact.unwrap().filenames[0];
+    let artifact = artifact.as_ref().unwrap();
+    let manifest_dir_path = artifact.manifest_path.parent().unwrap();
+    let wasm_path = &artifact.filenames[0];
     let wasm_file = wasm_path.file_name().unwrap();
 
     let output = child.wait().wrap_err("cargo build failed")?;
@@ -83,10 +85,11 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     }
 
     // Copy wasm to res folder
-    if !Path::new("res/").exists() {
-        fs::create_dir("res")?;
+    let res_path = Path::new(manifest_dir_path).join("res/");
+    if !res_path.exists() {
+        fs::create_dir(&res_path)?;
     }
-    let _ = fs::copy(wasm_path, Path::new("./res/").join(&wasm_file))?;
+    let _ = fs::copy(wasm_path, res_path.join(&wasm_file))?;
 
     // Optimize wasm if wasm-opt is present
     if wasm_opt_installed().await {
@@ -94,9 +97,9 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
 
         let output = Command::new("wasm-opt")
             .arg("-Oz")
-            .arg(Path::new("./res/").join(&wasm_file))
+            .arg(res_path.join(&wasm_file))
             .arg("-o")
-            .arg(Path::new("./res/").join(&wasm_file))
+            .arg(res_path.join(&wasm_file))
             .output()?;
 
         if !output.status.success() {
