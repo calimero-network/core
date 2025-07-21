@@ -65,7 +65,7 @@ pub struct BuildOpts {
     pub no_default_features: bool,
     /// Package to build
     #[clap(long, short)]
-    pub package: String,
+    pub package: Option<String>,
 }
 
 impl RootCommand {
