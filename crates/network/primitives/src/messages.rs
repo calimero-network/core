@@ -1,10 +1,10 @@
-use libp2p::core::transport::ListenerId;
-pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
-use libp2p::{Multiaddr, StreamProtocol};
-pub use libp2p::PeerId;
-use tokio::sync::oneshot;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
+use libp2p::core::transport::ListenerId;
+pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
+pub use libp2p::PeerId;
+use libp2p::{Multiaddr, StreamProtocol};
+use tokio::sync::oneshot;
 
 use crate::stream::Stream;
 

@@ -28,7 +28,13 @@ struct BlobRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct BlobResponse {
     found: bool,
-    data: Option<Vec<u8>>,
+    size: Option<u64>, // Total size if found
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BlobChunk {
+    data: Vec<u8>,
+    is_final: bool, // True for the last chunk
 }
 
 /// Handle blob requests that come over streams
@@ -45,17 +51,32 @@ async fn handle_blob_request_stream(
         "Processing blob request stream"
     );
 
-    // Try to get the blob
-    let blob_data = node_client
-        .get_blob_bytes(&BlobId::from(blob_request.blob_id))
-        .await?;
+    // Try to get the blob as a stream (handles chunked blobs efficiently)
+    let blob_stream = node_client.get_blob(&BlobId::from(blob_request.blob_id))?;
 
-    let response = BlobResponse {
-        found: blob_data.is_some(),
-        data: blob_data.map(|data| data.to_vec()),
+    let response = if let Some(_blob_stream) = blob_stream {
+        debug!(%peer_id, "Blob found, will stream chunks");
+
+        // Get blob metadata to determine size
+        let blob_metadata = node_client
+            .get_blob_info(BlobId::from(blob_request.blob_id))
+            .await?;
+
+        let total_size = blob_metadata.map(|meta| meta.size).unwrap_or(0);
+
+        BlobResponse {
+            found: true,
+            size: Some(total_size),
+        }
+    } else {
+        debug!(%peer_id, "Blob not found");
+        BlobResponse {
+            found: false,
+            size: None,
+        }
     };
 
-    // Send response
+    // Send initial response
     let response_data = serde_json::to_vec(&response)
         .map_err(|e| eyre::eyre!("Failed to serialize blob response: {}", e))?;
 
@@ -64,8 +85,55 @@ async fn handle_blob_request_stream(
         .await
         .map_err(|e| eyre::eyre!("Failed to send blob response: {}", e))?;
 
-    debug!(%peer_id, "Blob request stream handled successfully");
+    // If blob was found, stream the chunks
+    if response.found {
+        let mut blob_stream = node_client
+            .get_blob(&BlobId::from(blob_request.blob_id))?
+            .expect("Blob should exist since we just checked"); // Safe because we checked above
 
+        debug!(%peer_id, "Starting to stream blob chunks");
+
+        while let Some(chunk_result) = blob_stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    let blob_chunk = BlobChunk {
+                        data: chunk.to_vec(),
+                        is_final: false,
+                    };
+
+                    let chunk_data = serde_json::to_vec(&blob_chunk)
+                        .map_err(|e| eyre::eyre!("Failed to serialize blob chunk: {}", e))?;
+
+                    stream
+                        .send(StreamMessage::new(chunk_data))
+                        .await
+                        .map_err(|e| eyre::eyre!("Failed to send blob chunk: {}", e))?;
+                }
+                Err(e) => {
+                    warn!(%peer_id, error = %e, "Failed to read blob chunk");
+                    return Err(eyre::eyre!("Failed to read blob chunk: {}", e));
+                }
+            }
+        }
+
+        // Send final empty chunk to signal end of stream
+        let final_chunk = BlobChunk {
+            data: Vec::new(),
+            is_final: true,
+        };
+
+        let final_chunk_data = serde_json::to_vec(&final_chunk)
+            .map_err(|e| eyre::eyre!("Failed to serialize final blob chunk: {}", e))?;
+
+        stream
+            .send(StreamMessage::new(final_chunk_data))
+            .await
+            .map_err(|e| eyre::eyre!("Failed to send final blob chunk: {}", e))?;
+
+        debug!(%peer_id, "Successfully streamed all blob chunks");
+    }
+
+    debug!(%peer_id, "Blob request stream handled successfully");
     Ok(())
 }
 
@@ -96,7 +164,6 @@ async fn handle_blob_protocol_stream(
     handle_blob_request_stream(node_client, peer_id, blob_request, stream).await
 }
 
-
 impl Handler<NetworkEvent> for NodeManager {
     type Result = <NetworkEvent as Message>::Result;
 
@@ -108,11 +175,7 @@ impl Handler<NetworkEvent> for NodeManager {
                     return;
                 };
 
-                info!(
-                    "Peer '{}' subscribed to context '{}'",
-                    peer_id,
-                    context_id
-                );
+                info!("Peer '{}' subscribed to context '{}'", peer_id, context_id);
             }
             NetworkEvent::Unsubscribed { peer_id, topic } => {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
@@ -121,8 +184,7 @@ impl Handler<NetworkEvent> for NodeManager {
 
                 info!(
                     "Peer '{}' unsubscribed from context '{}'",
-                    peer_id,
-                    context_id
+                    peer_id, context_id
                 );
             }
             NetworkEvent::Message { message, .. } => {
@@ -175,7 +237,11 @@ impl Handler<NetworkEvent> for NodeManager {
                     }
                 }
             }
-            NetworkEvent::StreamOpened { peer_id, stream, protocol } => {
+            NetworkEvent::StreamOpened {
+                peer_id,
+                stream,
+                protocol,
+            } => {
                 // Route streams based on protocol
                 if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
                     debug!(%peer_id, "Handling blob protocol stream");

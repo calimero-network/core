@@ -10,10 +10,8 @@ use std::collections::hash_map::HashMap;
 
 use actix::{Actor, AsyncContext, Context};
 use calimero_network_primitives::config::NetworkConfig;
-use crate::handlers::stream::incoming::FromIncoming;
 use calimero_network_primitives::messages::NetworkEvent;
-use calimero_network_primitives::stream::CALIMERO_STREAM_PROTOCOL;
-use calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL;
+use calimero_network_primitives::stream::{CALIMERO_BLOB_PROTOCOL, CALIMERO_STREAM_PROTOCOL};
 use calimero_utils_actix::{actor, LazyRecipient};
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
@@ -24,6 +22,8 @@ use tokio::sync::oneshot;
 use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
 use tracing::error;
+
+use crate::handlers::stream::incoming::FromIncoming;
 
 mod behaviour;
 mod discovery;
@@ -92,9 +92,9 @@ impl Actor for NetworkManager {
         match control.accept(CALIMERO_STREAM_PROTOCOL) {
             Ok(incoming_streams) => {
                 let _inoming_streams_handle =
-                    ctx.add_stream(incoming_streams.map(|(peer_id, stream)| 
+                    ctx.add_stream(incoming_streams.map(|(peer_id, stream)| {
                         FromIncoming::from_stream(peer_id, stream, CALIMERO_STREAM_PROTOCOL)
-                    ));
+                    }));
             }
             Err(err) => {
                 error!("Failed to setup control for stream protocol: {:?}", err);
@@ -104,9 +104,9 @@ impl Actor for NetworkManager {
         match control.accept(CALIMERO_BLOB_PROTOCOL) {
             Ok(incoming_blob_streams) => {
                 let _incoming_blob_streams_handle =
-                    ctx.add_stream(incoming_blob_streams.map(|(peer_id, stream)| 
+                    ctx.add_stream(incoming_blob_streams.map(|(peer_id, stream)| {
                         FromIncoming::from_stream(peer_id, stream, CALIMERO_BLOB_PROTOCOL)
-                    ));
+                    }));
             }
             Err(err) => {
                 error!("Failed to setup control for blob protocol: {:?}", err);

@@ -1,7 +1,7 @@
 use actix::{Context, Handler, Message, Response};
 use calimero_network_primitives::messages::AnnounceBlob;
 use eyre::eyre;
-use libp2p::kad::{Record, RecordKey, Quorum};
+use libp2p::kad::{Quorum, Record, RecordKey};
 use tracing::{debug, info};
 
 use crate::NetworkManager;
@@ -45,15 +45,20 @@ impl Handler<AnnounceBlob> for NetworkManager {
             record.value.len()
         );
 
-        match self.swarm.behaviour_mut().kad.put_record(record, Quorum::One) {
+        match self
+            .swarm
+            .behaviour_mut()
+            .kad
+            .put_record(record, Quorum::One)
+        {
             Ok(_) => {
                 info!("Successfully stored blob record in DHT");
                 Response::reply(Ok(()))
-            },
+            }
             Err(err) => {
                 info!("Failed to store blob record in DHT: {:?}", err);
                 Response::reply(Err(eyre!("Failed to store record: {:?}", err)))
-            },
+            }
         }
     }
-} 
+}

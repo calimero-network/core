@@ -1,6 +1,8 @@
 use actix::{Context, Handler, Message, ResponseFuture};
-use calimero_network_primitives::messages::{RequestBlob, NetworkEvent};
-use calimero_network_primitives::stream::{Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL};
+use calimero_network_primitives::messages::{NetworkEvent, RequestBlob};
+use calimero_network_primitives::stream::{
+    Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL,
+};
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -17,7 +19,13 @@ pub struct BlobRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobResponse {
     pub found: bool,
-    pub data: Option<Vec<u8>>,
+    pub size: Option<u64>, // Total size if found
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BlobChunk {
+    pub data: Vec<u8>,
+    pub is_final: bool, // True for the last chunk
 }
 
 impl Handler<RequestBlob> for NetworkManager {
@@ -38,7 +46,8 @@ impl Handler<RequestBlob> for NetworkManager {
             // Open a stream to the peer
             let libp2p_stream = match stream_control
                 .open_stream(request.peer_id, CALIMERO_BLOB_PROTOCOL)
-                .await {
+                .await
+            {
                 Ok(stream) => stream,
                 Err(e) => {
                     // Emit failure event
@@ -86,7 +95,7 @@ impl Handler<RequestBlob> for NetworkManager {
                 return Err(e).wrap_err("Failed to send blob request");
             }
 
-            // Wait for response
+            // Wait for initial response
             let response_msg = match stream.next().await {
                 Some(Ok(msg)) => msg,
                 Some(Err(e)) => {
@@ -126,16 +135,82 @@ impl Handler<RequestBlob> for NetworkManager {
             };
 
             if blob_response.found {
-                if let Some(data) = blob_response.data.clone() {
-                    // Emit success event
-                    event_recipient.do_send(NetworkEvent::BlobDownloaded {
-                        blob_id: request.blob_id,
-                        context_id: request.context_id,
-                        data: data.clone(),
-                        from_peer: request.peer_id,
-                    });
+                debug!(
+                    blob_id = %request.blob_id,
+                    context_id = %request.context_id,
+                    peer_id = %request.peer_id,
+                    size = ?blob_response.size,
+                    "Blob found, streaming chunks"
+                );
+
+                // Prepare to collect chunks
+                let expected_size = blob_response.size.unwrap_or(0);
+                let mut collected_data = Vec::with_capacity(expected_size as usize);
+
+                // Stream chunks until we get is_final=true
+                loop {
+                    let chunk_msg = match stream.next().await {
+                        Some(Ok(msg)) => msg,
+                        Some(Err(e)) => {
+                            // Emit failure event
+                            event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                blob_id: request.blob_id,
+                                context_id: request.context_id,
+                                from_peer: request.peer_id,
+                                error: format!("Failed to receive chunk: {}", e),
+                            });
+                            return Err(e).wrap_err("Failed to receive chunk");
+                        }
+                        None => {
+                            // Emit failure event
+                            event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                blob_id: request.blob_id,
+                                context_id: request.context_id,
+                                from_peer: request.peer_id,
+                                error: "Stream closed during chunk transfer".to_string(),
+                            });
+                            return Err(eyre!("Stream closed during chunk transfer"));
+                        }
+                    };
+
+                    let blob_chunk: BlobChunk = match serde_json::from_slice(&chunk_msg.data) {
+                        Ok(chunk) => chunk,
+                        Err(e) => {
+                            // Emit failure event
+                            event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                blob_id: request.blob_id,
+                                context_id: request.context_id,
+                                from_peer: request.peer_id,
+                                error: format!("Failed to deserialize chunk: {}", e),
+                            });
+                            return Err(e).wrap_err("Failed to deserialize blob chunk");
+                        }
+                    };
+
+                    // Add chunk data to collection
+                    collected_data.extend(blob_chunk.data);
+
+                    // Check if this is the final chunk
+                    if blob_chunk.is_final {
+                        debug!(
+                            blob_id = %request.blob_id,
+                            peer_id = %request.peer_id,
+                            total_size = collected_data.len(),
+                            "Received final chunk, blob transfer complete"
+                        );
+                        break;
+                    }
                 }
-                Ok(blob_response.data)
+
+                // Emit success event
+                event_recipient.do_send(NetworkEvent::BlobDownloaded {
+                    blob_id: request.blob_id,
+                    context_id: request.context_id,
+                    data: collected_data.clone(),
+                    from_peer: request.peer_id,
+                });
+
+                Ok(Some(collected_data))
             } else {
                 // Emit failure event - blob not found
                 event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
@@ -148,4 +223,4 @@ impl Handler<RequestBlob> for NetworkManager {
             }
         })
     }
-} 
+}

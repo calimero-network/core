@@ -1,9 +1,9 @@
 use actix::{Addr, MailboxError};
+use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
 use eyre::eyre;
 use libp2p::PeerId;
 use tokio::sync::oneshot;
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::ContextId;
 
 use crate::messages::{
     AnnounceBlob, Bootstrap, Dial, ListenOn, MeshPeerCount, MeshPeers, NetworkMessage, OpenStream,
@@ -64,7 +64,10 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn subscribe(&self, topic: libp2p::gossipsub::IdentTopic) -> eyre::Result<libp2p::gossipsub::IdentTopic> {
+    pub async fn subscribe(
+        &self,
+        topic: libp2p::gossipsub::IdentTopic,
+    ) -> eyre::Result<libp2p::gossipsub::IdentTopic> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
@@ -78,7 +81,10 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn unsubscribe(&self, topic: libp2p::gossipsub::IdentTopic) -> eyre::Result<libp2p::gossipsub::IdentTopic> {
+    pub async fn unsubscribe(
+        &self,
+        topic: libp2p::gossipsub::IdentTopic,
+    ) -> eyre::Result<libp2p::gossipsub::IdentTopic> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
@@ -92,7 +98,11 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn publish(&self, topic: libp2p::gossipsub::TopicHash, data: Vec<u8>) -> eyre::Result<libp2p::gossipsub::MessageId> {
+    pub async fn publish(
+        &self,
+        topic: libp2p::gossipsub::TopicHash,
+        data: Vec<u8>,
+    ) -> eyre::Result<libp2p::gossipsub::MessageId> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
@@ -198,7 +208,10 @@ impl NetworkClient {
 
         self.network_manager
             .send(NetworkMessage::QueryBlob {
-                request: QueryBlob { blob_id, context_id },
+                request: QueryBlob {
+                    blob_id,
+                    context_id,
+                },
                 outcome: tx,
             })
             .await

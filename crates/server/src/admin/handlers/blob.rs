@@ -56,7 +56,7 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
 /// This endpoint accepts raw binary data in the request body and streams it
 /// directly to blob storage without loading it all into memory first.
 /// Perfect for large file uploads with minimal memory usage.
-/// 
+///
 /// Query parameters:
 /// - `hash`: Expected hash of the blob for verification (optional)
 /// - `context_id`: Context ID for network announcement (optional)
@@ -162,10 +162,7 @@ pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl 
 }
 
 /// Helper function to build response headers from blob metadata
-fn build_blob_response_headers(
-    blob_metadata: &BlobMetadata,
-    blob_id: BlobId,
-) -> Builder {
+fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) -> Builder {
     let etag = format!("\"{}\"", hex::encode(blob_metadata.hash));
 
     Response::builder()
@@ -213,8 +210,11 @@ pub async fn download_handler(
                     context_id = %context_id,
                     "Attempting blob download with network discovery"
                 );
-                
-                state.node_client.get_blob_with_discovery(&blob_id, &context_id).await
+
+                state
+                    .node_client
+                    .get_blob_with_discovery(&blob_id, &context_id)
+                    .await
             }
             Err(_) => {
                 return ApiError {
@@ -242,11 +242,11 @@ pub async fn download_handler(
                     // Create default metadata
                     BlobMetadata {
                         blob_id,
-                        size: 0, // Will be updated by streaming response
+                        size: 0,       // Will be updated by streaming response
                         hash: [0; 32], // Default hash
                         mime_type: "application/octet-stream".to_string(),
                     }
-                },
+                }
                 Err(err) => {
                     tracing::warn!("Failed to get blob metadata {}: {:?}", blob_id, err);
                     // Create default metadata

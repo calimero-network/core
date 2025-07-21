@@ -20,7 +20,11 @@ impl StreamHandler<FromIncoming> for NetworkManager {
         debug!("started receiving incoming connections");
     }
 
-    fn handle(&mut self, FromIncoming(peer_id, stream, protocol): FromIncoming, _ctx: &mut Self::Context) {
+    fn handle(
+        &mut self,
+        FromIncoming(peer_id, stream, protocol): FromIncoming,
+        _ctx: &mut Self::Context,
+    ) {
         self.event_recipient.do_send(NetworkEvent::StreamOpened {
             peer_id,
             stream: Box::new(Stream::new(stream)),

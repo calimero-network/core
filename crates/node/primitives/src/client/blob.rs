@@ -60,7 +60,7 @@ impl NodeClient {
                 context_id = %hex::encode(&*context_id),
                 "About to announce blob to network"
             );
-            
+
             match self
                 .network_client
                 .announce_blob(blob_id, context_id, size)
@@ -161,8 +161,10 @@ impl NodeClient {
                     );
 
                     // Store the blob locally for future use and return a stream to it
-                    let (blob_id_stored, _size) = self.add_blob(data.as_slice(), Some(data.len() as u64), None).await?;
-                    
+                    let (blob_id_stored, _size) = self
+                        .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                        .await?;
+
                     // Verify we stored the correct blob
                     if blob_id_stored != *blob_id {
                         tracing::warn!(
@@ -265,7 +267,10 @@ impl NodeClient {
                     );
 
                     // Store the blob locally for future use
-                    if let Err(e) = self.add_blob(data.as_slice(), Some(data.len() as u64), None).await {
+                    if let Err(e) = self
+                        .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                        .await
+                    {
                         tracing::warn!(
                             error = %e,
                             "Failed to store retrieved blob locally"

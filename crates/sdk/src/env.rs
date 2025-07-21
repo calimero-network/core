@@ -266,7 +266,7 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
 /// First attempts to open locally, then queries the network if not found.
 /// Returns a file descriptor that can be used with blob_read() and blob_close().
 /// Returns 0 if the blob is not found locally or in the network.
-/// 
+///
 /// Note: This function uses the current context for network discovery.
 /// For cross-context blob sharing, use blob_open_with_context().
 pub fn blob_open_with_discovery(blob_id: &[u8; 32]) -> u64 {
@@ -297,7 +297,7 @@ pub fn blob_open_with_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 
     // are not yet implemented in the runtime VM logic.
     // In a full implementation, this would call:
     // unsafe { sys::blob_open_with_discovery(Buffer::from(&blob_id[..]), Buffer::from(&context_id[..])) }
-    
+
     0 // Not found - network discovery not yet implemented in MVP
 }
 
@@ -316,7 +316,7 @@ pub fn blob_exists_local(blob_id: &[u8; 32]) -> bool {
 
 /// Query the network for blob availability in the current context.
 /// Returns true if the blob is available from at least one peer.
-/// 
+///
 /// Note: This is a placeholder for MVP - actual network query functionality
 /// would need to be implemented in the runtime VM logic.
 pub fn blob_query_network(blob_id: &[u8; 32]) -> bool {
@@ -326,7 +326,7 @@ pub fn blob_query_network(blob_id: &[u8; 32]) -> bool {
 
 /// Query the network for blob availability in a specific context.
 /// Returns true if the blob is available from at least one peer.
-/// 
+///
 /// Note: This is a placeholder for MVP - actual network query functionality
 /// would need to be implemented in the runtime VM logic.
 pub fn blob_query_network_with_context(_blob_id: &[u8; 32], _context_id: &[u8; 32]) -> bool {
@@ -335,6 +335,6 @@ pub fn blob_query_network_with_context(_blob_id: &[u8; 32], _context_id: &[u8; 3
     // In a full implementation, this would call:
     // unsafe { sys::blob_query_network(Buffer::from(&blob_id[..]), Buffer::from(&context_id[..])).try_into() }
     //     .unwrap_or_else(expected_boolean)
-    
+
     false // Network query not yet implemented in MVP
 }

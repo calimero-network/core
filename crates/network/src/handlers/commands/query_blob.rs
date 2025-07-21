@@ -27,7 +27,7 @@ impl Handler<QueryBlob> for NetworkManager {
             let mut key_bytes = Vec::with_capacity(64);
             key_bytes.extend_from_slice(&*context_id);
             key_bytes.extend_from_slice(&*request.blob_id);
-            
+
             info!(
                 "QUERY: blob_id_bytes={}, context_id_bytes={}, key_len={}, key_hex={}",
                 hex::encode(&*request.blob_id),
@@ -35,7 +35,7 @@ impl Handler<QueryBlob> for NetworkManager {
                 key_bytes.len(),
                 hex::encode(&key_bytes)
             );
-            
+
             RecordKey::new(&key_bytes)
         } else {
             // Global search would require searching all known contexts
@@ -51,12 +51,13 @@ impl Handler<QueryBlob> for NetworkManager {
         if self.pending_blob_queries.is_none() {
             self.pending_blob_queries = Some(HashMap::new());
         }
-        
-        let _previous = self.pending_blob_queries
+
+        let _previous = self
+            .pending_blob_queries
             .as_mut()
             .unwrap()
             .insert(query_id, sender);
 
         Box::pin(async { receiver.await.expect("Sender not to be dropped") })
     }
-} 
+}
