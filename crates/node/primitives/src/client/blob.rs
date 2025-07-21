@@ -296,10 +296,10 @@ impl NodeClient {
 }
 
 /// Detect MIME type from file bytes using the infer crate
-fn detect_mime_from_bytes(bytes: &[u8]) -> String {
+fn detect_mime_from_bytes(bytes: &[u8]) -> &'static str {
     if let Some(kind) = infer::get(bytes) {
-        return kind.mime_type().to_owned();
+        return kind.mime_type();
     }
 
-    "application/octet-stream".to_owned()
+    "application/octet-stream"
 }
