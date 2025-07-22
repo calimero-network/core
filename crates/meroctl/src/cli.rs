@@ -18,6 +18,7 @@ use crate::output::{Format, Output, Report};
 
 mod app;
 pub mod auth;
+mod blob;
 mod call;
 mod context;
 mod node;
@@ -26,6 +27,7 @@ pub mod storage;
 
 use app::AppCommand;
 use auth::{authenticate_with_session_cache, check_authentication};
+use blob::BlobCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
@@ -37,6 +39,9 @@ pub const EXAMPLES: &str = r"
 
   # List all contexts
   $ meroctl --node node1 context ls
+
+  # List all blobs
+  $ meroctl --node node1 blob ls
 ";
 
 #[derive(Debug, Parser)]
@@ -58,6 +63,7 @@ pub struct RootCommand {
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
     App(AppCommand),
+    Blob(BlobCommand),
     Context(ContextCommand),
     Call(CallCommand),
     Peers(PeersCommand),
@@ -129,6 +135,7 @@ impl RootCommand {
 
         let result = match self.action {
             SubCommands::App(application) => application.run(&environment).await,
+            SubCommands::Blob(blob) => blob.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
             SubCommands::Peers(peers) => peers.run(&environment).await,
