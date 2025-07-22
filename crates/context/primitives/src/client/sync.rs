@@ -98,25 +98,34 @@ impl ContextClient {
 
             if !self.node_client.has_application(&application.id)? {
                 let source: Url = application.source.into();
-
                 let metadata = application.metadata;
-
-                let derived_application_id = match source.scheme() {
-                    "http" | "https" => {
-                        self.node_client
-                            .install_application_from_url(source, metadata, None)
-                            .await?
+            
+                if source.scheme() != "http" && source.scheme() != "https" {
+                    tracing::warn!(
+                        source = %source,
+                        "Skipping application install: non-URL sources are not supported in context config sync"
+                    );
+                    // Do not attempt to install from local path; continue sync
+                    return Ok(());
+                }
+            
+                match self.node_client
+                    .install_application_from_url(source, metadata, None)
+                    .await
+                {
+                    Ok(derived_application_id) => {
+                        if application.id != derived_application_id {
+                            eyre::bail!("application mismatch");
+                        }
                     }
-                    _ => {
-                        // fixme! we shouldn't assume both nodes run on the same machine
-                        self.node_client
-                            .install_application_from_path(source.path().into(), metadata)
-                            .await?
+                    Err(err) => {
+                        tracing::warn!(
+                            ?err,
+                            application_id = %application.id,
+                            "Failed to install application from URL; continuing sync anyway"
+                        );
+                        // Continue sync despite failure
                     }
-                };
-
-                if application.id != derived_application_id {
-                    eyre::bail!("application mismatch")
                 }
             }
         }
