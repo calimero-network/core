@@ -85,7 +85,7 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     }
 
     // Copy wasm to res folder
-    let res_path = Path::new(manifest_dir_path).join("res/");
+    let res_path = Path::new(manifest_dir_path).join("res");
     if !res_path.exists() {
         fs::create_dir(&res_path)?;
     }
