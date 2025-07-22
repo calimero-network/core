@@ -12,6 +12,7 @@ use calimero_store::Store;
 use clap::{Parser, Subcommand};
 
 mod applications;
+pub mod blob;
 pub mod call;
 pub mod common;
 pub mod context;
@@ -35,6 +36,7 @@ pub struct RootCommand {
 pub enum SubCommand {
     #[command(alias = "app")]
     Application(applications::ApplicationCommand),
+    Blob(blob::BlobCommand),
     Call(call::CallCommand),
     Context(context::ContextCommand),
     Peers(peers::PeersCommand),
@@ -70,6 +72,7 @@ pub async fn handle_line(
 
     match command.action {
         SubCommand::Application(application) => application.run(&node_client).await?,
+        SubCommand::Blob(blob) => blob.run(&node_client).await?,
         SubCommand::Call(call) => call.run(&node_client, &ctx_client).await?,
         SubCommand::Context(context) => context.run(&node_client, &ctx_client).await?,
         SubCommand::Peers(peers) => peers.run(&node_client).await?,
