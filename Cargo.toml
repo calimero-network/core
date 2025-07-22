@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 resolver = "2"
 members = [
     "./crates/auth",
+    "./crates/cargo-mero",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
@@ -15,7 +16,6 @@ members = [
     "./crates/crypto",
     "./crates/meroctl",
     "./crates/merod",
-    "./crates/cargo-mero",
     "./crates/network",
     "./crates/network/primitives",
     "./crates/node",
