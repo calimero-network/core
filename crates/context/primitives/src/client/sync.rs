@@ -107,12 +107,12 @@ impl ContextClient {
                             .install_application_from_url(source, metadata, None)
                             .await?
                     }
-                    _ => {
-                        // fixme! we shouldn't assume both nodes run on the same machine
-                        self.node_client
-                            .install_application_from_path(source.path().into(), metadata)
-                            .await?
-                    }
+                    _ => self.node_client.install_application(
+                        &application.blob.bytecode,
+                        application.size,
+                        &source.into(),
+                        metadata,
+                    )?,
                 };
 
                 if application.id != derived_application_id {
