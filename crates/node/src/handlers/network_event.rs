@@ -31,10 +31,21 @@ struct BlobResponse {
     size: Option<u64>, // Total size if found
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+// Use binary format for efficient chunk transfer
+#[derive(Debug)]
 struct BlobChunk {
     data: Vec<u8>,
-    is_final: bool, // True for the last chunk
+    is_final: bool,
+}
+
+impl BlobChunk {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.data.len() + 9); // 8 bytes for length + 1 byte for is_final
+        bytes.extend_from_slice(&(self.data.len() as u64).to_le_bytes());
+        bytes.push(if self.is_final { 1u8 } else { 0u8 });
+        bytes.extend_from_slice(&self.data);
+        bytes
+    }
 }
 
 /// Handle blob requests that come over streams
@@ -93,16 +104,29 @@ async fn handle_blob_request_stream(
 
         debug!(%peer_id, "Starting to stream blob chunks");
 
+        let mut chunk_count = 0;
+        let mut total_bytes_sent = 0;
+
         while let Some(chunk_result) = blob_stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
+                    chunk_count += 1;
+                    total_bytes_sent += chunk.len();
+                    
+                    debug!(
+                        %peer_id,
+                        chunk_number = chunk_count,
+                        chunk_size = chunk.len(),
+                        total_sent = total_bytes_sent,
+                        "Sending blob chunk"
+                    );
+
                     let blob_chunk = BlobChunk {
                         data: chunk.to_vec(),
                         is_final: false,
                     };
 
-                    let chunk_data = serde_json::to_vec(&blob_chunk)
-                        .map_err(|e| eyre::eyre!("Failed to serialize blob chunk: {}", e))?;
+                    let chunk_data = blob_chunk.to_bytes();
 
                     stream
                         .send(StreamMessage::new(chunk_data))
@@ -122,15 +146,19 @@ async fn handle_blob_request_stream(
             is_final: true,
         };
 
-        let final_chunk_data = serde_json::to_vec(&final_chunk)
-            .map_err(|e| eyre::eyre!("Failed to serialize final blob chunk: {}", e))?;
+        let final_chunk_data = final_chunk.to_bytes();
 
         stream
             .send(StreamMessage::new(final_chunk_data))
             .await
             .map_err(|e| eyre::eyre!("Failed to send final blob chunk: {}", e))?;
 
-        debug!(%peer_id, "Successfully streamed all blob chunks");
+        debug!(
+            %peer_id, 
+            total_chunks = chunk_count + 1, // +1 for final chunk
+            total_bytes = total_bytes_sent,
+            "Successfully streamed all blob chunks"
+        );
     }
 
     debug!(%peer_id, "Blob request stream handled successfully");

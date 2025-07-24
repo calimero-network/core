@@ -22,10 +22,38 @@ pub struct BlobResponse {
     pub size: Option<u64>, // Total size if found
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+// Use a more efficient binary format for chunk transfer
+#[derive(Debug)]
 pub struct BlobChunk {
     pub data: Vec<u8>,
-    pub is_final: bool, // True for the last chunk
+    pub is_final: bool,
+}
+
+impl BlobChunk {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.data.len() + 9); // 8 bytes for length + 1 byte for is_final
+        bytes.extend_from_slice(&(self.data.len() as u64).to_le_bytes());
+        bytes.push(if self.is_final { 1u8 } else { 0u8 });
+        bytes.extend_from_slice(&self.data);
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> eyre::Result<Self> {
+        if bytes.len() < 9 {
+            return Err(eyre::eyre!("Invalid chunk data: too short"));
+        }
+        
+        let data_len = u64::from_le_bytes(bytes[0..8].try_into()?) as usize;
+        let is_final = bytes[8] != 0;
+        
+        if bytes.len() != 9 + data_len {
+            return Err(eyre::eyre!("Invalid chunk data: length mismatch"));
+        }
+        
+        let data = bytes[9..].to_vec();
+        
+        Ok(Self { data, is_final })
+    }
 }
 
 impl Handler<RequestBlob> for NetworkManager {
@@ -146,6 +174,7 @@ impl Handler<RequestBlob> for NetworkManager {
                 // Prepare to collect chunks
                 let expected_size = blob_response.size.unwrap_or(0);
                 let mut collected_data = Vec::with_capacity(expected_size as usize);
+                let mut chunk_count = 0;
 
                 // Stream chunks until we get is_final=true
                 loop {
@@ -173,7 +202,7 @@ impl Handler<RequestBlob> for NetworkManager {
                         }
                     };
 
-                    let blob_chunk: BlobChunk = match serde_json::from_slice(&chunk_msg.data) {
+                    let blob_chunk: BlobChunk = match BlobChunk::from_bytes(&chunk_msg.data) {
                         Ok(chunk) => chunk,
                         Err(e) => {
                             // Emit failure event
@@ -188,7 +217,18 @@ impl Handler<RequestBlob> for NetworkManager {
                     };
 
                     // Add chunk data to collection
-                    collected_data.extend(blob_chunk.data);
+                    collected_data.extend(blob_chunk.data.clone());
+                    chunk_count += 1;
+
+                    debug!(
+                        blob_id = %request.blob_id,
+                        peer_id = %request.peer_id,
+                        chunk_number = chunk_count,
+                        chunk_size = blob_chunk.data.len(),
+                        total_received = collected_data.len(),
+                        is_final = blob_chunk.is_final,
+                        "Received blob chunk"
+                    );
 
                     // Check if this is the final chunk
                     if blob_chunk.is_final {
