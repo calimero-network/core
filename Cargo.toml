@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 resolver = "2"
 members = [
     "./crates/auth",
+    "./crates/cargo-mero",
     "./crates/config",
     "./crates/context",
     "./crates/context/config",
@@ -53,6 +54,7 @@ bytes = "1.6.0"
 cached-path = "0.7.0"
 camino = "1.1.6"
 candid = "0.10.10"
+cargo_metadata = "0.20.0"
 cfg-if = "1.0.0"
 chrono = "0.4.37"
 claims = "0.7.1"

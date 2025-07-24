@@ -1,0 +1,21 @@
+[package]
+name = "app-template"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+thiserror = "2.0.12"
+calimero-sdk = { git = "https://github.com/calimero-network/core" }
+calimero-storage = { git = "https://github.com/calimero-network/core" }
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
