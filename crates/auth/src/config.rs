@@ -36,6 +36,10 @@ pub struct AuthConfig {
     /// Username/password configuration
     #[serde(default)]
     pub user_password: UserPasswordConfig,
+
+    /// WebAuthn configuration
+    #[serde(default)]
+    pub webauthn: WebAuthnConfig,
 }
 
 fn default_listen_addr() -> SocketAddr {
@@ -125,6 +129,42 @@ impl Default for UserPasswordConfig {
         Self {
             min_password_length: 8,
             max_password_length: 128,
+        }
+    }
+}
+
+/// WebAuthn configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebAuthnConfig {
+    /// Relying Party name
+    #[serde(default = "default_webauthn_rp_name")]
+    pub rp_name: String,
+
+    /// Relying Party ID (domain)
+    #[serde(default = "default_webauthn_rp_id")]
+    pub rp_id: String,
+
+    /// Origin URLs allowed for WebAuthn
+    #[serde(default = "default_webauthn_origins")]
+    pub origins: Vec<String>,
+
+    /// Timeout for authentication ceremonies (in seconds)
+    #[serde(default = "default_webauthn_timeout")]
+    pub timeout: u32,
+
+    /// User verification requirement
+    #[serde(default = "default_webauthn_user_verification")]
+    pub user_verification: String, // "required", "preferred", "discouraged"
+}
+
+impl Default for WebAuthnConfig {
+    fn default() -> Self {
+        Self {
+            rp_name: default_webauthn_rp_name(),
+            rp_id: default_webauthn_rp_id(),
+            origins: default_webauthn_origins(),
+            timeout: default_webauthn_timeout(),
+            user_verification: default_webauthn_user_verification(),
         }
     }
 }
@@ -353,6 +393,26 @@ fn default_min_password_length() -> usize {
 
 fn default_max_password_length() -> usize {
     128
+}
+
+fn default_webauthn_rp_name() -> String {
+    "Calimero Auth".to_string()
+}
+
+fn default_webauthn_rp_id() -> String {
+    "localhost".to_string()
+}
+
+fn default_webauthn_origins() -> Vec<String> {
+    vec!["http://localhost:3001".to_string()]
+}
+
+fn default_webauthn_timeout() -> u32 {
+    60 // 60 seconds
+}
+
+fn default_webauthn_user_verification() -> String {
+    "preferred".to_string()
 }
 
 /// Load the configuration from a file

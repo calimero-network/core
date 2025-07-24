@@ -52,6 +52,7 @@ url.workspace = true
 uuid = { version = "1.6", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
 web3.workspace = true
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 
 [dev-dependencies]
 mockall = "0.11"

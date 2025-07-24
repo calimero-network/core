@@ -53,6 +53,7 @@ style_src = ["'self'", "'unsafe-inline'"]
 [providers]
 near_wallet = true
 user_password = true
+webauthn = true
 
 # NEAR wallet configuration
 [near]
@@ -63,4 +64,12 @@ wallet_url = "https://wallet.testnet.near.org"
 # Username/password configuration
 [user_password]
 min_password_length = 8
-max_password_length = 128 
+max_password_length = 128
+
+# WebAuthn configuration
+[webauthn]
+rp_name = "Calimero Auth"
+rp_id = "localhost"
+origins = ["http://localhost:3001"]
+timeout = 60
+user_verification = "preferred" 

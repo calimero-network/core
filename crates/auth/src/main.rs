@@ -6,6 +6,7 @@ use calimero_auth::auth::token::TokenManager;
 use calimero_auth::config::{
     load_config, AuthConfig, ContentSecurityPolicyConfig, JwtConfig, NearWalletConfig,
     RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
+    WebAuthnConfig,
 };
 use calimero_auth::secrets::SecretManager;
 use calimero_auth::server::{shutdown_signal, start_server};
@@ -38,6 +39,7 @@ struct Cli {
 fn create_default_config() -> AuthConfig {
     let mut providers = HashMap::new();
     providers.insert("near_wallet".to_string(), true);
+    providers.insert("webauthn".to_string(), true);
 
     AuthConfig {
         listen_addr: "127.0.0.1:3001".parse().unwrap(),
@@ -76,6 +78,7 @@ fn create_default_config() -> AuthConfig {
         providers,
         near: NearWalletConfig::default(),
         user_password: UserPasswordConfig::default(),
+        webauthn: WebAuthnConfig::default(),
     }
 }
 
