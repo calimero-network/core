@@ -3,11 +3,17 @@ x-node-defaults: &node-defaults
     context: .
     dockerfile: Dockerfile
     target: runtime
+    secrets:
+      - gh-token
   user: root
   volumes:
     - calimero_auth_node:/calimero
   healthcheck:
-    test: ["CMD-SHELL", "curl -f http://localhost:$${NODE_PORT}/admin-api/peers || exit 0"]
+    test:
+      [
+        "CMD-SHELL",
+        "curl -f http://localhost:$${NODE_PORT}/admin-api/peers || exit 0",
+      ]
     interval: 10s
     timeout: 5s
     retries: 5
@@ -70,7 +76,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.auth
-      target: final
+      target: runtime
+      secrets:
+        - gh-token
     volumes:
       - calimero_auth_data:/data
     environment:
@@ -90,7 +98,7 @@ services:
         max-file: "3"
     labels:
       - "traefik.enable=true"
-      
+
       # Public Routes (No Auth)
       - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth/`) || PathPrefix(`/admin/`)"
       - "traefik.http.routers.auth-public.entrypoints=web"
@@ -142,3 +150,7 @@ volumes:
     driver: local
   calimero_auth_data:
     driver: local
+
+secrets:
+  gh-token:
+    environment: GH_TOKEN

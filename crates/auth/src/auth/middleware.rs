@@ -33,7 +33,6 @@ pub async fn auth_middleware(
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let start_time = std::time::Instant::now();
-    info!("Authenticating request {} {}", method, path);
 
     // Skip authentication for public endpoints
     if path.starts_with("/public") {
@@ -44,27 +43,19 @@ pub async fn auth_middleware(
         return Ok(response);
     }
 
-    debug!("Validating authentication for {} {}", method, path);
-
-    // Extract headers for token validation
     let headers = request.headers().clone();
 
-    // Validate the request using the headers
     match state.auth_service.verify_token_from_headers(&headers).await {
         Ok(auth_response) => {
-            // Log successful authentication
             debug!(
                 "Successful authentication for {} {} by user {}",
                 method, path, auth_response.key_id
             );
 
-            // Create permission validator
             let validator = PermissionValidator::new();
 
-            // Determine required permissions for this request
             let required_permissions = validator.determine_required_permissions(&request);
 
-            // Validate user's permissions
             let has_permission =
                 validator.validate_permissions(&auth_response.permissions, &required_permissions);
 
@@ -78,17 +69,14 @@ pub async fn auth_middleware(
                 return Err((StatusCode::FORBIDDEN, headers));
             }
 
-            // Continue with normal request
             let mut response = next.run(request).await;
             let duration = start_time.elapsed();
             debug!("Request {} {} completed in {:?}", method, path, duration);
 
-            // Add authentication headers
             response
                 .headers_mut()
                 .insert("X-Auth-User", auth_response.key_id.parse().unwrap());
 
-            // Add permissions
             if !auth_response.permissions.is_empty() {
                 response.headers_mut().insert(
                     "X-Auth-Permissions",

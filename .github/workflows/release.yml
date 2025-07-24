@@ -255,7 +255,7 @@ jobs:
         with:
           context: .
           file: .github/workflows/deps/prebuilt.Dockerfile
-          push: true
+          push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}

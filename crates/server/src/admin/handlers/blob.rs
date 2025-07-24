@@ -313,9 +313,51 @@ pub async fn delete_handler(
         }
     };
 
-    match state.node_client.delete_blob(blob_id).await {
-        Ok(deleted) => ApiResponse {
-            payload: BlobDeleteResponse { blob_id, deleted },
+    // Get blob metadata first to include in headers
+    let blob_metadata = match state.node_client.get_blob_info(blob_id).await {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => {
+            return ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Blob not found".to_owned(),
+            }
+            .into_response();
+        }
+        Err(err) => {
+            tracing::error!("Failed to get blob metadata {}: {:?}", blob_id, err);
+            return ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Failed to retrieve blob metadata: {}", err),
+            }
+            .into_response();
+        }
+    };
+
+    // Get blob stream
+    match state.node_client.get_blob(&blob_id) {
+        Ok(Some(blob)) => {
+            tracing::debug!(
+                "Serving blob {} via streaming with metadata headers",
+                blob_id
+            );
+
+            let stream = blob.map(|result| {
+                result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+            });
+
+            build_blob_response_headers(&blob_metadata, blob_id)
+                .body(Body::from_stream(stream))
+                .unwrap_or_else(|_| {
+                    ApiError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: "Failed to build response".to_owned(),
+                    }
+                    .into_response()
+                })
+        }
+        Ok(None) => ApiError {
+            status_code: StatusCode::NOT_FOUND,
+            message: "Blob not found".to_owned(),
         }
         .into_response(),
         Err(err) => parse_api_error(err).into_response(),
