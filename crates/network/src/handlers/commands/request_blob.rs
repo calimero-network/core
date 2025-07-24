@@ -6,9 +6,16 @@ use calimero_network_primitives::stream::{
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use std::time::Duration;
+use tokio::time::timeout;
+use tracing::{debug, warn};
 
 use crate::NetworkManager;
+
+// Timeout for individual operations during blob transfer
+const BLOB_TRANSFER_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute per operation
+const CHUNK_RECEIVE_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
+const MAX_RETRY_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobRequest {
@@ -71,195 +78,251 @@ impl Handler<RequestBlob> for NetworkManager {
         let event_recipient = self.event_recipient.clone();
 
         Box::pin(async move {
-            // Open a stream to the peer
-            let libp2p_stream = match stream_control
-                .open_stream(request.peer_id, CALIMERO_BLOB_PROTOCOL)
-                .await
-            {
-                Ok(stream) => stream,
-                Err(e) => {
+            // Wrap the entire blob transfer in a timeout
+            let transfer_result = timeout(BLOB_TRANSFER_TIMEOUT, async {
+                // Open a stream to the peer
+                let libp2p_stream = match stream_control
+                    .open_stream(request.peer_id, CALIMERO_BLOB_PROTOCOL)
+                    .await
+                {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        // Emit failure event
+                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                            blob_id: request.blob_id,
+                            context_id: request.context_id,
+                            from_peer: request.peer_id,
+                            error: format!("Failed to open stream: {}", e),
+                        });
+                        return Err(e).wrap_err("Failed to open stream to peer");
+                    }
+                };
+
+                // Convert to Calimero stream
+                let mut stream = Stream::new(libp2p_stream);
+
+                // Send blob request
+                let blob_request = BlobRequest {
+                    blob_id: *request.blob_id,
+                    context_id: *request.context_id,
+                };
+
+                let request_data = match serde_json::to_vec(&blob_request) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        // Emit failure event
+                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                            blob_id: request.blob_id,
+                            context_id: request.context_id,
+                            from_peer: request.peer_id,
+                            error: format!("Failed to serialize request: {}", e),
+                        });
+                        return Err(e).wrap_err("Failed to serialize blob request");
+                    }
+                };
+
+                if let Err(e) = stream.send(StreamMessage::new(request_data)).await {
                     // Emit failure event
                     event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
                         from_peer: request.peer_id,
-                        error: format!("Failed to open stream: {}", e),
+                        error: format!("Failed to send request: {}", e),
                     });
-                    return Err(e).wrap_err("Failed to open stream to peer");
+                    return Err(e).wrap_err("Failed to send blob request");
                 }
-            };
 
-            // Convert to Calimero stream
-            let mut stream = Stream::new(libp2p_stream);
+                // Wait for initial response with timeout
+                let response_msg = match timeout(CHUNK_RECEIVE_TIMEOUT, stream.next()).await {
+                    Ok(Some(Ok(msg))) => msg,
+                    Ok(Some(Err(e))) => {
+                        // Emit failure event
+                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                            blob_id: request.blob_id,
+                            context_id: request.context_id,
+                            from_peer: request.peer_id,
+                            error: format!("Failed to receive response: {}", e),
+                        });
+                        return Err(e).wrap_err("Failed to receive response");
+                    }
+                    Ok(None) => {
+                        // Emit failure event
+                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                            blob_id: request.blob_id,
+                            context_id: request.context_id,
+                            from_peer: request.peer_id,
+                            error: "Stream closed without response".to_string(),
+                        });
+                        return Err(eyre!("Stream closed without response"));
+                    }
+                    Err(_) => {
+                        // Timeout occurred
+                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                            blob_id: request.blob_id,
+                            context_id: request.context_id,
+                            from_peer: request.peer_id,
+                            error: "Timeout waiting for response".to_string(),
+                        });
+                        return Err(eyre!("Timeout waiting for response"));
+                    }
+                };
 
-            // Send blob request
-            let blob_request = BlobRequest {
-                blob_id: *request.blob_id,
-                context_id: *request.context_id,
-            };
+                let blob_response: BlobResponse = match serde_json::from_slice(&response_msg.data) {
+                    Ok(response) => response,
+                    Err(e) => {
+                        // Emit failure event
+                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                            blob_id: request.blob_id,
+                            context_id: request.context_id,
+                            from_peer: request.peer_id,
+                            error: format!("Failed to deserialize response: {}", e),
+                        });
+                        return Err(e).wrap_err("Failed to deserialize blob response");
+                    }
+                };
 
-            let request_data = match serde_json::to_vec(&blob_request) {
-                Ok(data) => data,
-                Err(e) => {
-                    // Emit failure event
-                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                        blob_id: request.blob_id,
-                        context_id: request.context_id,
-                        from_peer: request.peer_id,
-                        error: format!("Failed to serialize request: {}", e),
-                    });
-                    return Err(e).wrap_err("Failed to serialize blob request");
-                }
-            };
+                if blob_response.found {
+                    debug!(
+                        blob_id = %request.blob_id,
+                        context_id = %request.context_id,
+                        peer_id = %request.peer_id,
+                        size = ?blob_response.size,
+                        "Blob found, streaming chunks"
+                    );
 
-            if let Err(e) = stream.send(StreamMessage::new(request_data)).await {
-                // Emit failure event
-                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                    blob_id: request.blob_id,
-                    context_id: request.context_id,
-                    from_peer: request.peer_id,
-                    error: format!("Failed to send request: {}", e),
-                });
-                return Err(e).wrap_err("Failed to send blob request");
-            }
-
-            // Wait for initial response
-            let response_msg = match stream.next().await {
-                Some(Ok(msg)) => msg,
-                Some(Err(e)) => {
-                    // Emit failure event
-                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                        blob_id: request.blob_id,
-                        context_id: request.context_id,
-                        from_peer: request.peer_id,
-                        error: format!("Failed to receive response: {}", e),
-                    });
-                    return Err(e).wrap_err("Failed to receive response");
-                }
-                None => {
-                    // Emit failure event
-                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                        blob_id: request.blob_id,
-                        context_id: request.context_id,
-                        from_peer: request.peer_id,
-                        error: "Stream closed without response".to_string(),
-                    });
-                    return Err(eyre!("Stream closed without response"));
-                }
-            };
-
-            let blob_response: BlobResponse = match serde_json::from_slice(&response_msg.data) {
-                Ok(response) => response,
-                Err(e) => {
-                    // Emit failure event
-                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                        blob_id: request.blob_id,
-                        context_id: request.context_id,
-                        from_peer: request.peer_id,
-                        error: format!("Failed to deserialize response: {}", e),
-                    });
-                    return Err(e).wrap_err("Failed to deserialize blob response");
-                }
-            };
-
-            if blob_response.found {
-                debug!(
-                    blob_id = %request.blob_id,
-                    context_id = %request.context_id,
-                    peer_id = %request.peer_id,
-                    size = ?blob_response.size,
-                    "Blob found, streaming chunks"
-                );
-
-                // Prepare to collect chunks
-                let expected_size = blob_response.size.unwrap_or(0);
-                let mut collected_data = Vec::with_capacity(expected_size as usize);
-                let mut chunk_count = 0;
-
-                // Stream chunks until we get is_final=true
-                loop {
-                    let chunk_msg = match stream.next().await {
-                        Some(Ok(msg)) => msg,
-                        Some(Err(e)) => {
-                            // Emit failure event
-                            event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                                blob_id: request.blob_id,
-                                context_id: request.context_id,
-                                from_peer: request.peer_id,
-                                error: format!("Failed to receive chunk: {}", e),
-                            });
-                            return Err(e).wrap_err("Failed to receive chunk");
-                        }
-                        None => {
-                            // Emit failure event
-                            event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                                blob_id: request.blob_id,
-                                context_id: request.context_id,
-                                from_peer: request.peer_id,
-                                error: "Stream closed during chunk transfer".to_string(),
-                            });
-                            return Err(eyre!("Stream closed during chunk transfer"));
-                        }
-                    };
-
-                    let blob_chunk: BlobChunk = match BlobChunk::from_bytes(&chunk_msg.data) {
-                        Ok(chunk) => chunk,
-                        Err(e) => {
-                            // Emit failure event
-                            event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                                blob_id: request.blob_id,
-                                context_id: request.context_id,
-                                from_peer: request.peer_id,
-                                error: format!("Failed to deserialize chunk: {}", e),
-                            });
-                            return Err(e).wrap_err("Failed to deserialize blob chunk");
-                        }
-                    };
-
-                    // Add chunk data to collection
-                    collected_data.extend(blob_chunk.data.clone());
-                    chunk_count += 1;
+                    // Prepare to collect chunks
+                    let expected_size = blob_response.size.unwrap_or(0);
+                    let mut collected_data = Vec::with_capacity(expected_size as usize);
+                    let mut chunk_count = 0;
+                    let start_time = std::time::Instant::now();
 
                     debug!(
                         blob_id = %request.blob_id,
                         peer_id = %request.peer_id,
-                        chunk_number = chunk_count,
-                        chunk_size = blob_chunk.data.len(),
-                        total_received = collected_data.len(),
-                        is_final = blob_chunk.is_final,
-                        "Received blob chunk"
+                        expected_size,
+                        "Starting chunked blob download"
                     );
 
-                    // Check if this is the final chunk
-                    if blob_chunk.is_final {
+                    // Stream chunks until we get is_final=true
+                    loop {
+                        let chunk_msg = match timeout(CHUNK_RECEIVE_TIMEOUT, stream.next()).await {
+                            Ok(Some(Ok(msg))) => msg,
+                            Ok(Some(Err(e))) => {
+                                // Emit failure event
+                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                    blob_id: request.blob_id,
+                                    context_id: request.context_id,
+                                    from_peer: request.peer_id,
+                                    error: format!("Failed to receive chunk: {}", e),
+                                });
+                                return Err(e).wrap_err("Failed to receive chunk");
+                            }
+                            Ok(None) => {
+                                // Emit failure event
+                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                    blob_id: request.blob_id,
+                                    context_id: request.context_id,
+                                    from_peer: request.peer_id,
+                                    error: "Stream closed during chunk transfer".to_string(),
+                                });
+                                return Err(eyre!("Stream closed during chunk transfer"));
+                            }
+                            Err(_) => {
+                                // Timeout occurred
+                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                    blob_id: request.blob_id,
+                                    context_id: request.context_id,
+                                    from_peer: request.peer_id,
+                                    error: format!("Timeout waiting for chunk {} (received {} bytes so far)", chunk_count + 1, collected_data.len()),
+                                });
+                                return Err(eyre!("Timeout waiting for chunk"));
+                            }
+                        };
+
+                        let blob_chunk: BlobChunk = match BlobChunk::from_bytes(&chunk_msg.data) {
+                            Ok(chunk) => chunk,
+                            Err(e) => {
+                                // Emit failure event
+                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                    blob_id: request.blob_id,
+                                    context_id: request.context_id,
+                                    from_peer: request.peer_id,
+                                    error: format!("Failed to deserialize chunk: {}", e),
+                                });
+                                return Err(e).wrap_err("Failed to deserialize blob chunk");
+                            }
+                        };
+
+                        // Add chunk data to collection
+                        collected_data.extend(blob_chunk.data.clone());
+                        chunk_count += 1;
+
                         debug!(
                             blob_id = %request.blob_id,
                             peer_id = %request.peer_id,
-                            total_size = collected_data.len(),
-                            "Received final chunk, blob transfer complete"
+                            chunk_number = chunk_count,
+                            chunk_size = blob_chunk.data.len(),
+                            total_received = collected_data.len(),
+                            is_final = blob_chunk.is_final,
+                            "Received blob chunk"
                         );
-                        break;
+
+                        // Check if this is the final chunk
+                        if blob_chunk.is_final {
+                            let total_time = start_time.elapsed();
+                            let transfer_rate = if total_time.as_secs() > 0 {
+                                collected_data.len() as f64 / total_time.as_secs_f64() / (1024.0 * 1024.0) // MB/s
+                            } else {
+                                0.0
+                            };
+
+                            debug!(
+                                blob_id = %request.blob_id,
+                                peer_id = %request.peer_id,
+                                total_size = collected_data.len(),
+                                total_chunks = chunk_count,
+                                transfer_time_secs = total_time.as_secs_f64(),
+                                transfer_rate_mbps = transfer_rate,
+                                "Received final chunk, blob transfer complete"
+                            );
+                            break;
+                        }
                     }
+
+                    // Emit success event
+                    event_recipient.do_send(NetworkEvent::BlobDownloaded {
+                        blob_id: request.blob_id,
+                        context_id: request.context_id,
+                        data: collected_data.clone(),
+                        from_peer: request.peer_id,
+                    });
+
+                    Ok(Some(collected_data))
+                } else {
+                    // Emit failure event - blob not found
+                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        blob_id: request.blob_id,
+                        context_id: request.context_id,
+                        from_peer: request.peer_id,
+                        error: "Blob not found on peer".to_string(),
+                    });
+                    Ok(None)
                 }
+            }).await;
 
-                // Emit success event
-                event_recipient.do_send(NetworkEvent::BlobDownloaded {
-                    blob_id: request.blob_id,
-                    context_id: request.context_id,
-                    data: collected_data.clone(),
-                    from_peer: request.peer_id,
-                });
-
-                Ok(Some(collected_data))
-            } else {
-                // Emit failure event - blob not found
-                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                    blob_id: request.blob_id,
-                    context_id: request.context_id,
-                    from_peer: request.peer_id,
-                    error: "Blob not found on peer".to_string(),
-                });
-                Ok(None)
+            // Handle timeout result
+            match transfer_result {
+                Ok(result) => result,
+                Err(_) => {
+                    // Overall transfer timeout
+                    event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                        blob_id: request.blob_id,
+                        context_id: request.context_id,
+                        from_peer: request.peer_id,
+                        error: format!("Blob transfer timed out after {} seconds", BLOB_TRANSFER_TIMEOUT.as_secs()),
+                    });
+                    Err(eyre!("Blob transfer timed out"))
+                }
             }
         })
     }

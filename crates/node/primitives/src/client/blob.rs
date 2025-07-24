@@ -111,89 +111,148 @@ impl NodeClient {
             return Ok(Some(blob));
         }
 
-        // If not found locally, query the network
+        // If not found locally, query the network with retry logic
         tracing::info!(
             blob_id = %hex::encode(&**blob_id),
             context_id = %hex::encode(&**context_id),
             "Blob not found locally, attempting network discovery"
         );
 
-        let peers = self
-            .network_client
-            .query_blob(*blob_id, Some(*context_id))
-            .await?;
+        const MAX_RETRIES: usize = 3;
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
-        if peers.is_empty() {
+        for attempt in 1..=MAX_RETRIES {
+            tracing::debug!(
+                blob_id = %hex::encode(&**blob_id),
+                context_id = %hex::encode(&**context_id),
+                attempt,
+                max_attempts = MAX_RETRIES,
+                "Attempting network discovery"
+            );
+
+            let peers = match self
+                .network_client
+                .query_blob(*blob_id, Some(*context_id))
+                .await
+            {
+                Ok(peers) => peers,
+                Err(e) => {
+                    tracing::warn!(
+                        blob_id = %hex::encode(&**blob_id),
+                        context_id = %hex::encode(&**context_id),
+                        attempt,
+                        error = %e,
+                        "Failed to query DHT for blob"
+                    );
+                    if attempt < MAX_RETRIES {
+                        tokio::time::sleep(RETRY_DELAY).await;
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
+
+            if peers.is_empty() {
+                tracing::info!(
+                    blob_id = %hex::encode(&**blob_id),
+                    context_id = %hex::encode(&**context_id),
+                    attempt,
+                    "No peers found with blob"
+                );
+                if attempt < MAX_RETRIES {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                    continue;
+                }
+                return Ok(None);
+            }
+
             tracing::info!(
                 blob_id = %hex::encode(&**blob_id),
                 context_id = %hex::encode(&**context_id),
-                "No peers found with blob"
-            );
-            return Ok(None);
-        }
-
-        tracing::info!(
-            blob_id = %hex::encode(&**blob_id),
-            context_id = %hex::encode(&**context_id),
-            peer_count = peers.len(),
-            "Found {} peers with blob, attempting download", peers.len()
-        );
-
-        // Try to get the blob from the first available peer
-        for peer_id in peers {
-            tracing::debug!(
-                peer_id = %peer_id,
-                "Attempting to download blob from peer"
+                peer_count = peers.len(),
+                attempt,
+                "Found {} peers with blob, attempting download", peers.len()
             );
 
-            match self
-                .network_client
-                .request_blob(*blob_id, *context_id, peer_id)
-                .await
-            {
-                Ok(Some(data)) => {
-                    tracing::info!(
-                        blob_id = %hex::encode(&**blob_id),
-                        peer_id = %peer_id,
-                        size = data.len(),
-                        "Successfully downloaded blob from network"
-                    );
+            // Try to get the blob from each available peer
+            for (peer_index, peer_id) in peers.iter().enumerate() {
+                tracing::debug!(
+                    peer_id = %peer_id,
+                    peer_index = peer_index + 1,
+                    total_peers = peers.len(),
+                    attempt,
+                    "Attempting to download blob from peer"
+                );
 
-                    // Store the blob locally for future use and return a stream to it
-                    let (blob_id_stored, _size) = self
-                        .add_blob(data.as_slice(), Some(data.len() as u64), None)
-                        .await?;
-
-                    // Verify we stored the correct blob
-                    if blob_id_stored != *blob_id {
-                        tracing::warn!(
-                            expected = %hex::encode(&**blob_id),
-                            actual = %hex::encode(&*blob_id_stored),
-                            "Downloaded blob ID mismatch"
+                match self
+                    .network_client
+                    .request_blob(*blob_id, *context_id, *peer_id)
+                    .await
+                {
+                    Ok(Some(data)) => {
+                        tracing::info!(
+                            blob_id = %hex::encode(&**blob_id),
+                            peer_id = %peer_id,
+                            size = data.len(),
+                            attempt,
+                            "Successfully downloaded blob from network"
                         );
-                        continue;
-                    }
 
-                    // Return the newly stored blob as a stream
-                    return self.get_blob(blob_id);
+                        // Store the blob locally for future use and return a stream to it
+                        let (blob_id_stored, _size) = self
+                            .add_blob(data.as_slice(), Some(data.len() as u64), None)
+                            .await?;
+
+                        // Verify we stored the correct blob
+                        if blob_id_stored != *blob_id {
+                            tracing::warn!(
+                                expected = %hex::encode(&**blob_id),
+                                actual = %hex::encode(&*blob_id_stored),
+                                "Downloaded blob ID mismatch"
+                            );
+                            continue;
+                        }
+
+                        // Return the newly stored blob as a stream
+                        return self.get_blob(blob_id);
+                    }
+                    Ok(None) => {
+                        tracing::debug!(
+                            peer_id = %peer_id,
+                            attempt,
+                            "Peer doesn't have the blob"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            peer_id = %peer_id,
+                            error = %e,
+                            attempt,
+                            "Failed to download blob from peer"
+                        );
+                    }
                 }
-                Ok(None) => {
-                    tracing::debug!(
-                        peer_id = %peer_id,
-                        "Peer doesn't have the blob"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        peer_id = %peer_id,
-                        error = %e,
-                        "Failed to download blob from peer"
-                    );
-                }
+            }
+
+            // If we reach here, all peers failed for this attempt
+            if attempt < MAX_RETRIES {
+                tracing::info!(
+                    blob_id = %hex::encode(&**blob_id),
+                    context_id = %hex::encode(&**context_id),
+                    attempt,
+                    "All peers failed, retrying in {} seconds",
+                    RETRY_DELAY.as_secs()
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
             }
         }
 
-        tracing::debug!("Failed to download blob from any peer");
+        tracing::debug!(
+            blob_id = %hex::encode(&**blob_id),
+            context_id = %hex::encode(&**context_id),
+            max_attempts = MAX_RETRIES,
+            "Failed to download blob from any peer after all retry attempts"
+        );
         Ok(None)
     }
 
