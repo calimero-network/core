@@ -32,6 +32,10 @@ pub struct AuthConfig {
     /// NEAR wallet configuration
     #[serde(default)]
     pub near: NearWalletConfig,
+
+    /// Username/password configuration
+    #[serde(default)]
+    pub user_password: UserPasswordConfig,
 }
 
 fn default_listen_addr() -> SocketAddr {
@@ -100,6 +104,27 @@ impl Default for NearWalletConfig {
             rpc_url: "https://rpc.testnet.near.org".to_string(),
             wallet_url: "https://wallet.testnet.near.org".to_string(),
             helper_url: None,
+        }
+    }
+}
+
+/// Username/password configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPasswordConfig {
+    /// Minimum password length
+    #[serde(default = "default_min_password_length")]
+    pub min_password_length: usize,
+
+    /// Maximum password length
+    #[serde(default = "default_max_password_length")]
+    pub max_password_length: usize,
+}
+
+impl Default for UserPasswordConfig {
+    fn default() -> Self {
+        Self {
+            min_password_length: 8,
+            max_password_length: 128,
         }
     }
 }
@@ -320,6 +345,14 @@ fn default_csp_script_src() -> Vec<String> {
 
 fn default_csp_style_src() -> Vec<String> {
     vec!["'self'".to_string(), "'unsafe-inline'".to_string()]
+}
+
+fn default_min_password_length() -> usize {
+    8
+}
+
+fn default_max_password_length() -> usize {
+    128
 }
 
 /// Load the configuration from a file

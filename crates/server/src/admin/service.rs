@@ -207,10 +207,14 @@ pub(crate) fn setup(
         )
         // Network info
         .route("/peers", get(get_peers_count_handler))
-        // Blob management - with increased body limit for large file uploads
-        .route("/blobs/upload", put(blob::handler))
-        .route("/blobs/:blob_id", get(blob::download_handler))
-        .route("/blobs/:blob_id/info", get(blob::info_handler))
+        // Blob management
+        .route("/blobs", put(blob::upload_handler).get(blob::list_handler))
+        .route(
+            "/blobs/:blob_id",
+            get(blob::download_handler)
+                .head(blob::info_handler)
+                .delete(blob::delete_handler),
+        )
         // Alias management
         .nest("/alias", alias::service())
         // Health endpoints (previously unprotected)

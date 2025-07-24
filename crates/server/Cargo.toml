@@ -17,6 +17,7 @@ chrono.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+hex.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
@@ -53,10 +54,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [features]
-jsonrpc = []
-host_layer = []
-websocket = ["axum/ws"]
 admin = ["dep:tower-sessions"]
+jsonrpc = []
+websocket = ["axum/ws"]
+host_layer = []
 
 [lints]
 workspace = true
