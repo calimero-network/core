@@ -96,7 +96,7 @@ impl ConnectionInfo {
         self.request(RequestType::Delete, path, None::<()>).await
     }
 
-    pub async fn head(&self, path: &str) -> Result<reqwest::header::HeaderMap> {
+    pub async fn head(&self, path: &str) -> EyreResult<reqwest::header::HeaderMap> {
         let mut url = self.api_url.clone();
         url.set_path(path);
 
@@ -152,10 +152,10 @@ impl ConnectionInfo {
     async fn execute_request_with_auth_retry<F, Fut>(
         &self,
         request_builder: F,
-    ) -> Result<reqwest::Response>
+    ) -> EyreResult<reqwest::Response>
     where
         F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+        Fut: std::future::Future<Output = EyreResult<reqwest::Response, reqwest::Error>>,
     {
         loop {
             let response = request_builder().await?;
