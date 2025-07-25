@@ -18,8 +18,9 @@ pub enum BroadcastMessage<'a> {
     StateDelta {
         context_id: ContextId,
         author_id: PublicKey,
-        root_hash: Hash,
+        root_hash: Hash, // todo! shouldn't be cleartext
         artifact: Cow<'a, [u8]>,
+        height: NonZeroUsize, // todo! shouldn't be cleartext
         nonce: Nonce,
     },
 }

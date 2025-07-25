@@ -331,6 +331,8 @@ impl SyncManager {
                         "Received state delta entry",
                     );
 
+                    // todo! what if the height is not sequential?
+
                     let outcome = self
                         .context_client
                         .execute(
