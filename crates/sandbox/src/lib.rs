@@ -22,6 +22,7 @@ pub struct Node {
     pub name: String,
     pub swarm_addr: String,
     pub server_addr: String,
+    pub protocol_args: Vec<String>,
 }
 
 impl Devnet {
@@ -104,16 +105,29 @@ impl Devnet {
                     .await?;
             let server_port_num = server_binding.port();
 
+            let protocol_args = self.get_protocol_args(&node_name).await?;
+
             let node = Node {
                 name: node_name.clone(),
                 swarm_addr: format!("{}:{}", self.config.swarm_host, swarm_port_num),
                 server_addr: format!("{}:{}", self.config.server_host, server_port_num),
+                protocol_args,
             };
 
             self.nodes.insert(node_name, node);
         }
 
         Ok(())
+    }
+
+    async fn get_protocol_args(&self, node_name: &str) -> eyre::Result<Vec<String>> {
+        let mut args = vec![];
+        for protocol in &self.config.protocols {
+            let env = self.get_protocol_environment(protocol)?;
+            let protocol_args = env.node_args(node_name).await?;
+            args.extend(protocol_args);
+        }
+        Ok(args)
     }
 
     fn print_info(&self) {

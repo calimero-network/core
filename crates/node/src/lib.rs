@@ -53,7 +53,6 @@ impl NodeManager {
             sync_manager,
             context_client,
             node_client,
-
             blob_cache: BTreeMap::new(),
         }
     }

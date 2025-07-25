@@ -196,30 +196,20 @@ impl Driver {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let mut merods = HashMap::new();
-        for (name, _node) in &devnet.nodes {
+        for (name, node) in &devnet.nodes {
             let merod = Merod::new(self.environment.merod_binary.clone());
             let node_dir = self.environment.nodes_dir.join(name);
             if !node_dir.exists() {
                 tokio::fs::create_dir_all(&node_dir).await?;
             }
 
-            // Get protocol-specific args
-            let protocol_env = devnet.get_protocol_environment(protocol_name.as_str())?;
-            let node_args = protocol_env.node_args(name).await?;
-
-            // Convert to --protocol-config arguments
-            let protocol_config_args = node_args
-                .into_iter()
-                .map(|arg| {
-                    let (key, value) = arg
-                        .split_once('=')
-                        .expect("Protocol config should be in key=value format");
-                    format!("--protocol-config={}={}", key, value)
-                })
-                .collect::<Vec<_>>();
-
+            // Pass the protocol args from the node
             merod
-                .start(&self.environment.nodes_dir, name, protocol_config_args)
+                .start(
+                    &self.environment.nodes_dir,
+                    name,
+                    node.protocol_args.clone(),
+                )
                 .await?;
             merods.insert(name.clone(), merod);
         }
