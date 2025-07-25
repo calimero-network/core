@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
@@ -7,7 +9,6 @@ use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
-use std::collections::HashMap;
 
 use crate::cli::RootArgs;
 
@@ -63,14 +64,17 @@ impl RunCommand {
     }
 }
 
-fn parse_key_val<T, U>(s: &str) -> Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
+fn parse_key_val<T, U>(
+    s: &str,
+) -> Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
 where
     T: std::str::FromStr,
     T::Err: std::error::Error + Send + Sync + 'static,
     U: std::str::FromStr,
     U::Err: std::error::Error + Send + Sync + 'static,
 {
-    let pos = s.find('=')
+    let pos = s
+        .find('=')
         .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{}`", s))?;
-    Ok((s[..pos].parse()?, s[pos+1..].parse()?))
+    Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
 }
