@@ -1,6 +1,6 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env::temp_dir;
 use std::str::FromStr;
 
@@ -9,7 +9,8 @@ use camino::Utf8PathBuf;
 use clap::{Parser, ValueEnum};
 use color_eyre::owo_colors::OwoColorize;
 use eyre::{bail, eyre, Result as EyreResult};
-use serde_json::{json, Map, Value as JsonValue};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value as JsonValue};
 use tokio::fs::{read_to_string, write};
 use toml_edit::{Item, Value};
 use tracing::info;
@@ -52,6 +53,24 @@ pub struct ConfigCommand {
     /// Save modifications to config file
     #[clap(short, long)]
     save: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConfigSchema {
+    description: Option<String>,
+    #[serde(rename = "type")]
+    type_info: ConfigType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ConfigType {
+    String,
+    Integer,
+    Float,
+    Boolean,
+    Object(HashMap<String, ConfigSchema>),
+    Array(Box<ConfigSchema>),
 }
 
 #[derive(Clone, Debug)]
@@ -121,9 +140,17 @@ impl ConfigCommand {
             .collect();
 
         if !hint_keys.is_empty() {
-            // Print schema hints and ignore any key-value pairs
+            // Print warning if there are both hints and key-value pairs
+            if self
+                .args
+                .iter()
+                .any(|arg| matches!(arg, KeyValueOrHint::KeyValue(_)))
+            {
+                eprintln!("Warning: Key-value modifications are ignored when showing hints");
+            }
+
             for key in hint_keys {
-                self.print_hint(&doc, key)?;
+                self.print_hint(key)?;
             }
             return Ok(());
         }
@@ -134,14 +161,7 @@ impl ConfigCommand {
 
         for arg in &self.args {
             if let KeyValueOrHint::KeyValue(kv) = arg {
-                let key_parts: Vec<&str> = kv.key.split('.').collect();
-                let mut current = doc.as_item_mut();
-
-                for key in &key_parts[..key_parts.len() - 1] {
-                    current = &mut current[key];
-                }
-
-                current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
+                self.process_key_value(&mut doc, &kv.key, kv.value.clone())?;
                 modified_keys.insert(kv.key.clone());
             }
         }
@@ -171,6 +191,103 @@ impl ConfigCommand {
         }
 
         Ok(())
+    }
+
+    fn process_key_value(
+        &self,
+        doc: &mut toml_edit::DocumentMut,
+        key: &str,
+        value: Value,
+    ) -> EyreResult<()> {
+        let key_parts: Vec<&str> = key.split('.').collect();
+        if key_parts.is_empty() {
+            return Err(eyre!("Empty key provided"));
+        }
+
+        let mut current = doc.as_item_mut();
+
+        for key in &key_parts[..key_parts.len() - 1] {
+            // toml_edit::Item does not have contains_key, so we must check if the key exists and is a table
+            let needs_insert = match current.get_mut(*key) {
+                Some(item) if item.is_table() => false,
+                Some(_) | None => true,
+            };
+            if needs_insert {
+                current[*key] = Item::Table(toml_edit::Table::new());
+            }
+
+            current = current.get_mut(*key).ok_or_else(|| {
+                eyre!(
+                    "Failed to access key '{}' while processing '{}'",
+                    key,
+                    key_parts.join(".")
+                )
+            })?;
+
+            if !current.is_table() {
+                return Err(eyre!(
+                    "Cannot create nested key '{}' - parent '{}' is not a table",
+                    key_parts.join("."),
+                    key
+                ));
+            }
+        }
+
+        let last_key = key_parts[key_parts.len() - 1];
+
+        // Validate type if the key already exists
+        if let Some(existing) = current.get(last_key) {
+            if existing.is_table() && !value.is_inline_table() {
+                return Err(eyre!(
+                    "Cannot set primitive value on existing table '{}'",
+                    key_parts.join(".")
+                ));
+            }
+        }
+
+        current[last_key] = Item::Value(value);
+        Ok(())
+    }
+
+    // Get the full config schema
+    fn get_schema() -> HashMap<String, ConfigSchema> {
+        let mut schema = HashMap::new();
+
+        // Network configuration
+        let mut network = HashMap::new();
+
+        // Swarm config
+        let mut swarm = HashMap::new();
+        swarm.insert(
+            "listen".to_string(),
+            ConfigSchema {
+                description: Some("List of addresses to listen on".to_string()),
+                type_info: ConfigType::Array(Box::new(ConfigSchema {
+                    description: None,
+                    type_info: ConfigType::String,
+                })),
+            },
+        );
+
+        network.insert(
+            "swarm".to_string(),
+            ConfigSchema {
+                description: Some("Swarm network configuration".to_string()),
+                type_info: ConfigType::Object(swarm),
+            },
+        );
+
+        // more configs
+
+        schema.insert(
+            "network".to_string(),
+            ConfigSchema {
+                description: Some("Network configuration".to_string()),
+                type_info: ConfigType::Object(network),
+            },
+        );
+
+        schema
     }
 
     fn print_config(&self, doc: &toml_edit::DocumentMut, keys: &[&str]) -> EyreResult<()> {
@@ -265,87 +382,100 @@ impl ConfigCommand {
 
             if let Some(orig) = original_value {
                 println!("-{} = {}", key, orig);
+            } else {
+                println!("-{} = (not set)", key);
             }
+
             if let Some(modif) = modified_value {
                 println!("+{} = {}", key, modif);
+            } else {
+                println!("+{} = (removed)", key);
             }
         }
         Ok(())
     }
 
-    fn print_hint(&self, doc: &toml_edit::DocumentMut, key: &str) -> EyreResult<()> {
+    fn print_hint(&self, key: &str) -> EyreResult<()> {
+        let schema = Self::get_schema();
         let key_parts: Vec<&str> = key.split('.').collect();
-        let current = doc.as_item().get(key_parts[0]);
 
-        if let Some(item) = current {
-            match self.print {
-                PrintFormat::Default | PrintFormat::Human => {
-                    println!("{}: {}", key_parts[0].bold(), "object".cyan());
-                    if let Some(table) = item.as_table() {
-                        for (k, v) in table.iter() {
-                            let type_str = match v {
-                                Item::Value(Value::String(_)) => "string".to_owned(),
-                                Item::Value(Value::Integer(_)) => "integer".to_owned(),
-                                Item::Value(Value::Float(_)) => "float".to_owned(),
-                                Item::Value(Value::Boolean(_)) => "boolean".to_owned(),
-                                Item::Value(Value::Datetime(_)) => "datetime".to_owned(),
-                                Item::Value(Value::Array(_)) => "array".to_owned(),
-                                Item::Table(_) => "object".to_owned(),
-                                _ => "unknown".to_owned(),
-                            };
-                            println!("  .{}: {} # {}", k, type_str.cyan(), "description");
-                        }
-                    }
-                }
-                PrintFormat::Toml => {
-                    println!("# Schema for {}", key_parts[0]);
-                    println!("# Type: object");
-                    if let Some(table) = item.as_table() {
-                        for (k, v) in table.iter() {
-                            println!(
-                                "#   .{}: {}",
-                                k,
-                                match v {
-                                    Item::Value(Value::String(_)) => "string",
-                                    Item::Value(Value::Integer(_)) => "integer",
-                                    Item::Value(Value::Float(_)) => "float",
-                                    Item::Value(Value::Boolean(_)) => "boolean",
-                                    Item::Value(Value::Datetime(_)) => "datetime",
-                                    Item::Value(Value::Array(_)) => "array",
-                                    Item::Table(_) => "object",
-                                    _ => "unknown",
-                                }
-                            );
-                        }
-                    }
-                }
-                PrintFormat::Json => {
-                    let mut schema = Map::new();
-                    schema.insert("type".to_owned(), "object".into());
+        let mut current_schema = &schema;
+        let mut path = Vec::new();
 
-                    if let Some(table) = item.as_table() {
-                        let mut properties = Map::new();
-                        for (k, v) in table.iter() {
-                            let type_str = match v {
-                                Item::Value(Value::String(_)) => "string",
-                                Item::Value(Value::Integer(_)) => "integer",
-                                Item::Value(Value::Float(_)) => "number",
-                                Item::Value(Value::Boolean(_)) => "boolean",
-                                Item::Value(Value::Datetime(_)) => "string",
-                                Item::Value(Value::Array(_)) => "array",
-                                Item::Table(_) => "object",
-                                _ => "unknown",
-                            };
-                            properties.insert(k.to_owned(), json!({ "type": type_str }));
-                        }
-                        schema.insert("properties".to_owned(), properties.into());
-                    }
+        for part in key_parts {
+            path.push(part);
+            if let ConfigType::Object(fields) = &current_schema
+                .get(part)
+                .ok_or_else(|| eyre!("Unknown config key: {}", path.join(".")))?
+                .type_info
+            {
+                current_schema = &fields;
+            } else {
+                return Err(eyre!("Key {} is not an object", path.join(".")));
+            }
+        }
 
-                    println!("{}", serde_json::to_string_pretty(&schema)?);
+        match self.print {
+            PrintFormat::Default | PrintFormat::Human => {
+                for (field, field_schema) in current_schema {
+                    let type_str = match &field_schema.type_info {
+                        ConfigType::String => "string",
+                        ConfigType::Integer => "integer",
+                        ConfigType::Float => "float",
+                        ConfigType::Boolean => "boolean",
+                        ConfigType::Object(_) => "object",
+                        ConfigType::Array(_) => "array",
+                    };
+
+                    println!(
+                        "  .{}: {} # {}",
+                        field,
+                        type_str.cyan(),
+                        field_schema.description.as_deref().unwrap_or("")
+                    );
                 }
             }
-        } else {
-            eprintln!("Warning: Key '{}' not found in config", key);
+            PrintFormat::Toml => {
+                println!("# Schema for {}", key);
+                for (field, field_schema) in current_schema {
+                    let type_str = match &field_schema.type_info {
+                        ConfigType::String => "string",
+                        ConfigType::Integer => "integer",
+                        ConfigType::Float => "float",
+                        ConfigType::Boolean => "boolean",
+                        ConfigType::Object(_) => "object",
+                        ConfigType::Array(_) => "array",
+                    };
+                    println!(
+                        "#   .{}: {} # {}",
+                        field,
+                        type_str,
+                        field_schema.description.as_deref().unwrap_or("")
+                    );
+                }
+            }
+            PrintFormat::Json => {
+                let mut schema_map = Map::new();
+                for (field, field_schema) in current_schema {
+                    let mut field_info = Map::new();
+                    field_info.insert(
+                        "type".to_string(),
+                        match &field_schema.type_info {
+                            ConfigType::String => "string".into(),
+                            ConfigType::Integer => "integer".into(),
+                            ConfigType::Float => "number".into(),
+                            ConfigType::Boolean => "boolean".into(),
+                            ConfigType::Object(_) => "object".into(),
+                            ConfigType::Array(_) => "array".into(),
+                        },
+                    );
+                    if let Some(desc) = &field_schema.description {
+                        field_info.insert("description".to_string(), desc.as_str().into());
+                    }
+                    schema_map.insert(field.to_string(), field_info.into());
+                }
+                println!("{}", serde_json::to_string_pretty(&schema_map)?);
+            }
         }
 
         Ok(())
