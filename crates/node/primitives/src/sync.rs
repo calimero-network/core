@@ -1,6 +1,7 @@
 #![expect(single_use_lifetimes, reason = "borsh shenanigans")]
 
 use std::borrow::Cow;
+use std::num::NonZeroUsize;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_crypto::Nonce;
@@ -17,8 +18,9 @@ pub enum BroadcastMessage<'a> {
     StateDelta {
         context_id: ContextId,
         author_id: PublicKey,
-        root_hash: Hash,
+        root_hash: Hash, // todo! shouldn't be cleartext
         artifact: Cow<'a, [u8]>,
+        height: NonZeroUsize, // todo! shouldn't be cleartext
         nonce: Nonce,
     },
 }
@@ -50,12 +52,26 @@ pub enum InitPayload {
         application_id: ApplicationId,
     },
     KeyShare,
+    DeltaSync {
+        root_hash: Hash,
+        application_id: ApplicationId,
+    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[expect(variant_size_differences, reason = "'tis fine")]
 pub enum MessagePayload<'a> {
-    StateSync { artifact: Cow<'a, [u8]> },
-    BlobShare { chunk: Cow<'a, [u8]> },
-    KeyShare { sender_key: PrivateKey },
+    StateSync {
+        artifact: Cow<'a, [u8]>,
+    },
+    BlobShare {
+        chunk: Cow<'a, [u8]>,
+    },
+    KeyShare {
+        sender_key: PrivateKey,
+    },
+    DeltaSync {
+        member: PublicKey,
+        height: NonZeroUsize,
+        delta: Option<Cow<'a, [u8]>>,
+    },
 }
