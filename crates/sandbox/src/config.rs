@@ -4,10 +4,10 @@ use camino::Utf8PathBuf;
 use eyre::bail;
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{
-    ethereum::EthereumProtocolConfig, icp::IcpProtocolConfig, near::NearProtocolConfig,
-    stellar::StellarProtocolConfig,
-};
+use crate::protocol::ethereum::EthereumProtocolConfig;
+use crate::protocol::icp::IcpProtocolConfig;
+use crate::protocol::near::NearProtocolConfig;
+use crate::protocol::stellar::StellarProtocolConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

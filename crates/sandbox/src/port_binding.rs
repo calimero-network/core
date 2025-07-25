@@ -48,7 +48,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ports() -> eyre::Result<()> {
-
         let env_hosts = env::var("TEST_HOSTS").ok();
 
         let mut env_hosts = env_hosts

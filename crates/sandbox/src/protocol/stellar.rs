@@ -31,7 +31,8 @@ pub struct StellarProtocolConfig {
 impl Default for StellarProtocolConfig {
     fn default() -> Self {
         Self {
-            context_config_contract_id: "CCIZDIWGDVCMO2PIR6VFW63GZNUAA47UYG4VUDL3XXN3DYJ2HWLIWIGD".to_string(),
+            context_config_contract_id: "CCIZDIWGDVCMO2PIR6VFW63GZNUAA47UYG4VUDL3XXN3DYJ2HWLIWIGD"
+                .to_string(),
             rpc_url: "http://127.0.0.1:8000/soroban/rpc".to_string(),
             public_key: "GDIY6AQQ75WMD4W46EYB7O6UYMHOCGQHLAQGQTKHDX4J2DYQCHVCR4W4".to_string(),
             secret_key: "SC36BWNUOCZAO7DMEJNNKFV6BOTPJP7IG5PSHLUOLT6DZFRU3D3XGIXW".to_string(),

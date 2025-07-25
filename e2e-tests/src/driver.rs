@@ -280,28 +280,36 @@ impl Driver {
             node_count: config.network.node_count,
             protocols: vec![protocol.as_str().to_string()],
             protocol_configs: ProtocolConfigs {
-                near: config.protocol_sandboxes.iter()
+                near: config
+                    .protocol_sandboxes
+                    .iter()
                     .find_map(|c| match c {
                         ProtocolSandboxConfig::Near(near) => Some(near.clone()),
-                        _ => None
+                        _ => None,
                     })
                     .ok_or_else(|| eyre::eyre!("Near config not found"))?,
-                icp: config.protocol_sandboxes.iter()
+                icp: config
+                    .protocol_sandboxes
+                    .iter()
                     .find_map(|c| match c {
                         ProtocolSandboxConfig::Icp(icp) => Some(icp.clone()),
-                        _ => None
+                        _ => None,
                     })
                     .ok_or_else(|| eyre::eyre!("ICP config not found"))?,
-                stellar: config.protocol_sandboxes.iter()
+                stellar: config
+                    .protocol_sandboxes
+                    .iter()
                     .find_map(|c| match c {
                         ProtocolSandboxConfig::Stellar(stellar) => Some(stellar.clone()),
-                        _ => None
+                        _ => None,
                     })
                     .ok_or_else(|| eyre::eyre!("Stellar config not found"))?,
-                ethereum: config.protocol_sandboxes.iter()
+                ethereum: config
+                    .protocol_sandboxes
+                    .iter()
                     .find_map(|c| match c {
                         ProtocolSandboxConfig::Ethereum(ethereum) => Some(ethereum.clone()),
-                        _ => None
+                        _ => None,
                     })
                     .ok_or_else(|| eyre::eyre!("Ethereum config not found"))?,
             },
@@ -313,7 +321,6 @@ impl Driver {
             node_name: "devnet".into(),
         })
     }
-
 
     async fn stop_merods(&self, merods: &HashMap<String, Merod>) {
         for (_, merod) in merods {

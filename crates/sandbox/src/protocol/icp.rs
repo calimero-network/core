@@ -30,9 +30,11 @@ impl Default for IcpProtocolConfig {
         Self {
             context_config_contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".to_string(),
             rpc_url: "http://127.0.0.1:4943".to_string(),
-            account_id: "fph2z-lxdui-xq3o6-6kuqy-rgkwi-hq7us-gkwlq-gxfgs-irrcq-hnm4e-6qe".to_string(),
+            account_id: "fph2z-lxdui-xq3o6-6kuqy-rgkwi-hq7us-gkwlq-gxfgs-irrcq-hnm4e-6qe"
+                .to_string(),
             public_key: "e3a22f0dbbde552188995641e1fa48cab2e06b94d24462281dace13d02".to_string(),
-            secret_key: "c9a8e56920efd1c7b6694dce6ce871b661ae3922d5045d4a9f04e131eaa34164".to_string(),
+            secret_key: "c9a8e56920efd1c7b6694dce6ce871b661ae3922d5045d4a9f04e131eaa34164"
+                .to_string(),
         }
     }
 }

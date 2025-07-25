@@ -24,7 +24,6 @@ impl Default for NearProtocolConfig {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct NearSandboxEnvironment {
     pub worker: Worker<Sandbox>,
