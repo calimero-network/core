@@ -297,35 +297,35 @@ impl ConfigCommand {
         // Discovery config
         let mut discovery = HashMap::new();
         discovery.insert(
-            "mdns".to_string(),
+            "mdns".to_owned(),
             ConfigSchema {
-                description: Some("Enable mDNS discovery".to_string()),
+                description: Some("Enable mDNS discovery".to_owned()),
                 type_info: ConfigType::Boolean,
                 default: Some(SchemaValue::Boolean(true)),
             },
         );
         discovery.insert(
-            "advertise_address".to_string(),
+            "advertise_address".to_owned(),
             ConfigSchema {
-                description: Some("Advertise observed address".to_string()),
+                description: Some("Advertise observed address".to_owned()),
                 type_info: ConfigType::Boolean,
                 default: Some(SchemaValue::Boolean(false)),
             },
         );
 
         network.insert(
-            "discovery".to_string(),
+            "discovery".to_owned(),
             ConfigSchema {
-                description: Some("Discovery configuration".to_string()),
+                description: Some("Discovery configuration".to_owned()),
                 type_info: ConfigType::Object(Box::new(discovery)),
                 default: None,
             },
         );
 
         schema.insert(
-            "network".to_string(),
+            "network".to_owned(),
             ConfigSchema {
-                description: Some("Network configuration".to_string()),
+                description: Some("Network configuration".to_owned()),
                 type_info: ConfigType::Object(Box::new(network)),
                 default: None,
             },
@@ -503,7 +503,7 @@ impl ConfigCommand {
                 for (field, field_schema) in current_schema {
                     let mut field_info = Map::new();
                     field_info.insert(
-                        "type".to_string(),
+                        "type".to_owned(),
                         match &field_schema.type_info {
                             ConfigType::String => "string".into(),
                             ConfigType::Integer => "integer".into(),
@@ -514,7 +514,7 @@ impl ConfigCommand {
                         },
                     );
                     if let Some(desc) = &field_schema.description {
-                        field_info.insert("description".to_string(), desc.as_str().into());
+                        field_info.insert("description".to_owned(), desc.as_str().into());
                     }
                     schema_map.insert(field.to_string(), field_info.into());
                 }
