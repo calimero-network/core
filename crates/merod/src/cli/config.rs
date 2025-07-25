@@ -60,6 +60,8 @@ struct ConfigSchema {
     description: Option<String>,
     #[serde(rename = "type")]
     type_info: ConfigType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<SchemaValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +73,42 @@ enum ConfigType {
     Boolean,
     Object(Box<HashMap<String, ConfigSchema>>),
     Array(Box<ConfigSchema>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum SchemaValue {
+    String(String),
+    Integer(i64),
+    Float(f64),
+    Boolean(bool),
+    // For objects and arrays we'll just use null since we don't need their values in schema
+    Null,
+}
+
+// Add these conversion functions
+impl From<&Value> for SchemaValue {
+    fn from(value: &Value) -> Self {
+        match value {
+            Value::String(s) => SchemaValue::String(s.value().to_string()),
+            Value::Integer(i) => SchemaValue::Integer(*i.value()),
+            Value::Float(f) => SchemaValue::Float(*f.value()),
+            Value::Boolean(b) => SchemaValue::Boolean(*b.value()),
+            _ => SchemaValue::Null,
+        }
+    }
+}
+
+impl From<SchemaValue> for Value {
+    fn from(value: SchemaValue) -> Self {
+        match value {
+            SchemaValue::String(s) => Value::String(toml_edit::Formatted::new(s)),
+            SchemaValue::Integer(i) => Value::Integer(toml_edit::Formatted::new(i)),
+            SchemaValue::Float(f) => Value::Float(toml_edit::Formatted::new(f)),
+            SchemaValue::Boolean(b) => Value::Boolean(toml_edit::Formatted::new(b)),
+            SchemaValue::Null => Value::String(toml_edit::Formatted::new(String::new())),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -256,34 +294,40 @@ impl ConfigCommand {
         // Network configuration
         let mut network = HashMap::new();
 
-        // Swarm config
-        let mut swarm = HashMap::new();
-        swarm.insert(
-            "listen".to_string(),
+        // Discovery config
+        let mut discovery = HashMap::new();
+        discovery.insert(
+            "mdns".to_string(),
             ConfigSchema {
-                description: Some("List of addresses to listen on".to_string()),
-                type_info: ConfigType::Array(Box::new(ConfigSchema {
-                    description: None,
-                    type_info: ConfigType::String,
-                })),
+                description: Some("Enable mDNS discovery".to_string()),
+                type_info: ConfigType::Boolean,
+                default: Some(SchemaValue::Boolean(true)),
+            },
+        );
+        discovery.insert(
+            "advertise_address".to_string(),
+            ConfigSchema {
+                description: Some("Advertise observed address".to_string()),
+                type_info: ConfigType::Boolean,
+                default: Some(SchemaValue::Boolean(false)),
             },
         );
 
         network.insert(
-            "swarm".to_string(),
+            "discovery".to_string(),
             ConfigSchema {
-                description: Some("Swarm network configuration".to_string()),
-                type_info: ConfigType::Object(Box::new(swarm)),
+                description: Some("Discovery configuration".to_string()),
+                type_info: ConfigType::Object(Box::new(discovery)),
+                default: None,
             },
         );
-
-        // more configs
 
         schema.insert(
             "network".to_string(),
             ConfigSchema {
                 description: Some("Network configuration".to_string()),
                 type_info: ConfigType::Object(Box::new(network)),
+                default: None,
             },
         );
 
