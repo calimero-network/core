@@ -103,16 +103,26 @@ impl ContextClient {
 
                 let derived_application_id = match source.scheme() {
                     "http" | "https" => {
-                        self.node_client
-                            .install_application_from_url(source, metadata, None)
-                            .await?
+                        match self
+                            .node_client
+                            .install_application_from_url(source.clone(), metadata.clone(), None)
+                            .await
+                        {
+                            Ok(app_id) => app_id,
+                            Err(_) => self.node_client.install_application(
+                                &application.blob.bytecode,
+                                application.size,
+                                &source.into(),
+                                metadata,
+                            )?,
+                        }
                     }
-                    _ => {
-                        // fixme! we shouldn't assume both nodes run on the same machine
-                        self.node_client
-                            .install_application_from_path(source.path().into(), metadata)
-                            .await?
-                    }
+                    _ => self.node_client.install_application(
+                        &application.blob.bytecode,
+                        application.size,
+                        &source.into(),
+                        metadata,
+                    )?,
                 };
 
                 if application.id != derived_application_id {
