@@ -1,4 +1,4 @@
-#![expect(single_use_lifetimes, "borsh shenanigans")]
+#![expect(single_use_lifetimes, reason = "borsh shenanigans")]
 
 use std::borrow::Cow;
 use std::num::NonZeroUsize;
