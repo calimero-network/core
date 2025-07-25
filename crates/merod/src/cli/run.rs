@@ -5,6 +5,7 @@ use calimero_config::ConfigFile;
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_node::sync::SyncConfig;
 use calimero_node::{start, NodeConfig};
+use calimero_server::admin::service::AdminConfig;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use clap::Parser;
@@ -18,6 +19,10 @@ pub struct RunCommand {
     /// Protocol configuration arguments in key=value format
     #[clap(long, value_parser = parse_key_val::<String, String>)]
     pub protocol_config: Vec<(String, String)>,
+
+      /// Enable admin API
+      #[clap(long, default_value_t = true)]
+      pub admin: bool,
 }
 
 impl RunCommand {
@@ -32,7 +37,12 @@ impl RunCommand {
         let server_config = ServerConfig::new(
             config.network.server.listen,
             config.identity.clone(),
-            config.network.server.admin,
+            // Pass admin flag
+            if self.admin {
+                Some(AdminConfig::new(true))
+            } else {
+                None
+            },
             config.network.server.jsonrpc,
             config.network.server.websocket,
         );
