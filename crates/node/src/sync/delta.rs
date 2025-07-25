@@ -1,4 +1,5 @@
-use std::borrow::Cow;
+use std::num::NonZeroUsize;
+use std::pin::pin;
 
 use calimero_context_primitives::ContextAtomic;
 use calimero_crypto::{Nonce, SharedKey};
@@ -9,14 +10,14 @@ use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
+use futures_util::{StreamExt, TryStreamExt};
 use rand::{thread_rng, Rng};
 use tracing::debug;
 
 use super::{Sequencer, SyncManager};
 
 impl SyncManager {
-    #[expect(dead_code, reason = "superceded by delta sync")]
-    pub(super) async fn initiate_state_sync_process(
+    pub(super) async fn initiate_delta_sync_process(
         &self,
         context: &mut Context,
         our_identity: PublicKey,
@@ -27,7 +28,7 @@ impl SyncManager {
             our_identity=%our_identity,
             our_root_hash=%context.root_hash,
             our_application_id=%context.application_id,
-            "Initiating state sync",
+            "Initiating state delta sync",
         );
 
         let our_nonce = thread_rng().gen::<Nonce>();
@@ -37,7 +38,7 @@ impl SyncManager {
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
-                payload: InitPayload::StateSync {
+                payload: InitPayload::DeltaSync {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
@@ -51,14 +52,14 @@ impl SyncManager {
 
         for _ in 1..=2 {
             let Some(ack) = self.recv(stream, None).await? else {
-                bail!("connection closed while awaiting state sync handshake");
+                bail!("connection closed while awaiting delta sync handshake");
             };
 
             let (their_root_hash, their_identity, their_nonce) = match ack {
                 StreamMessage::Init {
                     party_id,
                     payload:
-                        InitPayload::StateSync {
+                        InitPayload::DeltaSync {
                             root_hash,
                             application_id,
                         },
@@ -104,7 +105,7 @@ impl SyncManager {
         }
 
         let Some((their_root_hash, their_identity, their_nonce)) = triple else {
-            bail!("expected up to two state sync handshakes, got none");
+            bail!("expected up to two state delta sync handshakes, got none");
         };
 
         debug!(
@@ -113,7 +114,7 @@ impl SyncManager {
             our_root_hash=%context.root_hash,
             their_identity=%their_identity,
             their_root_hash=%their_root_hash,
-            "Received state sync request acknowledgement",
+            "Received state delta sync request acknowledgement",
         );
 
         if their_root_hash == context.root_hash {
@@ -142,8 +143,10 @@ impl SyncManager {
             stream,
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
-                payload: MessagePayload::StateSync {
-                    artifact: b"".into(),
+                payload: MessagePayload::DeltaSync {
+                    member: [0; 32].into(),
+                    height: NonZeroUsize::MIN,
+                    delta: None,
                 },
                 next_nonce: our_new_nonce,
             },
@@ -151,7 +154,7 @@ impl SyncManager {
         )
         .await?;
 
-        self.bidirectional_state_sync(
+        self.bidirectional_delta_sync(
             context,
             our_identity,
             their_identity,
@@ -164,7 +167,7 @@ impl SyncManager {
         .await
     }
 
-    pub(super) async fn handle_state_sync_request(
+    pub(super) async fn handle_delta_sync_request(
         &self,
         context: &mut Context,
         our_identity: PublicKey,
@@ -182,7 +185,7 @@ impl SyncManager {
             their_identity=%their_identity,
             their_root_hash=%their_root_hash,
             their_application_id=%their_application_id,
-            "Received state sync request",
+            "Received state delta sync request",
         );
 
         if their_application_id != context.application_id {
@@ -214,7 +217,7 @@ impl SyncManager {
             )
             .await?;
 
-            debug!(context_id=%context.id, "Resuming state sync");
+            debug!(context_id=%context.id, "Resuming state delta sync");
         }
 
         let our_nonce = thread_rng().gen::<Nonce>();
@@ -224,7 +227,7 @@ impl SyncManager {
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
-                payload: InitPayload::StateSync {
+                payload: InitPayload::DeltaSync {
                     root_hash: context.root_hash,
                     application_id: context.application_id,
                 },
@@ -255,7 +258,7 @@ impl SyncManager {
 
         let mut sqx_out = Sequencer::default();
 
-        self.bidirectional_state_sync(
+        self.bidirectional_delta_sync(
             context,
             our_identity,
             their_identity,
@@ -268,7 +271,7 @@ impl SyncManager {
         .await
     }
 
-    async fn bidirectional_state_sync(
+    async fn bidirectional_delta_sync(
         &self,
         context: &mut Context,
         our_identity: PublicKey,
@@ -283,21 +286,32 @@ impl SyncManager {
             context_id=%context.id,
             our_identity=%our_identity,
             their_identity=%their_identity,
-            "Starting bidirectional state sync",
+            "Starting bidirectional state delta sync",
         );
+
+        let members = self.context_client.context_members(&context.id, None);
+
+        let mut members = pin!(members);
 
         let mut sqx_in = Sequencer::default();
 
         let mut atomic = ContextAtomic::Lock;
 
+        let mut receiving = true;
+
         while let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? {
-            let (sequence_id, artifact, their_new_nonce) = match msg {
+            let (sequence_id, member, height, delta, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
                     sequence_id,
-                    payload: MessagePayload::StateSync { artifact },
+                    payload:
+                        MessagePayload::DeltaSync {
+                            member,
+                            height,
+                            delta,
+                        },
                     next_nonce,
-                } => (sequence_id, artifact, next_nonce),
+                } => (sequence_id, member, height, delta, next_nonce),
                 unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
                     bail!("unexpected message: {:?}", unexpected)
                 }
@@ -307,46 +321,126 @@ impl SyncManager {
 
             sqx_in.test(sequence_id)?;
 
-            if artifact.is_empty() && sqx_out.current() != 0 {
-                break;
+            match delta {
+                Some(_) if *member == [0; 32] => receiving = false,
+                Some(delta) => {
+                    debug!(
+                        context_id=%context.id,
+                        %member,
+                        height,
+                        "Received state delta entry",
+                    );
+
+                    // todo! what if the height is not sequential?
+
+                    let outcome = self
+                        .context_client
+                        .execute(
+                            &context.id,
+                            &our_identity,
+                            "__calimero_sync_next".to_owned(),
+                            delta.into_owned(),
+                            vec![],
+                            Some(atomic),
+                        )
+                        .await?;
+
+                    self.context_client
+                        .set_delta_height(&context.id, &member, height)?;
+
+                    atomic = ContextAtomic::Held(
+                        outcome
+                            .atomic
+                            .ok_or_eyre("expected an exclusive lock on the context")?,
+                    );
+
+                    context.root_hash = outcome.root_hash;
+
+                    continue;
+                }
+                _ if *member != [0; 32] => {
+                    let deltas =
+                        self.context_client
+                            .get_state_deltas(&context.id, Some(&member), height);
+
+                    let mut deltas = pin!(deltas);
+
+                    while let Some((_, height, data)) = deltas.try_next().await? {
+                        let our_new_nonce = thread_rng().gen::<Nonce>();
+
+                        debug!(
+                            context_id=%context.id,
+                            %member,
+                            height,
+                            "Sending state delta entry",
+                        );
+
+                        self.send(
+                            stream,
+                            &StreamMessage::Message {
+                                sequence_id: sqx_out.next(),
+                                payload: MessagePayload::DeltaSync {
+                                    member,
+                                    height,
+                                    delta: Some(data.into_vec().into()),
+                                },
+                                next_nonce: our_new_nonce,
+                            },
+                            Some((shared_key, our_nonce)),
+                        )
+                        .await?;
+
+                        our_nonce = our_new_nonce;
+                    }
+                }
+                _ => {}
             }
 
-            let outcome = self
-                .context_client
-                .execute(
-                    &context.id,
-                    &our_identity,
-                    "__calimero_sync_next".to_owned(),
-                    artifact.into_owned(),
-                    vec![],
-                    Some(atomic),
+            let Some((member, _)) = members.next().await.transpose()? else {
+                if !receiving {
+                    break;
+                }
+
+                self.send(
+                    stream,
+                    &StreamMessage::Message {
+                        sequence_id: sqx_out.next(),
+                        payload: MessagePayload::DeltaSync {
+                            member: [0; 32].into(),
+                            height: NonZeroUsize::MIN,
+                            delta: Some(b"".into()),
+                        },
+                        next_nonce: [0; 12],
+                    },
+                    Some((shared_key, our_nonce)),
                 )
                 .await?;
 
-            atomic = ContextAtomic::Held(
-                outcome
-                    .atomic
-                    .ok_or_eyre("expected an exclusive lock on the context")?,
-            );
+                continue;
+            };
 
-            context.root_hash = outcome.root_hash;
+            let height = self
+                .context_client
+                .get_delta_height(&context.id, &member)?
+                .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
+
+            let our_new_nonce = thread_rng().gen::<Nonce>();
 
             debug!(
                 context_id=%context.id,
-                root_hash=?context.root_hash,
-                "State sync outcome",
+                %member,
+                height,
+                "Sending state delta query",
             );
-
-            let our_new_nonce = (!outcome.artifact.is_empty())
-                .then(|| thread_rng().gen())
-                .unwrap_or_default();
 
             self.send(
                 stream,
                 &StreamMessage::Message {
                     sequence_id: sqx_out.next(),
-                    payload: MessagePayload::StateSync {
-                        artifact: Cow::from(&outcome.artifact),
+                    payload: MessagePayload::DeltaSync {
+                        member,
+                        height,
+                        delta: None,
                     },
                     next_nonce: our_new_nonce,
                 },
@@ -354,21 +448,15 @@ impl SyncManager {
             )
             .await?;
 
-            if our_new_nonce == [0; 12] {
-                break;
-            }
-
             our_nonce = our_new_nonce;
         }
-
-        // todo! eventually compare that both nodes arrive at the same state
 
         debug!(
             context_id=%context.id,
             our_root_hash=%context.root_hash,
             our_identity=%our_identity,
             their_identity=%their_identity,
-            "State sync completed",
+            "Delta sync completed",
         );
 
         Ok(())

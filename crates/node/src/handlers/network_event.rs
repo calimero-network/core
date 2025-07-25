@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use actix::{AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
@@ -274,6 +276,7 @@ impl Handler<NetworkEvent> for NodeManager {
                         author_id,
                         root_hash,
                         artifact,
+                        height,
                         nonce,
                     } => {
                         let context_client = self.context_client.clone();
@@ -289,6 +292,7 @@ impl Handler<NetworkEvent> for NodeManager {
                                     author_id,
                                     root_hash,
                                     artifact.into_owned(),
+                                    height,
                                     nonce,
                                 )
                                 .await
@@ -404,6 +408,7 @@ async fn handle_state_delta(
     author_id: PublicKey,
     root_hash: Hash,
     artifact: Vec<u8>,
+    height: NonZeroUsize,
     nonce: Nonce,
 ) -> eyre::Result<()> {
     let Some(context) = context_client.get_context(&context_id)? else {
@@ -420,6 +425,13 @@ async fn handle_state_delta(
     if root_hash == context.root_hash {
         debug!(%context_id, "Received state delta with same root hash, ignoring..");
         return Ok(());
+    }
+
+    if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
+        if known_height >= height || height.get() - known_height.get() > 1 {
+            debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
+            return sync_manager.initiate_sync(context_id, source).await;
+        }
     }
 
     let Some(sender_key) = context_client
@@ -458,6 +470,8 @@ async fn handle_state_delta(
             None,
         )
         .await?;
+
+    context_client.set_delta_height(&context_id, &author_id, height)?;
 
     if outcome.root_hash != root_hash {
         return sync_manager.initiate_sync(context_id, source).await;

@@ -6,7 +6,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::context::ContextId as PrimitiveContextId;
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
-use generic_array::typenum::U32;
+use generic_array::typenum::{U32, U8};
 use generic_array::GenericArray;
 
 use crate::db::Column;
@@ -236,6 +236,92 @@ impl Debug for ContextState {
         f.debug_struct("ContextState")
             .field("context_id", &self.context_id())
             .field("state_key", &self.state_key())
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DeltaHeight;
+
+impl KeyComponent for DeltaHeight {
+    type LEN = U8;
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextDelta(Key<(ContextId, PublicKey, DeltaHeight)>);
+
+impl ContextDelta {
+    #[must_use]
+    pub fn new(
+        context_id: PrimitiveContextId,
+        public_key: PrimitivePublicKey,
+        height: usize,
+    ) -> Self {
+        let public_key = GenericArray::from(*public_key);
+        let height = GenericArray::from(height.to_le_bytes());
+
+        let key = Key(GenericArray::from(*context_id)
+            .concat(public_key)
+            .concat(height));
+
+        Self(key)
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        let mut context_id = [0; 32];
+
+        context_id.copy_from_slice(&AsRef::<[_; 72]>::as_ref(&self.0)[..32]);
+
+        context_id.into()
+    }
+
+    #[must_use]
+    pub fn public_key(&self) -> PrimitivePublicKey {
+        let mut public_key = [0; 32];
+
+        public_key.copy_from_slice(&AsRef::<[_; 72]>::as_ref(&self.0)[32..64]);
+
+        public_key.into()
+    }
+
+    #[must_use]
+    pub fn height(&self) -> usize {
+        let mut height = [0; 8];
+
+        height.copy_from_slice(&AsRef::<[_; 72]>::as_ref(&self.0)[64..]);
+
+        usize::from_le_bytes(height)
+    }
+}
+
+impl AsKeyParts for ContextDelta {
+    type Components = (ContextId, PublicKey, DeltaHeight);
+
+    fn column() -> Column {
+        Column::Delta
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
+    }
+}
+
+impl FromKeyParts for ContextDelta {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
+impl Debug for ContextDelta {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextDelta")
+            .field("context_id", &self.context_id())
+            .field("public_key", &self.public_key())
+            .field("height", &self.height())
             .finish()
     }
 }

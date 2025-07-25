@@ -1,5 +1,6 @@
 use std::collections::{btree_map, BTreeMap};
 use std::mem;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use actix::{ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture};
@@ -286,6 +287,12 @@ async fn create_context(
     let proxy_contract = config_client.get_proxy_contract().await?;
 
     let datastore = storage.commit()?;
+
+    let height = NonZeroUsize::MIN;
+
+    context_client.put_state_delta(&context.id, &identity, height, &outcome.artifact)?;
+
+    context_client.set_delta_height(&context.id, &identity, height)?;
 
     let mut handle = datastore.handle();
 
