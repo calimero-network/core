@@ -21,7 +21,7 @@ pub struct RunCommand {
     pub protocol_config: Vec<(String, String)>,
 
     /// Enable admin API
-    #[clap(long, default_value_t = true)]
+    #[clap(long)]
     pub admin: bool,
 }
 

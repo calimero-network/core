@@ -32,10 +32,7 @@ impl Merod {
             .arg("--swarm-port")
             .arg("2427")
             .arg("--server-port")
-            .arg("2527")
-            // Enable admin API
-            .arg("--admin")
-            .arg("true");
+            .arg("2527");
 
         let init_status = init_command.status().await?;
         if !init_status.success() {
@@ -49,9 +46,7 @@ impl Merod {
             .arg("--node-name")
             .arg(node_name)
             .arg("run")
-            // Enable admin API
-            .arg("--admin")
-            .arg("true");
+            .arg("--admin");
 
         // Add protocol-specific args
         for arg in protocol_args {
