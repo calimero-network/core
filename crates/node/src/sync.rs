@@ -20,6 +20,7 @@ use tracing::{debug, error};
 use crate::utils::choose_stream;
 
 mod blobs;
+mod delta;
 mod key;
 mod state;
 
@@ -315,8 +316,11 @@ impl SyncManager {
             .await?;
         }
 
-        self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
+        self.initiate_delta_sync_process(&mut context, our_identity, &mut stream)
             .await
+
+        // self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
+        //     .await
     }
 
     pub async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
@@ -425,6 +429,33 @@ impl SyncManager {
                 }
 
                 self.handle_state_sync_request(
+                    &mut context,
+                    our_identity,
+                    their_identity,
+                    their_root_hash,
+                    their_application_id,
+                    stream,
+                    nonce,
+                )
+                .await?
+            }
+            InitPayload::DeltaSync {
+                root_hash: their_root_hash,
+                application_id: their_application_id,
+            } => {
+                if updated.is_none() && context.application_id != their_application_id {
+                    updated = Some(
+                        self.context_client
+                            .sync_context_config(context_id, None)
+                            .await?,
+                    );
+                }
+
+                if let Some(updated) = updated {
+                    context = updated;
+                }
+
+                self.handle_delta_sync_request(
                     &mut context,
                     our_identity,
                     their_identity,

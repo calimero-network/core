@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::Borsh;
-use crate::key::BlobMeta as BlobMetaKey;
+use crate::key;
 use crate::types::PredefinedEntry;
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
@@ -11,17 +11,17 @@ pub struct BlobMeta {
     // pub refs: usize,
     pub size: u64,
     pub hash: [u8; 32],
-    pub links: Box<[BlobMetaKey]>,
+    pub links: Box<[key::BlobMeta]>,
 }
 
 impl BlobMeta {
     #[must_use]
-    pub const fn new(size: u64, hash: [u8; 32], links: Box<[BlobMetaKey]>) -> Self {
+    pub const fn new(size: u64, hash: [u8; 32], links: Box<[key::BlobMeta]>) -> Self {
         Self { size, hash, links }
     }
 }
 
-impl PredefinedEntry for BlobMetaKey {
+impl PredefinedEntry for key::BlobMeta {
     type Codec = Borsh;
     type DataType<'a> = BlobMeta;
 }
