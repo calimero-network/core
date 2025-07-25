@@ -4,20 +4,13 @@ ARG RUST_VERSION=1.85.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
 ################################################################################
-FROM rust:${RUST_VERSION}-slim AS builder-rust
+FROM rust:${RUST_VERSION}-slim-bookworm AS build
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
-    libclang-dev \
-    cmake \
-    git \
+    make \
     pkg-config \
     libssl-dev \
-    zlib1g-dev \
-    libsnappy-dev \
-    libbz2-dev \
-    liblz4-dev \
-    libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -27,15 +20,26 @@ COPY crates ./crates
 COPY apps ./apps
 COPY e2e-tests ./e2e-tests
 
+ARG CALIMERO_WEBUI_SRC
+ARG CALIMERO_WEBUI_REPO
+ARG CALIMERO_WEBUI_VERSION
+ARG CALIMERO_WEBUI_FETCH
+
+# ^~~ docker build
+#        --build-arg CALIMERO_WEBUI_FETCH=1
+#   env: --secret id=gh-token,env=CALIMERO_WEBUI_FETCH_TOKEN
+#  file: --secret id=gh-token,src=./gh_token.txt
+
 RUN --mount=type=cache,target=/app/target/ \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
+    --mount=type=secret,id=gh-token,env=CALIMERO_WEBUI_FETCH_TOKEN \
+    [ -n "$CALIMERO_WEBUI_FETCH_TOKEN" ] || unset CALIMERO_WEBUI_FETCH_TOKEN && \
     cargo build --locked --release -p merod -p meroctl && \
-    cp /app/target/release/merod /usr/local/bin/merod && \
-    cp /app/target/release/meroctl /usr/local/bin/meroctl
+    cp /app/target/release/merod /app/target/release/meroctl /usr/local/bin/
 
 ################################################################################
-FROM debian:bookworm-slim as runtime
+FROM debian:bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.description="Calimero Node" \
     org.opencontainers.image.licenses="MIT OR Apache-2.0" \
@@ -43,8 +47,7 @@ LABEL org.opencontainers.image.description="Calimero Node" \
     org.opencontainers.image.source="https://github.com/calimero-network/core" \
     org.opencontainers.image.url="https://calimero.network"
 
-RUN apt-get update && apt-get install -y \
-    libssl3 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -57,12 +60,17 @@ RUN adduser \
     --uid "${UID}" \
     user
 
-COPY --from=builder-rust /usr/local/bin/merod /usr/local/bin/merod
-COPY --from=builder-rust /usr/local/bin/meroctl /usr/local/bin/meroctl
+COPY --from=build \
+    /usr/local/bin/merod \
+    /usr/local/bin/meroctl \
+    /usr/local/bin/
 
 USER user
 WORKDIR /data
 ENV CALIMERO_HOME=/data
+
+VOLUME /data
+EXPOSE 2428 2528
 
 ENTRYPOINT ["merod"]
 CMD ["--help"]

@@ -1,5 +1,7 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
+use std::num::NonZeroUsize;
+
 use async_stream::stream;
 use calimero_blobstore::BlobManager;
 use calimero_crypto::SharedKey;
@@ -85,6 +87,7 @@ impl NodeClient {
         sender: &PublicKey,
         sender_key: &PrivateKey,
         artifact: Vec<u8>,
+        height: NonZeroUsize,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -109,6 +112,7 @@ impl NodeClient {
             author_id: *sender,
             root_hash: context.root_hash,
             artifact: encrypted.into(),
+            height,
             nonce,
         };
 

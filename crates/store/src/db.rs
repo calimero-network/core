@@ -19,6 +19,7 @@ pub enum Column {
     Config,
     Identity,
     State,
+    Delta,
     Blobs,
     Application,
     Alias,

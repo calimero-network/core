@@ -15,6 +15,7 @@ use tracing::debug;
 use super::{Sequencer, SyncManager};
 
 impl SyncManager {
+    #[expect(dead_code, reason = "superceded by delta sync")]
     pub(super) async fn initiate_state_sync_process(
         &self,
         context: &mut Context,
@@ -103,7 +104,7 @@ impl SyncManager {
         }
 
         let Some((their_root_hash, their_identity, their_nonce)) = triple else {
-            bail!("expected two state sync handshakes, got none");
+            bail!("expected up to two state sync handshakes, got none");
         };
 
         debug!(
@@ -150,7 +151,7 @@ impl SyncManager {
         )
         .await?;
 
-        self.bidirectional_sync(
+        self.bidirectional_state_sync(
             context,
             our_identity,
             their_identity,
@@ -254,7 +255,7 @@ impl SyncManager {
 
         let mut sqx_out = Sequencer::default();
 
-        self.bidirectional_sync(
+        self.bidirectional_state_sync(
             context,
             our_identity,
             their_identity,
@@ -267,7 +268,7 @@ impl SyncManager {
         .await
     }
 
-    async fn bidirectional_sync(
+    async fn bidirectional_state_sync(
         &self,
         context: &mut Context,
         our_identity: PublicKey,
