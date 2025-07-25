@@ -4,6 +4,11 @@ use camino::Utf8PathBuf;
 use eyre::bail;
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::{
+    ethereum::EthereumProtocolConfig, icp::IcpProtocolConfig, near::NearProtocolConfig,
+    stellar::StellarProtocolConfig,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DevnetConfig {
@@ -12,6 +17,9 @@ pub struct DevnetConfig {
 
     /// List of protocols to enable (e.g. ["near", "ethereum"])
     pub protocols: Vec<String>,
+
+    /// Protocol-specific configurations
+    pub protocol_configs: ProtocolConfigs,
 
     /// Host address for swarm connections
     pub swarm_host: String,
@@ -32,6 +40,15 @@ pub struct DevnetConfig {
     pub node_name: Utf8PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolConfigs {
+    pub near: NearProtocolConfig,
+    pub icp: IcpProtocolConfig,
+    pub stellar: StellarProtocolConfig,
+    pub ethereum: EthereumProtocolConfig,
+}
+
 impl DevnetConfig {
     pub fn new(
         node_count: u32,
@@ -42,6 +59,7 @@ impl DevnetConfig {
         start_server_port: u16,
         home_dir: Utf8PathBuf,
         node_name: Utf8PathBuf,
+        protocol_configs: ProtocolConfigs,
     ) -> Self {
         Self {
             node_count,
@@ -52,6 +70,7 @@ impl DevnetConfig {
             start_server_port,
             home_dir,
             node_name,
+            protocol_configs,
         }
     }
 
@@ -78,6 +97,13 @@ impl DevnetConfig {
 
         if self.start_server_port == 0 {
             bail!("Server port must be greater than 0".to_string());
+        }
+
+        for protocol in &self.protocols {
+            match protocol.as_str() {
+                "near" | "icp" | "stellar" | "ethereum" => (),
+                _ => bail!("Unsupported protocol: {}", protocol),
+            }
         }
 
         Ok(())

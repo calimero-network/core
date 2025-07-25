@@ -25,6 +25,7 @@ members = [
     "./crates/sdk",
     "./crates/sdk/libs/near",
     "./crates/sdk/macros",
+    "./crates/sandbox",
     "./crates/server",
     "./crates/server/primitives",
     "./crates/storage",
@@ -38,7 +39,6 @@ members = [
     "./apps/kv-store",
 
     "./e2e-tests",
-    "./crates/sandbox",
 ]
 
 [workspace.dependencies]
@@ -140,44 +140,8 @@ velcro = "0.5.4"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 web3 = "0.19.0"
-x509-parser = "0.16.0"
-
-calimero-config = { path = "./crates/config" }
-calimero-context = { path = "./crates/context" }
-calimero-context-config = { path = "./crates/context/config" }
-calimero-context-primitives = { path = "./crates/context/primitives" }
-calimero-crypto = { path = "./crates/crypto" }
-meroctl = { path = "./crates/meroctl" }
-merod = { path = "./crates/merod" }
-calimero-network = { path = "./crates/network" }
-calimero-network-primitives = { path = "./crates/network/primitives" }
-calimero-node = { path = "./crates/node" }
-calimero-node-primitives = { path = "./crates/node/primitives" }
-calimero-primitives = { path = "./crates/primitives" }
-calimero-runtime = { path = "./crates/runtime" }
-calimero-sdk = { path = "./crates/sdk" }
-calimero-sdk-near = { path = "./crates/sdk/libs/near" }
-calimero-sdk-macros = { path = "./crates/sdk/macros" }
-calimero-server = { path = "./crates/server" }
-calimero-server-primitives = { path = "./crates/server/primitives" }
-calimero-sandbox = { path = "./crates/sandbox" }
-calimero-storage = { path = "./crates/storage" }
-calimero-storage-macros = { path = "./crates/storage/macros" }
-calimero-store = { path = "./crates/store" }
-calimero-store-rocksdb = { path = "./crates/store/impl/rocksdb" }
-calimero-blobstore = { path = "./crates/store/blobs" }
-e2e-tests = { path = "./e2e-tests" }
-calimero-utils-actix = { path = "./crates/utils/actix" }
-calimero-version = { path = "./crates/version" }
-
-kv-store = { path = "./apps/kv-store" }
-
-calimero-registry = { path = "./contracts/near/registry" }
-calimero-context-config-near = { path = "./contracts/near/context-config" }
-calimero-context-proxy-near = { path = "./contracts/near/context-proxy" }
-calimero-test-counter-near = { path = "./contracts/near/test-counter" }
-=======
 webbrowser = "1.0.4"
+x509-parser = "0.16.0"
 
 calimero-blobstore.path = "./crates/store/blobs"
 calimero-config.path = "./crates/config"
@@ -191,6 +155,7 @@ calimero-node.path = "./crates/node"
 calimero-node-primitives.path = "./crates/node/primitives"
 calimero-primitives.path = "./crates/primitives"
 calimero-runtime.path = "./crates/runtime"
+calimero-sandbox.path = "./crates/sandbox"
 calimero-sdk.path = "./crates/sdk"
 calimero-sdk-macros.path = "./crates/sdk/macros"
 calimero-sdk-near.path = "./crates/sdk/libs/near"

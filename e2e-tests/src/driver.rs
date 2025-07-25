@@ -3,7 +3,7 @@ use std::collections::btree_map::{BTreeMap, Entry as BTreeMapEntry};
 use std::collections::hash_map::HashMap;
 use std::path::PathBuf;
 
-use calimero_sandbox::config::DevnetConfig;
+use calimero_sandbox::config::{DevnetConfig, ProtocolConfigs};
 use calimero_sandbox::protocol::ethereum::EthereumSandboxEnvironment;
 use calimero_sandbox::protocol::icp::IcpSandboxEnvironment;
 use calimero_sandbox::protocol::near::NearSandboxEnvironment;
@@ -15,7 +15,7 @@ use eyre::{bail, Result as EyreResult};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
-use tokio::fs::{read, read_dir, write};
+use tokio::fs::{read, read_dir, read_to_string, write};
 
 use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
@@ -155,7 +155,7 @@ impl Driver {
                 );
             };
 
-            let mero = self.setup_mero(&sandbox.clone()).await?;
+            let mero = self.setup_mero(protocol_name).await?;
 
             let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
                 bail!(
@@ -230,35 +230,32 @@ impl Driver {
         report.result()
     }
 
-    async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
+    async fn setup_mero(&self, protocol_name: &Protocol) -> eyre::Result<Mero> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
 
-        let devnet_config = DevnetConfig {
-            node_count: self.config.network.node_count,
-            protocols: vec![sandbox.name().to_owned()],
-            swarm_host: self.config.network.swarm_host.to_string(),
-            start_swarm_port: self.config.network.start_swarm_port,
-            server_host: self.config.network.server_host.to_string(),
-            start_server_port: self.config.network.start_server_port,
-            home_dir: self.environment.nodes_dir.clone(),
-            node_name: "devnet".into(),
-        };
+        let config = self.load_sandbox_config(protocol_name).await?;
+        let mut devnet = Devnet::new(config)?;
 
-        let mut devnet = Devnet::new(devnet_config);
         devnet.start().await?;
-
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let mut merods = HashMap::new();
-        for name in devnet.nodes.keys() {
+        for (name, node) in &devnet.nodes {
             let merod = Merod::new(self.environment.merod_binary.clone());
             let node_dir = self.environment.nodes_dir.join(name);
             if !node_dir.exists() {
                 tokio::fs::create_dir_all(&node_dir).await?;
             }
-            merod.start(&self.environment.nodes_dir, name).await?;
+
+            // Get protocol-specific args
+            let protocol_env = devnet.get_protocol_environment(protocol_name.as_str())?;
+            let node_args = protocol_env.node_args(name).await?;
+
+            merod
+                .start(&self.environment.nodes_dir, name, node_args)
+                .await?;
             merods.insert(name.clone(), merod);
         }
 
@@ -273,6 +270,50 @@ impl Driver {
             ds: merods,
         })
     }
+
+    async fn load_sandbox_config(&self, protocol: &Protocol) -> EyreResult<DevnetConfig> {
+        let config_path = self.environment.input_dir.join("config.json");
+        let config_content = read_to_string(config_path).await?;
+        let config: Config = serde_json::from_str(&config_content)?;
+
+        Ok(DevnetConfig {
+            node_count: config.network.node_count,
+            protocols: vec![protocol.as_str().to_string()],
+            protocol_configs: ProtocolConfigs {
+                near: config.protocol_sandboxes.iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Near(near) => Some(near.clone()),
+                        _ => None
+                    })
+                    .ok_or_else(|| eyre::eyre!("Near config not found"))?,
+                icp: config.protocol_sandboxes.iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Icp(icp) => Some(icp.clone()),
+                        _ => None
+                    })
+                    .ok_or_else(|| eyre::eyre!("ICP config not found"))?,
+                stellar: config.protocol_sandboxes.iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Stellar(stellar) => Some(stellar.clone()),
+                        _ => None
+                    })
+                    .ok_or_else(|| eyre::eyre!("Stellar config not found"))?,
+                ethereum: config.protocol_sandboxes.iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Ethereum(ethereum) => Some(ethereum.clone()),
+                        _ => None
+                    })
+                    .ok_or_else(|| eyre::eyre!("Ethereum config not found"))?,
+            },
+            swarm_host: config.network.swarm_host.to_string(),
+            start_swarm_port: config.network.start_swarm_port,
+            server_host: config.network.server_host.to_string(),
+            start_server_port: config.network.start_server_port,
+            home_dir: self.environment.nodes_dir.clone(),
+            node_name: "devnet".into(),
+        })
+    }
+
 
     async fn stop_merods(&self, merods: &HashMap<String, Merod>) {
         for (_, merod) in merods {

@@ -1,18 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Once;
 
 use eyre::bail;
 use tokio::net::TcpListener;
-
-static INIT: Once = Once::new();
-
-pub fn setup_logging() {
-    INIT.call_once(|| {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .init();
-    });
-}
 
 pub struct PortBinding {
     address: SocketAddr,
@@ -59,7 +48,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ports() -> eyre::Result<()> {
-        setup_logging();
 
         let env_hosts = env::var("TEST_HOSTS").ok();
 

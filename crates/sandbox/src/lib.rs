@@ -5,12 +5,16 @@ pub mod port_binding;
 pub mod protocol;
 
 use config::DevnetConfig;
+use eyre::bail;
 use port_binding::PortBinding;
+
+use crate::protocol::ProtocolSandboxEnvironment;
 
 #[derive(Debug)]
 pub struct Devnet {
     config: DevnetConfig,
     pub nodes: HashMap<String, Node>,
+    protocol_environments: HashMap<String, ProtocolSandboxEnvironment>,
 }
 
 #[derive(Debug)]
@@ -21,17 +25,66 @@ pub struct Node {
 }
 
 impl Devnet {
-    pub fn new(config: DevnetConfig) -> Self {
-        Self {
+    pub fn new(config: DevnetConfig) -> eyre::Result<Self> {
+        config.validate()?;
+
+        Ok(Self {
             config,
             nodes: HashMap::new(),
-        }
+            protocol_environments: HashMap::new(),
+        })
     }
 
     pub async fn start(&mut self) -> eyre::Result<()> {
+        self.init_protocol_environments().await?;
         self.start_nodes().await?;
         self.print_info();
         Ok(())
+    }
+
+    async fn init_protocol_environments(&mut self) -> eyre::Result<()> {
+        for protocol in &self.config.protocols {
+            if self.protocol_environments.contains_key(protocol) {
+                continue;
+            }
+
+            let env = match protocol.as_str() {
+                "near" => ProtocolSandboxEnvironment::Near(
+                    protocol::near::NearSandboxEnvironment::init(
+                        self.config.protocol_configs.near.clone(),
+                    )
+                    .await?,
+                ),
+                "icp" => {
+                    ProtocolSandboxEnvironment::Icp(protocol::icp::IcpSandboxEnvironment::init(
+                        self.config.protocol_configs.icp.clone(),
+                    )?)
+                }
+                "stellar" => ProtocolSandboxEnvironment::Stellar(
+                    protocol::stellar::StellarSandboxEnvironment::init(
+                        self.config.protocol_configs.stellar.clone(),
+                    )?,
+                ),
+                "ethereum" => ProtocolSandboxEnvironment::Ethereum(
+                    protocol::ethereum::EthereumSandboxEnvironment::init(
+                        self.config.protocol_configs.ethereum.clone(),
+                    )?,
+                ),
+                _ => bail!("Unsupported protocol: {}", protocol),
+            };
+
+            self.protocol_environments.insert(protocol.clone(), env);
+        }
+        Ok(())
+    }
+
+    pub fn get_protocol_environment(
+        &self,
+        protocol: &str,
+    ) -> eyre::Result<&ProtocolSandboxEnvironment> {
+        self.protocol_environments
+            .get(protocol)
+            .ok_or_else(|| eyre::eyre!("Protocol {} not initialized", protocol))
     }
 
     async fn start_nodes(&mut self) -> eyre::Result<()> {

@@ -1,4 +1,8 @@
-use calimero_sandbox::config::DevnetConfig;
+use calimero_sandbox::config::{DevnetConfig, ProtocolConfigs};
+use calimero_sandbox::protocol::ethereum::EthereumProtocolConfig;
+use calimero_sandbox::protocol::icp::IcpProtocolConfig;
+use calimero_sandbox::protocol::near::NearProtocolConfig;
+use calimero_sandbox::protocol::stellar::StellarProtocolConfig;
 use calimero_sandbox::Devnet;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -131,9 +135,29 @@ impl DevnetCommand {
                 let config = if let Some(config_path) = cmd.config {
                     let config_str = fs::read_to_string(&config_path).await?;
                     let config_file: DevnetConfigFile = serde_json::from_str(&config_str)?;
+
+                    // Load protocol configs from separate files
+                    let protocol_configs = ProtocolConfigs {
+                        near: load_protocol_config(
+                            &config_path.parent().unwrap().join("near.json"),
+                        )
+                        .await?,
+                        icp: load_protocol_config(&config_path.parent().unwrap().join("icp.json"))
+                            .await?,
+                        stellar: load_protocol_config(
+                            &config_path.parent().unwrap().join("stellar.json"),
+                        )
+                        .await?,
+                        ethereum: load_protocol_config(
+                            &config_path.parent().unwrap().join("ethereum.json"),
+                        )
+                        .await?,
+                    };
+
                     DevnetConfig {
                         node_count: config_file.node_count,
                         protocols: config_file.protocols,
+                        protocol_configs,
                         swarm_host: config_file.swarm_host,
                         start_swarm_port: config_file.swarm_port,
                         server_host: config_file.server_host,
@@ -148,9 +172,16 @@ impl DevnetCommand {
                             .map_or_else(|| "devnet".into(), |args| args.node_name.clone()),
                     }
                 } else {
+                    // Default configs for inline usage
                     DevnetConfig {
                         node_count: cmd.node_count.unwrap_or(3),
-                        protocols: vec![],
+                        protocols: vec!["near".into()], // Default to near
+                        protocol_configs: ProtocolConfigs {
+                            near: NearProtocolConfig::default(),
+                            icp: IcpProtocolConfig::default(),
+                            stellar: StellarProtocolConfig::default(),
+                            ethereum: EthereumProtocolConfig::default(),
+                        },
                         swarm_host: cmd.swarm_host.unwrap_or_else(|| "127.0.0.1".into()),
                         start_swarm_port: cmd.swarm_port.unwrap_or(2428),
                         server_host: cmd.server_host.unwrap_or_else(|| "127.0.0.1".into()),
@@ -166,7 +197,7 @@ impl DevnetCommand {
                     }
                 };
 
-                let mut devnet = Devnet::new(config);
+                let mut devnet = Devnet::new(config)?;
                 devnet.start().await?;
 
                 tokio::signal::ctrl_c().await?;
@@ -174,4 +205,11 @@ impl DevnetCommand {
             }
         }
     }
+}
+
+async fn load_protocol_config<T: serde::de::DeserializeOwned>(
+    path: &Utf8PathBuf,
+) -> eyre::Result<T> {
+    let config_str = fs::read_to_string(path).await?;
+    Ok(serde_json::from_str(&config_str)?)
 }

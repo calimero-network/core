@@ -2093,6 +2093,7 @@ dependencies = [
  "candid",
  "clap",
  "eyre",
+ "futures-util",
  "ic-agent",
  "near-workspaces",
  "reqwest 0.12.9",

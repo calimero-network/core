@@ -13,6 +13,7 @@ camino.workspace = true
 candid.workspace = true
 clap.workspace = true
 eyre.workspace = true
+futures-util.workspace = true
 ic-agent.workspace = true
 near-workspaces.workspace = true
 reqwest.workspace = true

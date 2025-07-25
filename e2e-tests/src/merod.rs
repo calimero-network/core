@@ -16,7 +16,12 @@ impl Merod {
         }
     }
 
-    pub async fn start(&self, home_dir: &Utf8Path, node_name: &str) -> eyre::Result<()> {
+    pub async fn start(
+        &self,
+        home_dir: &Utf8Path,
+        node_name: &str,
+        protocol_args: Vec<String>,
+    ) -> eyre::Result<()> {
         let mut init_command = tokio::process::Command::new(&self.binary_path);
         init_command
             .arg("--home")
@@ -41,6 +46,11 @@ impl Merod {
             .arg("--node-name")
             .arg(node_name)
             .arg("run");
+
+        // Add protocol-specific args
+        for arg in protocol_args {
+            command.arg(arg);
+        }
 
         let child = command.spawn()?;
         self.process.borrow_mut().replace(child);

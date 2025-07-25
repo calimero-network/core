@@ -14,6 +14,17 @@ pub struct NearProtocolConfig {
     pub mock_external_contract: Utf8PathBuf,
 }
 
+impl Default for NearProtocolConfig {
+    fn default() -> Self {
+        Self {
+            context_config_contract: "contracts/near/calimero_context_config_near.wasm".into(),
+            proxy_lib_contract: "contracts/near/calimero_context_proxy_near.wasm".into(),
+            mock_external_contract: "contracts/near/calimero_mock_external_near.wasm".into(),
+        }
+    }
+}
+
+
 #[derive(Debug, Clone)]
 pub struct NearSandboxEnvironment {
     pub worker: Worker<Sandbox>,
