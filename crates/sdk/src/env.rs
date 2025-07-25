@@ -257,3 +257,84 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
         panic_str("Blob operation failed")
     }
 }
+
+// ========================================
+// NETWORK-AWARE BLOB API
+// ========================================
+
+/// Try to open a blob with network discovery fallback.
+/// First attempts to open locally, then queries the network if not found.
+/// Returns a file descriptor that can be used with blob_read() and blob_close().
+/// Returns 0 if the blob is not found locally or in the network.
+///
+/// Note: This function uses the current context for network discovery.
+/// For cross-context blob sharing, use blob_open_with_context().
+pub fn blob_open_with_discovery(blob_id: &[u8; 32]) -> u64 {
+    // First try to open locally
+    let fd = blob_open(blob_id);
+    if fd != 0 {
+        return fd;
+    }
+
+    // If not found locally, try network discovery using current context
+    let current_context = context_id();
+    blob_open_with_context(blob_id, &current_context)
+}
+
+/// Try to open a blob with network discovery for a specific context.
+/// First attempts to open locally, then queries the network within the specified context.
+/// Returns a file descriptor that can be used with blob_read() and blob_close().
+/// Returns 0 if the blob is not found locally or in the network.
+pub fn blob_open_with_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> u64 {
+    // First try to open locally
+    let fd = blob_open(blob_id);
+    if fd != 0 {
+        return fd;
+    }
+
+    // If not found locally, try network discovery
+    // For MVP, we'll return 0 (not found) since the host functions for network discovery
+    // are not yet implemented in the runtime VM logic.
+    // In a full implementation, this would call:
+    // unsafe { sys::blob_open_with_discovery(Buffer::from(&blob_id[..]), Buffer::from(&context_id[..])) }
+
+    0 // Not found - network discovery not yet implemented in MVP
+}
+
+/// Check if a blob exists locally (without network discovery).
+/// Returns true if the blob can be opened locally.
+pub fn blob_exists_local(blob_id: &[u8; 32]) -> bool {
+    let fd = blob_open(blob_id);
+    if fd != 0 {
+        // Close the handle since we were just checking existence
+        let _ = blob_close(fd);
+        true
+    } else {
+        false
+    }
+}
+
+/// Query the network for blob availability in the current context.
+/// Returns true if the blob is available from at least one peer.
+///
+/// Note: This is a placeholder for MVP - actual network query functionality
+/// would need to be implemented in the runtime VM logic.
+pub fn blob_query_network(blob_id: &[u8; 32]) -> bool {
+    let current_context = context_id();
+    blob_query_network_with_context(blob_id, &current_context)
+}
+
+/// Query the network for blob availability in a specific context.
+/// Returns true if the blob is available from at least one peer.
+///
+/// Note: This is a placeholder for MVP - actual network query functionality
+/// would need to be implemented in the runtime VM logic.
+pub fn blob_query_network_with_context(_blob_id: &[u8; 32], _context_id: &[u8; 32]) -> bool {
+    // For MVP, always return false since network query host functions
+    // are not yet implemented in the runtime VM logic.
+    // In a full implementation, this would call:
+    // unsafe { sys::blob_query_network(Buffer::from(&blob_id[..]), Buffer::from(&context_id[..])).try_into() }
+    //     .unwrap_or_else(expected_boolean)
+
+    false // Network query not yet implemented in MVP
+}
