@@ -49,7 +49,7 @@ impl Merod {
 
         // Add protocol-specific args with --protocol-arg flag
         for arg in protocol_args {
-            command.arg("--protocol-arg").arg(arg);
+            command.arg("--protocol-config").arg(arg);
         }
 
         let child = command.spawn()?;
