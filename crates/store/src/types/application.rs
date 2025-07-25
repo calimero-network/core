@@ -11,8 +11,8 @@ pub struct ApplicationMeta {
     // pub refs: usize,
     pub bytecode: key::BlobMeta,
     pub size: u64,
-    pub source: Box<str>,
-    pub metadata: Box<[u8]>,
+    pub source: Box<str>,    // todo! use Cow<'a, str>
+    pub metadata: Box<[u8]>, // todo! use Cow<'a, [u8]>
     pub compiled: key::BlobMeta,
 }
 
