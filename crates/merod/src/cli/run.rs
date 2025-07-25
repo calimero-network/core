@@ -20,9 +20,9 @@ pub struct RunCommand {
     #[clap(long, value_parser = parse_key_val::<String, String>)]
     pub protocol_config: Vec<(String, String)>,
 
-      /// Enable admin API
-      #[clap(long, default_value_t = true)]
-      pub admin: bool,
+    /// Enable admin API
+    #[clap(long, default_value_t = true)]
+    pub admin: bool,
 }
 
 impl RunCommand {
