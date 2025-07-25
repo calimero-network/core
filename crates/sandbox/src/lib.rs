@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use config::DevnetConfig;
-use port_binding::PortBinding;
-
 pub mod config;
 pub mod port_binding;
 pub mod protocol;
+
+use config::DevnetConfig;
+use port_binding::PortBinding;
 
 #[derive(Debug)]
 pub struct Devnet {
