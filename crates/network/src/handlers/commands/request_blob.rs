@@ -17,6 +17,23 @@ const BLOB_TRANSFER_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute per
 const CHUNK_RECEIVE_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 const MAX_RETRY_ATTEMPTS: usize = 3;
 
+// Self-test for binary protocol
+fn test_binary_protocol() -> eyre::Result<()> {
+    let test_chunk = BlobChunk {
+        data: vec![1, 2, 3, 4, 5],
+        is_final: true,
+    };
+    let bytes = test_chunk.to_bytes();
+    let parsed = BlobChunk::from_bytes(&bytes)?;
+    
+    if test_chunk.data != parsed.data || test_chunk.is_final != parsed.is_final {
+        return Err(eyre::eyre!("Binary protocol self-test failed"));
+    }
+    
+    tracing::debug!("Binary protocol self-test passed");
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobRequest {
     pub blob_id: [u8; 32],
@@ -67,11 +84,16 @@ impl Handler<RequestBlob> for NetworkManager {
     type Result = ResponseFuture<<RequestBlob as Message>::Result>;
 
     fn handle(&mut self, request: RequestBlob, _ctx: &mut Context<Self>) -> Self::Result {
+        // Test binary protocol on first use
+        if let Err(e) = test_binary_protocol() {
+            warn!("Binary protocol test failed: {}", e);
+        }
+
         debug!(
             blob_id = %request.blob_id,
             context_id = %request.context_id,
             peer_id = %request.peer_id,
-            "Requesting blob from peer"
+            "Requesting blob from peer using binary chunk protocol"
         );
 
         let mut stream_control = self.swarm.behaviour().stream.new_control();
@@ -181,6 +203,14 @@ impl Handler<RequestBlob> for NetworkManager {
                     }
                 };
 
+                debug!(
+                    blob_id = %request.blob_id,
+                    peer_id = %request.peer_id,
+                    found = blob_response.found,
+                    size = ?blob_response.size,
+                    "Received initial blob response"
+                );
+
                 if blob_response.found {
                     debug!(
                         blob_id = %request.blob_id,
@@ -205,17 +235,33 @@ impl Handler<RequestBlob> for NetworkManager {
 
                     // Stream chunks until we get is_final=true
                     loop {
+                        debug!(
+                            blob_id = %request.blob_id,
+                            peer_id = %request.peer_id,
+                            chunk_number = chunk_count + 1,
+                            "Waiting for next chunk"
+                        );
+
                         let chunk_msg = match timeout(CHUNK_RECEIVE_TIMEOUT, stream.next()).await {
-                            Ok(Some(Ok(msg))) => msg,
+                            Ok(Some(Ok(msg))) => {
+                                debug!(
+                                    blob_id = %request.blob_id,
+                                    peer_id = %request.peer_id,
+                                    chunk_number = chunk_count + 1,
+                                    message_size = msg.data.len(),
+                                    "Received raw chunk message"
+                                );
+                                msg
+                            },
                             Ok(Some(Err(e))) => {
                                 // Emit failure event
                                 event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
                                     blob_id: request.blob_id,
                                     context_id: request.context_id,
                                     from_peer: request.peer_id,
-                                    error: format!("Failed to receive chunk: {}", e),
+                                    error: format!("Stream error while receiving chunk: {}", e),
                                 });
-                                return Err(e).wrap_err("Failed to receive chunk");
+                                return Err(e).wrap_err("Stream error while receiving chunk");
                             }
                             Ok(None) => {
                                 // Emit failure event
@@ -240,16 +286,69 @@ impl Handler<RequestBlob> for NetworkManager {
                         };
 
                         let blob_chunk: BlobChunk = match BlobChunk::from_bytes(&chunk_msg.data) {
-                            Ok(chunk) => chunk,
-                            Err(e) => {
-                                // Emit failure event
-                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                                    blob_id: request.blob_id,
-                                    context_id: request.context_id,
-                                    from_peer: request.peer_id,
-                                    error: format!("Failed to deserialize chunk: {}", e),
-                                });
-                                return Err(e).wrap_err("Failed to deserialize blob chunk");
+                            Ok(chunk) => {
+                                debug!(
+                                    blob_id = %request.blob_id,
+                                    peer_id = %request.peer_id,
+                                    chunk_number = chunk_count + 1,
+                                    chunk_data_size = chunk.data.len(),
+                                    is_final = chunk.is_final,
+                                    "Successfully parsed binary chunk"
+                                );
+                                chunk
+                            },
+                            Err(binary_error) => {
+                                // Try fallback to JSON parsing in case server is still using old format
+                                debug!(
+                                    blob_id = %request.blob_id,
+                                    peer_id = %request.peer_id,
+                                    chunk_number = chunk_count + 1,
+                                    binary_error = %binary_error,
+                                    "Binary parsing failed, trying JSON fallback"
+                                );
+
+                                #[derive(Debug, serde::Deserialize)]
+                                struct JsonBlobChunk {
+                                    data: Vec<u8>,
+                                    is_final: bool,
+                                }
+
+                                match serde_json::from_slice::<JsonBlobChunk>(&chunk_msg.data) {
+                                    Ok(json_chunk) => {
+                                        warn!(
+                                            blob_id = %request.blob_id,
+                                            peer_id = %request.peer_id,
+                                            chunk_number = chunk_count + 1,
+                                            "Server is using old JSON format for chunks!"
+                                        );
+                                        BlobChunk {
+                                            data: json_chunk.data,
+                                            is_final: json_chunk.is_final,
+                                        }
+                                    },
+                                    Err(json_error) => {
+                                        // Log raw data for debugging
+                                        debug!(
+                                            blob_id = %request.blob_id,
+                                            peer_id = %request.peer_id,
+                                            chunk_number = chunk_count + 1,
+                                            raw_data_size = chunk_msg.data.len(),
+                                            raw_data_hex = hex::encode(&chunk_msg.data[..std::cmp::min(100, chunk_msg.data.len())]),
+                                            binary_error = %binary_error,
+                                            json_error = %json_error,
+                                            "Failed to parse chunk as both binary and JSON - showing first 100 bytes as hex"
+                                        );
+                                        
+                                        // Emit failure event
+                                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                            blob_id: request.blob_id,
+                                            context_id: request.context_id,
+                                            from_peer: request.peer_id,
+                                            error: format!("Failed to parse chunk as binary ({}) or JSON ({})", binary_error, json_error),
+                                        });
+                                        return Err(eyre::eyre!("Failed to parse blob chunk as binary or JSON"));
+                                    }
+                                }
                             }
                         };
 

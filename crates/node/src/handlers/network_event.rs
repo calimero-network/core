@@ -66,7 +66,7 @@ async fn handle_blob_request_stream(
         %peer_id,
         blob_id = %hex::encode(blob_request.blob_id),
         context_id = %hex::encode(blob_request.context_id),
-        "Processing blob request stream"
+        "Processing blob request stream using binary chunk protocol"
     );
 
     // Wrap the entire blob serving in a timeout
@@ -136,6 +136,15 @@ async fn handle_blob_request_stream(
                         };
 
                         let chunk_data = blob_chunk.to_bytes();
+
+                        debug!(
+                            %peer_id,
+                            chunk_number = chunk_count,
+                            original_chunk_size = chunk.len(),
+                            binary_message_size = chunk_data.len(),
+                            is_final = blob_chunk.is_final,
+                            "Sending binary chunk data"
+                        );
 
                         // Send chunk with timeout
                         timeout(CHUNK_SEND_TIMEOUT, stream.send(StreamMessage::new(chunk_data)))
