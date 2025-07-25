@@ -196,7 +196,7 @@ impl Driver {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let mut merods = HashMap::new();
-        for (name, node) in &devnet.nodes {
+        for (name, _node) in &devnet.nodes {
             let merod = Merod::new(self.environment.merod_binary.clone());
             let node_dir = self.environment.nodes_dir.join(name);
             if !node_dir.exists() {
