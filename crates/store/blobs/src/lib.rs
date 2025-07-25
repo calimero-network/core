@@ -96,6 +96,10 @@ impl BlobManager {
         Blob::new(id, self.clone())
     }
 
+    pub async fn delete(&self, id: BlobId) -> EyreResult<bool> {
+        self.blob_store.delete(id).await
+    }
+
     pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, Hash, u64)>
     where
         T: AsyncRead,
@@ -233,7 +237,7 @@ pub struct Blob {
 
     // blob_mgr: BlobManager,
     #[expect(clippy::type_complexity, reason = "Acceptable here")]
-    stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>>>>,
+    stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>> + Send>>,
 }
 
 impl Blob {
@@ -298,6 +302,7 @@ trait BlobRepository {
     async fn has(&self, id: BlobId) -> EyreResult<bool>;
     async fn get(&self, id: BlobId) -> EyreResult<Option<Box<[u8]>>>;
     async fn put(&self, id: BlobId, data: &[u8]) -> EyreResult<()>;
+    async fn delete(&self, id: BlobId) -> EyreResult<bool>;
 }
 
 #[derive(Clone, Debug)]
@@ -339,6 +344,15 @@ impl BlobRepository for FileSystem {
 
     async fn put(&self, id: BlobId, data: &[u8]) -> EyreResult<()> {
         async_write(self.path(id), data).await.map_err(Into::into)
+    }
+
+    async fn delete(&self, id: BlobId) -> EyreResult<bool> {
+        let path = self.path(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == IoErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 

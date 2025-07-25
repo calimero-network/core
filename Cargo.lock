@@ -181,7 +181,6 @@ dependencies = [
  "alloy-genesis",
  "alloy-network",
  "alloy-provider",
- "alloy-pubsub",
  "alloy-rpc-client",
  "alloy-rpc-types",
  "alloy-serde",
@@ -189,8 +188,6 @@ dependencies = [
  "alloy-signer-local",
  "alloy-transport",
  "alloy-transport-http",
- "alloy-transport-ipc",
- "alloy-transport-ws",
 ]
 
 [[package]]
@@ -218,7 +215,6 @@ dependencies = [
  "auto_impl",
  "c-kzg",
  "derive_more 1.0.0",
- "k256",
  "serde",
 ]
 
@@ -248,7 +244,6 @@ dependencies = [
  "alloy-network-primitives",
  "alloy-primitives",
  "alloy-provider",
- "alloy-pubsub",
  "alloy-rpc-types-eth",
  "alloy-sol-types",
  "alloy-transport",
@@ -318,7 +313,6 @@ checksum = "9b15b13d38b366d01e818fe8e710d4d702ef7499eacd44926a06171dd9585d0c"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
- "k256",
  "serde",
  "thiserror 2.0.11",
 ]
@@ -460,18 +454,11 @@ dependencies = [
  "alloy-network",
  "alloy-network-primitives",
  "alloy-primitives",
- "alloy-pubsub",
  "alloy-rpc-client",
- "alloy-rpc-types-anvil",
- "alloy-rpc-types-debug",
  "alloy-rpc-types-eth",
- "alloy-rpc-types-trace",
- "alloy-rpc-types-txpool",
  "alloy-sol-types",
  "alloy-transport",
  "alloy-transport-http",
- "alloy-transport-ipc",
- "alloy-transport-ws",
  "async-stream",
  "async-trait",
  "auto_impl",
@@ -489,25 +476,6 @@ dependencies = [
  "tracing",
  "url",
  "wasmtimer",
-]
-
-[[package]]
-name = "alloy-pubsub"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de3a68996f193f542f9e29c88dfa8ed1369d6ee04fa764c1bf23dc11b2f9e4a2"
-dependencies = [
- "alloy-json-rpc",
- "alloy-primitives",
- "alloy-transport",
- "bimap",
- "futures",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tower 0.5.2",
- "tracing",
 ]
 
 [[package]]
@@ -540,11 +508,8 @@ checksum = "b37cc3c7883dc41be1b01460127ad7930466d0a4bb6ba15a02ee34d2745e2d7c"
 dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
- "alloy-pubsub",
  "alloy-transport",
  "alloy-transport-http",
- "alloy-transport-ipc",
- "alloy-transport-ws",
  "futures",
  "pin-project",
  "reqwest 0.12.9",
@@ -565,22 +530,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f18e68a3882f372e045ddc89eb455469347767d17878ca492cfbac81e71a111"
 dependencies = [
  "alloy-primitives",
- "alloy-rpc-types-anvil",
- "alloy-rpc-types-engine",
- "alloy-rpc-types-eth",
- "alloy-rpc-types-trace",
- "alloy-rpc-types-txpool",
- "alloy-serde",
- "serde",
-]
-
-[[package]]
-name = "alloy-rpc-types-anvil"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10d06300df4a87d960add35909240fc72da355dd2ac926fa6999f9efafbdc5a7"
-dependencies = [
- "alloy-primitives",
  "alloy-rpc-types-eth",
  "alloy-serde",
  "serde",
@@ -595,32 +544,6 @@ dependencies = [
  "alloy-consensus-any",
  "alloy-rpc-types-eth",
  "alloy-serde",
-]
-
-[[package]]
-name = "alloy-rpc-types-debug"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2834b7012054cb2f90ee9893b7cc97702edca340ec1ef386c30c42e55e6cd691"
-dependencies = [
- "alloy-primitives",
- "serde",
-]
-
-[[package]]
-name = "alloy-rpc-types-engine"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e83dde9fcf1ccb9b815cc0c89bba26bbbbaae5150a53ae624ed0fc63cb3676c1"
-dependencies = [
- "alloy-consensus",
- "alloy-eips",
- "alloy-primitives",
- "alloy-rlp",
- "alloy-serde",
- "derive_more 1.0.0",
- "serde",
- "strum 0.26.3",
 ]
 
 [[package]]
@@ -641,32 +564,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.11",
-]
-
-[[package]]
-name = "alloy-rpc-types-trace"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bd951155515fa452a2ca4b5434d4b3ab742bcd3d1d1b9a91704bcef5b8d2604"
-dependencies = [
- "alloy-primitives",
- "alloy-rpc-types-eth",
- "alloy-serde",
- "serde",
- "serde_json",
- "thiserror 2.0.11",
-]
-
-[[package]]
-name = "alloy-rpc-types-txpool"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21d8dd5bd94993eda3d56a8c4c0d693548183a35462523ffc4385c0b020d3b0c"
-dependencies = [
- "alloy-primitives",
- "alloy-rpc-types-eth",
- "alloy-serde",
- "serde",
 ]
 
 [[package]]
@@ -817,44 +714,6 @@ dependencies = [
  "tower 0.5.2",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "alloy-transport-ipc"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e88304aa8b796204e5e2500dfe235933ed692745e3effd94c3733643db6d218"
-dependencies = [
- "alloy-json-rpc",
- "alloy-pubsub",
- "alloy-transport",
- "bytes",
- "futures",
- "interprocess",
- "pin-project",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "alloy-transport-ws"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9653ea9aa06d0e02fcbe2f04f1c47f35a85c378ccefa98e54ae85210bc8bbfa"
-dependencies = [
- "alloy-pubsub",
- "alloy-transport",
- "futures",
- "http 1.1.0",
- "rustls 0.23.19",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tracing",
- "ws_stream_wasm",
 ]
 
 [[package]]
@@ -1316,17 +1175,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async_io_stream"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6d7b9decdf35d8908a7e3ef02f64c5e9b1695e230154c0e8de3969142d9b94c"
-dependencies = [
- "futures",
- "pharos",
- "rustc_version 0.4.1",
-]
-
-[[package]]
 name = "asynchronous-codec"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1407,6 +1255,7 @@ dependencies = [
  "matchit 0.7.3",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "rustversion",
@@ -1417,7 +1266,7 @@ dependencies = [
  "sha1",
  "sync_wrapper 1.0.2",
  "tokio",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "tower 0.5.2",
  "tower-layer",
  "tower-service",
@@ -1988,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-config"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
  "calimero-context",
@@ -2155,6 +2004,7 @@ dependencies = [
  "either",
  "eyre",
  "futures-util",
+ "hex",
  "libp2p",
  "owo-colors",
  "rand 0.8.5",
@@ -2162,7 +2012,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "webbrowser 1.0.4",
+ "webbrowser",
 ]
 
 [[package]]
@@ -2181,6 +2031,7 @@ dependencies = [
  "camino",
  "eyre",
  "futures-util",
+ "infer",
  "libp2p",
  "rand 0.8.5",
  "reqwest 0.12.9",
@@ -2213,15 +2064,20 @@ version = "0.1.0"
 dependencies = [
  "assert-json-diff",
  "borsh",
+ "bytes",
+ "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
  "fragile",
+ "futures-util",
  "ouroboros",
  "owo-colors",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
  "ureq",
  "wasmer",
  "wasmer-types",
@@ -2280,6 +2136,7 @@ dependencies = [
  "color-eyre",
  "eyre",
  "futures-util",
+ "hex",
  "libp2p",
  "multiaddr",
  "rand 0.8.5",
@@ -2289,7 +2146,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tower 0.4.13",
+ "tokio-util",
  "tower-http",
  "tower-sessions",
  "tracing",
@@ -2437,6 +2294,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-mero"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "clap",
+ "const_format",
+ "eyre",
+ "rust-embed",
+ "tokio",
+]
+
+[[package]]
+name = "cargo-platform"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84982c6c0ae343635a3a4ee6dedef965513735c8b183caa7289fa6e27399ebd4"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "cargo-util-schemas"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e63d2780ac94487eb9f1fea7b0d56300abc9eb488800854ca217f102f5caccca"
+dependencies = [
+ "semver 1.0.23",
+ "serde",
+ "serde-untagged",
+ "serde-value",
+ "thiserror 1.0.69",
+ "toml 0.8.19",
+ "unicode-xid",
+ "url",
+]
+
+[[package]]
+name = "cargo_metadata"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f7835cfc6135093070e95eb2b53e5d9b5c403dc3a6be6040ee026270aa82502"
+dependencies = [
+ "camino",
+ "cargo-platform",
+ "cargo-util-schemas",
+ "semver 1.0.23",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2460,6 +2369,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
 dependencies = [
  "nom",
+]
+
+[[package]]
+name = "cfb"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d38f2da7a0a2c4ccf0065be06397cc26a81f4e528be095826eee9d4adbb8c60f"
+dependencies = [
+ "byteorder",
+ "fnv",
+ "uuid 1.11.0",
 ]
 
 [[package]]
@@ -3279,7 +3199,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.100",
- "unicode-xid",
 ]
 
 [[package]]
@@ -3379,12 +3298,6 @@ name = "dlv-list"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0688c2a7f92e427f44895cd63841bff7b29f8d7a1648b9e7e07a4a365b2e1257"
-
-[[package]]
-name = "doctest-file"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aac81fa3e28d21450aa4d2ac065992ba96a1d7303efbce51a95f4fd175b67562"
 
 [[package]]
 name = "downcast"
@@ -3623,6 +3536,16 @@ name = "equivalent"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5443807d6dff69373d433ab9ef5378ad8df50ca6298caf15de6e52e24aaf54d5"
+
+[[package]]
+name = "erased-serde"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e004d887f51fcb9fef17317a2f3525c887d8aa3f4f50fed920816a688284a5b7"
+dependencies = [
+ "serde",
+ "typeid",
+]
 
 [[package]]
 name = "errno"
@@ -5054,6 +4977,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a588916bfdfd92e71cacef98a63d9b1f0d74d6599980d11894290e7ddefffcf7"
+dependencies = [
+ "cfb",
+]
+
+[[package]]
 name = "inotify"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5089,21 +5021,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "interprocess"
-version = "2.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d941b405bd2322993887859a8ee6ac9134945a24ec5ec763a8a962fc64dfec2d"
-dependencies = [
- "doctest-file",
- "futures-core",
- "libc",
- "recvmsg",
- "tokio",
- "widestring",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6128,15 +6045,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "malloc_buf"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "match_cfg"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6205,6 +6113,7 @@ dependencies = [
  "dirs",
  "eyre",
  "futures-util",
+ "hex",
  "libp2p",
  "notify",
  "rand 0.8.5",
@@ -6214,10 +6123,10 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "toml 0.8.19",
  "url",
- "webbrowser 0.8.15",
+ "webbrowser",
 ]
 
 [[package]]
@@ -6359,6 +6268,23 @@ name = "more-asserts"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7843ec2de400bcbc6a6328c958dc38e5359da6e93e72e37bc5246bf1ae776389"
+
+[[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http 1.1.0",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin 0.9.8",
+ "version_check",
+]
 
 [[package]]
 name = "multiaddr"
@@ -6669,7 +6595,7 @@ dependencies = [
  "near-stdx",
  "near-time",
  "num-rational 0.3.2",
- "ordered-float",
+ "ordered-float 4.5.0",
  "primitive-types 0.10.1",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -7098,15 +7024,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
-dependencies = [
- "malloc_buf",
-]
-
-[[package]]
 name = "objc2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7219,6 +7136,15 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "ordered-float"
+version = "2.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "ordered-float"
@@ -7457,16 +7383,6 @@ checksum = "edd1101f170f5903fde0914f899bb503d9ff5271d7ba76bbb70bea63690cc0d5"
 dependencies = [
  "pest",
  "sha2 0.10.8",
-]
-
-[[package]]
-name = "pharos"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9567389417feee6ce15dd6527a8a1ecac205ef62c2932bcf3d9f6fc5b78b414"
-dependencies = [
- "futures",
- "rustc_version 0.4.1",
 ]
 
 [[package]]
@@ -8033,12 +7949,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60fcc7d6849342eff22c4350c8b9a989ee8ceabc4b481253e8946b9fe83d684"
 
 [[package]]
-name = "raw-window-handle"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2ff9a1f06a88b01621b7ae906ef0211290d1c8a168a15542486a8f61c0833b9"
-
-[[package]]
 name = "rayon"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8078,12 +7988,6 @@ checksum = "678054eb77286b51581ba43620cc911abf02758c91f93f479767aed0f90458b2"
 dependencies = [
  "rand_core 0.3.1",
 ]
-
-[[package]]
-name = "recvmsg"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
 
 [[package]]
 name = "redox_syscall"
@@ -8843,18 +8747,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "send_wrapper"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
-
-[[package]]
 name = "serde"
 version = "1.0.215"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6513c1ad0b11a9376da888e3e0baa0077f1aed55c17f50e7b2397136129fb88f"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde-untagged"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "299d9c19d7d466db4ab10addd5703e4c615dec2a5a16dbbafe191045e87ee66e"
+dependencies = [
+ "erased-serde",
+ "serde",
+ "typeid",
+]
+
+[[package]]
+name = "serde-value"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
+dependencies = [
+ "ordered-float 2.10.1",
+ "serde",
 ]
 
 [[package]]
@@ -10226,23 +10145,7 @@ dependencies = [
  "futures-util",
  "log",
  "tokio",
- "tungstenite 0.24.0",
-]
-
-[[package]]
-name = "tokio-tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
-dependencies = [
- "futures-util",
- "log",
- "rustls 0.23.19",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls 0.26.0",
- "tungstenite 0.26.2",
- "webpki-roots 0.26.7",
+ "tungstenite",
 ]
 
 [[package]]
@@ -10552,29 +10455,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
-dependencies = [
- "bytes",
- "data-encoding",
- "http 1.1.0",
- "httparse",
- "log",
- "rand 0.9.0",
- "rustls 0.23.19",
- "rustls-pki-types",
- "sha1",
- "thiserror 2.0.11",
- "utf-8",
-]
-
-[[package]]
 name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"
@@ -11289,23 +11179,6 @@ dependencies = [
 
 [[package]]
 name = "webbrowser"
-version = "0.8.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db67ae75a9405634f5882791678772c94ff5f16a66535aae186e26aa0841fc8b"
-dependencies = [
- "core-foundation 0.9.4",
- "home",
- "jni",
- "log",
- "ndk-context",
- "objc",
- "raw-window-handle",
- "url",
- "web-sys",
-]
-
-[[package]]
-name = "webbrowser"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5df295f8451142f1856b1bd86a606dfe9587d439bc036e319c827700dbd555e"
@@ -11746,25 +11619,6 @@ name = "writeable"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e9df38ee2d2c3c5948ea468a8406ff0db0b29ae1ffde1bcf20ef305bcc95c51"
-
-[[package]]
-name = "ws_stream_wasm"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7999f5f4217fe3818726b66257a4475f71e74ffd190776ad053fa159e50737f5"
-dependencies = [
- "async_io_stream",
- "futures",
- "js-sys",
- "log",
- "pharos",
- "rustc_version 0.4.1",
- "send_wrapper",
- "thiserror 1.0.69",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
 
 [[package]]
 name = "wyz"
