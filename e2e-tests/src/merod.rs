@@ -47,9 +47,9 @@ impl Merod {
             .arg(node_name)
             .arg("run");
 
-        // Add protocol-specific args
+        // Add protocol-specific args with --protocol-arg flag
         for arg in protocol_args {
-            command.arg(arg);
+            command.arg("--protocol-arg").arg(arg);
         }
 
         let child = command.spawn()?;
