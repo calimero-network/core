@@ -7,12 +7,17 @@ use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
+use std::collections::HashMap;
 
 use crate::cli::RootArgs;
 
 /// Run a node
 #[derive(Debug, Parser)]
-pub struct RunCommand;
+pub struct RunCommand {
+    /// Protocol configuration arguments in key=value format
+    #[clap(long, value_parser = parse_key_val::<String, String>)]
+    pub protocol_config: Vec<(String, String)>,
+}
 
 impl RunCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
@@ -30,6 +35,9 @@ impl RunCommand {
             config.network.server.jsonrpc,
             config.network.server.websocket,
         );
+
+        // Convert protocol config args to HashMap
+        let protocol_config: HashMap<String, String> = self.protocol_config.into_iter().collect();
 
         start(NodeConfig {
             home: path.clone(),
@@ -49,7 +57,20 @@ impl RunCommand {
             blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
             server: server_config,
+            protocol_config,
         })
         .await
     }
+}
+
+fn parse_key_val<T, U>(s: &str) -> Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
+where
+    T: std::str::FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+    U: std::str::FromStr,
+    U::Err: std::error::Error + Send + Sync + 'static,
+{
+    let pos = s.find('=')
+        .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{}`", s))?;
+    Ok((s[..pos].parse()?, s[pos+1..].parse()?))
 }
