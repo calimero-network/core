@@ -207,13 +207,25 @@ impl Driver {
             let protocol_env = devnet.get_protocol_environment(protocol_name.as_str())?;
             let node_args = protocol_env.node_args(name).await?;
 
+            // Convert to --protocol-config arguments
+            let protocol_config_args = node_args
+                .into_iter()
+                .map(|arg| {
+                    let (key, value) = arg
+                        .split_once('=')
+                        .expect("Protocol config should be in key=value format");
+                    format!("--protocol-config={}={}", key, value)
+                })
+                .collect::<Vec<_>>();
+
             merod
-                .start(&self.environment.nodes_dir, name, node_args)
+                .start(&self.environment.nodes_dir, name, protocol_config_args)
                 .await?;
             merods.insert(name.clone(), merod);
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // Wait longer for nodes to fully initialize
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
         Ok(MeroWithDevnet {
             ctl: Meroctl::new(
