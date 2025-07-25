@@ -1,5 +1,5 @@
 use crate::entry::Identity;
-use crate::key::Generic as GenericKey;
+use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
@@ -8,7 +8,7 @@ pub struct GenericData<'a> {
     value: Slice<'a>,
 }
 
-impl PredefinedEntry for GenericKey {
+impl PredefinedEntry for key::Generic {
     type Codec = Identity;
     type DataType<'a> = GenericData<'a>;
 }
