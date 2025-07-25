@@ -62,6 +62,7 @@ struct ConfigSchema {
     type_info: ConfigType,
 }
 
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ConfigType {
@@ -69,7 +70,7 @@ enum ConfigType {
     Integer,
     Float,
     Boolean,
-    Object(HashMap<String, ConfigSchema>),
+    Object(Box<HashMap<String, ConfigSchema>>), 
     Array(Box<ConfigSchema>),
 }
 
@@ -273,7 +274,7 @@ impl ConfigCommand {
             "swarm".to_string(),
             ConfigSchema {
                 description: Some("Swarm network configuration".to_string()),
-                type_info: ConfigType::Object(swarm),
+                type_info: ConfigType::Object(Box::new(swarm)),
             },
         );
 
@@ -283,7 +284,7 @@ impl ConfigCommand {
             "network".to_string(),
             ConfigSchema {
                 description: Some("Network configuration".to_string()),
-                type_info: ConfigType::Object(network),
+                type_info: ConfigType::Object(Box::new(network)),
             },
         );
 
