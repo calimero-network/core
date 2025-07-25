@@ -62,7 +62,6 @@ struct ConfigSchema {
     type_info: ConfigType,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ConfigType {
@@ -70,7 +69,7 @@ enum ConfigType {
     Integer,
     Float,
     Boolean,
-    Object(Box<HashMap<String, ConfigSchema>>), 
+    Object(Box<HashMap<String, ConfigSchema>>),
     Array(Box<ConfigSchema>),
 }
 
