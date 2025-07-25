@@ -347,15 +347,13 @@ impl ContextClient {
         try_stream! {
             let mut iter = handle.iter::<key::ContextDelta>()?;
 
-            let first = public_key
-                .and_then(|public_key| {
-                    iter.seek(key::ContextDelta::new(
-                        context_id,
-                        public_key,
-                        start_height.get(),
-                    ))
-                    .transpose()
-                })
+            let first = iter
+                .seek(key::ContextDelta::new(
+                    context_id,
+                    public_key.unwrap_or([0; 32].into()),
+                    start_height.get(),
+                ))
+                .transpose()
                 .map(|k| (k, iter.read()));
 
             for (k, v) in first.into_iter().chain(iter.entries()) {
