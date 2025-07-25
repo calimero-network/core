@@ -229,7 +229,7 @@ impl Driver {
     async fn load_sandbox_config(&self, protocol: &Protocol) -> EyreResult<DevnetConfig> {
         Ok(DevnetConfig {
             node_count: self.config.network.node_count,
-            protocols: vec![protocol.as_str().to_string()],
+            protocols: vec![protocol.as_str().to_owned()],
             protocol_configs: ProtocolConfigs {
                 near: self
                     .config
