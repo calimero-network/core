@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 use std::collections::btree_map;
+use std::num::NonZeroUsize;
 
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
 };
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
+use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::execute::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
 };
@@ -75,7 +77,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
-        let is_state_op = ["init", "__calimero_sync_next"].contains(&&*method);
+        let is_state_op = "__calimero_sync_next" == method;
 
         if !is_state_op && *context.meta.root_hash == [0; 32] {
             return ActorResponse::reply(Err(ExecuteError::Uninitialized));
@@ -154,6 +156,7 @@ impl Handler<ExecuteRequest> for ContextManager {
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
+            let context_client = act.context_client.clone();
 
             async move {
                 let old_root_hash = context.root_hash;
@@ -161,6 +164,7 @@ impl Handler<ExecuteRequest> for ContextManager {
                 let outcome = internal_execute(
                     datastore,
                     &node_client,
+                    &context_client,
                     module,
                     &guard,
                     &mut context,
@@ -357,6 +361,7 @@ impl ContextManager {
 async fn internal_execute(
     datastore: Store,
     node_client: &NodeClient,
+    context_client: &ContextClient,
     module: calimero_runtime::Module,
     guard: &OwnedMutexGuard<ContextId>,
     context: &mut Context,
@@ -398,6 +403,21 @@ async fn internal_execute(
 
         if let Some(root_hash) = outcome.root_hash {
             context.root_hash = root_hash.into();
+
+            if !is_state_op {
+                let height = context_client
+                    .get_delta_height(&context.id, &executor)?
+                    .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
+
+                context_client.put_state_delta(
+                    &context.id,
+                    &executor,
+                    height,
+                    &outcome.artifact,
+                )?;
+
+                context_client.set_delta_height(&context.id, &executor, height)?;
+            }
 
             let mut handle = store.handle();
 

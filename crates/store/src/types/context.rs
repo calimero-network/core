@@ -1,11 +1,12 @@
+#![allow(single_use_lifetimes)]
+
+use std::borrow::Cow;
+use std::num::NonZeroUsize;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::{Borsh, Identity};
-use crate::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextConfig as ContextConfigKey,
-    ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
-    ContextState as ContextStateKey,
-};
+use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
@@ -14,13 +15,13 @@ pub type Hash = [u8; 32];
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextMeta {
-    pub application: ApplicationMetaKey,
+    pub application: key::ApplicationMeta,
     pub root_hash: Hash,
 }
 
 impl ContextMeta {
     #[must_use]
-    pub const fn new(application: ApplicationMetaKey, root_hash: Hash) -> Self {
+    pub const fn new(application: key::ApplicationMeta, root_hash: Hash) -> Self {
         Self {
             application,
             root_hash,
@@ -28,7 +29,7 @@ impl ContextMeta {
     }
 }
 
-impl PredefinedEntry for ContextMetaKey {
+impl PredefinedEntry for key::ContextMeta {
     type Codec = Borsh;
     type DataType<'a> = ContextMeta;
 }
@@ -65,7 +66,7 @@ impl ContextConfig {
     }
 }
 
-impl PredefinedEntry for ContextConfigKey {
+impl PredefinedEntry for key::ContextConfig {
     type Codec = Borsh;
     type DataType<'a> = ContextConfig;
 }
@@ -76,7 +77,7 @@ pub struct ContextState<'a> {
     pub value: Slice<'a>,
 }
 
-impl PredefinedEntry for ContextStateKey {
+impl PredefinedEntry for key::ContextState {
     type Codec = Identity;
     type DataType<'a> = ContextState<'a>;
 }
@@ -103,7 +104,18 @@ pub struct ContextIdentity {
     pub sender_key: Option<[u8; 32]>,
 }
 
-impl PredefinedEntry for ContextIdentityKey {
+impl PredefinedEntry for key::ContextIdentity {
     type Codec = Borsh;
     type DataType<'a> = ContextIdentity;
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub enum ContextDelta<'a> {
+    Head(NonZeroUsize),
+    Data(Cow<'a, [u8]>),
+}
+
+impl PredefinedEntry for key::ContextDelta {
+    type Codec = Borsh;
+    type DataType<'a> = ContextDelta<'a>;
 }

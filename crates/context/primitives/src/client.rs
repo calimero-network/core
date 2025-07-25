@@ -1,5 +1,7 @@
 #![allow(clippy::multiple_inherent_impl, reason = "better readability")]
 
+use std::num::NonZeroUsize;
+
 use async_stream::try_stream;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_node_primitives::client::NodeClient;
@@ -7,8 +9,9 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use calimero_store::{key, Store};
+use calimero_store::{key, types, Store};
 use calimero_utils_actix::LazyRecipient;
+use eyre::{bail, eyre};
 use futures_util::Stream;
 use tokio::sync::oneshot;
 
@@ -149,10 +152,10 @@ impl ContextClient {
         &self,
         start: Option<ContextId>,
     ) -> impl Stream<Item = eyre::Result<ContextId>> {
-        let datastore = self.datastore.handle();
+        let handle = self.datastore.handle();
 
         try_stream! {
-            let mut iter = datastore.iter::<key::ContextMeta>()?;
+            let mut iter = handle.iter::<key::ContextMeta>()?;
 
             let start = start.and_then(|s| iter.seek(key::ContextMeta::new(s)).transpose());
 
@@ -180,12 +183,12 @@ impl ContextClient {
         context_id: &ContextId,
         owned: Option<bool>,
     ) -> impl Stream<Item = eyre::Result<(PublicKey, bool)>> {
-        let datastore = self.datastore.handle();
+        let handle = self.datastore.handle();
         let context_id = *context_id;
         let only_owned = owned.unwrap_or(false);
 
         try_stream! {
-            let mut iter = datastore.iter::<key::ContextIdentity>()?;
+            let mut iter = handle.iter::<key::ContextIdentity>()?;
 
             let first = iter
                 .seek(key::ContextIdentity::new(context_id, [0; 32].into()))
@@ -276,5 +279,109 @@ impl ContextClient {
             .expect("Mailbox not to be dropped");
 
         receiver.await.expect("Mailbox not to be dropped")
+    }
+
+    pub fn set_delta_height(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        height: NonZeroUsize,
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.handle();
+
+        handle.put(
+            &key::ContextDelta::new(*context_id, *public_key, 0),
+            &types::ContextDelta::Head(height),
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_delta_height(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+    ) -> eyre::Result<Option<NonZeroUsize>> {
+        let handle = self.datastore.handle();
+
+        let key = key::ContextDelta::new(*context_id, *public_key, 0);
+
+        let Some(delta) = handle.get(&key)? else {
+            return Ok(None);
+        };
+
+        let types::ContextDelta::Head(height) = delta else {
+            bail!("Odd HEAD delta format for context: {context_id}, public key: {public_key}");
+        };
+
+        Ok(Some(height))
+    }
+
+    pub fn put_state_delta(
+        &self,
+        context_id: &ContextId,
+        public_key: &PublicKey,
+        height: NonZeroUsize,
+        delta: &[u8],
+    ) -> eyre::Result<()> {
+        let mut handle = self.datastore.handle();
+
+        handle.put(
+            &key::ContextDelta::new(*context_id, *public_key, height.get()),
+            &types::ContextDelta::Data(delta.into()),
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_state_deltas(
+        &self,
+        context_id: &ContextId,
+        public_key: Option<&PublicKey>,
+        start_height: NonZeroUsize,
+    ) -> impl Stream<Item = eyre::Result<(PublicKey, NonZeroUsize, Box<[u8]>)>> {
+        let handle = self.datastore.handle();
+        let context_id = *context_id;
+        let public_key = public_key.copied();
+
+        try_stream! {
+            let mut iter = handle.iter::<key::ContextDelta>()?;
+
+            let first = public_key
+                .and_then(|public_key| {
+                    iter.seek(key::ContextDelta::new(
+                        context_id,
+                        public_key,
+                        start_height.get(),
+                    ))
+                    .transpose()
+                })
+                .map(|k| (k, iter.read()));
+
+            for (k, v) in first.into_iter().chain(iter.entries()) {
+                let (k, v) = (k?, v?);
+
+                if k.context_id() != context_id {
+                    break;
+                }
+
+                let expected = k.public_key();
+                if let Some(public_key) = public_key {
+                    if expected != public_key {
+                        break;
+                    }
+                }
+
+                let Some(height) = NonZeroUsize::new(k.height()) else {
+                    continue;
+                };
+
+                let types::ContextDelta::Data(delta) = v else {
+                    return Err(eyre!("Odd DATA delta format for context: {context_id}, public key: {expected}, height: {height}"))?;
+                };
+
+                yield (expected, height, delta.into());
+            }
+        }
     }
 }
