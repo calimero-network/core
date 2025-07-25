@@ -82,11 +82,9 @@ enum SchemaValue {
     Integer(i64),
     Float(f64),
     Boolean(bool),
-    // For objects and arrays we'll just use null since we don't need their values in schema
     Null,
 }
 
-// Add these conversion functions
 impl From<&Value> for SchemaValue {
     fn from(value: &Value) -> Self {
         match value {
@@ -245,7 +243,6 @@ impl ConfigCommand {
         let mut current = doc.as_item_mut();
 
         for key in &key_parts[..key_parts.len() - 1] {
-            // toml_edit::Item does not have contains_key, so we must check if the key exists and is a table
             let needs_insert = match current.get_mut(*key) {
                 Some(item) if item.is_table() => false,
                 Some(_) | None => true,
@@ -287,7 +284,6 @@ impl ConfigCommand {
         Ok(())
     }
 
-    // Get the full config schema
     fn get_schema() -> HashMap<String, ConfigSchema> {
         let mut schema = HashMap::new();
 
@@ -415,25 +411,36 @@ impl ConfigCommand {
         modified: &toml_edit::DocumentMut,
         modified_keys: &HashSet<String>,
     ) -> EyreResult<()> {
+        let mut changes = HashMap::new();
+
         for key in modified_keys {
             let key_parts: Vec<&str> = key.split('.').collect();
             let table_name = key_parts[0];
 
-            println!("[{}]", table_name);
+            let entry = changes.entry(table_name).or_insert_with(Vec::new);
 
             let original_value = original.as_item().get(key);
             let modified_value = modified.as_item().get(key);
 
-            if let Some(orig) = original_value {
-                println!("-{} = {}", key, orig);
-            } else {
-                println!("-{} = (not set)", key);
-            }
+            entry.push((key.to_string(), original_value, modified_value));
+        }
 
-            if let Some(modif) = modified_value {
-                println!("+{} = {}", key, modif);
-            } else {
-                println!("+{} = (removed)", key);
+        for (table_name, changes) in changes {
+            println!("[{}]", table_name);
+
+            for (key, orig, modif) in changes {
+                if let Some(orig) = orig {
+                    println!("-{} = {}", key, orig);
+                } else {
+                    println!("-{} = (not set)", key);
+                }
+
+                if let Some(modif) = modif {
+                    println!("+{} = {}", key, modif);
+                } else {
+                    println!("+{} = (removed)", key);
+                }
+                println!();
             }
         }
         Ok(())
@@ -445,22 +452,34 @@ impl ConfigCommand {
 
         let mut current_schema = &schema;
         let mut path = Vec::new();
+        let mut current_schema_item: Option<&ConfigSchema> = None;
 
         for part in key_parts {
             path.push(part);
-            if let ConfigType::Object(fields) = &current_schema
-                .get(part)
-                .ok_or_else(|| eyre!("Unknown config key: {}", path.join(".")))?
-                .type_info
-            {
-                current_schema = &fields;
+            if let Some(schema_item) = current_schema.get(part) {
+                current_schema_item = Some(schema_item);
+                if let ConfigType::Object(fields) = &schema_item.type_info {
+                    current_schema = &fields;
+                } else {
+                    return Err(eyre!("Key {} is not an object", path.join(".")));
+                }
             } else {
-                return Err(eyre!("Key {} is not an object", path.join(".")));
+                return Err(eyre!("Unknown config key: {}", path.join(".")));
             }
         }
 
+        let current_schema_item =
+            current_schema_item.ok_or_else(|| eyre!("No schema found for key: {}", key))?;
+
         match self.print {
             PrintFormat::Default | PrintFormat::Human => {
+                println!(
+                    "{}: {} # {}",
+                    key.bold(),
+                    "object".cyan(),
+                    current_schema_item.description.as_deref().unwrap_or("")
+                );
+
                 for (field, field_schema) in current_schema {
                     let type_str = match &field_schema.type_info {
                         ConfigType::String => "string",
@@ -481,6 +500,11 @@ impl ConfigCommand {
             }
             PrintFormat::Toml => {
                 println!("# Schema for {}", key);
+                println!("# type: object");
+                if let Some(desc) = &current_schema_item.description {
+                    println!("# description: {}", desc);
+                }
+
                 for (field, field_schema) in current_schema {
                     let type_str = match &field_schema.type_info {
                         ConfigType::String => "string",
@@ -490,16 +514,21 @@ impl ConfigCommand {
                         ConfigType::Object(_) => "object",
                         ConfigType::Array(_) => "array",
                     };
-                    println!(
-                        "#   .{}: {} # {}",
-                        field,
-                        type_str,
-                        field_schema.description.as_deref().unwrap_or("")
-                    );
+
+                    println!("#   .{}:", field);
+                    println!("#     type: {}", type_str);
+                    if let Some(desc) = &field_schema.description {
+                        println!("#     description: {}", desc);
+                    }
+                    if let Some(default) = &field_schema.default {
+                        println!("#     default: {:?}", default);
+                    }
                 }
             }
             PrintFormat::Json => {
                 let mut schema_map = Map::new();
+                let mut properties = Map::new();
+
                 for (field, field_schema) in current_schema {
                     let mut field_info = Map::new();
                     field_info.insert(
@@ -516,13 +545,35 @@ impl ConfigCommand {
                     if let Some(desc) = &field_schema.description {
                         field_info.insert("description".to_owned(), desc.as_str().into());
                     }
-                    schema_map.insert(field.to_string(), field_info.into());
+                    if let Some(default) = &field_schema.default {
+                        field_info.insert("default".to_owned(), self.schema_value_to_json(default));
+                    }
+                    properties.insert(field.to_string(), field_info.into());
                 }
+
+                schema_map.insert("type".to_owned(), "object".into());
+                if let Some(desc) = &current_schema_item.description {
+                    schema_map.insert("description".to_owned(), desc.as_str().into());
+                }
+                schema_map.insert("properties".to_owned(), properties.into());
+
                 println!("{}", serde_json::to_string_pretty(&schema_map)?);
             }
         }
 
         Ok(())
+    }
+
+    fn schema_value_to_json(&self, value: &SchemaValue) -> JsonValue {
+        match value {
+            SchemaValue::String(s) => JsonValue::String(s.clone()),
+            SchemaValue::Integer(i) => JsonValue::Number((*i).into()),
+            SchemaValue::Float(f) => {
+                JsonValue::Number(serde_json::Number::from_f64(*f).unwrap_or(0.into()))
+            }
+            SchemaValue::Boolean(b) => JsonValue::Bool(*b),
+            SchemaValue::Null => JsonValue::Null,
+        }
     }
 
     pub async fn validate_toml(&self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
