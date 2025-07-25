@@ -4,10 +4,6 @@ use std::collections::hash_map::HashMap;
 use std::path::PathBuf;
 
 use calimero_sandbox::config::{DevnetConfig, ProtocolConfigs};
-use calimero_sandbox::protocol::ethereum::EthereumSandboxEnvironment;
-use calimero_sandbox::protocol::icp::IcpSandboxEnvironment;
-use calimero_sandbox::protocol::near::NearSandboxEnvironment;
-use calimero_sandbox::protocol::stellar::StellarSandboxEnvironment;
 use calimero_sandbox::protocol::ProtocolSandboxEnvironment;
 use calimero_sandbox::Devnet;
 use camino::Utf8Path;
@@ -76,9 +72,10 @@ pub struct Driver {
     config: Config,
 }
 
-pub struct Mero {
+pub struct MeroWithDevnet {
     ctl: Meroctl,
     ds: HashMap<String, Merod>,
+    devnet: Devnet,
 }
 
 impl Driver {
@@ -93,49 +90,8 @@ impl Driver {
         self.environment.init().await?;
 
         let mut report = TestRunReport::new();
-        let mut initialized_protocols: HashMap<Protocol, ProtocolSandboxEnvironment> =
-            HashMap::new();
 
         let protocols_dir = self.environment.input_dir.join("protocols");
-
-        for protocol in &self.environment.protocols {
-            if initialized_protocols.contains_key(protocol) {
-                continue;
-            }
-
-            for sandbox_cfg in &self.config.protocol_sandboxes {
-                let config_protocol = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(_) => Protocol::Stellar,
-                    ProtocolSandboxConfig::Near(_) => Protocol::Near,
-                    ProtocolSandboxConfig::Icp(_) => Protocol::Icp,
-                    ProtocolSandboxConfig::Ethereum(_) => Protocol::Ethereum,
-                };
-
-                if &config_protocol != protocol {
-                    continue;
-                }
-
-                let sandbox_env = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(config) => ProtocolSandboxEnvironment::Stellar(
-                        StellarSandboxEnvironment::init(config.clone())?,
-                    ),
-                    ProtocolSandboxConfig::Near(config) => ProtocolSandboxEnvironment::Near(
-                        NearSandboxEnvironment::init(config.clone()).await?,
-                    ),
-                    ProtocolSandboxConfig::Icp(config) => ProtocolSandboxEnvironment::Icp(
-                        IcpSandboxEnvironment::init(config.clone())?,
-                    ),
-                    ProtocolSandboxConfig::Ethereum(config) => {
-                        ProtocolSandboxEnvironment::Ethereum(EthereumSandboxEnvironment::init(
-                            config.clone(),
-                        )?)
-                    }
-                };
-
-                initialized_protocols.insert(*protocol, sandbox_env);
-                break;
-            }
-        }
 
         for protocol_name in &self.environment.protocols {
             let protocol_path = protocols_dir.join(protocol_name.as_str());
@@ -148,14 +104,12 @@ impl Driver {
                 continue;
             }
 
-            let Some(sandbox) = initialized_protocols.get(&protocol_name) else {
-                bail!(
-                    "Sandbox not initialized for protocol: {}",
-                    protocol_name.as_str()
-                );
-            };
-
             let mero = self.setup_mero(protocol_name).await?;
+
+            // Get protocol environment from devnet
+            let protocol_env = mero
+                .devnet
+                .get_protocol_environment(protocol_name.as_str())?;
 
             let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
                 bail!(
@@ -183,7 +137,7 @@ impl Driver {
                     self.environment.output_writer,
                     protocol_name,
                     None,
-                    sandbox,
+                    protocol_env,
                 );
                 let test_file_path = app.path();
 
@@ -199,7 +153,7 @@ impl Driver {
 
                 self.environment
                     .output_writer
-                    .write_header(&format!("Running protocol {}", sandbox.name()), 1);
+                    .write_header(&format!("Running protocol {}", protocol_env.name()), 1);
 
                 report = self
                     .run_scenarios(&mut ctx, report, app_name, scenario, &test_file_path)
@@ -207,7 +161,7 @@ impl Driver {
 
                 self.environment
                     .output_writer
-                    .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
+                    .write_header(&format!("Finished protocol {}", protocol_env.name()), 1);
             }
 
             self.stop_merods(&mero.ds).await;
@@ -230,7 +184,7 @@ impl Driver {
         report.result()
     }
 
-    async fn setup_mero(&self, protocol_name: &Protocol) -> eyre::Result<Mero> {
+    async fn setup_mero(&self, protocol_name: &Protocol) -> eyre::Result<MeroWithDevnet> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
@@ -261,13 +215,14 @@ impl Driver {
 
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-        Ok(Mero {
+        Ok(MeroWithDevnet {
             ctl: Meroctl::new(
                 self.environment.nodes_dir.clone(),
                 self.environment.meroctl_binary.clone(),
                 self.environment.output_writer,
             ),
             ds: merods,
+            devnet,
         })
     }
 
