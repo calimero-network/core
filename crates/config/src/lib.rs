@@ -158,6 +158,10 @@ impl ConfigFile {
         dir.join(CONFIG_FILE).is_file()
     }
 
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        self.context.client.validate()
+    }
+
     pub async fn load(dir: &Utf8Path) -> EyreResult<Self> {
         let path = dir.join(CONFIG_FILE);
         let content = read_to_string(&path).await.wrap_err_with(|| {
@@ -167,7 +171,14 @@ impl ConfigFile {
             )
         })?;
 
-        toml::from_str(&content).map_err(Into::into)
+        let config: Self = toml::from_str(&content).wrap_err("invalid config TOML")?;
+
+        if let Err(errors) = config.validate() {
+            let combined = errors.join("\n");
+            eyre::bail!("configuration validation failed:\n{}", combined);
+        }
+
+        Ok(config)
     }
 
     pub async fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
