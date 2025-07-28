@@ -1,11 +1,13 @@
 use std::borrow::Cow;
 use std::collections::btree_map;
+use std::num::NonZeroUsize;
 
 use actix::{
     ActorFuture, ActorFutureExt, ActorResponse, ActorTryFutureExt, Handler, Message, WrapFuture,
 };
 use calimero_context_config::repr::ReprTransmute;
 use calimero_context_primitives::client::crypto::ContextIdentity;
+use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::execute::{
     ExecuteError, ExecuteEvent, ExecuteRequest, ExecuteResponse,
 };
@@ -75,7 +77,7 @@ impl Handler<ExecuteRequest> for ContextManager {
             }
         };
 
-        let is_state_op = ["init", "__calimero_sync_next"].contains(&&*method);
+        let is_state_op = "__calimero_sync_next" == method;
 
         if !is_state_op && *context.meta.root_hash == [0; 32] {
             return ActorResponse::reply(Err(ExecuteError::Uninitialized));
@@ -154,13 +156,15 @@ impl Handler<ExecuteRequest> for ContextManager {
         let execute_task = module_task.and_then(move |(guard, mut context, module), act, _ctx| {
             let datastore = act.datastore.clone();
             let node_client = act.node_client.clone();
+            let context_client = act.context_client.clone();
 
             async move {
                 let old_root_hash = context.root_hash;
 
-                let outcome = internal_execute(
+                let (outcome, delta_height) = internal_execute(
                     datastore,
                     &node_client,
+                    &context_client,
                     module,
                     &guard,
                     &mut context,
@@ -183,63 +187,72 @@ impl Handler<ExecuteRequest> for ContextManager {
                     "executed request"
                 );
 
-                Ok((guard, context, outcome))
+                Ok((guard, context, outcome, delta_height))
             }
             .into_actor(act)
         });
 
-        let external_task = execute_task.and_then(move |(guard, context, outcome), act, _ctx| {
-            if let Some(cached_context) = act.contexts.get_mut(&context_id) {
-                cached_context.meta.root_hash = context.root_hash;
-            }
-
-            let node_client = act.node_client.clone();
-            let context_client = act.context_client.clone();
-
-            async move {
-                if outcome.returns.is_err() {
-                    return Ok((guard, context.root_hash, outcome));
+        let external_task =
+            execute_task.and_then(move |(guard, context, outcome, delta_height), act, _ctx| {
+                if let Some(cached_context) = act.contexts.get_mut(&context_id) {
+                    cached_context.meta.root_hash = context.root_hash;
                 }
 
-                if !(is_state_op || outcome.artifact.is_empty()) {
-                    node_client
-                        .broadcast(&context, &executor, &sender_key, outcome.artifact.clone())
-                        .await?;
+                let node_client = act.node_client.clone();
+                let context_client = act.context_client.clone();
+
+                async move {
+                    if outcome.returns.is_err() {
+                        return Ok((guard, context.root_hash, outcome));
+                    }
+
+                    if !(is_state_op || outcome.artifact.is_empty()) {
+                        if let Some(height) = delta_height {
+                            node_client
+                                .broadcast(
+                                    &context,
+                                    &executor,
+                                    &sender_key,
+                                    outcome.artifact.clone(),
+                                    height,
+                                )
+                                .await?;
+                        }
+                    }
+
+                    let external_client =
+                        context_client.external_client(&context_id, &external_config)?;
+
+                    let proxy_client = external_client.proxy();
+
+                    for (proposal_id, actions) in &outcome.proposals {
+                        let actions = borsh::from_slice(actions)?;
+
+                        let proposal_id = proposal_id.rt().expect("infallible conversion");
+
+                        proxy_client
+                            .propose(&executor, &proposal_id, actions)
+                            .await?;
+                    }
+
+                    for proposal_id in &outcome.approvals {
+                        let proposal_id = proposal_id.rt().expect("infallible conversion");
+
+                        proxy_client.approve(&executor, &proposal_id).await?;
+                    }
+
+                    Ok((guard, context.root_hash, outcome))
                 }
-
-                let external_client =
-                    context_client.external_client(&context_id, &external_config)?;
-
-                let proxy_client = external_client.proxy();
-
-                for (proposal_id, actions) in &outcome.proposals {
-                    let actions = borsh::from_slice(actions)?;
-
-                    let proposal_id = proposal_id.rt().expect("infallible conversion");
-
-                    proxy_client
-                        .propose(&executor, &proposal_id, actions)
-                        .await?;
-                }
-
-                for proposal_id in &outcome.approvals {
-                    let proposal_id = proposal_id.rt().expect("infallible conversion");
-
-                    proxy_client.approve(&executor, &proposal_id).await?;
-                }
-
-                Ok((guard, context.root_hash, outcome))
-            }
-            .map_err(|err| {
-                error!(
+                .map_err(|err| {
+                    error!(
                     ?err,
                     "execution succeeded, but an error occurred while performing external actions"
                 );
 
-                err
-            })
-            .into_actor(act)
-        });
+                    err
+                })
+                .into_actor(act)
+            });
 
         let task = external_task
             .map_err(|err, _act, _ctx| {
@@ -357,6 +370,7 @@ impl ContextManager {
 async fn internal_execute(
     datastore: Store,
     node_client: &NodeClient,
+    context_client: &ContextClient,
     module: calimero_runtime::Module,
     guard: &OwnedMutexGuard<ContextId>,
     context: &mut Context,
@@ -364,7 +378,7 @@ async fn internal_execute(
     method: Cow<'static, str>,
     input: Cow<'static, [u8]>,
     is_state_op: bool,
-) -> eyre::Result<Outcome> {
+) -> eyre::Result<(Outcome, Option<NonZeroUsize>)> {
     let storage = ContextStorage::from(datastore, context.id);
 
     let (outcome, storage) = execute(
@@ -379,7 +393,7 @@ async fn internal_execute(
     .await?;
 
     if outcome.returns.is_err() {
-        return Ok(outcome);
+        return Ok((outcome, None));
     }
 
     'fine: {
@@ -393,11 +407,30 @@ async fn internal_execute(
         }
     }
 
+    let mut height = None;
+
     if !storage.is_empty() {
         let store = storage.commit()?;
 
         if let Some(root_hash) = outcome.root_hash {
             context.root_hash = root_hash.into();
+
+            if !is_state_op {
+                let delta_height = context_client
+                    .get_delta_height(&context.id, &executor)?
+                    .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
+
+                height = Some(delta_height);
+
+                context_client.put_state_delta(
+                    &context.id,
+                    &executor,
+                    delta_height,
+                    &outcome.artifact,
+                )?;
+
+                context_client.set_delta_height(&context.id, &executor, delta_height)?;
+            }
 
             let mut handle = store.handle();
 
@@ -432,7 +465,7 @@ async fn internal_execute(
         }),
     }))?;
 
-    Ok(outcome)
+    Ok((outcome, height))
 }
 
 pub async fn execute(
