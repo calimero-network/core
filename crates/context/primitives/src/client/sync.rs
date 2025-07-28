@@ -101,28 +101,25 @@ impl ContextClient {
 
                 let metadata = application.metadata;
 
-                let derived_application_id = match source.scheme() {
-                    "http" | "https" => {
-                        match self
+                let derived_application_id = {
+                    let app_id = match source.scheme() {
+                        "http" | "https" => self
                             .node_client
                             .install_application_from_url(source.clone(), metadata.clone(), None)
                             .await
-                        {
-                            Ok(app_id) => app_id,
-                            Err(_) => self.node_client.install_application(
-                                &application.blob.bytecode,
-                                application.size,
-                                &source.into(),
-                                metadata,
-                            )?,
-                        }
+                            .ok(),
+                        _ => None,
+                    };
+
+                    match app_id {
+                        Some(id) => id,
+                        None => self.node_client.install_application(
+                            &application.blob.bytecode,
+                            application.size,
+                            &source.into(),
+                            metadata,
+                        )?,
                     }
-                    _ => self.node_client.install_application(
-                        &application.blob.bytecode,
-                        application.size,
-                        &source.into(),
-                        metadata,
-                    )?,
                 };
 
                 if application.id != derived_application_id {
