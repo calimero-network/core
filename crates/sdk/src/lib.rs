@@ -1,3 +1,5 @@
+#![allow(wasm_c_abi, reason = "This is accounted for in the host")]
+
 pub use {borsh, serde, serde_json};
 
 pub mod env;

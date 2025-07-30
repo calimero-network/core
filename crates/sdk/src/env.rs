@@ -1,9 +1,9 @@
 use std::panic::set_hook;
 
 use crate::event::AppEvent;
-use crate::sys;
 use crate::sys::{
-    log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, RegisterId, ValueReturn,
+    self, log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, Ref, RegisterId,
+    ValueReturn,
 };
 
 #[doc(hidden)]
@@ -20,7 +20,12 @@ pub fn panic() -> ! {
 #[track_caller]
 #[inline]
 pub fn panic_str(message: &str) -> ! {
-    unsafe { panic_utf8(Buffer::from(message), Location::caller()) }
+    unsafe {
+        panic_utf8(
+            Ref::new(&Buffer::from(message)),
+            Ref::new(&Location::caller()),
+        )
+    }
 }
 
 #[track_caller]
@@ -46,7 +51,12 @@ pub fn setup_panic_hook() {
                 .map_or("<no message>", |message| &**message),
         };
 
-        unsafe { panic_utf8(Buffer::from(message), Location::from(info.location())) }
+        unsafe {
+            panic_utf8(
+                Ref::new(&Buffer::from(message)),
+                Ref::new(&Location::from(info.location())),
+            )
+        }
     }));
 }
 
@@ -80,7 +90,7 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
     let succeed: bool = unsafe {
         buffer.set_len(len);
 
-        sys::read_register(register_id, BufferMut::new(&mut buffer))
+        sys::read_register(register_id, Ref::new(&BufferMut::new(&mut buffer)))
             .try_into()
             .unwrap_or_else(expected_boolean)
     };
@@ -103,7 +113,7 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
         reason = "we don't want to copy the buffer, but write to the same one that's returned"
     )]
     let succeed: bool = unsafe {
-        sys::read_register(register_id, BufferMut::new(&mut buffer))
+        sys::read_register(register_id, Ref::new(&BufferMut::new(&mut buffer)))
             .try_into()
             .unwrap_or_else(expected_boolean)
     };
@@ -142,12 +152,12 @@ where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
 {
-    unsafe { sys::value_return(ValueReturn::from(result.as_ref())) }
+    unsafe { sys::value_return(Ref::new(&ValueReturn::from(result.as_ref()))) }
 }
 
 #[inline]
 pub fn log(message: &str) {
-    unsafe { log_utf8(Buffer::from(message)) }
+    unsafe { log_utf8(Ref::new(&Buffer::from(message))) }
 }
 
 #[inline]
@@ -155,7 +165,7 @@ pub fn emit<T: AppEvent>(event: &T) {
     let kind = event.kind();
     let data = event.data();
 
-    unsafe { sys::emit(Event::new(&kind, &data)) }
+    unsafe { sys::emit(Ref::new(&Event::new(&kind, &data))) }
 }
 
 pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {

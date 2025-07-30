@@ -7,18 +7,18 @@ pub use types::*;
 wasm_imports! {
     "env" => {
         fn panic(loc: Location<'_>) -> !;
-        fn panic_utf8(msg: Buffer<'_>, loc: Location<'_>) -> !;
+        fn panic_utf8(msg: Ref<Buffer<'_>>, loc: Ref<Location<'_>>) -> !;
         // --
         fn register_len(register_id: RegisterId) -> PtrSizedInt;
-        fn read_register(register_id: RegisterId, buf: BufferMut<'_>) -> Bool;
+        fn read_register(register_id: RegisterId, buf: Ref<BufferMut<'_>>) -> Bool;
         // --
         fn context_id(register_id: RegisterId);
         fn executor_id(register_id: RegisterId);
         // --
         fn input(register_id: RegisterId);
-        fn value_return(value: ValueReturn<'_>);
-        fn log_utf8(msg: Buffer<'_>);
-        fn emit(event: Event<'_>);
+        fn value_return(value: Ref<ValueReturn<'_>>);
+        fn log_utf8(msg: Ref<Buffer<'_>>);
+        fn emit(event: Ref<Event<'_>>);
         // --
         fn commit(root: Buffer<'_>, artifact: Buffer<'_>);
         // --
