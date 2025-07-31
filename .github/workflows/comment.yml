@@ -13,13 +13,15 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
 
     steps:
-      - env:
+      - name: Debug Workflow Run Payload
+        env:
           PD: ${{ toJson(github.event.workflow_run) }}
         run: echo "$PD"
 
       - name: Download artifact
         id: download
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: pr-comment-payload
           run-id: ${{ github.event.workflow_run.id }}
