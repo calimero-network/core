@@ -3,14 +3,12 @@ name: e2e-tests
 # without the e2e-tests workflow being run as it is a required check.
 
 on:
-  push:
-    branches: [miraclx/probe]
-  # pull_request:
-  #   paths-ignore:
-  #     - Cargo.toml
-  #     - Cargo.lock
-  #     - "crates/**"
-  #     - "e2e-tests/**"
+  pull_request:
+    paths-ignore:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
+      - "e2e-tests/**"
 
 jobs:
   test:
