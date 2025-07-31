@@ -2,7 +2,7 @@ name: PR Comment
 
 on:
   workflow_run:
-    workflows: ['e2e-tests', 'PR Description', 'PR Title']
+    workflows: ["e2e-tests", "PR Description", "PR Title"]
     types:
       - completed
 
@@ -14,7 +14,9 @@ jobs:
 
     steps:
       - name: Download artifact
+        id: download
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: pr-comment-payload
           run-id: ${{ github.event.workflow_run.id }}
@@ -23,6 +25,13 @@ jobs:
       - name: Extract payload
         id: payload
         run: |
+          echo ${{ success() }}
+          echo ${{ failure() }}
+          echo ${{ always() }}
+          echo ${{ steps.download.outcome }}
+          echo ${{ steps.download.conclusion }}
+          echo "${{ steps.download }}"
+
           cat payload.json
 
           echo "pr=$(jq '.pr' payload.json)" >> $GITHUB_OUTPUT
@@ -30,10 +39,10 @@ jobs:
           echo "mode=$(jq '.mode' payload.json)" >> $GITHUB_OUTPUT
           echo "message=$(jq '.message' payload.json)" >> $GITHUB_OUTPUT
 
-      - name: Apply pull request comment
-        uses: thollander/actions-comment-pull-request@v3
-        with:
-          pr-number: ${{ fromJson(steps.payload.outputs.pr) }}
-          comment-tag: ${{ fromJson(steps.payload.outputs.tag) }}
-          mode: ${{ fromJson(steps.payload.outputs.mode) }}
-          message: ${{ fromJson(steps.payload.outputs.message) }}
+      # - name: Apply pull request comment
+      #   uses: thollander/actions-comment-pull-request@v3
+      #   with:
+      #     pr-number: ${{ fromJson(steps.payload.outputs.pr) }}
+      #     comment-tag: ${{ fromJson(steps.payload.outputs.tag) }}
+      #     mode: ${{ fromJson(steps.payload.outputs.mode) }}
+      #     message: ${{ fromJson(steps.payload.outputs.message) }}
