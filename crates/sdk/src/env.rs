@@ -257,3 +257,33 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
         panic_str("Blob operation failed")
     }
 }
+
+// ========================================
+// NETWORK-AWARE BLOB API
+// ========================================
+
+/// Announce a blob to a specific context for network discovery.
+/// This makes the blob discoverable by other nodes in the context.
+/// Returns true if the announcement was successful.
+///
+/// # Arguments
+/// * `blob_id` - The 32-byte ID of the blob to announce
+/// * `context_id` - The 32-byte ID of the context to announce the blob in
+///
+/// # Example
+/// ```no_run
+/// use calimero_sdk::env;
+///
+/// // Create and write a blob
+/// let fd = env::blob_create();
+/// env::blob_write(fd, b"Hello, World!");
+/// let blob_id = env::blob_close(fd);
+///
+/// // Announce it to the current context
+/// let current_context = env::context_id();
+/// let announced = env::blob_announce_to_context(&blob_id, &current_context);
+/// ```
+pub fn blob_announce_to_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> bool {
+    unsafe { sys::blob_announce_to_context(Buffer::from(&blob_id[..]), Buffer::from(&context_id[..])).try_into() }
+        .unwrap_or_else(expected_boolean)
+}

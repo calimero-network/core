@@ -55,7 +55,7 @@ impl NodeClient {
             return Ok(None);
         };
 
-        let Some(bytes) = self.get_blob_bytes(&application.bytecode.blob_id()).await? else {
+        let Some(bytes) = self.get_blob_bytes(&application.bytecode.blob_id(), None).await? else {
             bail!("fatal: application points to dangling blob");
         };
 
@@ -74,7 +74,7 @@ impl NodeClient {
         Ok(false)
     }
 
-    pub fn install_application(
+    fn install_application(
         &self,
         blob_id: &BlobId,
         size: u64,

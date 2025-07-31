@@ -1,17 +1,17 @@
 use actix::StreamHandler;
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::stream::Stream;
-use libp2p::{PeerId, Stream as P2pStream};
+use libp2p::{PeerId, Stream as P2pStream, StreamProtocol};
 use tracing::debug;
 
 use crate::NetworkManager;
 
 #[derive(Debug)]
-pub struct FromIncoming(PeerId, P2pStream);
+pub struct FromIncoming(PeerId, P2pStream, StreamProtocol);
 
-impl From<(PeerId, P2pStream)> for FromIncoming {
-    fn from((id, stream): (PeerId, P2pStream)) -> Self {
-        Self(id, stream)
+impl FromIncoming {
+    pub fn from_stream(peer_id: PeerId, stream: P2pStream, protocol: StreamProtocol) -> Self {
+        FromIncoming(peer_id, stream, protocol)
     }
 }
 
@@ -20,10 +20,15 @@ impl StreamHandler<FromIncoming> for NetworkManager {
         debug!("started receiving incoming connections");
     }
 
-    fn handle(&mut self, FromIncoming(peer_id, stream): FromIncoming, _ctx: &mut Self::Context) {
+    fn handle(
+        &mut self,
+        FromIncoming(peer_id, stream, protocol): FromIncoming,
+        _ctx: &mut Self::Context,
+    ) {
         self.event_recipient.do_send(NetworkEvent::StreamOpened {
             peer_id,
             stream: Box::new(Stream::new(stream)),
+            protocol,
         });
     }
 
