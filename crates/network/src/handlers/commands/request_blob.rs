@@ -173,7 +173,7 @@ impl Handler<RequestBlob> for NetworkManager {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
-                            error: "Stream closed without response".to_string(),
+                            error: "Stream closed without response".to_owned(),
                         });
                         return Err(eyre!("Stream closed without response"));
                     }
@@ -183,7 +183,7 @@ impl Handler<RequestBlob> for NetworkManager {
                             blob_id: request.blob_id,
                             context_id: request.context_id,
                             from_peer: request.peer_id,
-                            error: "Timeout waiting for response".to_string(),
+                            error: "Timeout waiting for response".to_owned(),
                         });
                         return Err(eyre!("Timeout waiting for response"));
                     }
@@ -269,7 +269,7 @@ impl Handler<RequestBlob> for NetworkManager {
                                     blob_id: request.blob_id,
                                     context_id: request.context_id,
                                     from_peer: request.peer_id,
-                                    error: "Stream closed during chunk transfer".to_string(),
+                                    error: "Stream closed during chunk transfer".to_owned(),
                                 });
                                 return Err(eyre!("Stream closed during chunk transfer"));
                             }
@@ -402,7 +402,7 @@ impl Handler<RequestBlob> for NetworkManager {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
                         from_peer: request.peer_id,
-                        error: "Blob not found on peer".to_string(),
+                        error: "Blob not found on peer".to_owned(),
                     });
                     Ok(None)
                 }
