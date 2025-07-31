@@ -321,7 +321,7 @@ impl ContextClient {
         &self,
         context_id: &ContextId,
         public_key: &PublicKey,
-        height: NonZeroUsize,
+        height: &NonZeroUsize,
         delta: &[u8],
     ) -> eyre::Result<()> {
         let mut handle = self.datastore.handle();
