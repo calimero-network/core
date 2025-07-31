@@ -30,7 +30,7 @@ jobs:
         continue-on-error: true
 
       - env:
-          S: ${{ success() }}
+          S: "${{ success() }}"
           # F: ${{ failure() }}
           # A: ${{ always() }}
           # O: ${{ steps.download.outcome }}
