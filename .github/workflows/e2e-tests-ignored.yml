@@ -31,8 +31,8 @@ jobs:
 
       - env:
           S: ${{ success() }}
-          F: ${{ failure() }}
-          A: ${{ always() }}
+          # F: ${{ failure() }}
+          # A: ${{ always() }}
           # O: ${{ steps.download.outcome }}
           # C: ${{ steps.download.conclusion }}
           # D: ${{ toJson(steps.download) }}
