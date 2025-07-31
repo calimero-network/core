@@ -33,4 +33,5 @@ jobs:
           # O: ${{ steps.download.outcome }}
           # C: ${{ steps.download.conclusion }}
           # D: ${{ toJson(steps.download) }}
-        run: env
+        run: |
+          echo "S: $S"
