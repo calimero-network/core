@@ -822,7 +822,8 @@ impl VMHostFunctions<'_> {
 
         // Read blob_id and context_id from memory
         let blob_id_bytes = self.read_guest_memory_sized::<32>(blob_id_ptr, blob_id_len)?;
-        let context_id_bytes = self.read_guest_memory_sized::<32>(context_id_ptr, context_id_len)?;
+        let context_id_bytes =
+            self.read_guest_memory_sized::<32>(context_id_ptr, context_id_len)?;
 
         let blob_id = BlobId::from(blob_id_bytes);
         let context_id = calimero_primitives::context::ContextId::from(context_id_bytes);
@@ -837,7 +838,8 @@ impl VMHostFunctions<'_> {
             })
         })?;
 
-        let blob_info = blob_info.ok_or_else(|| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+        let blob_info =
+            blob_info.ok_or_else(|| VMLogicError::HostError(HostError::BlobsNotSupported))?;
 
         // Announce blob to network
         tokio::task::block_in_place(|| {

@@ -284,6 +284,9 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
 /// let announced = env::blob_announce_to_context(&blob_id, &current_context);
 /// ```
 pub fn blob_announce_to_context(blob_id: &[u8; 32], context_id: &[u8; 32]) -> bool {
-    unsafe { sys::blob_announce_to_context(Buffer::from(&blob_id[..]), Buffer::from(&context_id[..])).try_into() }
-        .unwrap_or_else(expected_boolean)
+    unsafe {
+        sys::blob_announce_to_context(Buffer::from(&blob_id[..]), Buffer::from(&context_id[..]))
+            .try_into()
+    }
+    .unwrap_or_else(expected_boolean)
 }

@@ -9,6 +9,7 @@ use calimero_store::layer::LayerExt;
 use eyre::bail;
 use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
+
 use super::NodeClient;
 
 impl NodeClient {
@@ -37,8 +38,6 @@ impl NodeClient {
 
         Ok((blob_id, size))
     }
-
-
 
     /// Get blob from local storage or network if context_id is provided
     /// Returns a streaming Blob that can be used to read the data
@@ -177,7 +176,7 @@ impl NodeClient {
                                 );
                             }
                         }
-                }
+                    }
 
                     // If we reach here, all peers failed for this attempt
                     if attempt < MAX_RETRIES {
@@ -190,7 +189,7 @@ impl NodeClient {
                         );
                         tokio::time::sleep(RETRY_DELAY).await;
                     }
-            }
+                }
 
                 tracing::debug!(
                     blob_id = %blob_id,
