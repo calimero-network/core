@@ -22,6 +22,8 @@ jobs:
 
   stage:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - id: download
         run: exit 1
