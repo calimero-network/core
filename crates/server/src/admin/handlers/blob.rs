@@ -207,7 +207,7 @@ pub async fn download_handler(
                         blob_id,
                         size: 0,       // Will be updated by streaming response
                         hash: [0; 32], // Default hash
-                        mime_type: "application/octet-stream".to_string(),
+                        mime_type: "application/octet-stream".to_owned(),
                     }
                 }
                 Err(err) => {
@@ -217,7 +217,7 @@ pub async fn download_handler(
                         blob_id,
                         size: 0,
                         hash: [0; 32], // Default hash
-                        mime_type: "application/octet-stream".to_string(),
+                        mime_type: "application/octet-stream".to_owned(),
                     }
                 }
             };
