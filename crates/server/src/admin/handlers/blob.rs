@@ -190,7 +190,10 @@ pub async fn download_handler(
         None
     };
 
-    let blob_result = state.node_client.get_blob(&blob_id, context_id.as_ref()).await;
+    let blob_result = state
+        .node_client
+        .get_blob(&blob_id, context_id.as_ref())
+        .await;
 
     match blob_result {
         Ok(Some(blob)) => {

@@ -1,7 +1,8 @@
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_utils_actix::LazyRecipient;
-use libp2p::{gossipsub::{IdentTopic, MessageId, TopicHash}, Multiaddr};
+use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
+use libp2p::Multiaddr;
 use tokio::sync::oneshot;
 
 use crate::messages::{
@@ -63,10 +64,7 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn subscribe(
-        &self,
-        topic: IdentTopic,
-    ) -> eyre::Result<IdentTopic> {
+    pub async fn subscribe(&self, topic: IdentTopic) -> eyre::Result<IdentTopic> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
@@ -80,10 +78,7 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn unsubscribe(
-        &self,
-        topic: IdentTopic,
-    ) -> eyre::Result<IdentTopic> {
+    pub async fn unsubscribe(&self, topic: IdentTopic) -> eyre::Result<IdentTopic> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager
@@ -97,11 +92,7 @@ impl NetworkClient {
         rx.await.expect("Mailbox not to be dropped")
     }
 
-    pub async fn publish(
-        &self,
-        topic: TopicHash,
-        data: Vec<u8>,
-    ) -> eyre::Result<MessageId> {
+    pub async fn publish(&self, topic: TopicHash, data: Vec<u8>) -> eyre::Result<MessageId> {
         let (tx, rx) = oneshot::channel();
 
         self.network_manager

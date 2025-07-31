@@ -2036,7 +2036,6 @@ dependencies = [
  "camino",
  "eyre",
  "futures-util",
- "hex",
  "infer",
  "libp2p",
  "rand 0.8.5",

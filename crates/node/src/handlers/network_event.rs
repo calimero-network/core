@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use actix::{AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_primitives::client::ContextClient;
@@ -14,7 +15,6 @@ use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
@@ -73,7 +73,9 @@ async fn handle_blob_request_stream(
     // Wrap the entire blob serving in a timeout
     let serve_result = timeout(BLOB_SERVE_TIMEOUT, async {
         // Try to get the blob as a stream (handles chunked blobs efficiently)
-        let blob_stream = node_client.get_blob(&BlobId::from(blob_request.blob_id), None).await?;
+        let blob_stream = node_client
+            .get_blob(&BlobId::from(blob_request.blob_id), None)
+            .await?;
 
         let response = if let Some(_blob_stream) = blob_stream {
             debug!(%peer_id, "Blob found, will stream chunks");
@@ -101,10 +103,13 @@ async fn handle_blob_request_stream(
         let response_data = serde_json::to_vec(&response)
             .map_err(|e| eyre::eyre!("Failed to serialize blob response: {}", e))?;
 
-        timeout(CHUNK_SEND_TIMEOUT, stream.send(StreamMessage::new(response_data)))
-            .await
-            .map_err(|_| eyre::eyre!("Timeout sending response"))?
-            .map_err(|e| eyre::eyre!("Failed to send blob response: {}", e))?;
+        timeout(
+            CHUNK_SEND_TIMEOUT,
+            stream.send(StreamMessage::new(response_data)),
+        )
+        .await
+        .map_err(|_| eyre::eyre!("Timeout sending response"))?
+        .map_err(|e| eyre::eyre!("Failed to send blob response: {}", e))?;
 
         // If blob was found, stream the chunks
         if response.found {
@@ -123,7 +128,7 @@ async fn handle_blob_request_stream(
                     Ok(chunk) => {
                         chunk_count += 1;
                         total_bytes_sent += chunk.len();
-                        
+
                         debug!(
                             %peer_id,
                             chunk_number = chunk_count,
@@ -149,13 +154,17 @@ async fn handle_blob_request_stream(
                         );
 
                         // Send chunk with timeout
-                        timeout(CHUNK_SEND_TIMEOUT, stream.send(StreamMessage::new(chunk_data)))
-                            .await
-                            .map_err(|_| eyre::eyre!("Timeout sending chunk {}", chunk_count))?
-                            .map_err(|e| eyre::eyre!("Failed to send blob chunk: {}", e))?;
+                        timeout(
+                            CHUNK_SEND_TIMEOUT,
+                            stream.send(StreamMessage::new(chunk_data)),
+                        )
+                        .await
+                        .map_err(|_| eyre::eyre!("Timeout sending chunk {}", chunk_count))?
+                        .map_err(|e| eyre::eyre!("Failed to send blob chunk: {}", e))?;
 
                         // Add small delay for flow control to prevent overwhelming receiver
-                        if chunk_count % 10 == 0 { // Every 10 chunks (~10MB), add a small pause
+                        if chunk_count % 10 == 0 {
+                            // Every 10 chunks (~10MB), add a small pause
                             sleep(FLOW_CONTROL_DELAY).await;
                         }
                     }
@@ -174,13 +183,16 @@ async fn handle_blob_request_stream(
 
             let final_chunk_data = final_chunk.to_bytes();
 
-            timeout(CHUNK_SEND_TIMEOUT, stream.send(StreamMessage::new(final_chunk_data)))
-                .await
-                .map_err(|_| eyre::eyre!("Timeout sending final chunk"))?
-                .map_err(|e| eyre::eyre!("Failed to send final blob chunk: {}", e))?;
+            timeout(
+                CHUNK_SEND_TIMEOUT,
+                stream.send(StreamMessage::new(final_chunk_data)),
+            )
+            .await
+            .map_err(|_| eyre::eyre!("Timeout sending final chunk"))?
+            .map_err(|e| eyre::eyre!("Failed to send final blob chunk: {}", e))?;
 
             debug!(
-                %peer_id, 
+                %peer_id,
                 total_chunks = chunk_count + 1, // +1 for final chunk
                 total_bytes = total_bytes_sent,
                 "Successfully streamed all blob chunks"
@@ -189,7 +201,8 @@ async fn handle_blob_request_stream(
 
         debug!(%peer_id, "Blob request stream handled successfully");
         Ok(())
-    }).await;
+    })
+    .await;
 
     // Handle timeout result
     match serve_result {

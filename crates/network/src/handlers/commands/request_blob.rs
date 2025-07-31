@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use actix::{Context, Handler, Message, ResponseFuture};
 use calimero_network_primitives::messages::{NetworkEvent, RequestBlob};
 use calimero_network_primitives::stream::{
@@ -6,7 +8,6 @@ use calimero_network_primitives::stream::{
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
@@ -24,11 +25,11 @@ fn test_binary_protocol() -> eyre::Result<()> {
     };
     let bytes = test_chunk.to_bytes();
     let parsed = BlobChunk::from_bytes(&bytes)?;
-    
+
     if test_chunk.data != parsed.data || test_chunk.is_final != parsed.is_final {
         return Err(eyre::eyre!("Binary protocol self-test failed"));
     }
-    
+
     tracing::debug!("Binary protocol self-test passed");
     Ok(())
 }
@@ -65,16 +66,16 @@ impl BlobChunk {
         if bytes.len() < 9 {
             return Err(eyre::eyre!("Invalid chunk data: too short"));
         }
-        
+
         let data_len = u64::from_le_bytes(bytes[0..8].try_into()?) as usize;
         let is_final = bytes[8] != 0;
-        
+
         if bytes.len() != 9 + data_len {
             return Err(eyre::eyre!("Invalid chunk data: length mismatch"));
         }
-        
+
         let data = bytes[9..].to_vec();
-        
+
         Ok(Self { data, is_final })
     }
 }
@@ -337,7 +338,6 @@ impl Handler<RequestBlob> for NetworkManager {
                                             json_error = %json_error,
                                             "Failed to parse chunk as both binary and JSON - showing first 100 bytes as hex"
                                         );
-                                        
                                         // Emit failure event
                                         event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
                                             blob_id: request.blob_id,
@@ -417,7 +417,10 @@ impl Handler<RequestBlob> for NetworkManager {
                         blob_id: request.blob_id,
                         context_id: request.context_id,
                         from_peer: request.peer_id,
-                        error: format!("Blob transfer timed out after {} seconds", BLOB_TRANSFER_TIMEOUT.as_secs()),
+                        error: format!(
+                            "Blob transfer timed out after {} seconds",
+                            BLOB_TRANSFER_TIMEOUT.as_secs()
+                        ),
                     });
                     Err(eyre!("Blob transfer timed out"))
                 }

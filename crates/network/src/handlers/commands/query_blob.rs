@@ -1,4 +1,3 @@
-
 use actix::{Context, Handler, Message, ResponseFuture};
 use calimero_network_primitives::messages::QueryBlob;
 use eyre::eyre;
@@ -27,12 +26,12 @@ impl Handler<QueryBlob> for NetworkManager {
             key_bytes.extend_from_slice(&*context_id);
             key_bytes.extend_from_slice(&*request.blob_id);
 
-                    info!(
-            "QUERY: blob_id={}, context_id={}, key_len={}",
-            request.blob_id,
-            context_id,
-            key_bytes.len(),
-        );
+            info!(
+                "QUERY: blob_id={}, context_id={}, key_len={}",
+                request.blob_id,
+                context_id,
+                key_bytes.len(),
+            );
 
             RecordKey::new(&key_bytes)
         } else {
