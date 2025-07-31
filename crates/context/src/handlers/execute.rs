@@ -425,7 +425,7 @@ async fn internal_execute(
                 context_client.put_state_delta(
                     &context.id,
                     &executor,
-                    delta_height,
+                    &delta_height,
                     &outcome.artifact,
                 )?;
 
