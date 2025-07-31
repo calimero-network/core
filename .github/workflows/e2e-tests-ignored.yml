@@ -19,3 +19,18 @@ jobs:
         protocol: [near, icp, stellar, ethereum]
     steps:
       - run: echo "Ignored"
+
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - id: download
+        run: exit 1
+        continue-on-error: true
+
+      - run: |
+          echo ${{ success() }}
+          echo ${{ failure() }}
+          echo ${{ always() }}
+          echo ${{ steps.download.outcome }}
+          echo ${{ steps.download.conclusion }}
+          echo "${{ steps.download }}"
