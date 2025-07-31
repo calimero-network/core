@@ -3,6 +3,7 @@ mod buffer;
 mod event;
 mod location;
 mod pointer;
+mod r#ref;
 mod register;
 
 pub use bool::*;
@@ -10,6 +11,7 @@ pub use buffer::*;
 pub use event::*;
 pub use location::*;
 pub use pointer::*;
+pub use r#ref::*;
 pub use register::*;
 
 #[repr(C, u64)]

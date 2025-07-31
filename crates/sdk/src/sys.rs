@@ -7,45 +7,45 @@ pub use types::*;
 wasm_imports! {
     "env" => {
         fn panic(loc: Location<'_>) -> !;
-        fn panic_utf8(msg: Buffer<'_>, loc: Location<'_>) -> !;
+        fn panic_utf8(msg: Ref<Buffer<'_>>, loc: Ref<Location<'_>>) -> !;
         // --
         fn register_len(register_id: RegisterId) -> PtrSizedInt;
-        fn read_register(register_id: RegisterId, buf: BufferMut<'_>) -> Bool;
+        fn read_register(register_id: RegisterId, buf: Ref<BufferMut<'_>>) -> Bool;
         // --
         fn context_id(register_id: RegisterId);
         fn executor_id(register_id: RegisterId);
         // --
         fn input(register_id: RegisterId);
-        fn value_return(value: ValueReturn<'_>);
-        fn log_utf8(msg: Buffer<'_>);
-        fn emit(event: Event<'_>);
+        fn value_return(value: Ref<ValueReturn<'_>>);
+        fn log_utf8(msg: Ref<Buffer<'_>>);
+        fn emit(event: Ref<Event<'_>>);
         // --
-        fn commit(root: Buffer<'_>, artifact: Buffer<'_>);
+        fn commit(root: Ref<Buffer<'_>>, artifact: Ref<Buffer<'_>>);
         // --
-        fn storage_read(key: Buffer<'_>, register_id: RegisterId) -> Bool;
-        fn storage_remove(key: Buffer<'_>, register_id: RegisterId) -> Bool;
-        fn storage_write(key: Buffer<'_>, value: Buffer<'_>, register_id: RegisterId) -> Bool;
+        fn storage_read(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        fn storage_remove(key: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
+        fn storage_write(key: Ref<Buffer<'_>>, value: Ref<Buffer<'_>>, register_id: RegisterId) -> Bool;
         // --
         fn fetch(
-            url: Buffer<'_>,
-            method: Buffer<'_>,
-            headers: Buffer<'_>,
-            body: Buffer<'_>,
+            url: Ref<Buffer<'_>>,
+            method: Ref<Buffer<'_>>,
+            headers: Ref<Buffer<'_>>,
+            body: Ref<Buffer<'_>>,
             register_id: RegisterId
         ) -> Bool;
         // --
-        fn random_bytes(buf: BufferMut<'_>);
-        fn time_now(buf: BufferMut<'_>);
+        fn random_bytes(buf: Ref<BufferMut<'_>>);
+        fn time_now(buf: Ref<BufferMut<'_>>);
         // --
-        fn send_proposal(value: Buffer<'_>, buf: BufferMut<'_>);
-        fn approve_proposal(value: Buffer<'_>);
+        fn send_proposal(value: Ref<Buffer<'_>>, buf: Ref<BufferMut<'_>>);
+        fn approve_proposal(value: Ref<Buffer<'_>>);
         // --
         // Streaming blob functions
         fn blob_create() -> PtrSizedInt;
-        fn blob_open(blob_id: Buffer<'_>) -> PtrSizedInt;
-        fn blob_read(fd: PtrSizedInt, buf: BufferMut<'_>) -> PtrSizedInt;
-        fn blob_write(fd: PtrSizedInt, data: Buffer<'_>) -> PtrSizedInt;
-        fn blob_close(fd: PtrSizedInt, blob_id_buf: BufferMut<'_>) -> Bool;
+        fn blob_open(blob_id: Ref<Buffer<'_>>) -> PtrSizedInt;
+        fn blob_read(fd: PtrSizedInt, buf: Ref<BufferMut<'_>>) -> PtrSizedInt;
+        fn blob_write(fd: PtrSizedInt, data: Ref<Buffer<'_>>) -> PtrSizedInt;
+        fn blob_close(fd: PtrSizedInt, blob_id_buf: Ref<BufferMut<'_>>) -> Bool;
     }
 }
 

@@ -1,11 +1,12 @@
 #![allow(single_use_lifetimes, unused_lifetimes, reason = "False positive")]
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
-use core::fmt;
 use core::num::NonZeroU64;
+use core::{fmt, slice};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor, Read};
+use std::mem::MaybeUninit;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
@@ -275,6 +276,17 @@ impl VMHostFunctions<'_> {
         Ok(buf)
     }
 
+    /// Reads a sized type from guest memory.
+    unsafe fn read_typed<T>(&self, ptr: u64) -> VMLogicResult<T> {
+        let mut value = MaybeUninit::<T>::uninit();
+
+        let raw = slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>());
+
+        self.borrow_memory().read(ptr, raw)?;
+
+        Ok(value.assume_init())
+    }
+
     fn get_string(&self, ptr: u64, len: u64) -> VMLogicResult<String> {
         let buf = self.read_guest_memory(ptr, len)?;
 
@@ -386,13 +398,10 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    pub fn emit(
-        &mut self,
-        kind_ptr: u64,
-        kind_len: u64,
-        data_ptr: u64,
-        data_len: u64,
-    ) -> VMLogicResult<()> {
+    pub fn emit(&mut self, event_ptr: u64) -> VMLogicResult<()> {
+        let (kind_ptr, kind_len, data_ptr, data_len) =
+            unsafe { self.read_typed::<(u64, u64, u64, u64)>(event_ptr)? };
+
         let logic = self.borrow_logic();
 
         if kind_len > logic.limits.max_event_kind_size {

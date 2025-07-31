@@ -1,9 +1,9 @@
 use std::panic::set_hook;
 
 use crate::event::AppEvent;
-use crate::sys;
 use crate::sys::{
-    log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, RegisterId, ValueReturn,
+    self, log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, Ref, RegisterId,
+    ValueReturn,
 };
 
 #[doc(hidden)]
@@ -20,7 +20,12 @@ pub fn panic() -> ! {
 #[track_caller]
 #[inline]
 pub fn panic_str(message: &str) -> ! {
-    unsafe { panic_utf8(Buffer::from(message), Location::caller()) }
+    unsafe {
+        panic_utf8(
+            Ref::new(&Buffer::from(message)),
+            Ref::new(&Location::caller()),
+        )
+    }
 }
 
 #[track_caller]
@@ -46,7 +51,12 @@ pub fn setup_panic_hook() {
                 .map_or("<no message>", |message| &**message),
         };
 
-        unsafe { panic_utf8(Buffer::from(message), Location::from(info.location())) }
+        unsafe {
+            panic_utf8(
+                Ref::new(&Buffer::from(message)),
+                Ref::new(&Location::from(info.location())),
+            )
+        }
     }));
 }
 
@@ -80,7 +90,7 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
     let succeed: bool = unsafe {
         buffer.set_len(len);
 
-        sys::read_register(register_id, BufferMut::new(&mut buffer))
+        sys::read_register(register_id, Ref::new(&BufferMut::new(&mut buffer)))
             .try_into()
             .unwrap_or_else(expected_boolean)
     };
@@ -103,7 +113,7 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
         reason = "we don't want to copy the buffer, but write to the same one that's returned"
     )]
     let succeed: bool = unsafe {
-        sys::read_register(register_id, BufferMut::new(&mut buffer))
+        sys::read_register(register_id, Ref::new(&BufferMut::new(&mut buffer)))
             .try_into()
             .unwrap_or_else(expected_boolean)
     };
@@ -142,12 +152,12 @@ where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
 {
-    unsafe { sys::value_return(ValueReturn::from(result.as_ref())) }
+    unsafe { sys::value_return(Ref::new(&ValueReturn::from(result.as_ref()))) }
 }
 
 #[inline]
 pub fn log(message: &str) {
-    unsafe { log_utf8(Buffer::from(message)) }
+    unsafe { log_utf8(Ref::new(&Buffer::from(message))) }
 }
 
 #[inline]
@@ -155,16 +165,21 @@ pub fn emit<T: AppEvent>(event: &T) {
     let kind = event.kind();
     let data = event.data();
 
-    unsafe { sys::emit(Event::new(&kind, &data)) }
+    unsafe { sys::emit(Ref::new(&Event::new(&kind, &data))) }
 }
 
 pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
-    unsafe { sys::commit(Buffer::from(&root_hash[..]), Buffer::from(artifact)) }
+    unsafe {
+        sys::commit(
+            Ref::new(&Buffer::from(&root_hash[..])),
+            Ref::new(&Buffer::from(artifact)),
+        )
+    }
 }
 
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    unsafe { sys::storage_read(Buffer::from(key), DATA_REGISTER) }
+    unsafe { sys::storage_read(Ref::new(&Buffer::from(key)), DATA_REGISTER) }
         .try_into()
         .unwrap_or_else(expected_boolean::<bool>)
         .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
@@ -172,20 +187,27 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
 
 #[inline]
 pub fn storage_remove(key: &[u8]) -> bool {
-    unsafe { sys::storage_remove(Buffer::from(key), DATA_REGISTER).try_into() }
+    unsafe { sys::storage_remove(Ref::new(&Buffer::from(key)), DATA_REGISTER).try_into() }
         .unwrap_or_else(expected_boolean)
 }
 
 #[inline]
 pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
-    unsafe { sys::storage_write(Buffer::from(key), Buffer::from(value), DATA_REGISTER).try_into() }
-        .unwrap_or_else(expected_boolean)
+    unsafe {
+        sys::storage_write(
+            Ref::new(&Buffer::from(key)),
+            Ref::new(&Buffer::from(value)),
+            DATA_REGISTER,
+        )
+        .try_into()
+    }
+    .unwrap_or_else(expected_boolean)
 }
 
 /// Fill the buffer with random bytes.
 #[inline]
 pub fn random_bytes(buf: &mut [u8]) {
-    unsafe { sys::random_bytes(BufferMut::new(buf)) }
+    unsafe { sys::random_bytes(Ref::new(&BufferMut::new(buf))) }
 }
 
 /// Gets the current time.
@@ -199,7 +221,7 @@ pub fn time_now() -> u64 {
         reason = "we don't want to copy the buffer, but write to the same one that's returned"
     )]
     unsafe {
-        sys::time_now(BufferMut::new(&mut bytes));
+        sys::time_now(Ref::new(&BufferMut::new(&mut bytes)));
     }
 
     u64::from_le_bytes(bytes)
@@ -219,21 +241,27 @@ pub fn blob_create() -> u64 {
 /// Returns a file descriptor that can be used with blob_read() and blob_close().
 /// Returns 0 if the blob is not found.
 pub fn blob_open(blob_id: &[u8; 32]) -> u64 {
-    unsafe { sys::blob_open(Buffer::from(&blob_id[..])) }.as_usize() as u64
+    unsafe { sys::blob_open(Ref::new(&Buffer::from(&blob_id[..]))) }.as_usize() as u64
 }
 
 /// Read data from a blob handle opened with blob_open().
 /// Reads into the provided buffer and returns the number of bytes read.
 /// Returns 0 when end of blob is reached.
 pub fn blob_read(fd: u64, buffer: &mut [u8]) -> u64 {
-    unsafe { sys::blob_read(PtrSizedInt::new(fd as usize), BufferMut::new(buffer)) }.as_usize()
-        as u64
+    unsafe {
+        sys::blob_read(
+            PtrSizedInt::new(fd as usize),
+            Ref::new(&BufferMut::new(buffer)),
+        )
+    }
+    .as_usize() as u64
 }
 
 /// Write data to a blob handle created with blob_create().
 /// Returns the number of bytes written.
 pub fn blob_write(fd: u64, data: &[u8]) -> u64 {
-    unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Buffer::from(data)) }.as_usize() as u64
+    unsafe { sys::blob_write(PtrSizedInt::new(fd as usize), Ref::new(&Buffer::from(data))) }
+        .as_usize() as u64
 }
 
 /// Close a blob handle and finalize the blob.
@@ -245,7 +273,7 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
     let success: bool = unsafe {
         sys::blob_close(
             PtrSizedInt::new(fd as usize),
-            BufferMut::new(&mut blob_id_buf),
+            Ref::new(&BufferMut::new(&mut blob_id_buf)),
         )
         .try_into()
     }
