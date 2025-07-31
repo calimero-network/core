@@ -5,8 +5,6 @@ x-node-defaults: &node-defaults
     target: runtime
     secrets:
       - gh-token
-    args:
-      - CALIMERO_WEBUI_FETCH=1
   user: root
   volumes:
     - calimero_auth_node:/calimero
@@ -81,18 +79,14 @@ services:
       target: runtime
       secrets:
         - gh-token
-      args:
-        - CALIMERO_AUTH_FRONTEND_FETCH=1
     volumes:
       - calimero_auth_data:/data
-    user: root
     environment:
       - RUST_LOG=debug
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/auth/health"]
       interval: 30s
       timeout: 10s
-    entrypoint: ["calimero-auth", "--config", "/etc/calimero/auth.toml", "--verbose"]
     networks:
       - internal
       - web
