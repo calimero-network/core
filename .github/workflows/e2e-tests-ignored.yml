@@ -20,20 +20,20 @@ jobs:
     steps:
       - run: echo "Ignored"
 
-  stage:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - id: download
-        run: exit 1
-        continue-on-error: true
+  # stage:
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #   steps:
+  #     - id: download
+  #       run: exit 1
+  #       continue-on-error: true
 
-      - env:
-          S: ${{ success() }}
-          F: ${{ failure() }}
-          A: ${{ always() }}
-          O: ${{ steps.download.outcome }}
-          C: ${{ steps.download.conclusion }}
-          D: ${{ toJson(steps.download) }}
-        run: env
+  #     - env:
+  #         S: ${{ success() }}
+  #         F: ${{ failure() }}
+  #         A: ${{ always() }}
+  #         O: ${{ steps.download.outcome }}
+  #         C: ${{ steps.download.conclusion }}
+  #         D: ${{ toJson(steps.download) }}
+  #       run: env
