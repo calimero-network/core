@@ -11,7 +11,7 @@ use std::collections::hash_map::HashMap;
 use actix::{Actor, AsyncContext, Context};
 use calimero_network_primitives::config::NetworkConfig;
 use calimero_network_primitives::messages::NetworkEvent;
-use calimero_network_primitives::stream::CALIMERO_STREAM_PROTOCOL;
+use calimero_network_primitives::stream::{CALIMERO_BLOB_PROTOCOL, CALIMERO_STREAM_PROTOCOL};
 use calimero_utils_actix::{actor, LazyRecipient};
 use eyre::Result as EyreResult;
 use futures_util::StreamExt;
@@ -23,13 +23,14 @@ use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
 use tracing::error;
 
+use crate::handlers::stream::incoming::FromIncoming;
+
 mod behaviour;
 mod discovery;
 mod handlers;
 
 use behaviour::Behaviour;
 use discovery::Discovery;
-use handlers::stream::incoming::FromIncoming;
 use handlers::stream::rendezvous::RendezvousTick;
 use handlers::stream::swarm::FromSwarm;
 
@@ -43,6 +44,7 @@ pub struct NetworkManager {
     discovery: Discovery,
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<()>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<()>>>,
+    pending_blob_queries: HashMap<QueryId, oneshot::Sender<eyre::Result<Vec<PeerId>>>>,
 }
 
 impl NetworkManager {
@@ -70,6 +72,7 @@ impl NetworkManager {
             discovery,
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
+            pending_blob_queries: HashMap::new(),
         };
 
         Ok(this)
@@ -89,10 +92,24 @@ impl Actor for NetworkManager {
         match control.accept(CALIMERO_STREAM_PROTOCOL) {
             Ok(incoming_streams) => {
                 let _inoming_streams_handle =
-                    ctx.add_stream(incoming_streams.map(FromIncoming::from));
+                    ctx.add_stream(incoming_streams.map(|(peer_id, stream)| {
+                        FromIncoming::from_stream(peer_id, stream, CALIMERO_STREAM_PROTOCOL)
+                    }));
             }
             Err(err) => {
                 error!("Failed to setup control for stream protocol: {:?}", err);
+            }
+        };
+
+        match control.accept(CALIMERO_BLOB_PROTOCOL) {
+            Ok(incoming_blob_streams) => {
+                let _incoming_blob_streams_handle =
+                    ctx.add_stream(incoming_blob_streams.map(|(peer_id, stream)| {
+                        FromIncoming::from_stream(peer_id, stream, CALIMERO_BLOB_PROTOCOL)
+                    }));
+            }
+            Err(err) => {
+                error!("Failed to setup control for blob protocol: {:?}", err);
             }
         };
 

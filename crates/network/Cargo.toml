@@ -10,6 +10,9 @@ license.workspace = true
 actix.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 libp2p = { workspace = true, features = [
     "autonat",
     "dcutr",
@@ -37,6 +40,7 @@ tokio-stream = { workspace = true, features = ["time"] }
 tracing.workspace = true
 
 calimero-network-primitives.workspace = true
+calimero-primitives.workspace = true
 calimero-utils-actix.workspace = true
 
 
