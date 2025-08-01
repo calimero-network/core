@@ -1,0 +1,21 @@
+{
+  "name": "websocket-auth-test",
+  "version": "1.0.0",
+  "description": "Test script for WebSocket authentication functionality",
+  "main": "test-websocket-auth.js",
+  "scripts": {
+    "test": "node test-websocket-auth.js",
+    "start": "node test-websocket-auth.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "keywords": [
+    "websocket",
+    "authentication",
+    "test",
+    "calimero"
+  ],
+  "author": "Calimero Team",
+  "license": "MIT"
+} 
