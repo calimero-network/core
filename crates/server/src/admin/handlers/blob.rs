@@ -21,6 +21,11 @@ pub struct BlobUploadQuery {
     hash: Option<String>,
 }
 
+#[derive(Debug, Serialize, Copy, Clone)]
+pub struct BlobUploadResponse {
+    pub data: BlobInfo,
+}
+
 #[derive(Debug, Serialize)]
 pub struct BlobListResponse {
     /// Wrapped response data
@@ -94,7 +99,9 @@ pub async fn upload_handler(
                 size as f64 / (1024.0 * 1024.0)
             );
             ApiResponse {
-                payload: BlobInfo { blob_id, size },
+                payload: BlobUploadResponse {
+                    data: BlobInfo { blob_id, size },
+                },
             }
             .into_response()
         }
