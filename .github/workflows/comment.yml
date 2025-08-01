@@ -13,11 +13,6 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
 
     steps:
-      - name: Debug Workflow Run Payload
-        env:
-          PD: ${{ toJson(github.event.workflow_run) }}
-        run: echo "$PD"
-
       - name: Download artifact
         id: download
         uses: actions/download-artifact@v4
