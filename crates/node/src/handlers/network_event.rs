@@ -30,8 +30,8 @@ const FLOW_CONTROL_DELAY: Duration = Duration::from_millis(10); // Small delay b
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BlobRequest {
-    blob_id: [u8; 32],
-    context_id: [u8; 32],
+    blob_id: BlobId,
+    context_id: ContextId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -66,8 +66,8 @@ async fn handle_blob_request_stream(
 ) -> eyre::Result<()> {
     debug!(
         %peer_id,
-        blob_id = %hex::encode(blob_request.blob_id),
-        context_id = %hex::encode(blob_request.context_id),
+        blob_id = blob_request.blob_id.as_str(),
+        context_id = blob_request.context_id.as_str(),
         "Processing blob request stream using binary chunk protocol"
     );
 
@@ -211,7 +211,7 @@ async fn handle_blob_request_stream(
         Err(_) => {
             warn!(
                 %peer_id,
-                blob_id = %hex::encode(blob_request.blob_id),
+                blob_id = blob_request.blob_id.as_str(),
                 timeout_secs = BLOB_SERVE_TIMEOUT.as_secs(),
                 "Blob serving timed out"
             );
