@@ -1,4 +1,4 @@
-name: Release
+name: Stub (Release)
 # ^~~ We run this workflow in-place to ensure that PRs are merged
 # without the release workflow being run as it is a required check.
 
@@ -8,7 +8,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
-      - ".github/workflows/release.yml"
 
 jobs:
   build-binaries:
