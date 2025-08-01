@@ -9,7 +9,6 @@ on:
       - Cargo.lock
       - "crates/**"
       - "e2e-tests/**"
-      - ".github/**"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
