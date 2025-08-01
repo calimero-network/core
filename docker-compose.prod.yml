@@ -79,6 +79,7 @@ services:
       target: runtime
       secrets:
         - gh-token
+    user: root
     volumes:
       - calimero_auth_data:/data
     environment:
