@@ -15,7 +15,6 @@ mod driver;
 mod meroctl;
 mod merod;
 mod output;
-mod protocol;
 mod steps;
 
 use config::Config;
