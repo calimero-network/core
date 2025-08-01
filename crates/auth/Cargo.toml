@@ -19,7 +19,7 @@ calimero-primitives = { path = "../primitives" }
 calimero-store = { path = "../store" }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
-config = { version = "0.13", features = ["yaml"] }
+config = { version = "0.13", features = ["yaml", "toml"] }
 ctor = "0.1"
 dashmap = "5.5.3"
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
@@ -44,7 +44,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 toml.workspace = true
 tower = { workspace = true, features = ["util", "limit"] }
-tower-http = { workspace = true, features = ["cors", "limit", "trace", "set-header"] }
+tower-http = { workspace = true, features = ["catch-panic", "cors", "limit", "trace", "set-header"] }
 tower-sessions.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -52,12 +52,6 @@ url = { workspace = true, features = ["serde"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
 web3.workspace = true
-
-[dev-dependencies]
-mockall = "0.11"
-reqwest = { workspace = true, features = ["json"] }
-tempfile = "3.8"
-tokio-test = "0.4"
 
 [build-dependencies]
 bytes.workspace = true
@@ -68,3 +62,6 @@ reqwest = { workspace = true, features = ["blocking"] }
 reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+
+[features]
+test-utils = ["ic-agent"]

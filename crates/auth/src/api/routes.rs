@@ -8,7 +8,7 @@ use tower_http::cors::CorsLayer;
 use super::handlers::client_keys::generate_client_key_handler;
 use crate::api::handlers::auth::{
     callback_handler, challenge_handler, login_handler, refresh_token_handler,
-    revoke_token_handler, token_handler, validate_handler, validate_token_path_handler, validate_ws_handler,
+    revoke_token_handler, token_handler, validate_handler
 };
 use crate::api::handlers::client_keys::{delete_client_handler, list_clients_handler};
 use crate::api::handlers::permissions::{
@@ -71,9 +71,7 @@ pub fn create_router(state: Arc<AppState>, config: &AuthConfig) -> Router {
         .route("/providers", get(providers_handler))
         .route("/health", get(health_handler))
         .route("/refresh", post(refresh_token_handler))
-        .route("/validate", get(validate_handler).post(validate_handler))
-        .route("/validate/token/:token", get(validate_token_path_handler))
-        .route("/validate/ws", get(validate_ws_handler));
+        .route("/validate", get(validate_handler).post(validate_handler));
 
     // 2. Protected routes (require JWT validation)
     let protected_routes = Router::new()
