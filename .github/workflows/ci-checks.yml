@@ -9,6 +9,7 @@ on:
       - Cargo.lock
       - "crates/**"
       - "e2e-tests/**"
+      - ".github/**"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -22,6 +23,9 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
+      - name: Just.. fail
+        run: exit 1
+
       - name: Checkout code
         uses: actions/checkout@v4
 
