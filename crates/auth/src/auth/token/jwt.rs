@@ -216,7 +216,7 @@ impl TokenManager {
                     Err(AuthError::InvalidToken(format!("Malformed token: {}", err)))
                 }
                 _ => Err(AuthError::InvalidToken(err.to_string())),
-            },
+            }
         }
     }
 

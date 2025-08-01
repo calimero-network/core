@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use url::Url;
 
-use axum::extract::{Extension, Query};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path, Query};
+use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::IntoResponse;
+use axum::body::Body;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -317,8 +319,10 @@ pub async fn validate_handler(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
+    tracing::info!("validate_handler called for WebSocket");
+    tracing::debug!("Received headers: {:?}", headers);
     // Check for token in Authorization header first
-    let token = if let Some(auth_header) = headers.get("Authorization") {
+    let mut token = if let Some(auth_header) = headers.get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str.starts_with("Bearer ") {
                 Some(auth_str.trim_start_matches("Bearer ").trim().to_string())
@@ -333,7 +337,22 @@ pub async fn validate_handler(
         query.get("token").cloned()
     };
 
-    // Check if we have a token
+    // If token is still not found, check X-Forwarded-Uri for Traefik compatibility
+    if token.is_none() {
+        if let Some(forwarded_uri_header) = headers.get("X-Forwarded-Uri") {
+            if let Ok(forwarded_uri_str) = forwarded_uri_header.to_str() {
+                let url_to_parse = format!("http://localhost{}", forwarded_uri_str);
+                if let Ok(forwarded_uri) = Url::parse(&url_to_parse) {
+                    token = forwarded_uri
+                        .query_pairs()
+                        .find(|(key, _)| key == "token")
+                        .map(|(_, value)| value.to_string());
+                }
+            }
+        }
+    }
+
+    // If token is still not found, return an error
     let token = match token {
         Some(token) if !token.is_empty() => token,
         _ => {
@@ -350,6 +369,7 @@ pub async fn validate_handler(
     // Validate the token
     match state.0.token_generator.verify_token(&token).await {
         Ok(claims) => {
+            tracing::info!("Token verified successfully. Claims: {:?}", claims);
             // Verify the key exists and is valid
             let key = match state.0.key_manager.get_key(&claims.sub).await {
                 Ok(Some(key)) if key.is_valid() => key,
@@ -400,15 +420,7 @@ pub async fn validate_handler(
         }
         Err(err) => {
             let mut error_headers = HeaderMap::new();
-            // Add error type header for better client handling
-            if err.to_string().contains("expired") {
-                error_headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
-            } else if err.to_string().contains("revoked") {
-                error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
-            } else {
-                error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
-            }
-
+            error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
             error_response(
                 StatusCode::UNAUTHORIZED,
                 format!("Invalid token: {}", err),
@@ -545,6 +557,201 @@ pub async fn revoke_token_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to revoke tokens: {}", err),
                 None,
+            )
+        }
+    }
+}
+
+/// Handler for validating tokens via URL path
+/// 
+/// This handler accepts tokens in the URL path format: `/validate/token/{token}`
+/// This is useful for Traefik forward auth that doesn't support query parameters
+pub async fn validate_token_path_handler(
+    state: Extension<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> impl IntoResponse {
+    // Check if we have a token
+    let token = if token.is_empty() {
+        let mut error_headers = HeaderMap::new();
+        error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "No token provided in URL path",
+            Some(error_headers),
+        );
+    } else {
+        token
+    };
+
+    // Validate the token
+    match state.0.token_generator.verify_token(&token).await {
+        Ok(claims) => {
+            // Verify the key exists and is valid
+            let key = match state.0.key_manager.get_key(&claims.sub).await {
+                Ok(Some(key)) if key.is_valid() => key,
+                Ok(Some(_)) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        "Key has been revoked",
+                        Some(error_headers),
+                    );
+                }
+                Ok(None) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Key not found",
+                        Some(error_headers),
+                    );
+                }
+                Err(_) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Failed to verify key",
+                        Some(error_headers),
+                    );
+                }
+            };
+
+            // Create response headers
+            let mut response_headers = HeaderMap::new();
+
+            // Add user ID header
+            response_headers.insert("X-Auth-User", claims.sub.parse().unwrap());
+
+            // Add permissions as a comma-separated list
+            if !claims.permissions.is_empty() {
+                response_headers.insert(
+                    "X-Auth-Permissions",
+                    claims.permissions.join(",").parse().unwrap(),
+                );
+            }
+
+            success_response("", Some(response_headers))
+        }
+        Err(err) => {
+            let mut error_headers = HeaderMap::new();
+            // Add error type header for better client handling
+            if err.to_string().contains("expired") {
+                error_headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
+            } else if err.to_string().contains("revoked") {
+                error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+            } else {
+                error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+            }
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("Token validation failed: {}", err),
+                Some(error_headers),
+            )
+        }
+    }
+}
+
+/// Handler for validating WebSocket tokens
+/// 
+/// This handler extracts the token from the request URL and validates it
+/// This is specifically designed for Traefik forward auth with WebSocket connections
+pub async fn validate_ws_handler(
+    state: Extension<Arc<AppState>>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    // Extract token from the request URI
+    let uri = request.uri();
+    let token = if let Some(query) = uri.query() {
+        // Parse query parameters to find the token
+        let params: HashMap<String, String> = url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        params.get("token").cloned()
+    } else {
+        None
+    };
+
+    // Check if we have a token
+    let token = match token {
+        Some(token) if !token.is_empty() => token,
+        _ => {
+            let mut error_headers = HeaderMap::new();
+            error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "No token provided in query parameter",
+                Some(error_headers),
+            );
+        }
+    };
+
+    // Validate the token
+    match state.0.token_generator.verify_token(&token).await {
+        Ok(claims) => {
+            // Verify the key exists and is valid
+            let key = match state.0.key_manager.get_key(&claims.sub).await {
+                Ok(Some(key)) if key.is_valid() => key,
+                Ok(Some(_)) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        "Key has been revoked",
+                        Some(error_headers),
+                    );
+                }
+                Ok(None) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Key not found",
+                        Some(error_headers),
+                    );
+                }
+                Err(_) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Failed to verify key",
+                        Some(error_headers),
+                    );
+                }
+            };
+
+            // Create response headers
+            let mut response_headers = HeaderMap::new();
+
+            // Add user ID header
+            response_headers.insert("X-Auth-User", claims.sub.parse().unwrap());
+
+            // Add permissions as a comma-separated list
+            if !claims.permissions.is_empty() {
+                response_headers.insert(
+                    "X-Auth-Permissions",
+                    claims.permissions.join(",").parse().unwrap(),
+                );
+            }
+
+            success_response("", Some(response_headers))
+        }
+        Err(err) => {
+            let mut error_headers = HeaderMap::new();
+            // Add error type header for better client handling
+            if err.to_string().contains("expired") {
+                error_headers.insert("X-Auth-Error", "token_expired".parse().unwrap());
+            } else if err.to_string().contains("revoked") {
+                error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+            } else {
+                error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+            }
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("Token validation failed: {}", err),
+                Some(error_headers),
             )
         }
     }
