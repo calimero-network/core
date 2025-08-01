@@ -7,6 +7,10 @@
     "test": "node test-websocket-auth.js",
     "start": "node test-websocket-auth.js"
   },
+  "config": {
+    "token": "your-jwt-token-here",
+    "wsUrl": "ws://localhost/ws"
+  },
   "dependencies": {
     "ws": "^8.16.0"
   },

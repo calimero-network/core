@@ -6,9 +6,16 @@
  */
 
 const WebSocket = require('ws');
+const fs = require('fs');
+const path = require('path');
 
-// Configuration
-const WS_URL = process.env.WS_URL || 'ws://localhost/ws';
+// Read package.json for config
+const packageJsonPath = path.join(__dirname, 'package.json');
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+
+// Configuration - priority: command line > environment > package.json config
+const WS_URL = process.env.WS_URL || process.env.npm_package_config_wsUrl || packageJson.config?.wsUrl || 'ws://localhost/ws';
+const DEFAULT_TOKEN = process.env.npm_package_config_token || packageJson.config?.token;
 
 // Colors for output
 const colors = {
@@ -61,14 +68,19 @@ async function runTests() {
   log('🔐 Testing WebSocket Authentication', 'yellow');
   log('==================================', 'yellow');
   
-  // Get token from command line argument
-  const token = process.argv[2];
+  // Get token from command line argument, environment, or package.json config
+  const token = process.argv[2] || process.env.TOKEN || DEFAULT_TOKEN;
   
-  if (!token) {
-    log('❌ Please provide a JWT token as an argument', 'red');
-    log('Usage: node scripts/test-websocket-auth.js <your-jwt-token>', 'yellow');
+  if (!token || token === 'your-jwt-token-here') {
+    log('❌ Please provide a JWT token', 'red');
+    log('Options:', 'yellow');
+    log('1. Command line: npm test "your-jwt-token-here"', 'yellow');
+    log('2. Environment: TOKEN=your-jwt-token-here npm test', 'yellow');
+    log('3. Package config: Update "config.token" in package.json', 'yellow');
     process.exit(1);
   }
+  
+  log(`Using WebSocket URL: ${WS_URL}`, 'yellow');
   
   try {
     // Test 1: WebSocket connection with token
