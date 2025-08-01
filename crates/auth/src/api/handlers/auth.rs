@@ -301,10 +301,13 @@ pub async fn refresh_token_handler(
 /// authentication before forwarding requests to backend services. It validates JWT tokens
 /// and returns user information via response headers.
 ///
+/// Supports both Authorization header and query parameter authentication for WebSocket compatibility.
+///
 /// # Arguments
 ///
 /// * `state` - The application state
 /// * `headers` - The request headers
+/// * `query` - The query parameters
 ///
 /// # Returns
 ///
@@ -312,46 +315,84 @@ pub async fn refresh_token_handler(
 pub async fn validate_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    // Check if Authorization header exists and starts with "Bearer "
-    if !headers
-        .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-        .map(|h| h.starts_with("Bearer "))
-        .unwrap_or(false)
-    {
-        let mut error_headers = HeaderMap::new();
-        error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "No Bearer token provided",
-            Some(error_headers),
-        );
-    }
-
-    // Validate the request using the headers
-    match state
-        .0
-        .auth_service
-        .verify_token_from_headers(&headers)
-        .await
-    {
-        Ok(auth_response) => {
-            if !auth_response.is_valid {
-                return error_response(StatusCode::UNAUTHORIZED, "Unauthorized", None);
+    // Check for token in Authorization header first
+    let token = if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if auth_str.starts_with("Bearer ") {
+                Some(auth_str.trim_start_matches("Bearer ").trim().to_string())
+            } else {
+                None
             }
+        } else {
+            None
+        }
+    } else {
+        // Fall back to query parameter for WebSocket compatibility
+        query.get("token").cloned()
+    };
+
+    // Check if we have a token
+    let token = match token {
+        Some(token) if !token.is_empty() => token,
+        _ => {
+            let mut error_headers = HeaderMap::new();
+            error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "No Bearer token provided in Authorization header or token query parameter",
+                Some(error_headers),
+            );
+        }
+    };
+
+    // Validate the token
+    match state.0.token_generator.verify_token(&token).await {
+        Ok(claims) => {
+            // Verify the key exists and is valid
+            let key = match state.0.key_manager.get_key(&claims.sub).await {
+                Ok(Some(key)) if key.is_valid() => key,
+                Ok(Some(_)) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        "Key has been revoked",
+                        Some(error_headers),
+                    );
+                }
+                Ok(None) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Key not found",
+                        Some(error_headers),
+                    );
+                }
+                Err(_) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Failed to verify key",
+                        Some(error_headers),
+                    );
+                }
+            };
 
             // Create response headers
             let mut response_headers = HeaderMap::new();
 
             // Add user ID header
-            response_headers.insert("X-Auth-User", auth_response.key_id.parse().unwrap());
+            response_headers.insert("X-Auth-User", claims.sub.parse().unwrap());
 
             // Add permissions as a comma-separated list
-            if !auth_response.permissions.is_empty() {
+            if !claims.permissions.is_empty() {
                 response_headers.insert(
                     "X-Auth-Permissions",
-                    auth_response.permissions.join(",").parse().unwrap(),
+                    claims.permissions.join(",").parse().unwrap(),
                 );
             }
 
