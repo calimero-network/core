@@ -2,17 +2,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use calimero_auth::auth::token::TokenManager;
-use calimero_auth::config::{
+use clap::Parser;
+use eyre::Result;
+use mero_auth::auth::token::TokenManager;
+use mero_auth::config::{
     load_config, AuthConfig, ContentSecurityPolicyConfig, JwtConfig, NearWalletConfig,
     RateLimitConfig, SecurityConfig, SecurityHeadersConfig, StorageConfig, UserPasswordConfig,
 };
-use calimero_auth::secrets::SecretManager;
-use calimero_auth::server::{shutdown_signal, start_server};
-use calimero_auth::storage::{create_storage, Storage};
-use calimero_auth::{providers, AuthService};
-use clap::Parser;
-use eyre::Result;
+use mero_auth::secrets::SecretManager;
+use mero_auth::server::{shutdown_signal, start_server};
+use mero_auth::storage::{create_storage, Storage};
+use mero_auth::{providers, AuthService};
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
