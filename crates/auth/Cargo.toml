@@ -53,6 +53,12 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
 web3.workspace = true
 
+[dev-dependencies]
+mockall = "0.11"
+reqwest = { workspace = true, features = ["json"] }
+tempfile = "3.8"
+tokio-test = "0.4"
+
 [build-dependencies]
 bytes.workspace = true
 cached-path.workspace = true
@@ -62,6 +68,3 @@ reqwest = { workspace = true, features = ["blocking"] }
 reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-
-[features]
-test-utils = ["ic-agent"]

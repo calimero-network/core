@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Simple script to test WebSocket authentication.
+# Install websocat: brew install websocat
 # Usage: ./test-websocket-auth.sh <YOUR_JWT_TOKEN>
 
 # --- Configuration ---

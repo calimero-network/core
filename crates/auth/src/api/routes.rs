@@ -8,7 +8,7 @@ use tower_http::cors::CorsLayer;
 use super::handlers::client_keys::generate_client_key_handler;
 use crate::api::handlers::auth::{
     callback_handler, challenge_handler, login_handler, refresh_token_handler,
-    revoke_token_handler, token_handler, validate_handler
+    revoke_token_handler, token_handler, validate_handler,
 };
 use crate::api::handlers::client_keys::{delete_client_handler, list_clients_handler};
 use crate::api::handlers::permissions::{

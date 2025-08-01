@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use url::Url;
 
-use axum::extract::{Extension, Path, Query};
-use axum::http::{HeaderMap, Request, StatusCode};
+use axum::extract::{Extension, Query};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::body::Body;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -423,15 +421,12 @@ fn extract_token_from_forwarded_uri<'a>(headers: &'a HeaderMap) -> Option<&'a st
         .get("X-Forwarded-Uri")
         .and_then(|value| value.to_str().ok())
         .and_then(|uri_str| {
-            uri_str
-                .split('?')
-                .nth(1)
-                .and_then(|query| {
-                    query
-                        .split('&')
-                        .find(|param| param.starts_with("token="))
-                        .map(|param| &param[6..])
-                })
+            uri_str.split('?').nth(1).and_then(|query| {
+                query
+                    .split('&')
+                    .find(|param| param.starts_with("token="))
+                    .map(|param| &param[6..])
+            })
         })
 }
 
