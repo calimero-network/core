@@ -1,4 +1,4 @@
-name: CI
+name: Stub (CI)
 # ^~~ We run this workflow in-place to ensure that PRs are merged
 # without the ci-checks workflow being run as it is a required check.
 
