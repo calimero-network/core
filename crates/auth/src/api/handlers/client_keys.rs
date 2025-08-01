@@ -125,21 +125,22 @@ pub async fn generate_client_key_handler(
         None => "".to_string(),
     };
 
-    // Check if admin permission is requested
-    let has_admin_permission = request
-        .permissions
-        .as_ref()
-        .map(|perms| perms.contains(&"admin".to_string()))
-        .unwrap_or(false);
+    //TODO decide final approach for context ID and Identity
+    // // Check if admin permission is requested
+    // let has_admin_permission = request
+    //     .permissions
+    //     .as_ref()
+    //     .map(|perms| perms.contains(&"admin".to_string()))
+    //     .unwrap_or(false);
 
-    // Allow empty context_id and context_identity only if admin permission is requested
-    if !has_admin_permission && (context_id.is_empty() || context_identity.is_empty()) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Context ID and context identity must contain valid characters",
-            None,
-        );
-    }
+    // // Allow empty context_id and context_identity only if admin permission is requested
+    // if !has_admin_permission && (context_id.is_empty() || context_identity.is_empty()) {
+    //     return error_response(
+    //         StatusCode::BAD_REQUEST,
+    //         "Context ID and context identity must contain valid characters",
+    //         None,
+    //     );
+    // }
 
     // Get and validate root key
     let root_key = match state.0.key_manager.get_key(&root_key_id).await {
