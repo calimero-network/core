@@ -92,7 +92,7 @@ impl NodeClient {
         Ok(false)
     }
 
-    fn install_application(
+    pub fn install_application(
         &self,
         blob_id: &BlobId,
         size: u64,

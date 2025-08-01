@@ -134,18 +134,6 @@ impl InstallDevApplicationRequest {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UninstallApplicationRequest {
-    pub application_id: ApplicationId,
-}
-
-impl UninstallApplicationRequest {
-    pub const fn new(application_id: ApplicationId) -> Self {
-        Self { application_id }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UninstallApplicationResponseData {
     pub application_id: ApplicationId,
 }

@@ -259,7 +259,7 @@ impl ContextDelta {
         height: usize,
     ) -> Self {
         let public_key = GenericArray::from(*public_key);
-        let height = GenericArray::from(height.to_le_bytes());
+        let height = GenericArray::from(height.to_be_bytes());
 
         let key = Key(GenericArray::from(*context_id)
             .concat(public_key)
@@ -292,7 +292,7 @@ impl ContextDelta {
 
         height.copy_from_slice(&AsRef::<[_; 72]>::as_ref(&self.0)[64..]);
 
-        usize::from_le_bytes(height)
+        usize::from_be_bytes(height)
     }
 }
 

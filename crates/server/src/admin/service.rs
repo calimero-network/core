@@ -97,7 +97,7 @@ pub(crate) fn setup(
         .route("/applications", get(list_applications::handler))
         .route(
             "/applications/:application_id",
-            get(get_application::handler),
+            get(get_application::handler).delete(uninstall_application::handler),
         )
         // Context management
         .route(
