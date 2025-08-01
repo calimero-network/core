@@ -4,29 +4,34 @@ Simple test scripts to verify WebSocket authentication functionality.
 
 ## Quick Test
 
-### Bash Script
+### Node.js Script (Recommended)
 ```bash
-# Run the bash test script
+# Install ws package if needed
+npm install ws
+
+# Run with your JWT token
+node scripts/test-websocket-auth.js "your-jwt-token-here"
+
+# Or with custom WebSocket URL
+WS_URL=ws://your-domain/ws node scripts/test-websocket-auth.js "your-jwt-token-here"
+```
+
+### Bash Script (Alternative)
+```bash
+# Run the bash test script (includes token generation)
 ./scripts/test-websocket-auth.sh
 
 # Or with custom URLs
 AUTH_URL=http://your-auth:3001 WS_URL=ws://your-domain/ws ./scripts/test-websocket-auth.sh
 ```
 
-### Node.js Script
-```bash
-# Install ws package if needed
-npm install ws
-
-# Run the Node.js test script
-node scripts/test-websocket-auth.js
-
-# Or with custom URLs
-AUTH_URL=http://your-auth:3001 WS_URL=ws://your-domain/ws node scripts/test-websocket-auth.js
-```
-
 ## What the Tests Do
 
+### Node.js Script
+1. **Test WebSocket connection** with provided token
+2. **Test WebSocket connection** without token (should fail)
+
+### Bash Script
 1. **Get JWT token** from auth service
 2. **Validate token via HTTP** (Authorization header)
 3. **Validate token via query parameter** (new WebSocket feature)
@@ -59,7 +64,5 @@ websocat "ws://localhost/ws?token=YOUR_TOKEN_HERE"
 
 ## Requirements
 
-- `curl` (for HTTP requests)
-- `jq` (for JSON parsing in bash script)
-- `websocat` (optional, for WebSocket testing)
-- `node` and `ws` package (for Node.js script) 
+- `node` and `ws` package (for Node.js script)
+- `curl`, `jq`, `websocat` (for bash script) 
