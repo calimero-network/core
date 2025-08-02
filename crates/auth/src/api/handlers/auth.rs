@@ -313,10 +313,8 @@ pub async fn validate_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    debug!("Validating token");
-
-    let token = extract_token_from_headers(&headers)
-        .or_else(|| extract_token_from_protocol(&headers));
+    let token =
+        extract_token_from_headers(&headers).or_else(|| extract_token_from_forwarded_uri(&headers));
 
     let token = match token {
         Some(token) => token.to_string(),
@@ -410,14 +408,18 @@ fn extract_token_from_headers(headers: &HeaderMap) -> Option<&str> {
         .map(|s| s.trim())
 }
 
-/// Extracts a JWT from the Sec-WebSocket-Protocol header.
-fn extract_token_from_protocol(headers: &HeaderMap) -> Option<&str> {
+/// Extracts the token from the X-Forwarded-Uri header.
+fn extract_token_from_forwarded_uri<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
     headers
-        .get("Sec-WebSocket-Protocol")
+        .get("X-Forwarded-Uri")
         .and_then(|value| value.to_str().ok())
-        .and_then(|protocols| {
-            // Split by comma and take the second element, trimming whitespace.
-            protocols.split(',').nth(1).map(|p| p.trim())
+        .and_then(|uri_str| {
+            uri_str.split('?').nth(1).and_then(|query| {
+                query
+                    .split('&')
+                    .find(|param| param.starts_with("token="))
+                    .map(|param| &param[6..])
+            })
         })
 }
 
