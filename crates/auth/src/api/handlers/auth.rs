@@ -301,13 +301,10 @@ pub async fn refresh_token_handler(
 /// authentication before forwarding requests to backend services. It validates JWT tokens
 /// and returns user information via response headers.
 ///
-/// Supports both Authorization header and query parameter authentication for WebSocket compatibility.
-///
 /// # Arguments
 ///
 /// * `state` - The application state
 /// * `headers` - The request headers
-/// * `query` - The query parameters
 ///
 /// # Returns
 ///
@@ -315,12 +312,9 @@ pub async fn refresh_token_handler(
 pub async fn validate_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    debug!("Validating token");
-    let token = extract_token_from_headers(&headers)
-        .or_else(|| query.get("token").map(|s| s.as_str()))
-        .or_else(|| extract_token_from_forwarded_uri(&headers));
+    let token =
+        extract_token_from_headers(&headers).or_else(|| extract_token_from_forwarded_uri(&headers));
 
     let token = match token {
         Some(token) => token.to_string(),
@@ -338,7 +332,6 @@ pub async fn validate_handler(
     // Validate the token
     match state.0.token_generator.verify_token(&token).await {
         Ok(claims) => {
-            debug!("Token verified successfully. Claims: {:?}", claims);
             // Verify the key exists and is valid
             let _key = match state.0.key_manager.get_key(&claims.sub).await {
                 Ok(Some(key)) if key.is_valid() => key,

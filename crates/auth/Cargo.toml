@@ -19,7 +19,7 @@ calimero-primitives = { path = "../primitives" }
 calimero-store = { path = "../store" }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
-config = { version = "0.13", features = ["yaml", "toml"] }
+config = { version = "0.13", features = ["yaml"] }
 ctor = "0.1"
 dashmap = "5.5.3"
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
@@ -48,7 +48,7 @@ tower-http = { workspace = true, features = ["catch-panic", "cors", "limit", "tr
 tower-sessions.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-url = { workspace = true, features = ["serde"] }
+url.workspace = true
 uuid = { version = "1.6", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
 web3.workspace = true
