@@ -1,5 +1,6 @@
 use bs58;
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
@@ -10,6 +11,7 @@ use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result as EyreResult};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 use tokio::io::{stdin, AsyncReadExt};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -21,11 +23,14 @@ use crate::output::{ErrorLine, InfoLine, Report};
 #[derive(Debug, Parser)]
 #[command(about = "Install an application")]
 pub struct InstallCommand {
-    #[arg(long, short, conflicts_with_all = ["url", "stdin"], help = "Path to the application")]
+    #[arg(long, short, conflicts_with_all = ["url", "stdin", "blob_id"], help = "Path to the application")]
     pub path: Option<Utf8PathBuf>,
 
-    #[clap(long, short, conflicts_with_all = ["path", "stdin"], help = "Url of the application")]
+    #[clap(long, short, conflicts_with_all = ["path", "stdin", "blob_id"], help = "Url of the application")]
     pub url: Option<String>,
+
+    #[clap(long, conflicts_with_all = ["path", "url", "stdin"], help = "Install from existing blob ID")]
+    pub blob_id: Option<BlobId>,
 
     #[clap(short, long, help = "Metadata for the application")]
     pub metadata: Option<String>,
@@ -39,8 +44,31 @@ pub struct InstallCommand {
     #[clap(long, help = "Expected size of the application")]
     pub size: Option<u64>,
 
-    #[clap(long, conflicts_with_all = ["path", "url"], help = "Read application from stdin")]
+    #[clap(long, conflicts_with_all = ["path", "url", "blob_id"], help = "Read application from stdin")]
     pub stdin: bool,
+
+    #[clap(long, help = "Application source description (used with --blob-id)")]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallApplicationFromBlobRequest {
+    pub blob_id: BlobId,
+    pub metadata: Vec<u8>,
+    pub source: String,
+    pub size: Option<u64>,
+}
+
+impl InstallApplicationFromBlobRequest {
+    pub fn new(blob_id: BlobId, metadata: Vec<u8>, source: String, size: Option<u64>) -> Self {
+        Self {
+            blob_id,
+            metadata,
+            source,
+            size,
+        }
+    }
 }
 
 impl Report for InstallApplicationResponse {
@@ -158,6 +186,55 @@ impl InstallCommand {
         Ok(install_response.data.application_id)
     }
 
+    /// Install an application from an existing blob ID
+    async fn install_from_blob_id(
+        &self,
+        environment: &Environment,
+        blob_id: BlobId,
+        metadata: Vec<u8>,
+    ) -> EyreResult<ApplicationId> {
+        let connection = environment.connection()?;
+
+        let headers = connection
+            .head(&format!("admin-api/blobs/{}", blob_id))
+            .await?;
+
+        let size = headers
+            .get("content-length")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .ok_or_else(|| eyre::eyre!("Could not get blob size from headers"))?;
+
+        // check size if available
+        if let Some(expected_size) = self.size {
+            if size != expected_size {
+                bail!(
+                    "Blob size mismatch: expected {} bytes, found {} bytes",
+                    expected_size,
+                    size
+                );
+            }
+        }
+
+        let source = self
+            .source
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "blob://uploaded".to_string());
+
+        let request = InstallApplicationFromBlobRequest::new(blob_id, metadata, source, Some(size));
+
+        let response: InstallApplicationResponse = connection
+            .post("admin-api/install-application-from-blob", request)
+            .await
+            .map_err(|_| {
+                eyre::eyre!("Install from blob endpoint not available.\n\n Blob ID: {}\n Blob Size: {} bytes", blob_id, size)
+            })?;
+
+        environment.output.write(&response);
+        Ok(response.data.application_id)
+    }
+
     pub async fn install_app(&self, environment: &Environment) -> EyreResult<ApplicationId> {
         let connection = environment.connection()?;
 
@@ -179,10 +256,14 @@ impl InstallCommand {
             connection
                 .post::<_, InstallApplicationResponse>("admin-api/install-application", request)
                 .await?
+        } else if let Some(blob_id) = self.blob_id {
+            return self
+                .install_from_blob_id(environment, blob_id, metadata)
+                .await;
         } else if self.stdin {
             return self.install_from_stdin(environment).await;
         } else {
-            bail!("Either path, url, or stdin must be provided");
+            bail!("Either --path, --url, --blob-id, or --stdin must be provided");
         };
 
         environment.output.write(&response);
@@ -231,18 +312,9 @@ impl InstallCommand {
                 | EventKind::Other => continue,
             }
 
-            let _application_id = InstallCommand {
-                path: Some(path.clone()),
-                url: None,
-                metadata: self.metadata.clone(),
-                hash: None,
-                watch: false,
-                stdin: false,
-                size: None,
-            }
-            .install_app(environment)
-            .await?;
+            let _ignored = self.install_app(environment).await?;
         }
+
         Ok(())
     }
 }

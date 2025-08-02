@@ -27,7 +27,7 @@ use super::handlers::{alias, blob};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
     get_application, install_application, install_application_stream, install_dev_application,
-    list_applications, uninstall_application,
+    install_from_blob, list_applications, uninstall_application,
 };
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_identities, get_context_storage,
@@ -90,6 +90,10 @@ pub(crate) fn setup(
     let router = Router::new()
         // Application management
         .route("/install-application", post(install_application::handler))
+        .route(
+            "/install-application-from-blob",
+            post(install_from_blob::handler),
+        )
         .route(
             "/install-dev-application",
             post(install_dev_application::handler),
@@ -224,7 +228,7 @@ pub(crate) fn setup(
 
     let admin_router = Router::new()
         .merge(router)
-        .merge(dev_router)  
+        .merge(dev_router)
         .layer(Extension(shared_state))
         .layer(session_layer);
 

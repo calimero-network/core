@@ -7,6 +7,7 @@ use crate::cli::Environment;
 pub mod delete;
 pub mod info;
 pub mod list;
+pub mod upload;
 
 pub const EXAMPLES: &str = r"
   # List all blobs
@@ -17,9 +18,21 @@ pub const EXAMPLES: &str = r"
 
   # Delete a specific blob
   $ meroctl --node node1 blob delete <blob_id>
+
+  # Upload a blob from a file
+  $ meroctl --node node1 blob upload --path /path/to/file.wasm
+
+  # Upload a blob from a URL
+  $ meroctl --node node1 blob upload --url https://example.com/file.wasm
+
+  # Upload a blob from stdin
+  $ cat file.wasm | meroctl --node node1 blob upload --stdin
+
+  # Upload with hash verification
+  $ meroctl --node node1 blob upload --path file.wasm --hash <expected_hash>
 ";
 
-#[derive(Debug, Parser, Clone, Copy)]
+#[derive(Debug, Parser, Clone)]
 #[command(about = "Command for managing blobs")]
 #[command(after_help = concatcp!(
     "Examples:",
@@ -30,7 +43,7 @@ pub struct BlobCommand {
     pub subcommand: BlobSubCommands,
 }
 
-#[derive(Debug, Subcommand, Copy, Clone)]
+#[derive(Debug, Subcommand, Clone)]
 pub enum BlobSubCommands {
     #[command(about = "List all blobs", alias = "ls")]
     List(list::ListCommand),
@@ -38,6 +51,8 @@ pub enum BlobSubCommands {
     Info(info::InfoCommand),
     #[command(about = "Delete a specific blob", alias = "rm")]
     Delete(delete::DeleteCommand),
+    #[command(about = "Upload a blob")]
+    Upload(upload::UploadCommand),
 }
 
 impl BlobCommand {
@@ -46,6 +61,7 @@ impl BlobCommand {
             BlobSubCommands::Delete(delete) => delete.run(environment).await,
             BlobSubCommands::Info(info) => info.run(environment).await,
             BlobSubCommands::List(list) => list.run(environment).await,
+            BlobSubCommands::Upload(upload) => upload.run(environment).await,
         }
     }
 }
