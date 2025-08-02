@@ -290,7 +290,7 @@ async fn create_context(
 
     let height = NonZeroUsize::MIN;
 
-    context_client.put_state_delta(&context.id, &identity, height, &outcome.artifact)?;
+    context_client.put_state_delta(&context.id, &identity, &height, &outcome.artifact)?;
 
     context_client.set_delta_height(&context.id, &identity, height)?;
 

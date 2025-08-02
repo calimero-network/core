@@ -176,7 +176,9 @@ async fn handle_state_delta(
     if let Some(known_height) = context_client.get_delta_height(&context_id, &author_id)? {
         if known_height >= height || height.get() - known_height.get() > 1 {
             debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
-            return sync_manager.initiate_sync(context_id, source).await;
+
+            let _ignored = sync_manager.initiate_sync(context_id, source).await;
+            return Ok(());
         }
     }
 
@@ -186,7 +188,8 @@ async fn handle_state_delta(
     else {
         debug!(%author_id, %context_id, "Missing sender key, initiating sync");
 
-        return sync_manager.initiate_sync(context_id, source).await;
+        let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        return Ok(());
     };
 
     let shared_key = SharedKey::from_sk(&sender_key);
@@ -194,7 +197,8 @@ async fn handle_state_delta(
     let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
         debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
 
-        return sync_manager.initiate_sync(context_id, source).await;
+        let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        return Ok(());
     };
 
     let identities = context_client.context_members(&context_id, Some(true));
@@ -203,8 +207,10 @@ async fn handle_state_delta(
         .await
         .transpose()?
     else {
-        bail!("no owned identities found for context: {}", context.id);
+        bail!("no owned identities found for context: {}", context_id);
     };
+
+    context_client.put_state_delta(&context_id, &author_id, &height, &artifact)?;
 
     let outcome = context_client
         .execute(
@@ -220,7 +226,16 @@ async fn handle_state_delta(
     context_client.set_delta_height(&context_id, &author_id, height)?;
 
     if outcome.root_hash != root_hash {
-        return sync_manager.initiate_sync(context_id, source).await;
+        debug!(
+            %context_id,
+            %author_id,
+            expected_root_hash = %root_hash,
+            current_root_hash = %outcome.root_hash,
+            "State delta application led to root hash mismatch, initiating sync"
+        );
+
+        let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        return Ok(());
     }
 
     Ok(())

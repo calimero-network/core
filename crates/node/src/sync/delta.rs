@@ -10,7 +10,7 @@ use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::{bail, OptionExt};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use rand::{thread_rng, Rng};
 use tracing::debug;
 
@@ -299,7 +299,10 @@ impl SyncManager {
 
         let mut receiving = true;
 
-        while let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? {
+        let mut our_height = None::<NonZeroUsize>;
+        let mut expected_member = None;
+
+        'recv: while let Some(msg) = self.recv(stream, Some((shared_key, their_nonce))).await? {
             let (sequence_id, member, height, delta, their_new_nonce) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
@@ -321,9 +324,40 @@ impl SyncManager {
 
             sqx_in.test(sequence_id)?;
 
-            match delta {
-                Some(_) if *member == [0; 32] => receiving = false,
-                Some(delta) => {
+            'handler: {
+                if let Some(delta) = delta {
+                    if *member == [0; 32] {
+                        debug!(
+                            context_id=%context.id,
+                            "Peer has finished sending delta queries",
+                        );
+
+                        receiving = false;
+
+                        break 'handler;
+                    }
+
+                    let Some(expected_member) = expected_member else {
+                        debug!(
+                            context_id=%context.id,
+                            %member,
+                            "Received state delta entry without a prior member query, ignoring",
+                        );
+
+                        break 'handler;
+                    };
+
+                    if expected_member != member {
+                        debug!(
+                            context_id=%context.id,
+                            %member,
+                            expected_member = %expected_member,
+                            "Received state delta entry for unexpected member, ignoring",
+                        );
+
+                        break 'handler;
+                    }
+
                     debug!(
                         context_id=%context.id,
                         %member,
@@ -331,7 +365,40 @@ impl SyncManager {
                         "Received state delta entry",
                     );
 
-                    // todo! what if the height is not sequential?
+                    let their_height = height;
+
+                    if let Some(our_height) = our_height {
+                        if our_height >= their_height {
+                            debug!(
+                                context_id=%context.id,
+                                %member,
+                                our_height,
+                                their_height,
+                                "We already have a state delta at this height, ignoring",
+                            );
+
+                            break 'handler;
+                        }
+
+                        if their_height.get() - our_height.get() != 1 {
+                            debug!(
+                                context_id=%context.id,
+                                %member,
+                                our_height,
+                                their_height,
+                                "Received delta is not sequential, ignoring",
+                            );
+
+                            break 'handler;
+                        }
+                    }
+
+                    self.context_client.put_state_delta(
+                        &context.id,
+                        &member,
+                        &their_height,
+                        &delta,
+                    )?;
 
                     let outcome = self
                         .context_client
@@ -346,7 +413,9 @@ impl SyncManager {
                         .await?;
 
                     self.context_client
-                        .set_delta_height(&context.id, &member, height)?;
+                        .set_delta_height(&context.id, &member, their_height)?;
+
+                    our_height = Some(their_height);
 
                     atomic = ContextAtomic::Held(
                         outcome
@@ -356,48 +425,101 @@ impl SyncManager {
 
                     context.root_hash = outcome.root_hash;
 
-                    continue;
+                    continue 'recv;
                 }
-                _ if *member != [0; 32] => {
-                    let deltas =
-                        self.context_client
-                            .get_state_deltas(&context.id, Some(&member), height);
 
-                    let mut deltas = pin!(deltas);
+                if *member == [0; 32] {
+                    break 'handler;
+                }
 
-                    while let Some((_, height, data)) = deltas.try_next().await? {
-                        let our_new_nonce = thread_rng().gen::<Nonce>();
+                let Some(our_height) =
+                    self.context_client.get_delta_height(&context.id, &member)?
+                else {
+                    debug!(
+                        context_id=%context.id,
+                        %member,
+                        "No state delta height for this member, ignoring",
+                    );
 
-                        debug!(
-                            context_id=%context.id,
-                            %member,
-                            height,
-                            "Sending state delta entry",
-                        );
+                    break 'handler;
+                };
 
-                        self.send(
-                            stream,
-                            &StreamMessage::Message {
-                                sequence_id: sqx_out.next(),
-                                payload: MessagePayload::DeltaSync {
-                                    member,
-                                    height,
-                                    delta: Some(data.into_vec().into()),
-                                },
-                                next_nonce: our_new_nonce,
+                debug!(
+                    context_id=%context.id,
+                    %member,
+                    height,
+                    "Received state delta query",
+                );
+
+                if our_height < height {
+                    debug!(
+                        context_id=%context.id,
+                        %member,
+                        our_height,
+                        requested_height = height,
+                        "We are {}, there's nothing new to share",
+                        match height.get() - our_height.get() {
+                            1 => "in sync",
+                            _ => "behind",
+                        },
+                    );
+
+                    break 'handler;
+                }
+
+                let deltas =
+                    self.context_client
+                        .get_state_deltas(&context.id, Some(&member), height);
+
+                let mut deltas = pin!(deltas);
+
+                while let Some((_, height, data)) = deltas.try_next().await? {
+                    debug!(
+                        context_id=%context.id,
+                        %member,
+                        height,
+                        "Sending state delta entry",
+                    );
+
+                    let our_new_nonce = thread_rng().gen::<Nonce>();
+
+                    self.send(
+                        stream,
+                        &StreamMessage::Message {
+                            sequence_id: sqx_out.next(),
+                            payload: MessagePayload::DeltaSync {
+                                member,
+                                height,
+                                delta: Some(data.as_ref().into()),
                             },
-                            Some((shared_key, our_nonce)),
-                        )
-                        .await?;
+                            next_nonce: our_new_nonce,
+                        },
+                        Some((shared_key, our_nonce)),
+                    )
+                    .await?;
 
-                        our_nonce = our_new_nonce;
+                    our_nonce = our_new_nonce;
+
+                    if height == our_height {
+                        // why, isn't it already guaranteed this will terminate appropriately?
+                        //   1. we store deltas before applying them (which could fail)
+                        //   2. only after successful application, do we set the height
+                        //   3. so.. this is a guard to ensure we don't send deltas that
+                        //      1. we personally have not applied yet
+                        //      2. may fail on the other side
+
+                        break;
                     }
                 }
-                _ => {}
-            }
+            };
 
-            let Some((member, _)) = members.next().await.transpose()? else {
+            let Some((member, _)) = members.try_next().await? else {
                 if !receiving {
+                    debug!(
+                        context_id=%context.id,
+                        "No more members to query, ending state delta sync",
+                    );
+
                     break;
                 }
 
@@ -419,10 +541,11 @@ impl SyncManager {
                 continue;
             };
 
-            let height = self
-                .context_client
-                .get_delta_height(&context.id, &member)?
-                .map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
+            expected_member = Some(member);
+
+            our_height = self.context_client.get_delta_height(&context.id, &member)?;
+
+            let height = our_height.map_or(NonZeroUsize::MIN, |v| v.saturating_add(1));
 
             let our_new_nonce = thread_rng().gen::<Nonce>();
 
