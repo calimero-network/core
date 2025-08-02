@@ -11,13 +11,22 @@ pub mod get;
 pub mod install;
 pub mod list;
 
-pub const EXAMPLES: &str = r"
+pub const EXAMPLES: &str = r#"
   # List all applications
   $ meroctl --node node1 application ls
 
   # Get details of an application
   $ meroctl --node node1 application get <app_id>
-";
+
+  # Install application from file
+  $ meroctl --node node1 application install --path app.wasm
+
+  # Install application from URL
+  $ meroctl --node node1 application install --url https://example.com/app.wasm
+
+  # Install application from existing blob
+  $ meroctl --node node1 application install-from-blob <blob_id> --metadata "My App"
+"#;
 
 #[derive(Debug, Parser)]
 #[command(about = "Command for managing applications")]

@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use eyre::{bail, eyre, Result, WrapErr};
+use chrono::Utc;
+use eyre::{bail, eyre, Result as EyreResult, WrapErr};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -43,11 +44,11 @@ impl ConnectionInfo {
         }
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> EyreResult<T> {
         self.request(RequestType::Get, path, None::<()>).await
     }
 
-    pub async fn post<I, O>(&self, path: &str, body: I) -> Result<O>
+    pub async fn post<I, O>(&self, path: &str, body: I) -> EyreResult<O>
     where
         I: Serialize,
         O: DeserializeOwned,
@@ -55,11 +56,47 @@ impl ConnectionInfo {
         self.request(RequestType::Post, path, Some(body)).await
     }
 
-    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    /// Send binary data as HTTP POST to the specified path.
+    pub async fn post_binary<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        content_type: &str,
+    ) -> EyreResult<T> {
+        let mut url = self.api_url.clone();
+        url.set_path(path);
+
+        let mut builder = self
+            .client
+            .post(url)
+            .header("Content-Type", content_type)
+            .body(data);
+
+        // Use JWT tokens instead of auth_key
+        if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
+            builder = builder.header("Authorization", format!("Bearer {}", tokens.access_token));
+        }
+
+        let response = builder.send().await?;
+
+        if !response.status().is_success() {
+            bail!(ApiError {
+                status_code: response.status().as_u16(),
+                message: response
+                    .text()
+                    .await
+                    .map_err(|e| eyre!("Failed to get response text: {e}"))?,
+            });
+        }
+
+        response.json::<T>().await.map_err(Into::into)
+    }
+
+    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> EyreResult<T> {
         self.request(RequestType::Delete, path, None::<()>).await
     }
 
-    pub async fn head(&self, path: &str) -> Result<reqwest::header::HeaderMap> {
+    pub async fn head(&self, path: &str) -> EyreResult<reqwest::header::HeaderMap> {
         let mut url = self.api_url.clone();
         url.set_path(path);
 
@@ -79,7 +116,12 @@ impl ConnectionInfo {
         Ok(response.headers().clone())
     }
 
-    async fn request<I, O>(&self, req_type: RequestType, path: &str, body: Option<I>) -> Result<O>
+    async fn request<I, O>(
+        &self,
+        req_type: RequestType,
+        path: &str,
+        body: Option<I>,
+    ) -> EyreResult<O>
     where
         I: Serialize,
         O: DeserializeOwned,
@@ -110,10 +152,10 @@ impl ConnectionInfo {
     async fn execute_request_with_auth_retry<F, Fut>(
         &self,
         request_builder: F,
-    ) -> Result<reqwest::Response>
+    ) -> EyreResult<reqwest::Response>
     where
         F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+        Fut: std::future::Future<Output = EyreResult<reqwest::Response, reqwest::Error>>,
     {
         loop {
             let response = request_builder().await?;
@@ -192,7 +234,7 @@ impl ConnectionInfo {
         }
     }
 
-    async fn refresh_token(&self) -> Result<JwtToken, RefreshError> {
+    async fn refresh_token(&self) -> EyreResult<JwtToken, RefreshError> {
         if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
             let refresh_token = tokens
                 .refresh_token
@@ -215,7 +257,11 @@ impl ConnectionInfo {
         Err(RefreshError::NoRefreshToken)
     }
 
-    async fn try_refresh_token(&self, access_token: &str, refresh_token: &str) -> Result<JwtToken> {
+    async fn try_refresh_token(
+        &self,
+        access_token: &str,
+        refresh_token: &str,
+    ) -> EyreResult<JwtToken> {
         let refresh_url = self.api_url.join("/auth/refresh")?;
 
         #[derive(serde::Serialize)]
@@ -269,7 +315,7 @@ impl ConnectionInfo {
         })
     }
 
-    pub async fn detect_auth_mode(&self) -> Result<String> {
+    pub async fn detect_auth_mode(&self) -> EyreResult<String> {
         let identity_url = self
             .api_url
             .join("/admin-api/health")
@@ -302,7 +348,7 @@ impl ConnectionInfo {
     }
 
     /// Update the stored JWT tokens for a specific node in the configuration
-    async fn update_node_tokens(node_name: &str, new_tokens: &JwtToken) -> Result<()> {
+    async fn update_node_tokens(node_name: &str, new_tokens: &JwtToken) -> EyreResult<()> {
         let mut config = crate::config::Config::load().await.wrap_err_with(|| {
             format!(
                 "Failed to load config while updating tokens for node '{}'",
