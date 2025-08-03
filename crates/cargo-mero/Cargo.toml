@@ -1,21 +1,15 @@
 [package]
 name = "cargo-mero"
 version = "0.1.0"
-description = "CLI tool for building applications on the Calimero network"
-categories = ["command-line-utilities"]
-keywords = ["cli", "cargo", "subcommand"]
-authors.workspace = true
-edition.workspace = true
-repository.workspace = true
-license.workspace = true
+edition = "2021"
 
 [dependencies]
-cargo_metadata.workspace = true
-clap = { workspace = true, features = ["derive"] }
-const_format.workspace = true
-eyre.workspace = true
-rust-embed.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "io-util"] }
+clap = { version = "4", features = ["derive"] }
+const_format = "0.2"
+eyre = "0.6"
+tokio = { version = "1", features = ["full"] }
+cargo_metadata = "0.18"
+rust-embed = "6.4.2"
 
-[lints]
-workspace = true
+[features]
+default = []

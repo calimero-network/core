@@ -1,7 +1,11 @@
+use std::fs;
+use std::path;
+
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
+use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl};
 
+use crate::abi::Abi;
 use crate::errors::{Errors, ParseError};
 use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
 use crate::logic::utils::typed_path;
@@ -9,21 +13,25 @@ use crate::macros::infallible;
 use crate::reserved::{idents, lifetimes};
 use crate::sanitizer::{Action, Case, Sanitizer};
 
+pub mod method;
 mod arg;
-mod method;
 mod ty;
 mod utils;
 
 pub struct LogicImpl<'a> {
     #[expect(dead_code, reason = "This will be used in future")]
-    type_: Path,
+    type_: syn::Path,
     methods: Vec<PublicLogicMethod<'a>>,
     orig: &'a ItemImpl,
 }
 
 impl ToTokens for LogicImpl<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let LogicImpl { orig, methods, .. } = self;
+        let LogicImpl {
+            orig,
+            methods,
+            ..
+        } = self;
 
         quote! {
             #orig
@@ -125,6 +133,16 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         }
 
         errors.check()?;
+
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let res_path = path::Path::new(&manifest_dir).join("res");
+        if !res_path.exists() {
+            fs::create_dir(&res_path).unwrap();
+        }
+
+        let abi = Abi { methods: &methods };
+        let abi_path = res_path.join("abi.json");
+        fs::write(abi_path, abi.to_string()).unwrap();
 
         Ok(Self {
             type_,

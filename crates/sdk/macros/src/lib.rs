@@ -14,6 +14,7 @@ use crate::items::{Empty, StructOrEnumItem};
 use crate::logic::{LogicImpl, LogicImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
+mod abi;
 mod errors;
 mod event;
 mod items;
