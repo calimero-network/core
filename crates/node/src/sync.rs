@@ -153,10 +153,10 @@ impl SyncManager {
                 Some(()) = async {
                     loop { advance(&mut futs, &mut state).await? }
                 } => {},
-                Some(res) = ctx_sync_rx.recv() => {
-                    debug!(?res, "Received an explicit sync request");
+                Some(ctx) = ctx_sync_rx.recv() => {
+                    debug!(?ctx, "Received an explicit sync request");
 
-                    requested_ctx = res;
+                    requested_ctx = ctx;
                 }
             }
 
