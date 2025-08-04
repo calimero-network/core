@@ -3,7 +3,7 @@
 ARG RUST_VERSION=1.85.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
-ARG APP_NAME=calimero-auth
+ARG APP_NAME=mero-auth
 
 ################################################################################
 FROM rust:${RUST_VERSION}-slim-bookworm AS build
@@ -52,6 +52,7 @@ LABEL org.opencontainers.image.description="Calimero Authentication Service" \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 ARG UID=10001
@@ -75,5 +76,4 @@ VOLUME /data
 EXPOSE 3001
 
 ENV APP_NAME=${APP_NAME}
-ENTRYPOINT $APP_NAME
-CMD ["--config", "/etc/calimero/auth.toml", "--verbose"]
+ENTRYPOINT ${APP_NAME} --config /etc/calimero/auth.toml --verbose

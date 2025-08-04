@@ -216,14 +216,9 @@ impl SyncManager {
         }
 
         for peer_id in peers.choose_multiple(&mut rand::thread_rng(), peers.len()) {
-            debug!(%context_id, %peer_id, "Attempting to sync with peer");
-
-            let Err(err) = self.initiate_sync(context_id, *peer_id).await else {
-                debug!(%context_id, %peer_id, "Sync with peer successfully finished");
+            if self.initiate_sync(context_id, *peer_id).await {
                 break;
-            };
-
-            error!(%context_id, %peer_id, %err, "Failed to sync with peer, trying another..");
+            }
         }
     }
 
@@ -277,7 +272,27 @@ impl SyncManager {
         Ok(Some(decoded))
     }
 
-    pub async fn initiate_sync(
+    pub async fn initiate_sync(&self, context_id: ContextId, peer_id: PeerId) -> bool {
+        let start = Instant::now();
+
+        debug!(%context_id, %peer_id, "Attempting to sync with peer");
+
+        let res = self.initiate_sync_inner(context_id, peer_id).await;
+
+        let took = start.elapsed();
+
+        let Err(err) = res else {
+            debug!(%context_id, %peer_id, ?took, "Sync with peer successfully finished");
+
+            return true;
+        };
+
+        error!(%context_id, %peer_id, ?took, %err, "Failed to sync with peer");
+
+        false
+    }
+
+    async fn initiate_sync_inner(
         &self,
         context_id: ContextId,
         chosen_peer: PeerId,

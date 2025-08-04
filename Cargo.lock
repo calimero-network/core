@@ -1762,63 +1762,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-auth"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "async-trait",
- "axum 0.7.9",
- "axum-extra",
- "base64 0.22.1",
- "borsh",
- "bs58 0.5.1",
- "bytes",
- "cached-path",
- "calimero-primitives",
- "calimero-store",
- "chrono",
- "clap",
- "config",
- "ctor",
- "dashmap 5.5.3",
- "ed25519-dalek",
- "eyre",
- "hex",
- "ic-agent",
- "jsonwebtoken",
- "lazy_static",
- "mockall",
- "near-crypto",
- "near-jsonrpc-client",
- "near-primitives",
- "parking_lot",
- "rand 0.8.5",
- "regex",
- "reqwest 0.11.27",
- "reqwest 0.12.9",
- "rocksdb",
- "rust-embed",
- "serde",
- "serde_json",
- "sha2 0.10.8",
- "starknet",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-test",
- "toml 0.8.19",
- "tower 0.4.13",
- "tower-http",
- "tower-sessions",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid 1.11.0",
- "validator",
- "web3",
-]
-
-[[package]]
 name = "calimero-blobstore"
 version = "0.1.0"
 dependencies = [
@@ -2250,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.7.0"
+version = "0.8.0-rc.1"
 dependencies = [
  "eyre",
  "rustc_version 0.4.1",
@@ -6100,6 +6043,63 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mero-auth"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "axum 0.7.9",
+ "axum-extra",
+ "base64 0.22.1",
+ "borsh",
+ "bs58 0.5.1",
+ "bytes",
+ "cached-path",
+ "calimero-primitives",
+ "calimero-store",
+ "chrono",
+ "clap",
+ "config",
+ "ctor",
+ "dashmap 5.5.3",
+ "ed25519-dalek",
+ "eyre",
+ "hex",
+ "ic-agent",
+ "jsonwebtoken",
+ "lazy_static",
+ "mockall",
+ "near-crypto",
+ "near-jsonrpc-client",
+ "near-primitives",
+ "parking_lot",
+ "rand 0.8.5",
+ "regex",
+ "reqwest 0.11.27",
+ "reqwest 0.12.9",
+ "rocksdb",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "starknet",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "toml 0.8.19",
+ "tower 0.4.13",
+ "tower-http",
+ "tower-sessions",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid 1.11.0",
+ "validator",
+ "web3",
 ]
 
 [[package]]
