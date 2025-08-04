@@ -1,4 +1,4 @@
-name: e2e-tests
+name: Stub (e2e-tests)
 # ^~~ We run this workflow in-place to ensure that PRs are merged
 # without the e2e-tests workflow being run as it is a required check.
 

@@ -8,13 +8,11 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
-      - ".github/workflows/release.yml"
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
-      - ".github/workflows/release.yml"
 
 permissions:
   contents: read
@@ -35,7 +33,6 @@ jobs:
       binary_release: ${{ steps.version_info.outputs.binary_release }}
       docker_release: ${{ steps.version_info.outputs.docker_release }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
-      overwrite_release: ${{ steps.version_info.outputs.overwrite_release }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
     steps:
       - name: Checkout code
@@ -50,28 +47,27 @@ jobs:
 
           version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-version") | .version')
 
+          prerelease=false
+          binary_release=false
+          docker_release=false
+
           if [ "${{ github.ref }}" == "refs/heads/master" ]; then
-            if [[ "$version" =~ "-[a-z]+(\.[0-9]+)?$" ]]; then
-              echo "prerelease=true" >> $GITHUB_OUTPUT
-              echo "overwrite_release=true" >> $GITHUB_OUTPUT
-            else
-              echo "prerelease=false" >> $GITHUB_OUTPUT
-              echo "overwrite_release=false" >> $GITHUB_OUTPUT
+            if [[ "$version" =~ -[a-z]+(\.[0-9]+)?$ ]]; then
+              prerelease=true
             fi
 
-            if gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
-              echo "binary_release=false" >> $GITHUB_OUTPUT
-              echo "docker_release=false" >> $GITHUB_OUTPUT
-            else
-              echo "binary_release=true" >> $GITHUB_OUTPUT
-              echo "docker_release=true" >> $GITHUB_OUTPUT
+            if ! gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
+              binary_release=true
+              docker_release=true
             fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
-            echo "binary_release=false" >> $GITHUB_OUTPUT
-            echo "docker_release=true" >> $GITHUB_OUTPUT
+            docker_release=true
           fi
 
           echo "version=$version" >> $GITHUB_OUTPUT
+          echo "prerelease=$prerelease" >> $GITHUB_OUTPUT
+          echo "binary_release=$binary_release" >> $GITHUB_OUTPUT
+          echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
 
   build-binaries:
     name: Build Binaries
@@ -163,7 +159,6 @@ jobs:
           tag: ${{ needs.prepare.outputs.version }}
           release_name: ${{ needs.prepare.outputs.version }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          overwrite: ${{ needs.prepare.outputs.overwrite_release }}
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
   build-docker:
