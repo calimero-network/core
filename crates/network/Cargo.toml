@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+borsh.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true

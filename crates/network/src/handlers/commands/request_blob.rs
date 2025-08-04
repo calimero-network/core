@@ -7,6 +7,7 @@ use calimero_network_primitives::stream::{
 };
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use tracing::{debug, warn};
@@ -29,38 +30,11 @@ pub struct BlobResponse {
     pub size: Option<u64>, // Total size if found
 }
 
-// Use a more efficient binary format for chunk transfer
-#[derive(Debug)]
+
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct BlobChunk {
     pub data: Vec<u8>,
     pub is_final: bool,
-}
-
-impl BlobChunk {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.data.len() + 9); // 8 bytes for length + 1 byte for is_final
-        bytes.extend_from_slice(&(self.data.len() as u64).to_le_bytes());
-        bytes.push(if self.is_final { 1u8 } else { 0u8 });
-        bytes.extend_from_slice(&self.data);
-        bytes
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> eyre::Result<Self> {
-        if bytes.len() < 9 {
-            return Err(eyre::eyre!("Invalid chunk data: too short"));
-        }
-
-        let data_len = u64::from_le_bytes(bytes[0..8].try_into()?) as usize;
-        let is_final = bytes[8] != 0;
-
-        if bytes.len() != 9 + data_len {
-            return Err(eyre::eyre!("Invalid chunk data: length mismatch"));
-        }
-
-        let data = bytes[9..].to_vec();
-
-        Ok(Self { data, is_final })
-    }
 }
 
 impl Handler<RequestBlob> for NetworkManager {
@@ -264,7 +238,7 @@ impl Handler<RequestBlob> for NetworkManager {
                             }
                         };
 
-                        let blob_chunk: BlobChunk = match BlobChunk::from_bytes(&chunk_msg.data) {
+                        let blob_chunk = match BorshDeserialize::try_from_slice(&chunk_msg.data) {
                             Ok(chunk) => {
                                 debug!(
                                     blob_id = %request.blob_id,
@@ -272,61 +246,29 @@ impl Handler<RequestBlob> for NetworkManager {
                                     chunk_number = chunk_count + 1,
                                     chunk_data_size = chunk.data.len(),
                                     is_final = chunk.is_final,
-                                    "Successfully parsed binary chunk"
+                                    "Successfully parsed borsh chunk"
                                 );
                                 chunk
                             },
-                            Err(binary_error) => {
-                                // Try fallback to JSON parsing in case server is still using old format
+                            Err(e) => {
+                                // Log raw data for debugging
                                 debug!(
                                     blob_id = %request.blob_id,
                                     peer_id = %request.peer_id,
                                     chunk_number = chunk_count + 1,
-                                    binary_error = %binary_error,
-                                    "Binary parsing failed, trying JSON fallback"
+                                    raw_data_size = chunk_msg.data.len(),
+                                    raw_data_hex = hex::encode(&chunk_msg.data[..std::cmp::min(100, chunk_msg.data.len())]),
+                                    error = %e,
+                                    "Failed to parse chunk as borsh"
                                 );
-
-                                #[derive(Debug, serde::Deserialize)]
-                                struct JsonBlobChunk {
-                                    data: Vec<u8>,
-                                    is_final: bool,
-                                }
-
-                                match serde_json::from_slice::<JsonBlobChunk>(&chunk_msg.data) {
-                                    Ok(json_chunk) => {
-                                        warn!(
-                                            blob_id = %request.blob_id,
-                                            peer_id = %request.peer_id,
-                                            chunk_number = chunk_count + 1,
-                                            "Server is using old JSON format for chunks!"
-                                        );
-                                        BlobChunk {
-                                            data: json_chunk.data,
-                                            is_final: json_chunk.is_final,
-                                        }
-                                    },
-                                    Err(json_error) => {
-                                        // Log raw data for debugging
-                                        debug!(
-                                            blob_id = %request.blob_id,
-                                            peer_id = %request.peer_id,
-                                            chunk_number = chunk_count + 1,
-                                            raw_data_size = chunk_msg.data.len(),
-                                            raw_data_hex = hex::encode(&chunk_msg.data[..std::cmp::min(100, chunk_msg.data.len())]),
-                                            binary_error = %binary_error,
-                                            json_error = %json_error,
-                                            "Failed to parse chunk as both binary and JSON - showing first 100 bytes as hex"
-                                        );
-                                        // Emit failure event
-                                        event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
-                                            blob_id: request.blob_id,
-                                            context_id: request.context_id,
-                                            from_peer: request.peer_id,
-                                            error: format!("Failed to parse chunk as binary ({}) or JSON ({})", binary_error, json_error),
-                                        });
-                                        return Err(eyre::eyre!("Failed to parse blob chunk as binary or JSON"));
-                                    }
-                                }
+                                // Emit failure event
+                                event_recipient.do_send(NetworkEvent::BlobDownloadFailed {
+                                    blob_id: request.blob_id,
+                                    context_id: request.context_id,
+                                    from_peer: request.peer_id,
+                                    error: format!("Failed to parse chunk: {}", e),
+                                });
+                                return Err(eyre::eyre!("Failed to parse blob chunk: {}", e));
                             }
                         };
 
@@ -413,13 +355,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_binary_protocol() {
+    fn test_borsh_serialization() {
         let test_chunk = BlobChunk {
             data: vec![1, 2, 3, 4, 5],
             is_final: true,
         };
-        let bytes = test_chunk.to_bytes();
-        let parsed = BlobChunk::from_bytes(&bytes).expect("Should parse successfully");
+        let bytes = test_chunk.try_to_vec().expect("Should serialize successfully");
+        let parsed = BlobChunk::try_from_slice(&bytes).expect("Should parse successfully");
 
         assert_eq!(test_chunk.data, parsed.data, "Data should match");
         assert_eq!(test_chunk.is_final, parsed.is_final, "is_final should match");
