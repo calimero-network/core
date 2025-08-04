@@ -88,6 +88,7 @@ jobs:
 
     env:
       CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CALIMERO_AUTH_FRONTEND_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -118,6 +119,9 @@ jobs:
           mkdir -p artifacts
 
           readarray -t binaries <<< "$BINARIES"
+          readarray -t auth_binaries <<< "$AUTH_BINARIES"
+
+          binaries+=("${auth_binaries[@]}")
 
           for binary in "${binaries[@]}"; do
             tar -czf artifacts/"$binary"_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release "$binary"
