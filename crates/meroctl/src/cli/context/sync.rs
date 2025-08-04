@@ -44,11 +44,7 @@ impl SyncCommand {
             format!("/admin-api/contexts/sync/{context_id}").into()
         };
 
-        let e = connection.post(&url, ()).await;
-
-        dbg!(&e);
-
-        let response: SyncContextResponse = e?;
+        let response: SyncContextResponse = connection.post(&url, ()).await?;
 
         environment.output.write(&response);
 
