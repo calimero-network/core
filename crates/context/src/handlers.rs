@@ -8,6 +8,7 @@ pub mod create_context;
 pub mod delete_context;
 pub mod execute;
 pub mod join_context;
+pub mod sync;
 pub mod update_application;
 
 impl Handler<ContextMessage> for ContextManager {
@@ -28,6 +29,9 @@ impl Handler<ContextMessage> for ContextManager {
                 self.forward_handler(ctx, request, outcome)
             }
             ContextMessage::JoinContext { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            ContextMessage::Sync { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }
