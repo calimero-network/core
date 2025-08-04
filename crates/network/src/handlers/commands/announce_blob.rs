@@ -18,7 +18,8 @@ impl Handler<AnnounceBlob> for NetworkManager {
         );
 
         // Create a unique key for this blob in this context
-        let key = RecordKey::new(&[request.context_id.as_slice(), request.blob_id.as_slice()].concat());
+        let key =
+            RecordKey::new(&[request.context_id.as_slice(), request.blob_id.as_slice()].concat());
 
         info!(
             "ANNOUNCE: blob_id={}, context_id={}, key_len={}",

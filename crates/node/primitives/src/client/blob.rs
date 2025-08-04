@@ -11,8 +11,8 @@ use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
 
 use super::NodeClient;
-use crate::messages::NodeMessage::GetBlobBytes;
 use crate::messages::get_blob_bytes::GetBlobBytesRequest;
+use crate::messages::NodeMessage::GetBlobBytes;
 
 impl NodeClient {
     // todo! maybe this should be an actor method?
@@ -218,16 +218,18 @@ impl NodeClient {
         }
 
         // First try to get from NodeManager's cache (for locally stored blobs)
-        let request = GetBlobBytesRequest {
-            blob_id: *blob_id,
-        };
-        
+        let request = GetBlobBytesRequest { blob_id: *blob_id };
+
         let (tx, rx) = tokio::sync::oneshot::channel();
-        
-        match self.node_manager.send(GetBlobBytes {
-            request,
-            outcome: tx,
-        }).await {
+
+        match self
+            .node_manager
+            .send(GetBlobBytes {
+                request,
+                outcome: tx,
+            })
+            .await
+        {
             Ok(_) => {
                 if let Ok(response) = rx.await {
                     if let Ok(response) = response {

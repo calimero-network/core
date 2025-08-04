@@ -409,16 +409,16 @@ impl Handler<NetworkEvent> for NodeManager {
                     data_size = data.len(),
                     "Blob downloaded successfully from peer, storing to blobstore"
                 );
-                
+
                 // Store the downloaded blob data to blobstore
                 let blobstore = self.blobstore.clone();
                 let blob_data = data.clone();
-                
+
                 let _ = ctx.spawn(
                     async move {
                         // Convert data to async reader for blobstore.put()
                         let reader = &blob_data[..];
-                        
+
                         match blobstore.put(reader).await {
                             Ok((stored_blob_id, _hash, size)) => {
                                 debug!(
@@ -437,7 +437,7 @@ impl Handler<NetworkEvent> for NodeManager {
                             }
                         }
                     }
-                    .into_actor(self)
+                    .into_actor(self),
                 );
             }
             NetworkEvent::BlobDownloadFailed {
