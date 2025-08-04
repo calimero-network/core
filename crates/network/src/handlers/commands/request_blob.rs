@@ -17,23 +17,6 @@ use crate::NetworkManager;
 const BLOB_TRANSFER_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute per operation
 const CHUNK_RECEIVE_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds per chunk
 
-// Self-test for binary protocol
-fn test_binary_protocol() -> eyre::Result<()> {
-    let test_chunk = BlobChunk {
-        data: vec![1, 2, 3, 4, 5],
-        is_final: true,
-    };
-    let bytes = test_chunk.to_bytes();
-    let parsed = BlobChunk::from_bytes(&bytes)?;
-
-    if test_chunk.data != parsed.data || test_chunk.is_final != parsed.is_final {
-        return Err(eyre::eyre!("Binary protocol self-test failed"));
-    }
-
-    tracing::debug!("Binary protocol self-test passed");
-    Ok(())
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobRequest {
     pub blob_id: [u8; 32],
@@ -84,10 +67,6 @@ impl Handler<RequestBlob> for NetworkManager {
     type Result = ResponseFuture<<RequestBlob as Message>::Result>;
 
     fn handle(&mut self, request: RequestBlob, _ctx: &mut Context<Self>) -> Self::Result {
-        // Test binary protocol on first use
-        if let Err(e) = test_binary_protocol() {
-            warn!("Binary protocol test failed: {}", e);
-        }
 
         debug!(
             blob_id = %request.blob_id,
@@ -426,5 +405,23 @@ impl Handler<RequestBlob> for NetworkManager {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_binary_protocol() {
+        let test_chunk = BlobChunk {
+            data: vec![1, 2, 3, 4, 5],
+            is_final: true,
+        };
+        let bytes = test_chunk.to_bytes();
+        let parsed = BlobChunk::from_bytes(&bytes).expect("Should parse successfully");
+
+        assert_eq!(test_chunk.data, parsed.data, "Data should match");
+        assert_eq!(test_chunk.is_final, parsed.is_final, "is_final should match");
     }
 }
