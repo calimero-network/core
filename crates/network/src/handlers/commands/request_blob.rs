@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use actix::{Context, Handler, Message, ResponseFuture};
+use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_network_primitives::messages::{NetworkEvent, RequestBlob};
 use calimero_network_primitives::stream::{
     Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL,
 };
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
-use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 use tracing::debug;
@@ -30,7 +30,6 @@ pub struct BlobResponse {
     pub size: Option<u64>, // Total size if found
 }
 
-
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub struct BlobChunk {
     pub data: Vec<u8>,
@@ -40,7 +39,6 @@ impl Handler<RequestBlob> for NetworkManager {
     type Result = ResponseFuture<<RequestBlob as Message>::Result>;
 
     fn handle(&mut self, request: RequestBlob, _ctx: &mut Context<Self>) -> Self::Result {
-
         debug!(
             blob_id = %request.blob_id,
             context_id = %request.context_id,
@@ -351,7 +349,6 @@ impl Handler<RequestBlob> for NetworkManager {
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_borsh_serialization() {
         let test_cases = vec![
@@ -360,28 +357,24 @@ mod tests {
                 data: vec![1, 2, 3, 4, 5],
             },
             // Empty data
-            BlobChunk {
-                data: vec![],
-            },
+            BlobChunk { data: vec![] },
             // Large data
             BlobChunk {
                 data: vec![42; 1024], // 1KB of data
             },
             // Single byte chunk
-            BlobChunk {
-                data: vec![1],
-            },
+            BlobChunk { data: vec![1] },
         ];
 
         for (i, chunk) in test_cases.into_iter().enumerate() {
             let bytes = borsh::to_vec(&chunk)
                 .unwrap_or_else(|e| panic!("Failed to serialize chunk {}: {}", i, e));
-            
+
             let parsed = BlobChunk::try_from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("Failed to deserialize chunk {}: {}", i, e));
 
             assert_eq!(chunk.data, parsed.data, "Data should match for chunk {}", i);
-            
+
             // Verify the serialized size is correct
             assert_eq!(
                 bytes.len(),
