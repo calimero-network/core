@@ -89,5 +89,7 @@ pub async fn update_application_id(
         .update_application(&context_id, &application_id, &public_key)
         .await?;
 
+    node_client.sync(Some(&context_id)).await?;
+
     Ok(application)
 }
