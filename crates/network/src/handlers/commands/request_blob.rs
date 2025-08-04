@@ -267,7 +267,6 @@ impl Handler<RequestBlob> for NetworkManager {
 
                         // Get chunk size before moving the data
                         let chunk_size = blob_chunk.data.len();
-                        
                         // Add chunk data to collection (move semantics, no clone)
                         collected_data.extend(blob_chunk.data);
                         chunk_count += 1;
