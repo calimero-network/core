@@ -163,6 +163,16 @@ enum Commands {
         #[command(subcommand)]
         command: ProposalsCommands,
     },
+    /// Explicitly request a sync
+    Sync {
+        /// The context to sync
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+
+        /// Sync all contexts
+        #[clap(long, short, conflicts_with = "context")]
+        all: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -585,7 +595,26 @@ impl ContextCommand {
             Commands::Proposals { command } => {
                 handle_proposals_command(node_client, ctx_client, command, &ind.to_string()).await?
             }
+            Commands::Sync { context, all } => {
+                if all {
+                    println!("{ind} Syncing all contexts...");
+
+                    node_client.sync(None).await?;
+                } else {
+                    let context_id = node_client
+                        .resolve_alias(context, None)?
+                        .ok_or_eyre("unable to resolve context")?;
+
+                    println!(
+                        "{ind} Syncing context '{}'...",
+                        pretty_alias(Some(context), &context_id)
+                    );
+
+                    node_client.sync(Some(&context_id)).await?;
+                }
+            }
         }
+
         Ok(())
     }
 }

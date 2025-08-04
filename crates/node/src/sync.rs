@@ -9,11 +9,12 @@ use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::{InitPayload, StreamMessage};
 use calimero_primitives::context::ContextId;
 use eyre::{bail, OptionExt, WrapErr};
-use futures_util::stream::FuturesUnordered;
+use futures_util::stream::{self, FuturesUnordered};
 use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
+use tokio::sync::mpsc;
 use tokio::time::{self, timeout, timeout_at, Instant, MissedTickBehavior};
 use tracing::{debug, error};
 
@@ -31,13 +32,27 @@ pub struct SyncConfig {
     pub frequency: time::Duration,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct SyncManager {
     sync_config: SyncConfig,
 
     node_client: NodeClient,
     context_client: ContextClient,
     network_client: NetworkClient,
+
+    ctx_sync_rx: Option<mpsc::Receiver<Option<ContextId>>>,
+}
+
+impl Clone for SyncManager {
+    fn clone(&self) -> Self {
+        Self {
+            sync_config: self.sync_config.clone(),
+            node_client: self.node_client.clone(),
+            context_client: self.context_client.clone(),
+            network_client: self.network_client.clone(),
+            ctx_sync_rx: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -82,16 +97,18 @@ impl SyncManager {
         node_client: NodeClient,
         context_client: ContextClient,
         network_client: NetworkClient,
+        ctx_sync_rx: mpsc::Receiver<Option<ContextId>>,
     ) -> Self {
         Self {
             sync_config,
             node_client,
             context_client,
             network_client,
+            ctx_sync_rx: Some(ctx_sync_rx),
         }
     }
 
-    pub async fn start(self) {
+    pub async fn start(mut self) {
         let mut next_sync = time::interval(self.sync_config.frequency);
 
         next_sync.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -120,18 +137,38 @@ impl SyncManager {
             Some(())
         };
 
+        let mut requested_ctx = None;
+
+        let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
+            error!("SyncManager can only be run once");
+
+            return;
+        };
+
         loop {
             tokio::select! {
-                _ = next_sync.tick() => {}
+                _ = next_sync.tick() => {
+                    debug!("Performing interval sync");
+                }
                 Some(()) = async {
                     loop { advance(&mut futs, &mut state).await? }
                 } => {},
-                // todo! allow explicit sync request
+                Some(res) = ctx_sync_rx.recv() => {
+                    debug!(?res, "Received an explicit sync request");
+
+                    requested_ctx = res;
+                }
             }
 
-            debug!("Performing interval sync");
+            let requested = requested_ctx.take();
 
-            let contexts = self.context_client.get_contexts(None);
+            let contexts = requested
+                .is_none()
+                .then(|| self.context_client.get_contexts(None));
+
+            let contexts = stream::iter(requested)
+                .map(Ok)
+                .chain(stream::iter(contexts).flatten());
 
             let mut contexts = pin!(contexts);
 
@@ -161,9 +198,13 @@ impl SyncManager {
                         let time_since = last_sync.elapsed();
 
                         if time_since < minimum {
-                            debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
+                            if requested.is_none() {
+                                debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
 
-                            continue;
+                                continue;
+                            }
+
+                            debug!(%context_id, ?time_since, ?minimum, "Force syncing despite recency, due to explicit request");
                         }
 
                         let _ignored = state.last_sync.take();
