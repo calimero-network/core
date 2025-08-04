@@ -22,19 +22,17 @@ impl Handler<QueryBlob> for NetworkManager {
         // Create search key based on context
         let key = if let Some(context_id) = request.context_id {
             // Search in specific context
-            let key = RecordKey::new(&[&*context_id, &*request.blob_id].concat());
+            let key = RecordKey::new(&[context_id.as_slice(), request.blob_id.as_slice()].concat());
 
             info!(
-                "QUERY: blob_id={}, context_id={}, key_len={}",
-                request.blob_id,
-                context_id,
-                key.as_ref().len(),
+                blob_id = %request.blob_id,
+                context_id = context_id.as_str(),
+                key_len = key.as_ref().len(),
+                "QUERY: searching for blob"
             );
 
             key
         } else {
-            // Global search would require searching all known contexts
-            // For MVP, we'll return an error for global queries
             drop(sender.send(Err(eyre!("Global blob queries not yet supported"))));
             return Box::pin(async { receiver.await.expect("Sender not to be dropped") });
         };

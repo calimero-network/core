@@ -18,7 +18,7 @@ impl Handler<AnnounceBlob> for NetworkManager {
         );
 
         // Create a unique key for this blob in this context
-        let key = RecordKey::new(&[&*request.context_id, &*request.blob_id].concat());
+        let key = RecordKey::new(&[request.context_id.as_slice(), request.blob_id.as_slice()].concat());
 
         info!(
             "ANNOUNCE: blob_id={}, context_id={}, key_len={}",
@@ -29,7 +29,7 @@ impl Handler<AnnounceBlob> for NetworkManager {
 
         // Create a record with blob metadata (size and peer ID)
         let peer_id = *self.swarm.local_peer_id();
-        let value = [&peer_id.to_bytes(), &request.size.to_le_bytes()].concat();
+        let value = [peer_id.to_bytes().as_slice(), &request.size.to_le_bytes()].concat();
 
         let record = Record::new(key, value);
 

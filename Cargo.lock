@@ -1891,6 +1891,7 @@ name = "calimero-network"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "borsh",
  "calimero-network-primitives",
  "calimero-primitives",
  "calimero-utils-actix",

@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
-borsh.workspace = true
+borsh = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
