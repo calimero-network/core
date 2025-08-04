@@ -11,6 +11,8 @@ use futures_util::{AsyncRead, StreamExt};
 use libp2p::PeerId;
 
 use super::NodeClient;
+use crate::messages::NodeMessage::GetBlobBytes;
+use crate::messages::get_blob_bytes::GetBlobBytesRequest;
 
 impl NodeClient {
     // todo! maybe this should be an actor method?
@@ -204,7 +206,8 @@ impl NodeClient {
         }
     }
 
-    /// Get blob bytes from local storage or network if context_id is provided
+    /// Get blob bytes from local storage with actor-based caching
+    /// Falls back to network download if context_id is provided and blob not found locally
     pub async fn get_blob_bytes(
         &self,
         blob_id: &BlobId,
@@ -214,18 +217,46 @@ impl NodeClient {
             return Ok(None);
         }
 
-        // Try to get the blob (either locally or from network)
-        let Some(mut blob) = self.get_blob(blob_id, context_id).await? else {
-            return Ok(None);
+        // First try to get from NodeManager's cache (for locally stored blobs)
+        let request = GetBlobBytesRequest {
+            blob_id: *blob_id,
         };
-
-        // Read all bytes from the blob stream
-        let mut data = Vec::new();
-        while let Some(chunk) = blob.next().await {
-            data.extend_from_slice(&chunk?);
+        
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        
+        match self.node_manager.send(GetBlobBytes {
+            request,
+            outcome: tx,
+        }).await {
+            Ok(_) => {
+                if let Ok(response) = rx.await {
+                    if let Ok(response) = response {
+                        if response.bytes.is_some() {
+                            return Ok(response.bytes);
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // NodeManager not available, fallback to direct access
+            }
         }
 
-        Ok(Some(data.into()))
+        if let Some(context_id) = context_id {
+            let Some(mut blob) = self.get_blob(blob_id, Some(context_id)).await? else {
+                return Ok(None);
+            };
+
+            let mut data = Vec::new();
+            while let Some(chunk) = blob.next().await {
+                data.extend_from_slice(&chunk?);
+            }
+
+            Ok(Some(data.into()))
+        } else {
+            // No context_id provided and not in local cache
+            Ok(None)
+        }
     }
 
     /// Query the network for peers that have a specific blob

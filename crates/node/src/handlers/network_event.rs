@@ -388,10 +388,38 @@ impl Handler<NetworkEvent> for NodeManager {
                     context_id = %context_id,
                     from_peer = %from_peer,
                     data_size = data.len(),
-                    "Blob downloaded successfully from peer"
+                    "Blob downloaded successfully from peer, storing to blobstore"
                 );
-                // For now, just log the success. Applications can listen to this event
-                // to implement custom logic when blobs are downloaded.
+                
+                // Store the downloaded blob data to blobstore
+                let blobstore = self.blobstore.clone();
+                let blob_data = data.clone();
+                
+                let _ = ctx.spawn(
+                    async move {
+                        // Convert data to async reader for blobstore.put()
+                        let reader = &blob_data[..];
+                        
+                        match blobstore.put(reader).await {
+                            Ok((stored_blob_id, _hash, size)) => {
+                                debug!(
+                                    requested_blob_id = %blob_id,
+                                    stored_blob_id = %stored_blob_id,
+                                    size = size,
+                                    "Successfully stored downloaded blob"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    blob_id = %blob_id,
+                                    error = %e,
+                                    "Failed to store downloaded blob"
+                                );
+                            }
+                        }
+                    }
+                    .into_actor(self)
+                );
             }
             NetworkEvent::BlobDownloadFailed {
                 blob_id,
