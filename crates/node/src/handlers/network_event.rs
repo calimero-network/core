@@ -10,6 +10,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use libp2p::PeerId;
+use owo_colors::OwoColorize;
 use tracing::{debug, info, warn};
 
 use crate::sync::SyncManager;
@@ -46,7 +47,8 @@ impl Handler<NetworkEvent> for NodeManager {
 
                 info!(
                     "Peer '{}' subscribed to context '{}'",
-                    their_peer_id, context_id
+                    their_peer_id.cyan(),
+                    context_id.cyan()
                 );
             }
             NetworkEvent::Unsubscribed {
