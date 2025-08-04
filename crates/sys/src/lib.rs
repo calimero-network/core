@@ -61,7 +61,7 @@ macro_rules! wasm_imports {
                 }
             } else {
                 $(
-                    #[expect(unused_variables, reason = "Needed due to macro expansion")]
+                    #[allow(unused_variables, reason = "Needed due to macro expansion")]
                     pub unsafe fn $func_name($($arg: $arg_ty),*) $(-> $returns)? {
                         panic!("host function `{}` is only available when compiled for wasm32", stringify!($func_name));
                     }

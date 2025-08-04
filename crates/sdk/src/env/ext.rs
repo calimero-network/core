@@ -3,10 +3,10 @@ use std::borrow::Cow;
 use std::str::FromStr;
 
 use borsh::{to_vec as to_borsh_vec, to_vec, BorshDeserialize, BorshSerialize};
+use calimero_sys::{self as sys, Buffer, BufferMut, Ref};
 use serde::{Deserialize, Serialize};
 
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
-use crate::sys::{self, Buffer, BufferMut, Ref};
 
 /// A blockchain proposal action.
 ///

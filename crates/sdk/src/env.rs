@@ -1,10 +1,10 @@
 use std::panic::set_hook;
 
-use crate::event::AppEvent;
-use crate::sys::{
-    self, log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, Ref, RegisterId,
-    ValueReturn,
+use calimero_sys::{
+    self as sys, Buffer, BufferMut, Event, Location, PtrSizedInt, Ref, RegisterId, ValueReturn,
 };
+
+use crate::event::AppEvent;
 
 #[doc(hidden)]
 pub mod ext;
@@ -21,7 +21,7 @@ pub fn panic() -> ! {
 #[inline]
 pub fn panic_str(message: &str) -> ! {
     unsafe {
-        panic_utf8(
+        sys::panic_utf8(
             Ref::new(&Buffer::from(message)),
             Ref::new(&Location::caller()),
         )
@@ -52,7 +52,7 @@ pub fn setup_panic_hook() {
         };
 
         unsafe {
-            panic_utf8(
+            sys::panic_utf8(
                 Ref::new(&Buffer::from(message)),
                 Ref::new(&Location::from(info.location())),
             )
@@ -157,7 +157,7 @@ where
 
 #[inline]
 pub fn log(message: &str) {
-    unsafe { log_utf8(Ref::new(&Buffer::from(message))) }
+    unsafe { sys::log_utf8(Ref::new(&Buffer::from(message))) }
 }
 
 #[inline]

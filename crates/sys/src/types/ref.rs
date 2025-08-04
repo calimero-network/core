@@ -1,10 +1,11 @@
 use std::marker::PhantomData;
 use std::ptr;
 
-use crate::sys::PtrSizedInt;
+use crate::PtrSizedInt;
 
 /// Abstraction type that encodes the pointer to any aggregate type T
 #[repr(C)]
+#[derive(Debug)]
 pub struct Ref<T> {
     ptr: PtrSizedInt,
     phantom: PhantomData<T>,

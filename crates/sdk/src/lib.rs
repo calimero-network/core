@@ -5,7 +5,6 @@ pub mod event;
 mod macros;
 mod returns;
 pub mod state;
-mod sys;
 pub mod types;
 
 pub mod app {

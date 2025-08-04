@@ -3,6 +3,7 @@ use core::panic::Location as PanicLocation;
 use super::Buffer;
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct Location<'a> {
     file: Buffer<'a>,
     line: u32,

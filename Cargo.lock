@@ -2090,7 +2090,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "calimero-sdk-macros",
- "cfg-if",
+ "calimero-sys",
  "serde",
  "serde_json",
  "trybuild",
@@ -2224,6 +2224,13 @@ dependencies = [
  "rocksdb",
  "strum 0.26.3",
  "tempdir",
+]
+
+[[package]]
+name = "calimero-sys"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
