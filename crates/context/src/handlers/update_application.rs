@@ -3,8 +3,9 @@ use calimero_context_primitives::client::ContextClient;
 use calimero_context_primitives::messages::update_application::UpdateApplicationRequest;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::ContextId;
+use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::PublicKey;
+use calimero_store::{key, types};
 use eyre::bail;
 
 use crate::ContextManager;
@@ -21,8 +22,10 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         }: UpdateApplicationRequest,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        if let Some(context) = self.contexts.get(&context_id) {
-            if application_id == context.meta.application_id {
+        let context = self.contexts.get(&context_id).map(|c| c.meta);
+
+        if let Some(context) = context {
+            if application_id == context.application_id {
                 return ActorResponse::reply(Ok(()));
             }
         }
@@ -30,9 +33,11 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
         let application = self.applications.get(&application_id).cloned();
 
         let task = update_application_id(
+            self.datastore.clone(),
             self.node_client.clone(),
             self.context_client.clone(),
             context_id,
+            context,
             application_id,
             application,
             public_key,
@@ -52,13 +57,26 @@ impl Handler<UpdateApplicationRequest> for ContextManager {
 }
 
 pub async fn update_application_id(
+    datastore: calimero_store::Store,
     node_client: NodeClient,
     context_client: ContextClient,
     context_id: ContextId,
+    context: Option<Context>,
     application_id: ApplicationId,
     application: Option<Application>,
     public_key: PublicKey,
 ) -> eyre::Result<Application> {
+    let context = match context {
+        Some(context) => context,
+        None => {
+            let Some(context) = context_client.get_context(&context_id)? else {
+                bail!("context '{}' does not exist", context_id);
+            };
+
+            context
+        }
+    };
+
     let application = match application {
         Some(application) => application,
         None => {
@@ -70,12 +88,11 @@ pub async fn update_application_id(
         }
     };
 
-    if !node_client.has_blob(&application.blob.bytecode)? {
-        bail!("application with id '{}' has no blob", application_id);
-    }
-
     let Some(config_client) = context_client.context_config(&context_id)? else {
-        bail!("context '{}' does not exist", context_id);
+        bail!(
+            "missing context config parameters for context '{}'",
+            context_id
+        );
     };
 
     let external_client = context_client.external_client(&context_id, &config_client)?;
@@ -85,9 +102,15 @@ pub async fn update_application_id(
         .update_application(&public_key, &application)
         .await?;
 
-    context_client
-        .update_application(&context_id, &application_id, &public_key)
-        .await?;
+    let mut handle = datastore.handle();
+
+    handle.put(
+        &key::ContextMeta::new(context.id),
+        &types::ContextMeta::new(
+            key::ApplicationMeta::new(application.id),
+            *context.root_hash,
+        ),
+    )?;
 
     Ok(application)
 }
