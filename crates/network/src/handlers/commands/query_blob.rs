@@ -22,18 +22,16 @@ impl Handler<QueryBlob> for NetworkManager {
         // Create search key based on context
         let key = if let Some(context_id) = request.context_id {
             // Search in specific context
-            let mut key_bytes = Vec::with_capacity(64);
-            key_bytes.extend_from_slice(&*context_id);
-            key_bytes.extend_from_slice(&*request.blob_id);
+            let key = RecordKey::new(&[&*context_id, &*request.blob_id].concat());
 
             info!(
                 "QUERY: blob_id={}, context_id={}, key_len={}",
                 request.blob_id,
                 context_id,
-                key_bytes.len(),
+                key.as_ref().len(),
             );
 
-            RecordKey::new(&key_bytes)
+            key
         } else {
             // Global search would require searching all known contexts
             // For MVP, we'll return an error for global queries
