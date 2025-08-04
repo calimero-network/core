@@ -75,7 +75,7 @@ impl Report for Response {
                     if let Some(output) = &result.output {
                         let _ = table.add_row(vec![format!("Output: {:#}", output)]);
                     } else {
-                        let _ = table.add_row(vec!["<no output>".to_string()]);
+                        let _ = table.add_row(vec!["<no output>".to_owned()]);
                     }
                 } else {
                     let _ = table.add_row(vec![format!("Result: {:#}", result)]);
