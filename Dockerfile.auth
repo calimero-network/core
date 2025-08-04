@@ -3,7 +3,7 @@
 ARG RUST_VERSION=1.85.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
-ARG APP_NAME=calimero-auth
+ARG APP_NAME=mero-auth
 
 ################################################################################
 FROM rust:${RUST_VERSION}-slim-bookworm AS build

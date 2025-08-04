@@ -1,4 +1,4 @@
-name: Release
+name: Stub (Release)
 # ^~~ We run this workflow in-place to ensure that PRs are merged
 # without the release workflow being run as it is a required check.
 
@@ -23,7 +23,7 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     steps:
       - run: echo "Ignored"

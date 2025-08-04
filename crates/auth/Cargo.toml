@@ -1,5 +1,5 @@
 [package]
-name = "calimero-auth"
+name = "mero-auth"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -44,7 +44,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 toml.workspace = true
 tower = { workspace = true, features = ["util", "limit"] }
-tower-http = { workspace = true, features = ["cors", "trace", "catch-panic", "limit", "set-header"] }
+tower-http = { workspace = true, features = ["catch-panic", "cors", "limit", "trace", "set-header"] }
 tower-sessions.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
