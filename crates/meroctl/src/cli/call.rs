@@ -2,7 +2,8 @@ use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    ExecutionRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
+    ExecutionRequest, ExecutionResponse, Request, RequestId, RequestPayload, Response,
+    ResponseBody, ResponseBodyResult, Version,
 };
 use clap::Parser;
 use comfy_table::{Cell, Color, Table};
@@ -47,8 +48,9 @@ pub struct CallCommand {
     )]
     pub executor: Alias<PublicKey>,
 
-    #[arg(long, default_value = "dontcare", help = "Id of the JsonRpc call")]
+    #[arg(long, help = "Id of the JsonRpc call")]
     pub id: Option<String>,
+
     #[arg(
         long = "substitute",
         help = "Comma-separated list of aliases to substitute in the payload (use {alias} in payload)",
@@ -68,8 +70,16 @@ impl Report for Response {
         let _ = table.set_header(vec![Cell::new("RPC Response").fg(Color::Blue)]);
 
         match &self.body {
-            ResponseBody::Result(result) => {
-                let _ = table.add_row(vec![format!("Result: {:#}", result.0)]);
+            ResponseBody::Result(ResponseBodyResult(result)) => {
+                if let Ok(result) = serde_json::from_value::<ExecutionResponse>(result.clone()) {
+                    if let Some(output) = &result.output {
+                        let _ = table.add_row(vec![format!("Output: {:#}", output)]);
+                    } else {
+                        let _ = table.add_row(vec!["<no output>".to_string()]);
+                    }
+                } else {
+                    let _ = table.add_row(vec![format!("Result: {:#}", result)]);
+                }
             }
             ResponseBody::Error(error) => {
                 let _ = table.add_row(vec![format!("Error: {}", error)]);
@@ -105,7 +115,7 @@ impl CallCommand {
 
         let request = Request::new(
             Version::TwoPointZero,
-            self.id.map(RequestId::String),
+            self.id.map(RequestId::String).unwrap_or_default(),
             payload,
         );
 
