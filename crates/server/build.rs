@@ -83,23 +83,10 @@ fn try_main() -> eyre::Result<()> {
         }
     };
 
-    let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
-
-    if let Some(token) = token {
-        let headers = [(
-            reqwest_compat::header::AUTHORIZATION,
-            format!("Bearer {token}").try_into()?,
-        )]
-        .into_iter();
-
-        builder = builder.default_headers(headers.collect());
-    }
-
     let webui_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
         let cache = Cache::builder()
-            .client_builder(builder)
             .freshness_lifetime(FRESHNESS_LIFETIME)
             .dir(target_dir()?.join("cache"))
             .build()?;
