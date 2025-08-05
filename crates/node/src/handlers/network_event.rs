@@ -40,20 +40,11 @@ struct BlobResponse {
 }
 
 // Use binary format for efficient chunk transfer
-#[derive(Debug)]
+use borsh::{BorshSerialize, BorshDeserialize};
+
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 struct BlobChunk {
     data: Vec<u8>,
-    is_final: bool,
-}
-
-impl BlobChunk {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.data.len() + 9); // 8 bytes for length + 1 byte for is_final
-        bytes.extend_from_slice(&(self.data.len() as u64).to_le_bytes());
-        bytes.push(if self.is_final { 1u8 } else { 0u8 });
-        bytes.extend_from_slice(&self.data);
-        bytes
-    }
 }
 
 /// Handle blob requests that come over streams
@@ -63,7 +54,7 @@ async fn handle_blob_request_stream(
     blob_request: BlobRequest,
     mut stream: Box<Stream>,
 ) -> eyre::Result<()> {
-    debug!(
+    info!(
         %peer_id,
         blob_id = blob_request.blob_id.as_str(),
         context_id = blob_request.context_id.as_str(),
@@ -73,12 +64,13 @@ async fn handle_blob_request_stream(
     // Wrap the entire blob serving in a timeout
     let serve_result = timeout(BLOB_SERVE_TIMEOUT, async {
         // Try to get the blob as a stream (handles chunked blobs efficiently)
+        info!(%peer_id, blob_id = %blob_request.blob_id, "Attempting to get blob from local storage");
         let blob_stream = node_client
             .get_blob(&BlobId::from(blob_request.blob_id), None)
             .await?;
 
-        let response = if let Some(_blob_stream) = blob_stream {
-            debug!(%peer_id, "Blob found, will stream chunks");
+        let (response, blob_stream) = if let Some(blob_stream) = blob_stream {
+            info!(%peer_id, "Blob found, will stream chunks");
 
             // Get blob metadata to determine size
             let blob_metadata = node_client
@@ -87,16 +79,19 @@ async fn handle_blob_request_stream(
 
             let total_size = blob_metadata.map(|meta| meta.size).unwrap_or(0);
 
-            BlobResponse {
+            let response = BlobResponse {
                 found: true,
                 size: Some(total_size),
-            }
+            };
+
+            (response, Some(blob_stream))
         } else {
-            debug!(%peer_id, "Blob not found");
-            BlobResponse {
+            info!(%peer_id, "Blob not found");
+            let response = BlobResponse {
                 found: false,
                 size: None,
-            }
+            };
+            (response, None)
         };
 
         // Send initial response with timeout
@@ -113,10 +108,7 @@ async fn handle_blob_request_stream(
 
         // If blob was found, stream the chunks
         if response.found {
-            let mut blob_stream = node_client
-                .get_blob(&BlobId::from(blob_request.blob_id), None)
-                .await?
-                .expect("Blob should exist since we just checked"); // Safe because we checked above
+            let mut blob_stream = blob_stream.expect("Blob stream should exist since response.found is true");
 
             debug!(%peer_id, "Starting to stream blob chunks");
 
@@ -139,17 +131,16 @@ async fn handle_blob_request_stream(
 
                         let blob_chunk = BlobChunk {
                             data: chunk.to_vec(),
-                            is_final: false,
                         };
 
-                        let chunk_data = blob_chunk.to_bytes();
+                        let chunk_data = borsh::to_vec(&blob_chunk)
+                            .map_err(|e| eyre::eyre!("Failed to serialize blob chunk: {}", e))?;
 
                         debug!(
                             %peer_id,
                             chunk_number = chunk_count,
                             original_chunk_size = chunk.len(),
                             binary_message_size = chunk_data.len(),
-                            is_final = blob_chunk.is_final,
                             "Sending binary chunk data"
                         );
 
@@ -178,10 +169,10 @@ async fn handle_blob_request_stream(
             // Send final empty chunk to signal end of stream
             let final_chunk = BlobChunk {
                 data: Vec::new(),
-                is_final: true,
             };
 
-            let final_chunk_data = final_chunk.to_bytes();
+            let final_chunk_data = borsh::to_vec(&final_chunk)
+                .map_err(|e| eyre::eyre!("Failed to serialize final chunk: {}", e))?;
 
             timeout(
                 CHUNK_SEND_TIMEOUT,
@@ -225,6 +216,8 @@ async fn handle_blob_protocol_stream(
     peer_id: libp2p::PeerId,
     mut stream: Box<Stream>,
 ) -> eyre::Result<()> {
+    info!(%peer_id, "Starting blob protocol stream handler");
+    
     // Read the first message which should be a blob request
     let first_message = match stream.next().await {
         Some(Ok(msg)) => msg,
@@ -328,7 +321,7 @@ impl Handler<NetworkEvent> for NodeManager {
             } => {
                 // Route streams based on protocol
                 if protocol == calimero_network_primitives::stream::CALIMERO_BLOB_PROTOCOL {
-                    debug!(%peer_id, "Handling blob protocol stream");
+                    info!(%peer_id, "Handling blob protocol stream - STREAM OPENED");
                     let node_client = self.node_client.clone();
                     let _ignored = ctx.spawn(
                         async move {

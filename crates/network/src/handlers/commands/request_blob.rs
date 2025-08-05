@@ -6,6 +6,8 @@ use calimero_network_primitives::messages::{NetworkEvent, RequestBlob};
 use calimero_network_primitives::stream::{
     Message as StreamMessage, Stream, CALIMERO_BLOB_PROTOCOL,
 };
+use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
 use eyre::{eyre, Context as EyreContext};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -20,8 +22,8 @@ const CHUNK_RECEIVE_TIMEOUT: Duration = Duration::from_secs(30); // 30 seconds p
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobRequest {
-    pub blob_id: [u8; 32],
-    pub context_id: [u8; 32],
+    pub blob_id: BlobId,
+    pub context_id: ContextId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -75,8 +77,8 @@ impl Handler<RequestBlob> for NetworkManager {
 
                 // Send blob request
                 let blob_request = BlobRequest {
-                    blob_id: *request.blob_id,
-                    context_id: *request.context_id,
+                    blob_id: request.blob_id,
+                    context_id: request.context_id,
                 };
 
                 let request_data = match serde_json::to_vec(&blob_request) {
