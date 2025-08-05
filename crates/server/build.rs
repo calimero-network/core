@@ -72,16 +72,14 @@ fn try_main() -> eyre::Result<()> {
                 other => bail!("expected json response, got: {:?}", other),
             };
 
-            let zipball_url = release
+            let build_url = release
                 .assets
                 .into_iter()
                 .find(|asset| asset.name == "admin-dashboard-build.zip")
                 .map(|asset| asset.browser_download_url)
                 .ok_or_eyre("missing `admin-dashboard-build.zip` asset")?;
 
-            println!("zipball_url: {}", zipball_url);
-
-            zipball_url.into()
+            build_url.into()
         }
     };
 
@@ -117,15 +115,7 @@ fn try_main() -> eyre::Result<()> {
 
         let workdir = cache.cached_path_with_options(&*src, &options)?;
 
-        if src.ends_with(".zip") {
-            Cow::from(workdir)
-        } else {
-            let repo = fs::read_dir(&workdir)?
-                .filter_map(Result::ok)
-                .find(|entry| entry.path().is_dir())
-                .ok_or_eyre("no extracted directory found")?;
-            Cow::from(repo.path().join("build"))
-        }
+        workdir.into()
     };
 
     println!("cargo:rerun-if-changed={}", webui_dir.display());
