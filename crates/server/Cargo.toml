@@ -37,14 +37,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [build-dependencies]
-bytes.workspace = true
-cached-path.workspace = true
 eyre.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
-# cached-path compat
-reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }
+serde.workspace = true
+zip.workspace = true
 
 [features]
 admin = ["dep:tower-sessions"]
