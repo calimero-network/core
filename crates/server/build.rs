@@ -8,8 +8,16 @@ use eyre::{bail, Context, OptionExt};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct Release {
-    zipball_url: String,
+    assets: Vec<Asset>,
 }
 
 const USER_AGENT: &str = "calimero-server-build";
@@ -59,15 +67,19 @@ fn try_main() -> eyre::Result<()> {
 
             let res = req.send()?;
 
-            let Release { mut zipball_url } = match Response::try_from(res)? {
+            let release: Release = match Response::try_from(res)? {
                 Response::Json(value) => serde_json::from_value(value)?,
                 other => bail!("expected json response, got: {:?}", other),
             };
 
-            // atm, cached-path infers the archive type from the URL
-            // https://github.com/epwalsh/rust-cached-path/issues/68
-            // this is a temporary workaround for extraction support
-            zipball_url.push_str("?.zip");
+            let zipball_url = release
+                .assets
+                .into_iter()
+                .find(|asset| asset.name == "admin-dashboard-build.zip")
+                .map(|asset| asset.browser_download_url)
+                .ok_or_eyre("missing `admin-dashboard-build.zip` asset")?;
+
+            println!("zipball_url: {}", zipball_url);
 
             zipball_url.into()
         }
@@ -105,12 +117,15 @@ fn try_main() -> eyre::Result<()> {
 
         let workdir = cache.cached_path_with_options(&*src, &options)?;
 
-        let repo = fs::read_dir(workdir)?
-            .filter_map(Result::ok)
-            .find(|entry| entry.path().is_dir())
-            .ok_or_eyre("no extracted directory found")?;
-
-        repo.path().join("build").into()
+        if src.ends_with(".zip") {
+            Cow::from(workdir)
+        } else {
+            let repo = fs::read_dir(&workdir)?
+                .filter_map(Result::ok)
+                .find(|entry| entry.path().is_dir())
+                .ok_or_eyre("no extracted directory found")?;
+            Cow::from(repo.path().join("build"))
+        }
     };
 
     println!("cargo:rerun-if-changed={}", webui_dir.display());
