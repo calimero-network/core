@@ -8,8 +8,14 @@ use eyre::{bail, Context, OptionExt};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Deserialize)]
 struct Release {
-    zipball_url: String,
+    assets: Vec<Asset>,
 }
 
 const USER_AGENT: &str = "calimero-server-build";
@@ -17,6 +23,7 @@ const FRESHNESS_LIFETIME: u64 = 60 * 60 * 24 * 7; // 1 week
 const CALIMERO_WEBUI_REPO: &str = "calimero-network/admin-dashboard";
 const CALIMERO_WEBUI_VERSION: &str = "latest";
 const CALIMERO_WEBUI_SRC_URL: &str = "https://api.github.com/repos/{repo}/releases/{version}";
+const CALIMERO_WEBUI_BUILD_ARTIFACT_NAME: &str = "{repo_name}-build.zip";
 
 fn main() {
     if let Err(e) = try_main() {
@@ -59,17 +66,28 @@ fn try_main() -> eyre::Result<()> {
 
             let res = req.send()?;
 
-            let Release { mut zipball_url } = match Response::try_from(res)? {
+            let release: Release = match Response::try_from(res)? {
                 Response::Json(value) => serde_json::from_value(value)?,
                 other => bail!("expected json response, got: {:?}", other),
             };
 
-            // atm, cached-path infers the archive type from the URL
-            // https://github.com/epwalsh/rust-cached-path/issues/68
-            // this is a temporary workaround for extraction support
-            zipball_url.push_str("?.zip");
+            let repo_name = repo.split('/').last().unwrap_or(repo);
+            let build_artifact_name =
+                replace(CALIMERO_WEBUI_BUILD_ARTIFACT_NAME.into(), |var| match var {
+                    "repo_name" => Some(repo_name),
+                    _ => None,
+                });
 
-            zipball_url.into()
+            release
+                .assets
+                .iter()
+                .find(|asset| asset.name == build_artifact_name)
+                .map(|asset| Cow::from(asset.browser_download_url.clone()))
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "No build artifact found for repo '{repo}' and version '{version}'"
+                    )
+                })?
         }
     };
 
@@ -105,12 +123,7 @@ fn try_main() -> eyre::Result<()> {
 
         let workdir = cache.cached_path_with_options(&*src, &options)?;
 
-        let repo = fs::read_dir(workdir)?
-            .filter_map(Result::ok)
-            .find(|entry| entry.path().is_dir())
-            .ok_or_eyre("no extracted directory found")?;
-
-        repo.path().join("build").into()
+        workdir.into()
     };
 
     println!("cargo:rerun-if-changed={}", webui_dir.display());
