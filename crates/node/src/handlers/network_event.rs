@@ -40,7 +40,7 @@ struct BlobResponse {
 }
 
 // Use binary format for efficient chunk transfer
-use borsh::{BorshSerialize, BorshDeserialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 struct BlobChunk {
@@ -217,7 +217,7 @@ async fn handle_blob_protocol_stream(
     mut stream: Box<Stream>,
 ) -> eyre::Result<()> {
     info!(%peer_id, "Starting blob protocol stream handler");
-    
+
     // Read the first message which should be a blob request
     let first_message = match stream.next().await {
         Some(Ok(msg)) => msg,
