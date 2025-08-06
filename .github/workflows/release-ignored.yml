@@ -50,5 +50,5 @@ jobs:
           BRO: ${{ toJson(github.event) }}
         run: jq <<< "$BRO" .ref
 
-      - name: und das?
-        run: echo "[${{ github.event.ref == "" }}]"
+      # - name: und das?
+      #   run: echo "[${{ github.event.ref == "" }}]"
