@@ -52,4 +52,6 @@ jobs:
         run: echo "[${{ github.event.ref == "" }}]"
 
       - name: und das?
-        run: echo "[${{ github.ref }}]"
+        env:
+          THING: ${{ github.ref }}
+        run: echo "[$THING]"
