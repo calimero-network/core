@@ -174,11 +174,15 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: ./.github/actions/release/container.yml
-    with:
-      binaries: $BINARIES
-      dockerfile: .github/workflows/deps/prebuilt.Dockerfile
-      container_name: merod
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Release
+        uses: ./.github/actions/release
+        with:
+          binaries: $BINARIES
+          dockerfile: .github/workflows/deps/prebuilt.Dockerfile
+          container_name: merod
 
   release-mero-auth-container:
     name: Release Mero Auth container
@@ -189,11 +193,15 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: ./.github/actions/release/container.yml
-    with:
-      binaries: $AUTH_BINARIES
-      dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
-      container_name: mero-auth
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Release
+        uses: ./.github/actions/release
+        with:
+          binaries: $BINARIES
+          dockerfile: .github/workflows/deps/prebuilt.Dockerfile
+          container_name: merod
 
   brew-update:
     name: Update Homebrew Tap

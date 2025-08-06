@@ -1,7 +1,5 @@
 name: Container release
 description: "Release container based on prebuilt binaries"
-runs-on: ubuntu-latest
-timeout-minutes: 120
 
 inputs:
   binaries:
