@@ -56,9 +56,9 @@ jobs:
         run: jq <<< "$BRO"
 
       - name: und das?
-        if: ${{ github.event.ref == "" }}
+        if: ${{ github.event && github.event.ref == "" }}
         run: echo "forkkkkkk"
 
       - name: und das?
-        if: ${{ github.event.ref != "" }}
+        if: ${{ github.event && github.event.ref != "" }}
         run: echo "base"
