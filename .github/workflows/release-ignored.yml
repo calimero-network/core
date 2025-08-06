@@ -35,3 +35,8 @@ jobs:
         env:
           BRO: ${{ toJson(github.event) }}
         run: echo "$BRO"
+
+      - name: und das?
+        env:
+          BRO: ${{ toJson(github.event) }}
+        run: echo "[${{github.event.pull_request.head.repo.full_name}}]"
