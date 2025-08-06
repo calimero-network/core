@@ -32,4 +32,6 @@ jobs:
       - run: echo "Ignored"
 
       - name: Thing
-        run: ${{ toJson(github.event) }}
+        env:
+          BRO: ${{ toJson(github.event) }}
+        run: echo "$BRO"
