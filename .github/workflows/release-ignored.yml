@@ -32,21 +32,3 @@ jobs:
         env:
           BRO: ${{ toJson(github.event) }}
         run: echo "$BRO"
-
-      - name: und das?
-        run: echo "[${{github.event.pull_request.head.repo.full_name}}]"
-
-      - name: und das?
-        run: echo "[${{ github.event.pull_request.head.repo.fork }}]"
-
-      - name: und das?
-        run: echo "[${{ github.event.repository.fork }}]"
-
-      - name: und das?
-        run: echo "[${{ github.event.repository.fork == false }}]"
-
-      - name: und das?
-        run: echo "[${{ github.event.ref }}]"
-
-      - name: und das?
-        run: echo "[${{ github.event.ref == "" }}]"
