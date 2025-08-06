@@ -183,9 +183,13 @@ jobs:
       - name: Release
         uses: ./.github/actions/container-release
         with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: ${{ needs.prepare.outputs.docker_release }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-mero-auth-container:
     name: Release Mero Auth container
@@ -205,9 +209,13 @@ jobs:
       - name: Release
         uses: ./.github/actions/container-release
         with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: ${{ needs.prepare.outputs.docker_release }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   brew-update:
     name: Update Homebrew Tap
