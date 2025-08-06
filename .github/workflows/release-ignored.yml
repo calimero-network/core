@@ -50,8 +50,3 @@ jobs:
 
       - name: und das?
         run: echo "[${{ github.event.ref == "" }}]"
-
-      - name: und das?
-        env:
-          THING: ${{ github.ref }}
-        run: echo "[$THING]"
