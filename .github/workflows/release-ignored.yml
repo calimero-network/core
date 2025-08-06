@@ -56,4 +56,6 @@ jobs:
         run: jq <<< "$BRO"
 
       - name: und das?
-        run: echo "${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}"
+        env:
+          IS_FORK: ${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
+        run: echo "${{ !env.IS_FORK }}"
