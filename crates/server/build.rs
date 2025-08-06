@@ -41,7 +41,9 @@ fn try_main() -> eyre::Result<()> {
 
     let src = match option_env!("CALIMERO_WEBUI_SRC") {
         Some(src) => {
-            is_local_dir = fs::metadata(src)?.is_dir();
+            if reqwest::Url::parse(src).is_err() {
+                is_local_dir = fs::metadata(src)?.is_dir();
+            }
 
             Cow::from(src)
         }
