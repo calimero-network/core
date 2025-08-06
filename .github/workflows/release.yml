@@ -169,7 +169,7 @@ jobs:
     name: Release Merod container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-merod-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -195,7 +195,7 @@ jobs:
     name: Release Mero Auth container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-mero-auth-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
