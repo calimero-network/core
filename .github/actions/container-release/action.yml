@@ -2,22 +2,31 @@ name: Container release
 description: "Release container based on prebuilt binaries"
 
 inputs:
+  version:
+    description: "Version of the release"
+    required: true
+  release:
+    description: "Flag indicating if this is a release"
+    required: true
+  prerelease:
+    description: "Flag indicating if this is a prerelease"
+    required: true
   binaries:
     description: "List of binaries to include in the container"
     required: true
   dockerfile:
     description: "Path to the Dockerfile to use for building the container"
     required: true
-  conatiner_name:
+  container_name:
     description: "Name of the container to build and push"
+    required: true
+  github-token:
+    description: "GitHub token"
     required: true
 
 runs:
   using: "composite"
   steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
     - name: Download built binaries
       uses: actions/download-artifact@v4
       with:
@@ -49,7 +58,7 @@ runs:
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+        password: ${{ inputs.github-token }}
 
     - name: Prepare Docker Cache parameters
       shell: bash
@@ -90,8 +99,8 @@ runs:
           type=edge
           type=ref,prefix=pr-,event=pr
           type=sha,prefix=,format=short
-          type=raw,value=${{ needs.prepare.outputs.version }},enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' }}
-          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true' && needs.prepare.outputs.prerelease == 'false' }}
+          type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' }}
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'false' }}
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 
@@ -99,7 +108,7 @@ runs:
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: .github/workflows/deps/prebuilt.Dockerfile
+        file: ${{ inputs.dockerfile }}
         push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         platforms: linux/amd64,linux/arm64
         tags: ${{ steps.metadata.outputs.tags }}

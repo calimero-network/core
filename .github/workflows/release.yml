@@ -169,7 +169,7 @@ jobs:
     name: Release Merod container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-merod-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -177,18 +177,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Release
-        uses: ./.github/actions/release
+        uses: ./.github/actions/container-release
         with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: ${{ needs.prepare.outputs.docker_release }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-mero-auth-container:
     name: Release Mero Auth container
     needs: [prepare, build-binaries]
     concurrency:
-      group: ${{ github.workflow }}-${{ github.job }}-${{ needs.prepare.outputs.version }}
+      group: ${{ github.workflow }}-${{ github.job }}-mero-auth-${{ needs.prepare.outputs.version }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -196,12 +203,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Release
-        uses: ./.github/actions/release
+        uses: ./.github/actions/container-release
         with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: ${{ needs.prepare.outputs.docker_release }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   brew-update:
     name: Update Homebrew Tap
