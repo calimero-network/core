@@ -41,8 +41,6 @@ bytes.workspace = true
 cached-path.workspace = true
 eyre.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
-# cached-path compat
-reqwest-compat = { version = "0.11", package = "reqwest", features = ["blocking"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
