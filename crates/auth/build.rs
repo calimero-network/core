@@ -95,16 +95,10 @@ fn try_main() -> eyre::Result<()> {
         let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
 
         if let Some(token) = token {
-            let headers = [
-                (
-                    reqwest_compat::header::AUTHORIZATION,
-                    format!("Bearer {token}").try_into()?,
-                ),
-                (
-                    reqwest_compat::header::ACCEPT,
-                    reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
-                ),
-            ]
+            let headers = [(
+                reqwest_compat::header::AUTHORIZATION,
+                format!("Bearer {token}").try_into()?,
+            )]
             .into_iter();
 
             builder = builder.default_headers(headers.collect());
