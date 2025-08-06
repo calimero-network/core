@@ -177,8 +177,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Release
-        uses: ./.github/actions/release
+        uses: ./.github/actions/container-release
         with:
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
@@ -196,8 +199,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Release
-        uses: ./.github/actions/release
+        uses: ./.github/actions/container-release
         with:
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
