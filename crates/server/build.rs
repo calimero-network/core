@@ -41,15 +41,19 @@ fn try_main() -> eyre::Result<()> {
 
     let src = match option_env!("CALIMERO_WEBUI_SRC") {
         Some(src) => {
-            if reqwest::Url::parse(src).is_err() {
-                if Path::new(src).is_relative() {
+            match reqwest::Url::parse(src) {
+                Ok(url) if !matches!(url.scheme(), "http" | "https") => {
                     bail!(
                         "CALIMERO_WEBUI_SRC must be an absolute path or a valid URL, got: {}",
                         src
                     );
                 }
-
-                is_local_dir = fs::metadata(src)?.is_dir();
+                Err(_) if !Path::new(src).is_absolute() => bail!(
+                    "CALIMERO_WEBUI_SRC must be an absolute path or a valid URL, got: {}",
+                    src
+                ),
+                Err(_) => is_local_dir = fs::metadata(src)?.is_dir(),
+                _ => {}
             }
 
             Cow::from(src)
