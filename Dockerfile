@@ -20,10 +20,12 @@ COPY crates ./crates
 COPY apps ./apps
 COPY e2e-tests ./e2e-tests
 
-ARG CALIMERO_WEBUI_SRC
-ARG CALIMERO_WEBUI_REPO
-ARG CALIMERO_WEBUI_VERSION
-ARG CALIMERO_WEBUI_FETCH
+ARG CALIMERO_WEBUI_SRC # the url or absolute path to the webui (archive or directory)
+ARG CALIMERO_WEBUI_REPO # the git repository hosting the webui (for a git release asset)
+ARG CALIMERO_WEBUI_VERSION # the version of the webui to use (for a git release asset)
+ARG CALIMERO_WEBUI_FETCH # invalidate the cache, fetch the webui (for a git release asset)
+ARG CALIMERO_WEBUI_ASSET # file name of the asset to use (for a git release asset)
+# CALIMERO_WEBUI_FETCH_TOKEN # GitHub token to use for fetching the webui (for a git release asset)
 
 # ^~~ docker build
 #        --build-arg CALIMERO_WEBUI_FETCH=1
