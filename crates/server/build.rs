@@ -11,7 +11,7 @@ use serde::Deserialize;
 #[serde(rename_all = "snake_case")]
 struct Asset {
     name: String,
-    browser_download_url: String,
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -67,19 +67,33 @@ fn try_main() -> eyre::Result<()> {
 
             let res = req.send()?;
 
-            let release: Release = match Response::try_from(res)? {
+            let Release { mut assets } = match Response::try_from(res)? {
                 Response::Json(value) => serde_json::from_value(value)?,
                 other => bail!("expected json response, got: {:?}", other),
             };
 
-            let build_url = release
-                .assets
-                .into_iter()
-                .find(|asset| asset.name == "admin-dashboard-build.zip")
-                .map(|asset| asset.browser_download_url)
-                .ok_or_eyre("missing `admin-dashboard-build.zip` asset")?;
+            let asset = match assets.pop() {
+                None => bail!("no assets found in release"),
+                Some(asset) if assets.is_empty() => asset,
+                Some(asset) => {
+                    let file = option_env!("CALIMERO_WEBUI_ASSET");
+                    let file = file.ok_or_eyre(
+                        "multiple assets found, but no `CALIMERO_WEBUI_ASSET` environment variable set"
+                    )?;
 
-            build_url.into()
+                    let found = [asset]
+                        .into_iter()
+                        .chain(assets)
+                        .find(|asset| asset.name == file);
+
+                    found.ok_or_eyre(format!(
+                        "no asset found with name `{}` in release (env: CALIMERO_WEBUI_ASSET)",
+                        file
+                    ))?
+                }
+            };
+
+            asset.url.into()
         }
     };
 
