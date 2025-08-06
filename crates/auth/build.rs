@@ -34,7 +34,20 @@ fn try_main() -> eyre::Result<()> {
 
     let src = match option_env!("CALIMERO_AUTH_FRONTEND_SRC") {
         Some(src) => {
-            is_local_dir = fs::metadata(src)?.is_dir();
+            match reqwest::Url::parse(src) {
+                Ok(url) if !matches!(url.scheme(), "http" | "https") => {
+                    bail!(
+                        "CALIMERO_AUTH_FRONTEND_SRC must be an absolute path or a valid URL, got: {}",
+                        src
+                    );
+                }
+                Err(_) if !Path::new(src).is_absolute() => bail!(
+                    "CALIMERO_AUTH_FRONTEND_SRC must be an absolute path or a valid URL, got: {}",
+                    src
+                ),
+                Err(_) => is_local_dir = fs::metadata(src)?.is_dir(),
+                _ => {}
+            }
 
             Cow::from(src)
         }
@@ -76,21 +89,27 @@ fn try_main() -> eyre::Result<()> {
         }
     };
 
-    let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
-
-    if let Some(token) = token {
-        let headers = [(
-            reqwest_compat::header::AUTHORIZATION,
-            format!("Bearer {token}").try_into()?,
-        )]
-        .into_iter();
-
-        builder = builder.default_headers(headers.collect());
-    }
-
     let frontend_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
+        let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
+
+        if let Some(token) = token {
+            let headers = [
+                (
+                    reqwest_compat::header::AUTHORIZATION,
+                    format!("Bearer {token}").try_into()?,
+                ),
+                (
+                    reqwest_compat::header::ACCEPT,
+                    reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
+                ),
+            ]
+            .into_iter();
+
+            builder = builder.default_headers(headers.collect());
+        }
+
         let cache = Cache::builder()
             .client_builder(builder)
             .freshness_lifetime(FRESHNESS_LIFETIME)
@@ -139,7 +158,8 @@ fn target_dir() -> eyre::Result<PathBuf> {
     eyre::bail!("failed to resolve target dir");
 }
 
-fn replace<'a>(str: Cow<'_, str>, replace: impl Fn(&str) -> Option<&'a str>) -> Cow<'_, str> {
+#[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
+fn replace<'a: 'b, 'b>(str: Cow<'a, str>, replace: impl Fn(&str) -> Option<&str>) -> Cow<'b, str> {
     let mut idx = 0;
     let mut buf = str.as_ref();
     let mut out = String::new();
