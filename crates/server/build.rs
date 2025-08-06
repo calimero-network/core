@@ -174,7 +174,8 @@ fn target_dir() -> eyre::Result<PathBuf> {
     eyre::bail!("failed to resolve target dir");
 }
 
-fn replace<'a>(str: Cow<'_, str>, replace: impl Fn(&str) -> Option<&'a str>) -> Cow<'_, str> {
+#[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
+fn replace<'a: 'b, 'b>(str: Cow<'a, str>, replace: impl Fn(&str) -> Option<&str>) -> Cow<'b, str> {
     let mut idx = 0;
     let mut buf = str.as_ref();
     let mut out = String::new();
