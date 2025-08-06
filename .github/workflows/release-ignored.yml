@@ -62,3 +62,6 @@ jobs:
       - name: und das?
         if: ${{ github.event && github.event.ref != "" }}
         run: echo "base"
+
+      - name: und das?
+        run: echo "${{ github.event.pull_request && github.event.pull_request.head.repo.fork || !github.event.pull_request }}"
