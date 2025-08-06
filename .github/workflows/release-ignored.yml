@@ -3,9 +3,6 @@ name: Stub (Release)
 # without the release workflow being run as it is a required check.
 
 on:
-  push:
-    branches:
-      - miraclx/test
   pull_request:
     paths-ignore:
       - Cargo.toml
