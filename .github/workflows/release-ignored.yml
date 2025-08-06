@@ -58,4 +58,4 @@ jobs:
       - name: und das?
         env:
           IS_FORK: ${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
-        run: echo "${{ !env.IS_FORK }}"
+        run: echo "${{ env.IS_FORK == 'false' }}
