@@ -1,9 +1,12 @@
 use calimero_primitives::context::{Context, ContextConfigParams, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
+use tokio::sync::oneshot;
 use url::Url;
 
 use super::ContextClient;
+use crate::messages::sync::SyncRequest;
+use crate::messages::ContextMessage;
 
 impl ContextClient {
     pub async fn sync_context_config(
@@ -101,17 +104,24 @@ impl ContextClient {
 
                 let metadata = application.metadata;
 
-                let derived_application_id = match source.scheme() {
-                    "http" | "https" => {
-                        self.node_client
-                            .install_application_from_url(source, metadata, None)
-                            .await?
-                    }
-                    _ => {
-                        // fixme! we shouldn't assume both nodes run on the same machine
-                        self.node_client
-                            .install_application_from_path(source.path().into(), metadata)
-                            .await?
+                let derived_application_id = {
+                    let app_id = match source.scheme() {
+                        "http" | "https" => self
+                            .node_client
+                            .install_application_from_url(source.clone(), metadata.clone(), None)
+                            .await
+                            .ok(),
+                        _ => None,
+                    };
+
+                    match app_id {
+                        Some(id) => id,
+                        None => self.node_client.install_application(
+                            &application.blob.bytecode,
+                            application.size,
+                            &source.into(),
+                            metadata,
+                        )?,
                     }
                 };
 
@@ -157,11 +167,25 @@ impl ContextClient {
         );
 
         if should_save {
-            // todo! if the application_id changed, we need to notify ContextManager
             handle.put(
                 &key::ContextMeta::new(context_id),
                 &types::ContextMeta::new(key::ApplicationMeta::new(application_id), *root_hash),
             )?;
+
+            let (sender, receiver) = oneshot::channel();
+
+            self.context_manager
+                .send(ContextMessage::Sync {
+                    request: SyncRequest {
+                        context_id,
+                        application_id,
+                    },
+                    outcome: sender,
+                })
+                .await
+                .expect("Mailbox not to be dropped");
+
+            receiver.await.expect("Mailbox not to be dropped")
         }
 
         let context = Context::new(context_id, application_id, root_hash);

@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# temp setup to test stuff
+# you may need to modify
+# the TCONTRACT, TRPC vars
+# to match your environment
+
 set -e
 
 cd "$(dirname $0)"

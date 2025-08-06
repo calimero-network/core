@@ -49,6 +49,12 @@ services:
       - "traefik.http.routers.node-api.service=node-core"
       - "traefik.http.routers.node-api.middlewares=cors,auth-node"
 
+      # WebSocket route
+      - "traefik.http.routers.node-ws.rule=PathPrefix(`/ws`)"
+      - "traefik.http.routers.node-ws.entrypoints=web"
+      - "traefik.http.routers.node-ws.service=node-core"
+      - "traefik.http.routers.node-ws.middlewares=cors,auth-node"
+
       # Admin dashboard route
       - "traefik.http.routers.node-dashboard.rule=PathPrefix(`/admin-dashboard`)"
       - "traefik.http.routers.node-dashboard.entrypoints=web"
@@ -79,6 +85,7 @@ services:
       target: runtime
       secrets:
         - gh-token
+    user: root
     volumes:
       - calimero_auth_data:/data
     environment:

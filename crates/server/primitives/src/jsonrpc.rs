@@ -5,12 +5,13 @@ use calimero_primitives::identity::PublicKey;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum RequestId {
     String(String),
     Number(u64),
+    #[default]
     Null,
 }
 
@@ -51,14 +52,14 @@ impl<'de> Deserialize<'de> for Version {
 #[non_exhaustive]
 pub struct Request<P> {
     pub jsonrpc: Version,
-    pub id: Option<RequestId>,
+    pub id: RequestId,
     #[serde(flatten)]
     pub payload: P,
 }
 
 impl Request<RequestPayload> {
     #[must_use]
-    pub const fn new(jsonrpc: Version, id: Option<RequestId>, payload: RequestPayload) -> Self {
+    pub const fn new(jsonrpc: Version, id: RequestId, payload: RequestPayload) -> Self {
         Self {
             jsonrpc,
             id,
@@ -78,14 +79,14 @@ pub enum RequestPayload {
 #[non_exhaustive]
 pub struct Response {
     pub jsonrpc: Version,
-    pub id: Option<RequestId>,
+    pub id: RequestId,
     #[serde(flatten)]
     pub body: ResponseBody,
 }
 
 impl Response {
     #[must_use]
-    pub const fn new(jsonrpc: Version, id: Option<RequestId>, body: ResponseBody) -> Self {
+    pub const fn new(jsonrpc: Version, id: RequestId, body: ResponseBody) -> Self {
         Self { jsonrpc, id, body }
     }
 }
