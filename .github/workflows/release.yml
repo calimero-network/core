@@ -180,7 +180,7 @@ jobs:
       - name: Release
         uses: ./.github/actions/release
         with:
-          binaries: $BINARIES
+          binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
 
@@ -199,9 +199,9 @@ jobs:
       - name: Release
         uses: ./.github/actions/release
         with:
-          binaries: $BINARIES
-          dockerfile: .github/workflows/deps/prebuilt.Dockerfile
-          container_name: merod
+          binaries: ${{ env.AUTH_BINARIES }}
+          dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
+          container_name: mero-auth
 
   brew-update:
     name: Update Homebrew Tap
