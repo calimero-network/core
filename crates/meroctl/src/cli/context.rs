@@ -16,6 +16,7 @@ pub mod invite;
 pub mod join;
 pub mod list;
 pub mod proposals;
+pub mod sync;
 pub mod update;
 pub mod watch;
 
@@ -64,6 +65,7 @@ pub enum ContextSubCommands {
     Alias(alias::ContextAliasCommand),
     Use(alias::UseCommand),
     Proposals(proposals::ProposalsCommand),
+    Sync(sync::SyncCommand),
 }
 
 impl Report for Context {
@@ -99,6 +101,7 @@ impl ContextCommand {
             ContextSubCommands::Alias(alias) => alias.run(environment).await,
             ContextSubCommands::Use(use_cmd) => use_cmd.run(environment).await,
             ContextSubCommands::Proposals(proposals) => proposals.run(environment).await,
+            ContextSubCommands::Sync(sync) => sync.run(environment).await,
         }
     }
 }

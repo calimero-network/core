@@ -31,7 +31,7 @@ use crate::admin::handlers::applications::{
 };
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_identities, get_context_storage,
-    get_contexts, invite_to_context, join_context, update_context_application,
+    get_contexts, invite_to_context, join_context, sync, update_context_application,
 };
 use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::peers::get_peers_count_handler;
@@ -171,6 +171,12 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/proxy-contract",
             get(get_proxy_contract_handler),
+        )
+        .nest(
+            "/contexts/sync",
+            Router::new()
+                .route("/", post(sync::handler))
+                .route("/:context_id", post(sync::handler)),
         )
         // Network info
         .route("/peers", get(get_peers_count_handler))
