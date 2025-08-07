@@ -109,7 +109,7 @@ runs:
       with:
         context: .
         file: ${{ inputs.dockerfile }}
-        push: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        push: ${{ inputs.release == 'true' }}
         platforms: linux/amd64,linux/arm64
         tags: ${{ steps.metadata.outputs.tags }}
         labels: ${{ steps.metadata.outputs.labels }}

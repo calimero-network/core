@@ -58,7 +58,7 @@ jobs:
 
             if ! gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
               binary_release=true
-              docker_release=true
+              docker_release=${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
             fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
             docker_release=true
