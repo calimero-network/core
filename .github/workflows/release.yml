@@ -32,6 +32,7 @@ jobs:
       version: ${{ steps.version_info.outputs.version }}
       binary_release: ${{ steps.version_info.outputs.binary_release }}
       docker_release: ${{ steps.version_info.outputs.docker_release }}
+      docker_push: ${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
     steps:
@@ -58,7 +59,7 @@ jobs:
 
             if ! gh release view "$version" --repo ${{ github.repository }} >/dev/null 2>&1; then
               binary_release=true
-              docker_release=${{ github.event.pull_request && !github.event.pull_request.head.repo.fork || !github.event.pull_request }}
+              docker_release=true
             fi
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
             docker_release=true
@@ -186,6 +187,7 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
+          push: ${{ needs.prepare.outputs.docker_push }}
           binaries: ${{ env.BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
@@ -212,6 +214,7 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           release: ${{ needs.prepare.outputs.docker_release }}
           prerelease: ${{ needs.prepare.outputs.prerelease }}
+          push: ${{ needs.prepare.outputs.docker_push }}
           binaries: ${{ env.AUTH_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.auth.Dockerfile
           container_name: mero-auth
