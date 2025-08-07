@@ -11,6 +11,9 @@ inputs:
   prerelease:
     description: "Flag indicating if this is a prerelease"
     required: true
+  push:
+    description: "Flag indicating if the tag(s) should be pushed to the registry"
+    required: true
   binaries:
     description: "List of binaries to include in the container"
     required: true
@@ -109,7 +112,7 @@ runs:
       with:
         context: .
         file: ${{ inputs.dockerfile }}
-        push: ${{ inputs.release == 'true' }}
+        push: ${{ inputs.push == 'true' }}
         platforms: linux/amd64,linux/arm64
         tags: ${{ steps.metadata.outputs.tags }}
         labels: ${{ steps.metadata.outputs.labels }}
