@@ -81,7 +81,7 @@ pub(crate) fn setup(
     let admin_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
         format!("{}{}", prefix, base_path)
     } else {
-        base_path.to_string()
+        base_path.to_owned()
     };
 
     for listen in &config.listen {
@@ -244,7 +244,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
         format!("{}{}", prefix, base_path)
     } else {
         info!("No path prefix configured");
-        base_path.to_string()
+        base_path.to_owned()
     };
 
     for listen in &config.listen {
@@ -280,7 +280,7 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
     let full_prefix = if let Ok(node_prefix) = std::env::var("NODE_PATH_PREFIX") {
         format!("{}/admin-dashboard/", node_prefix)
     } else {
-        "/admin-dashboard/".to_string()
+        "/admin-dashboard/".to_owned()
     };
 
     // Extract the path from the URI, removing the full prefix and any leading slashes
@@ -334,7 +334,7 @@ fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
             let base_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
                 format!("{}/admin-dashboard", prefix)
             } else {
-                "/admin-dashboard".to_string()
+                "/admin-dashboard".to_owned()
             };
 
             // Replace all instances of /admin-dashboard with the correct base path

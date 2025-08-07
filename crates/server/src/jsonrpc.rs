@@ -42,7 +42,7 @@ pub(crate) fn service(
     let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
         format!("{}{}", prefix, base_path)
     } else {
-        base_path.to_string()
+        base_path.to_owned()
     };
 
     for listen in &config.listen {
