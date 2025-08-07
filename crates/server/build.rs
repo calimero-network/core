@@ -115,21 +115,17 @@ fn try_main() -> eyre::Result<()> {
     } else {
         let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
 
-        if let Some(token) = token {
-            let headers = [
-                (
-                    reqwest_compat::header::AUTHORIZATION,
-                    format!("Bearer {token}").try_into()?,
-                ),
-                (
-                    reqwest_compat::header::ACCEPT,
-                    reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
-                ),
-            ]
-            .into_iter();
+        let base_headers = [(
+            reqwest_compat::header::ACCEPT,
+            reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
+        )];
 
-            builder = builder.default_headers(headers.collect());
-        }
+        let auth_header = token
+            .map(|token| format!("Bearer {token}").try_into())
+            .transpose()?
+            .map(|token| (reqwest_compat::header::AUTHORIZATION, token));
+
+        builder = builder.default_headers(base_headers.into_iter().chain(auth_header).collect());
 
         let cache = Cache::builder()
             .client_builder(builder)
