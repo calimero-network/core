@@ -74,7 +74,7 @@ pub(crate) fn service(
     };
 
     let base_path = "/ws";
-    
+
     // Get the node prefix from env var
     let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
         format!("{}{}", prefix, base_path)

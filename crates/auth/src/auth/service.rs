@@ -97,12 +97,19 @@ impl AuthService {
             .map_err(|e| AuthError::InvalidRequest(e.to_string()))?;
 
         // Use the auth data registry to parse auth data to the correct type
-        let auth_response = self.authenticate_with_data(auth_method, auth_data_json).await?;
+        let auth_response = self
+            .authenticate_with_data(auth_method, auth_data_json)
+            .await?;
 
         // If node_id is provided, validate that the key is valid for this node
         if let Some(node_url) = node_url {
-            if let Some(key) = self.token_manager.get_key_manager().get_key(&auth_response.key_id).await
-                .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))? {
+            if let Some(key) = self
+                .token_manager
+                .get_key_manager()
+                .get_key(&auth_response.key_id)
+                .await
+                .map_err(|e| AuthError::AuthenticationFailed(e.to_string()))?
+            {
                 if !key.is_valid_for_node(Some(node_url)) {
                     return Err(AuthError::AuthenticationFailed(
                         "Key is not valid for this node".to_string(),

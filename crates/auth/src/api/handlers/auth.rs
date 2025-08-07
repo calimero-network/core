@@ -280,7 +280,12 @@ pub async fn refresh_token_handler(
     };
 
     // Verify the refresh token and extract claims
-    let refresh_claims = match state.0.token_generator.verify_token(&refresh_request.refresh_token).await {
+    let refresh_claims = match state
+        .0
+        .token_generator
+        .verify_token(&refresh_request.refresh_token)
+        .await
+    {
         Ok(claims) => claims,
         Err(err) => {
             return error_response(

@@ -144,7 +144,7 @@ impl UserPasswordProvider {
             username.to_string(), // Use username as the "public key"
             "user_password".to_string(),
             vec!["admin".to_string()], // Default admin permission
-            None, // No node_id for bootstrap keys
+            None,                      // No node_id for bootstrap keys
         );
 
         // Store the root key using KeyManager

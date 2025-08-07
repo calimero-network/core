@@ -202,7 +202,8 @@ pub async fn generate_client_key_handler(
 
     let name = format!("Context Client - {} ({})", context_id, context_identity);
 
-    let client_key = Key::new_client_key(root_key_id.clone(), name, all_permissions, node_url.clone());
+    let client_key =
+        Key::new_client_key(root_key_id.clone(), name, all_permissions, node_url.clone());
 
     if let Err(err) = state.0.key_manager.set_key(&client_id, &client_key).await {
         error!("Failed to store client key: {}", err);

@@ -372,7 +372,10 @@ impl TokenManager {
 
         match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
-            KeyType::Root => self.generate_token_pair(claims.sub, key.permissions, claims.node_url.clone()).await,
+            KeyType::Root => {
+                self.generate_token_pair(claims.sub, key.permissions, claims.node_url.clone())
+                    .await
+            }
             // For client tokens, rotate the key ID
             KeyType::Client => {
                 // Generate new client ID
@@ -404,7 +407,11 @@ impl TokenManager {
 
                 // Generate new tokens with the new ID first (before deleting old key)
                 let token_result = self
-                    .generate_token_pair(new_client_id.clone(), key.permissions, claims.node_url.clone())
+                    .generate_token_pair(
+                        new_client_id.clone(),
+                        key.permissions,
+                        claims.node_url.clone(),
+                    )
                     .await;
 
                 // Only delete the old key if token generation was successful

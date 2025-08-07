@@ -76,7 +76,7 @@ pub(crate) fn setup(
     };
 
     let base_path = "/admin-api";
-    
+
     // Get the node prefix from env var
     let admin_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
         format!("{}{}", prefix, base_path)
@@ -225,7 +225,7 @@ pub(crate) fn setup(
 ///
 /// # Returns
 /// - `Option<(String, Router)>`: If the admin site is enabled, it returns a tuple containing
-///   the base path (e.g., "/admin-dashboard" or with prefix from NODE_PATH_PREFIX env var) 
+///   the base path (e.g., "/admin-dashboard" or with prefix from NODE_PATH_PREFIX env var)
 ///   and the router for that path. If the admin site is disabled, it returns `None`.
 pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     let _admin_config = match &config.admin {
@@ -237,7 +237,7 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
     };
 
     let base_path = "/admin-dashboard";
-    
+
     // First check the environment variable, fall back to config if not present
     let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
         info!("Using path prefix from environment: {}", prefix);
@@ -323,9 +323,13 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
     let content = if let Ok(content) = String::from_utf8(file.data.to_vec()) {
         // Process HTML, JavaScript, and CSS files
-        if file.metadata.mimetype().starts_with("text/html") ||
-           file.metadata.mimetype().starts_with("application/javascript") ||
-           file.metadata.mimetype() == "text/css" {
+        if file.metadata.mimetype().starts_with("text/html")
+            || file
+                .metadata
+                .mimetype()
+                .starts_with("application/javascript")
+            || file.metadata.mimetype() == "text/css"
+        {
             // Get the node prefix from env var
             let base_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
                 format!("{}/admin-dashboard", prefix)
@@ -335,12 +339,18 @@ fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
 
             // Replace all instances of /admin-dashboard with the correct base path
             let modified_content = content
-                .replace("\"/admin-dashboard", &format!("\"{}",base_path))
+                .replace("\"/admin-dashboard", &format!("\"{}", base_path))
                 .replace("'/admin-dashboard", &format!("'{}", base_path))
                 .replace("(/admin-dashboard", &format!("({}", base_path))
                 .replace(" /admin-dashboard", &format!(" {}", base_path))
-                .replace("href=\"/admin-dashboard", &format!("href=\"{}/admin-dashboard", base_path))
-                .replace("src=\"/admin-dashboard", &format!("src=\"{}/admin-dashboard", base_path));
+                .replace(
+                    "href=\"/admin-dashboard",
+                    &format!("href=\"{}/admin-dashboard", base_path),
+                )
+                .replace(
+                    "src=\"/admin-dashboard",
+                    &format!("src=\"{}/admin-dashboard", base_path),
+                );
             modified_content.into_bytes()
         } else {
             file.data.into_owned()

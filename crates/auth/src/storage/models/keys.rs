@@ -219,7 +219,9 @@ impl Key {
     pub fn is_valid_for_node(&self, node_url: Option<&str>) -> bool {
         match (&self.node_url, node_url) {
             (None, _) => true, // Legacy keys without node_url are valid everywhere
-            (Some(key_node_url), Some(request_node_url)) => request_node_url.starts_with(key_node_url),
+            (Some(key_node_url), Some(request_node_url)) => {
+                request_node_url.starts_with(key_node_url)
+            }
             (Some(_), None) => false, // Node-specific key used without node context
         }
     }

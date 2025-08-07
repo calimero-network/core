@@ -422,8 +422,12 @@ mod tests {
         assert_eq!(found_key.get_public_key(), Some("test_pub_key"));
 
         // Test client key operations (no permissions to avoid validation issues)
-        let client_key =
-            Key::new_client_key("test_key".to_string(), "Test Client".to_string(), vec![], None);
+        let client_key = Key::new_client_key(
+            "test_key".to_string(),
+            "Test Client".to_string(),
+            vec![],
+            None,
+        );
 
         // Test set and get
         key_manager

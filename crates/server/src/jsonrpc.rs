@@ -37,7 +37,7 @@ pub(crate) fn service(
     ctx_client: ContextClient,
 ) -> Option<(String, Router)> {
     let base_path = "/jsonrpc";
-    
+
     // Get the node prefix from env var
     let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
         format!("{}{}", prefix, base_path)
