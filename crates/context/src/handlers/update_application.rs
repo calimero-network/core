@@ -112,5 +112,7 @@ pub async fn update_application_id(
         ),
     )?;
 
+    node_client.sync(Some(&context_id)).await?;
+
     Ok(application)
 }
