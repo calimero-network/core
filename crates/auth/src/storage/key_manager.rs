@@ -42,6 +42,34 @@ impl KeyManager {
         Ok(None)
     }
 
+    /// Get a key for a specific node
+    ///
+    /// # Arguments
+    ///
+    /// * `key_id` - The key ID
+    /// * `node_url` - The node URL to check against
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Option<Key>, StorageError>` - The key if found and valid for the node
+    pub async fn get_key_for_node(
+        &self,
+        key_id: &str,
+        node_url: Option<&str>,
+    ) -> Result<Option<Key>, StorageError> {
+        if let Some(key) = self.get_key(key_id).await? {
+            if key.is_valid_for_node(node_url) {
+                Ok(Some(key))
+            } else {
+                Err(StorageError::ValidationError(
+                    "Key is not valid for this node".to_string(),
+                ))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Set a key with appropriate indexing based on key type
     /// Returns true if the key was updated, false if it was newly created
     pub async fn set_key(&self, key_id: &str, key: &Key) -> Result<bool, StorageError> {
@@ -371,6 +399,7 @@ mod tests {
             "test_pub_key".to_string(),
             "near".to_string(),
             vec!["admin".to_string(), "test_permission".to_string()],
+            None, // No node_id for test
         );
 
         // Test set and get
@@ -394,7 +423,7 @@ mod tests {
 
         // Test client key operations (no permissions to avoid validation issues)
         let client_key =
-            Key::new_client_key("test_key".to_string(), "Test Client".to_string(), vec![]);
+            Key::new_client_key("test_key".to_string(), "Test Client".to_string(), vec![], None);
 
         // Test set and get
         key_manager

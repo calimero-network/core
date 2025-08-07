@@ -35,6 +35,10 @@ pub struct Key {
     /// Permissions assigned to this key
     pub permissions: Vec<String>,
 
+    /// Node URL this key belongs to (for multi-node deployments)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_url: Option<String>,
+
     /// Key metadata
     #[serde(flatten)]
     pub metadata: KeyMetadata,
@@ -46,6 +50,7 @@ impl Key {
         public_key: String,
         auth_method: String,
         permissions: Vec<String>,
+        node_url: Option<String>,
     ) -> Self {
         Self {
             key_type: KeyType::Root,
@@ -54,12 +59,18 @@ impl Key {
             root_key_id: None,
             name: None,
             permissions,
+            node_url,
             metadata: KeyMetadata::new(),
         }
     }
 
     /// Create a new client key
-    pub fn new_client_key(root_key_id: String, name: String, permissions: Vec<String>) -> Self {
+    pub fn new_client_key(
+        root_key_id: String,
+        name: String,
+        permissions: Vec<String>,
+        node_url: Option<String>,
+    ) -> Self {
         Self {
             key_type: KeyType::Client,
             public_key: None,
@@ -67,6 +78,7 @@ impl Key {
             root_key_id: Some(root_key_id),
             name: Some(name),
             permissions,
+            node_url,
             metadata: KeyMetadata::new(),
         }
     }
@@ -196,6 +208,20 @@ impl Key {
     /// Get the name (for client keys)
     pub fn get_name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+
+    /// Get the node URL this key belongs to
+    pub fn get_node_url(&self) -> Option<&str> {
+        self.node_url.as_deref()
+    }
+
+    /// Check if this key is valid for the given node URL
+    pub fn is_valid_for_node(&self, node_url: Option<&str>) -> bool {
+        match (&self.node_url, node_url) {
+            (None, _) => true, // Legacy keys without node_url are valid everywhere
+            (Some(key_node_url), Some(request_node_url)) => request_node_url.starts_with(key_node_url),
+            (Some(_), None) => false, // Node-specific key used without node context
+        }
     }
 }
 

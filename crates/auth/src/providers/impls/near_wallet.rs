@@ -297,6 +297,7 @@ impl NearWalletProvider {
     ///
     /// * `account_id` - The account ID to create a root key for
     /// * `public_key` - The public key to associate with the root key
+    /// * `node_id` - Optional node ID for node-specific key creation
     ///
     /// # Returns
     ///
@@ -305,6 +306,7 @@ impl NearWalletProvider {
         &self,
         account_id: &str,
         public_key: &str,
+        node_id: Option<&str>,
     ) -> eyre::Result<(String, Key)> {
         // Create a hash of the account ID to use as a key ID
         let mut hasher = Sha256::new();
@@ -317,6 +319,7 @@ impl NearWalletProvider {
             public_key.to_string(),
             "near_wallet".to_string(),
             vec!["admin".to_string()], // Default admin permission
+            node_id.map(|s| s.to_string()),
         );
 
         // Store the root key using KeyManager
@@ -414,7 +417,7 @@ impl NearWalletProvider {
 
                 if existing_keys.is_empty() {
                     // Bootstrap: create first root key
-                    self.create_root_key(account_id, public_key).await?
+                    self.create_root_key(account_id, public_key, None).await?
                 } else {
                     // Root keys exist - this account is not authorized
                     return Err(eyre::eyre!("NEAR account {} is not authorized", account_id));
@@ -652,6 +655,7 @@ impl AuthProvider for NearWalletProvider {
         public_key: &str,
         auth_method: &str,
         provider_data: Value,
+        node_url: Option<&str>,
     ) -> eyre::Result<bool> {
         let account_id = provider_data.get("account_id").unwrap().as_str().unwrap();
         // Create a hash of the account ID to use as a key ID
@@ -665,6 +669,7 @@ impl AuthProvider for NearWalletProvider {
             public_key.to_string(),
             auth_method.to_string(),
             vec!["admin".to_string()],
+            node_url.map(|s| s.to_string()),
         );
 
         // Store the root key using KeyManager

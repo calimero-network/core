@@ -144,6 +144,7 @@ impl UserPasswordProvider {
             username.to_string(), // Use username as the "public key"
             "user_password".to_string(),
             vec!["admin".to_string()], // Default admin permission
+            None, // No node_id for bootstrap keys
         );
 
         // Store the root key using KeyManager
@@ -368,6 +369,7 @@ impl AuthProvider for UserPasswordProvider {
         public_key: &str,
         auth_method: &str,
         provider_data: Value,
+        node_url: Option<&str>,
     ) -> eyre::Result<bool> {
         let username = provider_data.get("username").unwrap().as_str().unwrap();
         let password = provider_data.get("password").unwrap().as_str().unwrap();
@@ -380,6 +382,7 @@ impl AuthProvider for UserPasswordProvider {
             public_key.to_string(),
             auth_method.to_string(),
             vec!["admin".to_string()],
+            node_url.map(|s| s.to_string()),
         );
 
         // Store the root key using KeyManager
