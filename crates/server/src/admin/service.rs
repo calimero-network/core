@@ -386,9 +386,25 @@ async fn health_check_handler() -> impl IntoResponse {
     }
     .into_response()
 }
+#[derive(Debug, Serialize)]
+struct IsAuthedResponse {
+    data: IsAuthed,
+}
+
+#[derive(Debug, Serialize)]
+struct IsAuthed {
+    status: String,
+}
 
 async fn is_authed_handler() -> impl IntoResponse {
-    ApiResponse { payload: {} }.into_response()
+    ApiResponse {
+        payload: IsAuthedResponse {
+            data: IsAuthed {
+                status: "alive".to_owned(),
+            },
+        },
+    }
+    .into_response()
 }
 
 async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
