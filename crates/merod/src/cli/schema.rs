@@ -311,7 +311,32 @@ pub struct RawCredentialsSchema {
 }
 
 pub fn generate_schema() -> ConfigSchema {
-    schema_for!(ConfigFile).into()
+    let mut config_schema: ConfigSchema = schema_for!(ConfigFile).into();
+
+    config_schema.protocols = Some(ProtocolsSchema {
+        ethereum: Some(EthereumProtocolSchema {
+            network: "mainnet".to_string(),
+            contract_id: "".to_string(),
+            signer: "".to_string(),
+        }),
+        near: Some(NearProtocolSchema {
+            network: "testnet".to_string(),
+            contract_id: "".to_string(),
+            signer: "".to_string(),
+        }),
+        icp: Some(IcpProtocolSchema {
+            network: "testnet".to_string(),
+            contract_id: "".to_string(),
+            signer: "".to_string(),
+        }),
+        stellar: Some(StellarProtocolSchema {
+            network: "testnet".to_string(),
+            contract_id: "".to_string(),
+            signer: "".to_string(),
+        }),
+    });
+
+    config_schema
 }
 
 pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
@@ -618,7 +643,7 @@ fn get_protocol_field_hint<T: JsonSchema + Serialize>(
                 return field_schema
                     .get("description")
                     .and_then(|d| d.as_str())
-                    .map(|s| s.to_string());
+                    .map(|s| s.to_owned());
             }
 
             if let Some(sub_schema) = field_schema.get("properties") {
