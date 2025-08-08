@@ -27,7 +27,6 @@ services:
       - SWARM_PORT=2428
       - NODE_PORT=2528
       - CALIMERO_HOME=/calimero/data
-      - NODE_PATH_PREFIX=/node1
     ports:
       - "2428:2428"
       - "2528:2528"
@@ -44,23 +43,30 @@ services:
     labels:
       - "traefik.enable=true"
 
-      # JSON-RPC route
-      - "traefik.http.routers.node1-api.rule=PathPrefix(`/node1/jsonrpc`) || PathPrefix(`/node1/admin-api/`)"
+      # JSON-RPC and Admin API routes
+      - "traefik.http.routers.node1-api.rule=Host(`node1.127.0.0.1.nip.io`) && (PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api/`))"
       - "traefik.http.routers.node1-api.entrypoints=web"
       - "traefik.http.routers.node1-api.service=node1-core"
       - "traefik.http.routers.node1-api.middlewares=cors,auth-node1"
 
       # WebSocket route
-      - "traefik.http.routers.node1-ws.rule=PathPrefix(`/node1/ws`)"
+      - "traefik.http.routers.node1-ws.rule=Host(`node1.127.0.0.1.nip.io`) && PathPrefix(`/ws`)"
       - "traefik.http.routers.node1-ws.entrypoints=web"
       - "traefik.http.routers.node1-ws.service=node1-core"
       - "traefik.http.routers.node1-ws.middlewares=cors,auth-node1"
 
-      # Admin dashboard route
-      - "traefik.http.routers.node1-dashboard.rule=PathPrefix(`/node1/admin-dashboard`)"
+      # Admin dashboard route (publicly accessible)
+      - "traefik.http.routers.node1-dashboard.rule=Host(`node1.127.0.0.1.nip.io`) && PathPrefix(`/admin-dashboard`)"
       - "traefik.http.routers.node1-dashboard.entrypoints=web"
       - "traefik.http.routers.node1-dashboard.service=node1-core"
       - "traefik.http.routers.node1-dashboard.middlewares=cors"
+
+      # Auth service route for node1 subdomain (both /auth/ and /admin/)
+      - "traefik.http.routers.node1-auth.rule=Host(`node1.127.0.0.1.nip.io`) && (PathPrefix(`/auth/`) || PathPrefix(`/admin/`))"
+      - "traefik.http.routers.node1-auth.entrypoints=web"
+      - "traefik.http.routers.node1-auth.service=auth-service"
+      - "traefik.http.routers.node1-auth.middlewares=cors,auth-headers"
+      - "traefik.http.routers.node1-auth.priority=200"
 
       # Forward Auth middleware for node1 service
       - "traefik.http.middlewares.auth-node1.forwardauth.address=http://auth:3001/auth/validate"
@@ -86,7 +92,6 @@ services:
       - SWARM_PORT=2429
       - NODE_PORT=2529
       - CALIMERO_HOME=/calimero/data
-      - NODE_PATH_PREFIX=/node2
     ports:
       - "2429:2429"
       - "2529:2529"
@@ -103,25 +108,32 @@ services:
     labels:
       - "traefik.enable=true"
 
-      # JSON-RPC route
-      - "traefik.http.routers.node2-api.rule=PathPrefix(`/node2/jsonrpc`) || PathPrefix(`/node2/admin-api/`)"
+      # JSON-RPC and Admin API routes
+      - "traefik.http.routers.node2-api.rule=Host(`node2.127.0.0.1.nip.io`) && (PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api/`))"
       - "traefik.http.routers.node2-api.entrypoints=web"
       - "traefik.http.routers.node2-api.service=node2-core"
       - "traefik.http.routers.node2-api.middlewares=cors,auth-node2"
 
       # WebSocket route
-      - "traefik.http.routers.node2-ws.rule=PathPrefix(`/node2/ws`)"
+      - "traefik.http.routers.node2-ws.rule=Host(`node2.127.0.0.1.nip.io`) && PathPrefix(`/ws`)"
       - "traefik.http.routers.node2-ws.entrypoints=web"
       - "traefik.http.routers.node2-ws.service=node2-core"
       - "traefik.http.routers.node2-ws.middlewares=cors,auth-node2"
 
-      # Admin dashboard route
-      - "traefik.http.routers.node2-dashboard.rule=PathPrefix(`/node2/admin-dashboard`)"
+      # Admin dashboard route (publicly accessible)
+      - "traefik.http.routers.node2-dashboard.rule=Host(`node2.127.0.0.1.nip.io`) && PathPrefix(`/admin-dashboard`)"
       - "traefik.http.routers.node2-dashboard.entrypoints=web"
       - "traefik.http.routers.node2-dashboard.service=node2-core"
       - "traefik.http.routers.node2-dashboard.middlewares=cors"
 
-      # Forward Auth middleware for node1 service
+      # Auth service route for node2 subdomain (both /auth/ and /admin/)
+      - "traefik.http.routers.node2-auth.rule=Host(`node2.127.0.0.1.nip.io`) && (PathPrefix(`/auth/`) || PathPrefix(`/admin/`))"
+      - "traefik.http.routers.node2-auth.entrypoints=web"
+      - "traefik.http.routers.node2-auth.service=auth-service"
+      - "traefik.http.routers.node2-auth.middlewares=cors,auth-headers"
+      - "traefik.http.routers.node2-auth.priority=200"
+
+      # Forward Auth middleware for node2 service
       - "traefik.http.middlewares.auth-node2.forwardauth.address=http://auth:3001/auth/validate"
       - "traefik.http.middlewares.auth-node2.forwardauth.trustForwardHeader=true"
       - "traefik.http.middlewares.auth-node2.forwardauth.authResponseHeaders=X-Auth-User,X-Auth-Permissions"
@@ -166,11 +178,12 @@ services:
     labels:
       - "traefik.enable=true"
 
-      # Public Routes (No Auth) - Add node context for auth service
-      - "traefik.http.routers.auth-public.rule=PathPrefix(`/auth/`) || PathPrefix(`/admin/`)"
+      # Auth service accessible from localhost (both /auth/ and /admin/)
+      - "traefik.http.routers.auth-public.rule=Host(`localhost`) && (PathPrefix(`/auth/`) || PathPrefix(`/admin/`))"
       - "traefik.http.routers.auth-public.entrypoints=web"
       - "traefik.http.routers.auth-public.service=auth-service"
       - "traefik.http.routers.auth-public.middlewares=cors,auth-headers"
+      - "traefik.http.routers.auth-public.priority=100"
       
       # Add Node ID header for auth service (will be overridden by specific node calls)
       - "traefik.http.middlewares.auth-headers.headers.customrequestheaders.X-Node-ID=auth"
@@ -208,6 +221,11 @@ services:
     networks:
       - web
     restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.proxy-dashboard.rule=Host(`proxy.127.0.0.1.nip.io`)"
+      - "traefik.http.routers.proxy-dashboard.entrypoints=web"
+      - "traefik.http.routers.proxy-dashboard.service=api@internal"
 
 networks:
   web:
