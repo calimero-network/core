@@ -10,6 +10,7 @@ mod config;
 mod init;
 mod relay;
 mod run;
+mod schema;
 
 use config::ConfigCommand;
 use init::InitCommand;

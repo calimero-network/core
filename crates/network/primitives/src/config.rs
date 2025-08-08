@@ -4,6 +4,7 @@ use core::time::Duration;
 use libp2p::identity::Keypair;
 use libp2p::rendezvous::Namespace;
 use multiaddr::{Multiaddr, Protocol};
+use schemars::JsonSchema;
 use serde::de::{Error as SerdeError, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -23,6 +24,40 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
     "/ip4/18.156.18.6/udp/4001/quic-v1/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
     "/ip4/18.156.18.6/tcp/4001/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC",
 ];
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(transparent)]
+#[schemars(description = "A libp2p multiaddress string")]
+pub struct MultiaddrWrapper(#[schemars(with = "String")] pub Multiaddr);
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(transparent)]
+#[schemars(description = "Rendezvous namespace ID (e.g. '/com/example/app')")]
+pub struct NamespaceWrapper(#[schemars(with = "String")] pub NamespaceString);
+
+#[derive(Debug)]
+pub struct NamespaceString(pub Namespace);
+
+impl Serialize for NamespaceString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for NamespaceString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(NamespaceString(
+            Namespace::new(s).map_err(SerdeError::custom)?,
+        ))
+    }
+}
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -51,9 +86,10 @@ impl NetworkConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct SwarmConfig {
+    #[schemars(with = "MultiaddrWrapper")]
     pub listen: Vec<Multiaddr>,
 }
 
@@ -64,7 +100,7 @@ impl SwarmConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct BootstrapConfig {
     #[serde(default)]
@@ -78,11 +114,12 @@ impl BootstrapConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(transparent)]
 #[non_exhaustive]
 pub struct BootstrapNodes {
     #[serde(deserialize_with = "deserialize_bootstrap")]
+    #[schemars(with = "Vec<MultiaddrWrapper>")]
     pub list: Vec<Multiaddr>,
 }
 
@@ -113,7 +150,7 @@ impl BootstrapNodes {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
@@ -159,7 +196,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct RelayConfig {
     pub registrations_limit: usize,
@@ -182,7 +219,7 @@ impl Default for RelayConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct AutonatConfig {
     pub confidence_threshold: usize,
@@ -204,13 +241,14 @@ impl Default for AutonatConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct RendezvousConfig {
     #[serde(
         serialize_with = "serialize_rendezvous_namespace",
         deserialize_with = "deserialize_rendezvous_namespace"
     )]
+    #[schemars(with = "NamespaceWrapper")]
     pub namespace: Namespace,
 
     pub discovery_rpm: f32,

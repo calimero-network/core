@@ -5,6 +5,7 @@ use ed25519_consensus::SigningKey;
 use ic_agent::export::Principal;
 use ic_agent::identity::BasicIdentity;
 use ic_agent::Agent;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -13,6 +14,7 @@ use super::Protocol;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
+use crate::schema::PrincipalSchema;
 
 #[derive(Copy, Clone, Debug)]
 pub enum Icp {}
@@ -25,9 +27,10 @@ impl AssociatedTransport for IcpTransport<'_> {
     type Protocol = Icp;
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
+    #[schemars(with = "PrincipalSchema")]
     pub account_id: Principal,
     pub public_key: String,
     pub secret_key: String,

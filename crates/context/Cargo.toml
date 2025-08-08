@@ -15,6 +15,7 @@ futures-util.workspace = true
 memchr.workspace = true
 ouroboros.workspace = true
 rand.workspace = true
+schemars = { workspace = true, features = ["chrono04"] }
 serde.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tracing.workspace = true

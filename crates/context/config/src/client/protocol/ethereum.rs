@@ -7,6 +7,7 @@ use alloy::primitives::{keccak256, Address, Bytes};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::time::Duration;
@@ -27,7 +28,7 @@ impl Protocol for Ethereum {
 impl AssociatedTransport for EthereumTransport<'_> {
     type Protocol = Ethereum;
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
     pub account_id: String,

@@ -7,6 +7,7 @@ use calimero_server_primitives::jsonrpc::{
     Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
     ResponseBodyError, ResponseBodyResult, ServerResponseError,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
@@ -14,7 +15,7 @@ use crate::config::ServerConfig;
 
 mod execute;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct JsonRpcConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
