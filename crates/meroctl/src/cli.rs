@@ -104,7 +104,7 @@ impl Environment {
     pub fn connection(&self) -> Result<&ConnectionInfo> {
         self.connection
             .as_ref()
-            .ok_or_eyre("No node selected: set default node by running `meroctl node use <node_name>` or use `--node` or `--api` to manually select a node")
+            .ok_or_eyre("No connection available: this should not happen as we fall back to localhost:2528 by default")
     }
 }
 
@@ -197,8 +197,15 @@ impl RootCommand {
                     }
                 }
 
-                // No active node set
-                Ok(None)
+                // No active node set - fall back to default localhost server
+                let default_url = "http://127.0.0.1:2528".parse()?;
+                let connection = authenticate_with_session_cache(
+                    &default_url,
+                    "default localhost server",
+                    output,
+                )
+                .await?;
+                Ok(Some(connection))
             }
             _ => Ok(None),
         }
