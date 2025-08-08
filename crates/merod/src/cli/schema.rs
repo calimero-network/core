@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigSchema {
-    pub identity: IdentitySchema,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentitySchema>,
     pub network: NetworkSchema,
     pub sync: SyncSchema,
     pub datastore: DataStoreSchema,
@@ -17,9 +18,8 @@ pub struct ConfigSchema {
 
 impl From<schemars::Schema> for ConfigSchema {
     fn from(schema: schemars::Schema) -> Self {
-        // Convert the JSON schema to our ConfigSchema structure
-        let schema_value = serde_json::to_value(&schema).expect("Failed to serialize schema");
-        serde_json::from_value(schema_value).expect("Failed to deserialize into ConfigSchema")
+        let schema = schema_for!(ConfigFile);
+        serde_json::from_value(serde_json::to_value(schema).unwrap()).expect("valid config schema")
     }
 }
 
@@ -263,6 +263,18 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
     }
 
     let mut current: &dyn std::any::Any = schema;
+
+    if path[0] == "identity" {
+        if path.len() == 1 {
+            return Some("Peer identity configuration (optional)".to_string());
+        }
+        if let Some(identity) = &schema.identity {
+            current = identity;
+        } else {
+            return Some("Peer identity configuration (currently not set)".to_string());
+        }
+    }
+
     let mut current_path = Vec::new();
 
     for part in path {

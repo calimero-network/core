@@ -223,8 +223,7 @@ impl ConfigCommand {
 
             match format {
                 PrintFormat::Toml => {
-                    // Convert JSON back to TOML for output
-                    unimplemented!()
+                    println!("{}", doc.to_string());
                 }
                 PrintFormat::Json => {
                     println!("{}", serde_json::to_string_pretty(&output)?);
