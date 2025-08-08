@@ -246,10 +246,51 @@ impl ConfigCommand {
         let original = doc.clone();
         let mut changes_made = false;
 
+        // First pass: check if we need to create the protocols table
+        let needs_protocols = changes.iter().any(|kv| {
+            let parts: Vec<&str> = kv.key.split('.').collect();
+            parts.get(0) == Some(&"context") && parts.get(1) == Some(&"config")
+        }) && doc.get("protocols").is_none();
+
+        // Create protocols table if needed
+        if needs_protocols {
+            doc["protocols"] = toml_edit::table();
+        }
+
+        // Second pass: process all changes
         for kv in changes {
             let key_parts: Vec<&str> = kv.key.split('.').collect();
             let mut current = doc.as_item_mut();
 
+            // Special handling for protocol-specific configurations
+            if key_parts.get(0) == Some(&"context") && key_parts.get(1) == Some(&"config") {
+                if let Some(protocol) = key_parts.get(2) {
+                    let protocol_key = format!("protocols.{}", protocol);
+                    let new_key = kv.key.replacen("context.config.", &protocol_key, 1);
+
+                    let mut new_parts: Vec<&str> = new_key.split('.').collect();
+                    let mut protocol_current = doc.as_item_mut();
+
+                    for key in &new_parts[..new_parts.len() - 1] {
+                        protocol_current = &mut protocol_current[key];
+                    }
+
+                    let last_key = new_parts[new_parts.len() - 1];
+                    let old_value = protocol_current[last_key].clone();
+
+                    protocol_current[last_key] = Item::Value(kv.value.clone());
+                    changes_made = true;
+
+                    if show_diff {
+                        self.show_diff(&old_value, &protocol_current[last_key], &new_key)
+                            .await?;
+                    }
+
+                    continue;
+                }
+            }
+
+            // Original handling for non-protocol configs
             for key in &key_parts[..key_parts.len() - 1] {
                 current = &mut current[key];
             }

@@ -14,12 +14,69 @@ pub struct ConfigSchema {
     pub datastore: DataStoreSchema,
     pub blobstore: BlobStoreSchema,
     pub context: ContextSchema,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocols: Option<ProtocolsSchema>,
+}
+
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolsSchema {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ethereum: Option<EthereumProtocolSchema>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icp: Option<IcpProtocolSchema>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near: Option<NearProtocolSchema>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stellar: Option<StellarProtocolSchema>,
+}
+
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+pub struct EthereumProtocolSchema {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
+}
+
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+pub struct IcpProtocolSchema {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
+}
+
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+pub struct NearProtocolSchema {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
+}
+
+#[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
+pub struct StellarProtocolSchema {
+    pub network: String,
+    pub contract_id: String,
+    pub signer: String,
 }
 
 impl From<schemars::Schema> for ConfigSchema {
     fn from(schema: schemars::Schema) -> Self {
         let schema = schema_for!(ConfigFile);
-        serde_json::from_value(serde_json::to_value(schema).unwrap()).expect("valid config schema")
+        let mut config_schema: ConfigSchema =
+            serde_json::from_value(serde_json::to_value(schema).unwrap())
+                .expect("valid config schema");
+
+        // Add protocol defaults if they don't exist
+        if config_schema.protocols.is_none() {
+            config_schema.protocols = Some(ProtocolsSchema {
+                ethereum: None,
+                icp: None,
+                near: None,
+                stellar: None,
+            });
+        }
+
+        config_schema
     }
 }
 
@@ -264,14 +321,33 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
 
     let mut current: &dyn std::any::Any = schema;
 
-    if path[0] == "identity" {
-        if path.len() == 1 {
-            return Some("Peer identity configuration (optional)".to_owned());
-        }
-        if let Some(identity) = &schema.identity {
-            current = identity;
-        } else {
-            return Some("Peer identity configuration (currently not set)".to_owned());
+    if path.len() >= 3 && path[0] == "context" && path[1] == "config" {
+        if let Some(protocol) = path.get(2) {
+            if let Some(protocols) = &schema.protocols {
+                match *protocol {
+                    "ethereum" => {
+                        if let Some(ethereum) = &protocols.ethereum {
+                            return get_protocol_field_hint(&path[3..], "Ethereum", ethereum);
+                        }
+                    }
+                    "icp" => {
+                        if let Some(icp) = &protocols.icp {
+                            return get_protocol_field_hint(&path[3..], "ICP", icp);
+                        }
+                    }
+                    "near" => {
+                        if let Some(near) = &protocols.near {
+                            return get_protocol_field_hint(&path[3..], "NEAR", near);
+                        }
+                    }
+                    "stellar" => {
+                        if let Some(stellar) = &protocols.stellar {
+                            return get_protocol_field_hint(&path[3..], "Stellar", stellar);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -519,6 +595,41 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
             "Unknown configuration path: {}",
             current_path.join(".")
         ));
+    }
+
+    None
+}
+
+fn get_protocol_field_hint<T: JsonSchema + Serialize>(
+    path: &[&str],
+    protocol_name: &str,
+    schema: &T,
+) -> Option<String> {
+    if path.is_empty() {
+        return Some(format!("{} protocol configuration", protocol_name));
+    }
+
+    let schema_value = serde_json::to_value(schema).ok()?;
+    let schema_obj = schema_value.as_object()?;
+
+    for (i, part) in path.iter().enumerate() {
+        if let Some(field_schema) = schema_obj.get(*part) {
+            if i == path.len() - 1 {
+                return field_schema
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string());
+            }
+
+            if let Some(sub_schema) = field_schema.get("properties") {
+                if let Some(sub_schema) = sub_schema.as_object() {
+                    if let Some(next_schema) = sub_schema.get(path[i + 1]) {
+                        // Continue with next part
+                        continue;
+                    }
+                }
+            }
+        }
     }
 
     None
