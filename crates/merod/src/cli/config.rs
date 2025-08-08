@@ -370,9 +370,18 @@ impl ConfigCommand {
 
         let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
 
-        drop(ConfigFile::load(&tmp_path_utf8).await?);
-
-        Ok(())
+        match ConfigFile::load(&tmp_path_utf8).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Provide more detailed error message for protocol config validation
+                if let Some(serde_err) = e.downcast_ref::<serde_json::Error>() {
+                    if serde_err.to_string().contains("missing field `network`") {
+                        bail!("Protocol configuration is missing required 'network' field");
+                    }
+                }
+                Err(e)
+            }
+        }
     }
 
     async fn print_human(

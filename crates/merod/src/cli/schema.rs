@@ -33,59 +33,86 @@ pub struct ProtocolsSchema {
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct EthereumProtocolSchema {
+    #[schemars(description = "Ethereum network name (e.g. sepolia, mainnet)")]
     pub network: String,
+    #[schemars(description = "Ethereum contract address")]
     pub contract_id: String,
+    #[schemars(description = "Signer type (relayer or local)")]
     pub signer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional RPC URL for direct connection")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional account ID")]
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional secret key")]
     pub secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct IcpProtocolSchema {
+    #[schemars(description = "Icp network name (e.g. sepolia, mainnet)")]
     pub network: String,
+    #[schemars(description = "Icp contract address")]
     pub contract_id: String,
+    #[schemars(description = "Signer type (relayer or local)")]
     pub signer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional RPC URL for direct connection")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional account ID")]
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional public key")]
     pub public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional secret key")]
     pub secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct NearProtocolSchema {
+    #[schemars(description = "Near network name (e.g. sepolia, mainnet)")]
     pub network: String,
+    #[schemars(description = "Near contract address")]
     pub contract_id: String,
+    #[schemars(description = "Signer type (relayer or local)")]
     pub signer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional RPC URL for direct connection")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional account ID")]
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional public key")]
     pub public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional secret key")]
     pub secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
 pub struct StellarProtocolSchema {
+    #[schemars(description = "Stellar network name (e.g. sepolia, mainnet)")]
     pub network: String,
+    #[schemars(description = "Stellar contract address")]
     pub contract_id: String,
+    #[schemars(description = "Signer type (relayer or local)")]
     pub signer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional RPC URL for direct connection")]
     pub rpc_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional account ID")]
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional public key")]
     pub public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Optional secret key")]
     pub secret_key: Option<String>,
 }
 
