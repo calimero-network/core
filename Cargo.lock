@@ -1741,14 +1741,15 @@ dependencies = [
 
 [[package]]
 name = "cached-path"
-version = "0.7.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8369b5b3f30578fe6080a3adf8437a88ea47d028719b887a1237c5339fced03f"
+checksum = "678838d744fc7640e0967cc09a5cb39f52d5cf4909dd28591de75b33fa3db312"
 dependencies = [
  "flate2",
  "fs2",
  "glob",
  "indicatif",
+ "infer",
  "log",
  "rand 0.8.5",
  "reqwest 0.11.27",
@@ -2192,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.8.0-rc.1"
+version = "0.8.0-rc.2"
 dependencies = [
  "eyre",
  "rustc_version 0.4.1",
@@ -2544,6 +2545,7 @@ dependencies = [
  "encode_unicode",
  "libc",
  "once_cell",
+ "unicode-width 0.2.0",
  "windows-sys 0.59.0",
 ]
 
@@ -4915,14 +4917,15 @@ checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 
 [[package]]
 name = "indicatif"
-version = "0.16.2"
+version = "0.17.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d207dc617c7a380ab07ff572a6e52fa202a2a8f355860ac9c38e23f8196be1b"
+checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
 dependencies = [
  "console",
- "lazy_static",
  "number_prefix",
- "regex",
+ "portable-atomic",
+ "unicode-width 0.2.0",
+ "web-time",
 ]
 
 [[package]]
@@ -7476,6 +7479,12 @@ dependencies = [
  "opaque-debug",
  "universal-hash",
 ]
+
+[[package]]
+name = "portable-atomic"
+version = "1.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f84267b20a16ea918e43c6a88433c2d54fa145c92a811b5b047ccbe153674483"
 
 [[package]]
 name = "powerfmt"

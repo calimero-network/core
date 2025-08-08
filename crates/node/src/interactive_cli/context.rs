@@ -77,7 +77,7 @@ enum Commands {
         #[clap(long, short, default_value = "default")]
         context: Alias<ContextId>,
         /// The identity inviting the other
-        #[clap(long = "as")]
+        #[clap(long = "as", default_value = "default")]
         inviter: Alias<PublicKey>,
         /// The name for the invitee
         #[clap(long)]
@@ -105,7 +105,6 @@ enum Commands {
     /// Delete a context
     Delete {
         /// The context to delete
-        #[clap(long, short)]
         context: Alias<ContextId>,
     },
     /// Update the proxy for a context
@@ -162,6 +161,16 @@ enum Commands {
     Proposals {
         #[command(subcommand)]
         command: ProposalsCommands,
+    },
+    /// Explicitly request a sync
+    Sync {
+        /// The context to sync
+        #[clap(long, short, default_value = "default")]
+        context: Alias<ContextId>,
+
+        /// Sync all contexts
+        #[clap(long, short, conflicts_with = "context")]
+        all: bool,
     },
 }
 
@@ -319,7 +328,8 @@ impl ContextCommand {
 
                 println!(
                     "{ind} Joined context '{}' as '{}', syncing state...",
-                    response.context_id, response.member_public_key
+                    response.context_id.cyan(),
+                    response.member_public_key.cyan()
                 );
             }
 
@@ -390,8 +400,9 @@ impl ContextCommand {
                         }
 
                         println!(
-                            "{ind} Created context {} with identity {}",
-                            response.context_id, response.identity
+                            "{ind} Created context '{}' with identity '{}'",
+                            response.context_id.cyan(),
+                            response.identity.cyan()
                         );
                     }
                     Err(err) => {
@@ -424,7 +435,7 @@ impl ContextCommand {
                         pretty_alias(name, &invitee_id),
                         pretty_alias(Some(context), &context_id)
                     );
-                    println!("{ind} Invitation Payload: {invitation_payload}");
+                    println!("{ind} Invitation Payload: '{}'", invitation_payload.cyan());
                 } else {
                     println!(
                         "{ind} Unable to invite '{}' to context '{}'",
@@ -574,18 +585,39 @@ impl ContextCommand {
 
                 if context.as_str() != context_id.as_str() {
                     println!(
-                        "{} Default context set to: {} (from alias '{}')",
-                        ind, context_id, context
+                        "{} Default context set to '{}' (from alias '{}')",
+                        ind,
+                        context_id.cyan(),
+                        context.cyan()
                     );
                 } else {
-                    println!("{} Default context set to: {}", ind, context_id);
+                    println!("{} Default context set to '{}'", ind, context_id.cyan());
                 }
             }
             Commands::Identity(identity) => identity.run(node_client, ctx_client).await?,
             Commands::Proposals { command } => {
                 handle_proposals_command(node_client, ctx_client, command, &ind.to_string()).await?
             }
+            Commands::Sync { context, all } => {
+                if all {
+                    println!("{ind} Syncing all contexts...");
+
+                    node_client.sync(None).await?;
+                } else {
+                    let context_id = node_client
+                        .resolve_alias(context, None)?
+                        .ok_or_eyre("unable to resolve context")?;
+
+                    println!(
+                        "{ind} Syncing context '{}'...",
+                        pretty_alias(Some(context), &context_id)
+                    );
+
+                    node_client.sync(Some(&context_id)).await?;
+                }
+            }
         }
+
         Ok(())
     }
 }

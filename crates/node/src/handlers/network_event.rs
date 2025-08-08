@@ -16,6 +16,8 @@ use eyre::bail;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, timeout};
+use libp2p::PeerId;
+use owo_colors::OwoColorize;
 use tracing::{debug, info, warn};
 
 use crate::sync::SyncManager;

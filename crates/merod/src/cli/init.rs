@@ -38,7 +38,7 @@ use near_crypto::{KeyType, SecretKey};
 use rand::rngs::OsRng;
 use soroban_client::keypair::{Keypair as StellarKeypair, KeypairBehavior};
 use starknet::signers::SigningKey;
-use tokio::fs::{create_dir, create_dir_all};
+use tokio::fs::{self, create_dir, create_dir_all};
 use tracing::{info, warn};
 use url::Url;
 
@@ -161,15 +161,6 @@ impl InitCommand {
 
         let path = root_args.home.join(root_args.node_name);
 
-        if !path.exists() {
-            if root_args.home == defaults::default_node_dir() {
-                create_dir_all(&path).await
-            } else {
-                create_dir(&path).await
-            }
-            .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
-        }
-
         if ConfigFile::exists(&path) {
             if let Err(err) = ConfigFile::load(&path).await {
                 if self.force {
@@ -184,6 +175,17 @@ impl InitCommand {
                 warn!("Node is already initialized in {:?}", path);
                 return Ok(());
             }
+
+            fs::remove_dir_all(&path).await?;
+        }
+
+        if !path.exists() {
+            if root_args.home == defaults::default_node_dir() {
+                create_dir_all(&path).await
+            } else {
+                create_dir(&path).await
+            }
+            .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
         let identity = Keypair::generate_ed25519();
