@@ -36,6 +36,12 @@ pub struct EthereumProtocolSchema {
     pub network: String,
     pub contract_id: String,
     pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
@@ -43,6 +49,14 @@ pub struct IcpProtocolSchema {
     pub network: String,
     pub contract_id: String,
     pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
@@ -50,6 +64,14 @@ pub struct NearProtocolSchema {
     pub network: String,
     pub contract_id: String,
     pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone, JsonSchema, Serialize, Deserialize)]
@@ -57,6 +79,14 @@ pub struct StellarProtocolSchema {
     pub network: String,
     pub contract_id: String,
     pub signer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<String>,
 }
 
 impl From<schemars::Schema> for ConfigSchema {
@@ -315,24 +345,39 @@ pub fn generate_schema() -> ConfigSchema {
 
     config_schema.protocols = Some(ProtocolsSchema {
         ethereum: Some(EthereumProtocolSchema {
-            network: "mainnet".to_owned(),
+            network: "sepolia".to_owned(),
             contract_id: "".to_owned(),
             signer: "".to_owned(),
+            rpc_url: None,
+            account_id: None,
+            secret_key: None,
+        }),
+        icp: Some(IcpProtocolSchema {
+            network: "local".to_owned(),
+            contract_id: "".to_owned(),
+            signer: "".to_owned(),
+            rpc_url: None,
+            account_id: None,
+            public_key: None,
+            secret_key: None,
         }),
         near: Some(NearProtocolSchema {
             network: "testnet".to_owned(),
             contract_id: "".to_owned(),
             signer: "".to_owned(),
-        }),
-        icp: Some(IcpProtocolSchema {
-            network: "testnet".to_owned(),
-            contract_id: "".to_owned(),
-            signer: "".to_owned(),
+            rpc_url: None,
+            account_id: None,
+            public_key: None,
+            secret_key: None,
         }),
         stellar: Some(StellarProtocolSchema {
             network: "testnet".to_owned(),
             contract_id: "".to_owned(),
             signer: "".to_owned(),
+            rpc_url: None,
+            account_id: None,
+            public_key: None,
+            secret_key: None,
         }),
     });
 
@@ -649,7 +694,6 @@ fn get_protocol_field_hint<T: JsonSchema + Serialize>(
             if let Some(sub_schema) = field_schema.get("properties") {
                 if let Some(sub_schema) = sub_schema.as_object() {
                     if let Some(next_schema) = sub_schema.get(path[i + 1]) {
-                        // Continue with next part
                         continue;
                     }
                 }
