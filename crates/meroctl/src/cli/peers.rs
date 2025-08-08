@@ -30,7 +30,7 @@ impl Report for GetPeersCountResponse {
 
 impl PeersCommand {
     pub async fn run(&self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         let response: GetPeersCountResponse = connection.get("admin-api/peers").await?;
 

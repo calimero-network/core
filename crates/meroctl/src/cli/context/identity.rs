@@ -71,7 +71,7 @@ pub enum ContextIdentitySubcommand {
 
 impl ContextIdentityCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {

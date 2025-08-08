@@ -107,7 +107,7 @@ impl Report for GetContextIdentitiesResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;
 

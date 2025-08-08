@@ -5,7 +5,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
-use eyre::{bail, OptionExt, Report as EyreReport, Result};
+use eyre::{bail, Report as EyreReport, Result};
 use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
@@ -101,10 +101,10 @@ impl Environment {
         Self { output, connection }
     }
 
-    pub fn connection(&self) -> Result<&ConnectionInfo> {
+    pub fn connection(&self) -> &ConnectionInfo {
         self.connection
             .as_ref()
-            .ok_or_eyre("No connection available: this should not happen as we fall back to localhost:2528 by default")
+            .expect("Unable to create a connection.")
     }
 }
 
@@ -119,14 +119,7 @@ impl RootCommand {
         };
 
         let connection = if needs_connection {
-            match self.prepare_connection(output).await {
-                Ok(conn) => conn,
-                Err(err) => {
-                    let err = CliError::Other(err);
-                    output.write(&err);
-                    return Err(err);
-                }
-            }
+            Some(self.prepare_connection(output).await?)
         } else {
             None
         };
@@ -155,59 +148,51 @@ impl RootCommand {
         Ok(())
     }
 
-    async fn prepare_connection(&self, output: Output) -> Result<Option<ConnectionInfo>> {
-        match (&self.args.node, &self.args.api) {
-            (Some(node), None) => {
-                // Use specific node - first check if it's registered
-                let config = Config::load().await?;
+    async fn prepare_connection(&self, output: Output) -> Result<ConnectionInfo> {
+        if let Some(node) = &self.args.node {
+            // Use specific node - first check if it's registered
+            let config = Config::load().await?;
 
-                if let Some(conn) = config.get_connection(node, output).await? {
-                    return Ok(Some(conn));
+            if let Some(conn) = config.get_connection(node, output).await? {
+                return Ok(conn);
+            }
+
+            // Check if it's a local node at <home>/<node>
+            let config = load_config(&self.args.home, node).await?;
+            let multiaddr = fetch_multiaddr(&config)?;
+            let url = multiaddr_to_url(&multiaddr, "")?;
+
+            // Even local nodes might require authentication - use session cache for unregistered nodes
+            let connection =
+                authenticate_with_session_cache(&url, &format!("local node {}", node), output)
+                    .await?;
+            Ok(connection)
+        } else if let Some(api_url) = &self.args.api {
+            // Use specific API URL - check session cache first, then authenticate if needed
+            let connection =
+                authenticate_with_session_cache(api_url, &api_url.to_string(), output).await?;
+            Ok(connection)
+        } else {
+            // Try to use active node
+            let config = Config::load().await?;
+
+            if let Some(active_node_name) = &config.active_node {
+                if let Some(conn) = config.get_connection(active_node_name, output).await? {
+                    return Ok(conn);
+                } else {
+                    bail!(
+                        "Active node '{}' not found. Please check your configuration.",
+                        active_node_name
+                    );
                 }
-
-                // Check if it's a local node at <home>/<node>
-                let config = load_config(&self.args.home, node).await?;
-                let multiaddr = fetch_multiaddr(&config)?;
-                let url = multiaddr_to_url(&multiaddr, "")?;
-
-                // Even local nodes might require authentication - use session cache for unregistered nodes
-                let connection =
-                    authenticate_with_session_cache(&url, &format!("local node {}", node), output)
-                        .await?;
-                Ok(Some(connection))
             }
-            (None, Some(api_url)) => {
-                // Use specific API URL - check session cache first, then authenticate if needed
-                let connection =
-                    authenticate_with_session_cache(api_url, &api_url.to_string(), output).await?;
-                Ok(Some(connection))
-            }
-            (None, None) => {
-                // Try to use active node
-                let config = Config::load().await?;
 
-                if let Some(active_node_name) = &config.active_node {
-                    if let Some(conn) = config.get_connection(active_node_name, output).await? {
-                        return Ok(Some(conn));
-                    } else {
-                        bail!(
-                            "Active node '{}' not found. Please check your configuration.",
-                            active_node_name
-                        );
-                    }
-                }
-
-                // No active node set - fall back to default localhost server
-                let default_url = "http://127.0.0.1:2528".parse()?;
-                let connection = authenticate_with_session_cache(
-                    &default_url,
-                    "default localhost server",
-                    output,
-                )
-                .await?;
-                Ok(Some(connection))
-            }
-            _ => Ok(None),
+            // No active node set - fall back to default localhost server
+            let default_url = "http://127.0.0.1:2528".parse()?;
+            let connection =
+                authenticate_with_session_cache(&default_url, "default localhost server", output)
+                    .await?;
+            Ok(connection)
         }
     }
 }
