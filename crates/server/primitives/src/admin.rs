@@ -968,3 +968,15 @@ impl RevokePermissionResponse {
         Self { data: Empty {} }
     }
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncContextResponse {
+    pub data: Empty,
+}
+
+impl SyncContextResponse {
+    pub const fn new() -> Self {
+        Self { data: Empty {} }
+    }
+}

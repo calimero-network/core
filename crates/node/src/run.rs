@@ -109,12 +109,15 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (event_sender, _) = broadcast::channel(32);
 
+    let (ctx_sync_tx, ctx_sync_rx) = mpsc::channel(16);
+
     let node_client = NodeClient::new(
         datastore.clone(),
         blobstore.clone(),
         network_client.clone(),
         node_recipient.clone(),
         event_sender,
+        ctx_sync_tx,
     );
 
     let external_client = ExternalClient::from_config(&config.context.client);
@@ -143,6 +146,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         node_client.clone(),
         context_client.clone(),
         network_client.clone(),
+        ctx_sync_rx,
     );
 
     let node_manager = NodeManager::new(

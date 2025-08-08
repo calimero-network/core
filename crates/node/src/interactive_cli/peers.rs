@@ -37,7 +37,7 @@ impl PeersCommand {
             println!(
                 "{ind} Peers (Session) for Topic {}: {:#?}",
                 topic.clone(),
-                node_client.get_peers_count(Some(context_id)).await.cyan()
+                node_client.get_peers_count(Some(&context_id)).await.cyan()
             );
         }
 
