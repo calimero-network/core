@@ -20,7 +20,7 @@ x-node-defaults: &node-defaults
 
 services:
   # Primary node
-  node1:
+  node:
     <<: *node-defaults
     environment:
       - NODE_NAME=authnode1
@@ -43,19 +43,19 @@ services:
     labels:
       - "traefik.enable=true"
 
-      # JSON-RPC and Admin API routes
+      # Node1 API routes (protected)
       - "traefik.http.routers.node1-api.rule=Host(`node1.127.0.0.1.nip.io`) && (PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api/`))"
       - "traefik.http.routers.node1-api.entrypoints=web"
       - "traefik.http.routers.node1-api.service=node1-core"
       - "traefik.http.routers.node1-api.middlewares=cors,auth-node1"
 
-      # WebSocket route
+      # Node1 WebSocket (protected)
       - "traefik.http.routers.node1-ws.rule=Host(`node1.127.0.0.1.nip.io`) && PathPrefix(`/ws`)"
       - "traefik.http.routers.node1-ws.entrypoints=web"
       - "traefik.http.routers.node1-ws.service=node1-core"
       - "traefik.http.routers.node1-ws.middlewares=cors,auth-node1"
 
-      # Admin dashboard route (publicly accessible)
+      # Node1 Admin dashboard (publicly accessible)
       - "traefik.http.routers.node1-dashboard.rule=Host(`node1.127.0.0.1.nip.io`) && PathPrefix(`/admin-dashboard`)"
       - "traefik.http.routers.node1-dashboard.entrypoints=web"
       - "traefik.http.routers.node1-dashboard.service=node1-core"
@@ -73,81 +73,8 @@ services:
       - "traefik.http.middlewares.auth-node1.forwardauth.trustForwardHeader=true"
       - "traefik.http.middlewares.auth-node1.forwardauth.authResponseHeaders=X-Auth-User,X-Auth-Permissions"
 
-      # CORS middleware
-      - "traefik.http.middlewares.cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST,DELETE"
-      - "traefik.http.middlewares.cors.headers.accesscontrolallowheaders=*"
-      - "traefik.http.middlewares.cors.headers.accesscontrolalloworiginlist=*"
-      - "traefik.http.middlewares.cors.headers.accesscontrolmaxage=100"
-      - "traefik.http.middlewares.cors.headers.addvaryheader=true"
-      - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
-
       # Define the service
       - "traefik.http.services.node1-core.loadbalancer.server.port=2528"
-
-  # Secondary node
-  node2:
-    <<: *node-defaults
-    environment:
-      - NODE_NAME=authnode2
-      - SWARM_PORT=2429
-      - NODE_PORT=2529
-      - CALIMERO_HOME=/calimero/data
-    ports:
-      - "2429:2429"
-      - "2529:2529"
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "mkdir -p $${CALIMERO_HOME} $${CALIMERO_HOME}/../logic $${CALIMERO_HOME}/../credentials &&
-      if [ ! -d $${CALIMERO_HOME}/config ]; then
-        merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} init --server-host 0.0.0.0 --server-port 2529 --swarm-port 2429
-      fi &&
-      merod --node-name $${NODE_NAME} --home $${CALIMERO_HOME} run"
-    networks:
-      - internal
-      - web
-    labels:
-      - "traefik.enable=true"
-
-      # JSON-RPC and Admin API routes
-      - "traefik.http.routers.node2-api.rule=Host(`node2.127.0.0.1.nip.io`) && (PathPrefix(`/jsonrpc`) || PathPrefix(`/admin-api/`))"
-      - "traefik.http.routers.node2-api.entrypoints=web"
-      - "traefik.http.routers.node2-api.service=node2-core"
-      - "traefik.http.routers.node2-api.middlewares=cors,auth-node2"
-
-      # WebSocket route
-      - "traefik.http.routers.node2-ws.rule=Host(`node2.127.0.0.1.nip.io`) && PathPrefix(`/ws`)"
-      - "traefik.http.routers.node2-ws.entrypoints=web"
-      - "traefik.http.routers.node2-ws.service=node2-core"
-      - "traefik.http.routers.node2-ws.middlewares=cors,auth-node2"
-
-      # Admin dashboard route (publicly accessible)
-      - "traefik.http.routers.node2-dashboard.rule=Host(`node2.127.0.0.1.nip.io`) && PathPrefix(`/admin-dashboard`)"
-      - "traefik.http.routers.node2-dashboard.entrypoints=web"
-      - "traefik.http.routers.node2-dashboard.service=node2-core"
-      - "traefik.http.routers.node2-dashboard.middlewares=cors"
-
-      # Auth service route for node2 subdomain (both /auth/ and /admin/)
-      - "traefik.http.routers.node2-auth.rule=Host(`node2.127.0.0.1.nip.io`) && (PathPrefix(`/auth/`) || PathPrefix(`/admin/`))"
-      - "traefik.http.routers.node2-auth.entrypoints=web"
-      - "traefik.http.routers.node2-auth.service=auth-service"
-      - "traefik.http.routers.node2-auth.middlewares=cors,auth-headers"
-      - "traefik.http.routers.node2-auth.priority=200"
-
-      # Forward Auth middleware for node2 service
-      - "traefik.http.middlewares.auth-node2.forwardauth.address=http://auth:3001/auth/validate"
-      - "traefik.http.middlewares.auth-node2.forwardauth.trustForwardHeader=true"
-      - "traefik.http.middlewares.auth-node2.forwardauth.authResponseHeaders=X-Auth-User,X-Auth-Permissions"
-
-      # CORS middleware
-      - "traefik.http.middlewares.cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST,DELETE"
-      - "traefik.http.middlewares.cors.headers.accesscontrolallowheaders=*"
-      - "traefik.http.middlewares.cors.headers.accesscontrolalloworiginlist=*"
-      - "traefik.http.middlewares.cors.headers.accesscontrolmaxage=100"
-      - "traefik.http.middlewares.cors.headers.addvaryheader=true"
-      - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
-
-      # Define the service
-      - "traefik.http.services.node2-core.loadbalancer.server.port=2529"
 
   # Auth service
   auth:
@@ -178,26 +105,18 @@ services:
     labels:
       - "traefik.enable=true"
 
-      # Auth service accessible from localhost (both /auth/ and /admin/)
+      # Auth service on localhost (both /auth/ and /admin/)
       - "traefik.http.routers.auth-public.rule=Host(`localhost`) && (PathPrefix(`/auth/`) || PathPrefix(`/admin/`))"
       - "traefik.http.routers.auth-public.entrypoints=web"
       - "traefik.http.routers.auth-public.service=auth-service"
       - "traefik.http.routers.auth-public.middlewares=cors,auth-headers"
       - "traefik.http.routers.auth-public.priority=100"
-      
-      # Add Node ID header for auth service (will be overridden by specific node calls)
+
+      # Add Node ID header for auth service
       - "traefik.http.middlewares.auth-headers.headers.customrequestheaders.X-Node-ID=auth"
 
       # Define the service
       - "traefik.http.services.auth-service.loadbalancer.server.port=3001"
-
-      # CORS middleware
-      - "traefik.http.middlewares.cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST,DELETE"
-      - "traefik.http.middlewares.cors.headers.accesscontrolallowheaders=*"
-      - "traefik.http.middlewares.cors.headers.accesscontrolalloworiginlist=*"
-      - "traefik.http.middlewares.cors.headers.accesscontrolmaxage=100"
-      - "traefik.http.middlewares.cors.headers.addvaryheader=true"
-      - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
 
   # Reverse proxy
   proxy:
@@ -223,9 +142,18 @@ services:
     restart: unless-stopped
     labels:
       - "traefik.enable=true"
+      # Proxy dashboard
       - "traefik.http.routers.proxy-dashboard.rule=Host(`proxy.127.0.0.1.nip.io`)"
       - "traefik.http.routers.proxy-dashboard.entrypoints=web"
       - "traefik.http.routers.proxy-dashboard.service=api@internal"
+      
+      # Shared middleware definitions
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowmethods=GET,OPTIONS,PUT,POST,DELETE"
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.cors.headers.accesscontrolalloworiginlist=*"
+      - "traefik.http.middlewares.cors.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.cors.headers.addvaryheader=true"
+      - "traefik.http.middlewares.cors.headers.accesscontrolexposeheaders=X-Auth-Error"
 
 networks:
   web:

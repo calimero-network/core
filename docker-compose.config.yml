@@ -1,0 +1,214 @@
+services:
+  # Volume initialization service to set proper permissions
+  init_volume:
+    image: debian:bookworm-slim
+    user: root
+    volumes:
+      - calimero_auth_node:/calimero
+    command: >
+      /bin/sh -c "mkdir -p /calimero/data /calimero/logic /calimero/credentials/node1 /calimero/credentials/node2 /calimero/credentials/node3 &&
+                  chmod -R 777 /calimero"
+
+  # Backend Build Service (for applications/smart contracts)
+  backend_build:
+    image: rust:latest
+    user: root
+    volumes:
+      - ./apps:/apps
+      - calimero_auth_node:/calimero
+      - cargo-cache:/usr/local/cargo/registry
+    working_dir: /apps
+    command: >
+      bash -c "
+        apt-get update && 
+        apt-get install -y binaryen curl jq && 
+        rustup target add wasm32-unknown-unknown && 
+        echo 'Backend build service ready. Add your application build logic here.' &&
+        mkdir -p /calimero/logic &&
+        echo 'Applications will be built and copied to /calimero/logic/'
+      "
+    depends_on:
+      init_volume:
+        condition: service_completed_successfully
+    profiles: [build]
+
+  # Context Coordinator Service (for setting up contexts and applications)
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      secrets:
+        - gh-token
+    user: root
+    entrypoint: /bin/sh
+    volumes:
+      - calimero_auth_node:/calimero
+    network_mode: "host"
+    environment:
+      - CONTEXT_RECREATE=${CONTEXT_RECREATE:-false}
+      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-node1}
+      - NODE1_URL=${NODE1_URL:-http://localhost:2528}
+      - NODE2_URL=${NODE2_URL:-http://localhost:2529} 
+      - NODE3_URL=${NODE3_URL:-http://localhost:2530}
+    command: >
+      -c '
+        echo "=== Calimero Context Coordinator ===" &&
+        echo "Available profiles: node1, node2, node3" &&
+        echo "Current profile: $COMPOSE_PROFILES" &&
+        echo "Context recreate: $CONTEXT_RECREATE" &&
+        echo "" &&
+        
+        # Wait for nodes to be ready
+        echo "Waiting for nodes to be ready..." &&
+        
+        # Check if context info already exists and CONTEXT_RECREATE is not set to true
+        if [ -f /calimero/context_info.json ] && [ "$CONTEXT_RECREATE" != "true" ]; then
+          echo "Found existing context info. Reusing it..." &&
+          CONTEXT_INFO=$$(cat /calimero/context_info.json) &&
+          CONTEXT_ID=$$(echo "$$CONTEXT_INFO" | grep -o "\"context_id\":\"[^\"]*\"" | cut -d":" -f2 | tr -d "\"") &&
+          APP_ID=$$(echo "$$CONTEXT_INFO" | grep -o "\"app_id\":\"[^\"]*\"" | cut -d":" -f2 | tr -d "\"") &&
+          NODE1_MEMBER_KEY=$$(echo "$$CONTEXT_INFO" | grep -o "\"node1_member_key\":\"[^\"]*\"" | cut -d":" -f2 | tr -d "\"") &&
+          
+          echo "Reused Context ID: $$CONTEXT_ID" &&
+          echo "Reused App ID: $$APP_ID" &&
+          echo "Reused Node1 Member Key: $$NODE1_MEMBER_KEY"
+        else
+          echo "Creating new context..." &&
+          echo "Add your application installation and context creation logic here" &&
+          
+          # Example context creation (modify as needed)
+          # APP_OUTPUT=$$(meroctl --node-name authnode1 --home /calimero/data app install -p /calimero/logic/your_app.wasm) &&
+          # APP_ID=$$(echo "$$APP_OUTPUT" | grep "application_id:" | sed "s/application_id: //") &&
+          # CONTEXT_OUTPUT=$$(meroctl --node-name authnode1 --home /calimero/data context create -a "$$APP_ID" --protocol near) &&
+          # CONTEXT_ID=$$(echo "$$CONTEXT_OUTPUT" | grep "context_id:" | sed "s/context_id: //") &&
+          # NODE1_MEMBER_KEY=$$(echo "$$CONTEXT_OUTPUT" | grep "member_public_key:" | sed "s/member_public_key: //") &&
+          
+          # For now, create placeholder values
+          CONTEXT_ID="placeholder-context-id" &&
+          APP_ID="placeholder-app-id" &&
+          NODE1_MEMBER_KEY="placeholder-member-key" &&
+          
+          echo "Context ID: $$CONTEXT_ID" &&
+          echo "App ID: $$APP_ID" &&
+          echo "Node1 Member Key: $$NODE1_MEMBER_KEY" &&
+          
+          # Save context info for future use
+          echo "{\"context_id\":\"$$CONTEXT_ID\",\"app_id\":\"$$APP_ID\",\"node1_member_key\":\"$$NODE1_MEMBER_KEY\"}" > /calimero/context_info.json
+        fi &&
+        
+        # Create node1 credentials
+        echo "Creating credentials for node1..." &&
+        echo "CONTEXT_ID=$$CONTEXT_ID" > /calimero/credentials/node1/.env &&
+        echo "MEMBER_PUBLIC_KEY=$$NODE1_MEMBER_KEY" >> /calimero/credentials/node1/.env &&
+        echo "APP_URL=$NODE1_URL" >> /calimero/credentials/node1/.env &&
+        echo "NODE_NAME=authnode1" >> /calimero/credentials/node1/.env &&
+        
+        echo "Node1 credentials created!" &&
+        
+        # Handle Node2 if enabled
+        if [ "$COMPOSE_PROFILES" = "node2" ] || [ "$COMPOSE_PROFILES" = "node3" ]; then
+          echo "Setting up node2..." &&
+          
+          # Check if node2 context info already exists
+          if [ -f /calimero/node2_context_info.json ] && [ "$CONTEXT_RECREATE" != "true" ]; then
+            echo "Found existing node2 context info. Reusing it..." &&
+            NODE2_INFO=$$(cat /calimero/node2_context_info.json) &&
+            NODE2_MEMBER_KEY=$$(echo "$$NODE2_INFO" | grep -o "\"node2_member_key\":\"[^\"]*\"" | cut -d":" -f2 | tr -d "\"") &&
+            echo "Reused Node2 Member Key: $$NODE2_MEMBER_KEY"
+          else
+            echo "Add node2 setup logic here (identity generation, invitation, join)" &&
+            NODE2_MEMBER_KEY="placeholder-node2-member-key" &&
+            echo "{\"context_id\":\"$$CONTEXT_ID\",\"node2_member_key\":\"$$NODE2_MEMBER_KEY\"}" > /calimero/node2_context_info.json
+          fi &&
+          
+          # Create node2 credentials
+          echo "CONTEXT_ID=$$CONTEXT_ID" > /calimero/credentials/node2/.env &&
+          echo "MEMBER_PUBLIC_KEY=$$NODE2_MEMBER_KEY" >> /calimero/credentials/node2/.env &&
+          echo "APP_URL=$NODE2_URL" >> /calimero/credentials/node2/.env &&
+          echo "NODE_NAME=authnode2" >> /calimero/credentials/node2/.env &&
+          
+          echo "Node2 setup complete!"
+        fi &&
+        
+        # Handle Node3 if enabled  
+        if [ "$COMPOSE_PROFILES" = "node3" ]; then
+          echo "Setting up node3..." &&
+          
+          # Check if node3 context info already exists
+          if [ -f /calimero/node3_context_info.json ] && [ "$CONTEXT_RECREATE" != "true" ]; then
+            echo "Found existing node3 context info. Reusing it..." &&
+            NODE3_INFO=$$(cat /calimero/node3_context_info.json) &&
+            NODE3_MEMBER_KEY=$$(echo "$$NODE3_INFO" | grep -o "\"node3_member_key\":\"[^\"]*\"" | cut -d":" -f2 | tr -d "\"") &&
+            echo "Reused Node3 Member Key: $$NODE3_MEMBER_KEY"
+          else
+            echo "Add node3 setup logic here (identity generation, invitation, join)" &&
+            NODE3_MEMBER_KEY="placeholder-node3-member-key" &&
+            echo "{\"context_id\":\"$$CONTEXT_ID\",\"node3_member_key\":\"$$NODE3_MEMBER_KEY\"}" > /calimero/node3_context_info.json
+          fi &&
+          
+          # Create node3 credentials
+          echo "CONTEXT_ID=$$CONTEXT_ID" > /calimero/credentials/node3/.env &&
+          echo "MEMBER_PUBLIC_KEY=$$NODE3_MEMBER_KEY" >> /calimero/credentials/node3/.env &&
+          echo "APP_URL=$NODE3_URL" >> /calimero/credentials/node3/.env &&
+          echo "NODE_NAME=authnode3" >> /calimero/credentials/node3/.env &&
+          
+          echo "Node3 setup complete!"
+        fi &&
+        
+        echo "=== Configuration Complete ===" &&
+        echo "Credentials created in /calimero/credentials/" &&
+        echo "Context info saved in /calimero/"
+      '
+    depends_on:
+      init_volume:
+        condition: service_completed_successfully
+    profiles: [config]
+
+  # Application installer service (for deploying applications to nodes)
+  app_installer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      secrets:
+        - gh-token
+    user: root
+    volumes:
+      - calimero_auth_node:/calimero
+    network_mode: "host"
+    environment:
+      - APP_PATH=${APP_PATH:-/calimero/logic/app.wasm}
+      - NODE_NAME=${NODE_NAME:-authnode1}
+    command: >
+      /bin/sh -c "
+        echo 'Application Installer Service' &&
+        echo 'App path: $APP_PATH' &&
+        echo 'Node name: $NODE_NAME' &&
+        echo 'Add your application installation logic here' &&
+        # meroctl --node-name $NODE_NAME --home /calimero/data app install -p $APP_PATH
+        echo 'Application installation placeholder completed'
+      "
+    depends_on:
+      init_volume:
+        condition: service_completed_successfully
+    profiles: [install]
+
+networks:
+  web:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-calimero}_web
+  internal:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-calimero}_internal
+
+volumes:
+  calimero_auth_node:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-calimero}_calimero_auth_node
+  cargo-cache:
+    driver: local
+
+secrets:
+  gh-token:
+    environment: GH_TOKEN
