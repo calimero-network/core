@@ -83,7 +83,6 @@ pub async fn list_keys_handler(state: Extension<Arc<AppState>>) -> impl IntoResp
 /// * `impl IntoResponse` - The response
 pub async fn create_key_handler(
     state: Extension<Arc<AppState>>,
-    headers: HeaderMap,
     Json(mut request): Json<CreateKeyRequest>,
 ) -> impl IntoResponse {
     // Sanitize inputs to prevent injection attacks
