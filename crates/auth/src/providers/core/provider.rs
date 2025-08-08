@@ -79,6 +79,7 @@ pub trait AuthProvider: Send + Sync {
     /// * `public_key` - The public key to associate with the root key
     /// * `auth_method` - The authentication method
     /// * `provider_data` - Provider-specific data for key creation
+    /// * `node_url` - Optional node URL for node-specific key creation
     ///
     /// # Returns
     ///
@@ -88,6 +89,7 @@ pub trait AuthProvider: Send + Sync {
         public_key: &str,
         auth_method: &str,
         provider_data: Value,
+        node_url: Option<&str>,
     ) -> eyre::Result<bool>;
 
     /// Convert to Any for downcasting
