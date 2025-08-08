@@ -21,7 +21,7 @@ impl Report for GenerateContextIdentityResponse {
 
 impl GenerateCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         let response: GenerateContextIdentityResponse = connection
             .post("admin-api/identity/context", None::<()>)

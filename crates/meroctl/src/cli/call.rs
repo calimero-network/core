@@ -91,7 +91,7 @@ impl Report for Response {
 
 impl CallCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;
         let context_id = resolve_response

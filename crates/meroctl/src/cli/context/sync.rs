@@ -30,7 +30,7 @@ impl Report for SyncContextResponse {
 
 impl SyncCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         let url = if self.all {
             Cow::from("/admin-api/contexts/sync")

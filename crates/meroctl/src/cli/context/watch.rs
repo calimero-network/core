@@ -98,7 +98,7 @@ impl Report for ExecutionOutput<'_> {
 
 impl WatchCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;
 

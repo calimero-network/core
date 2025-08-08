@@ -44,7 +44,7 @@ impl Report for BlobListResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let connection = environment.connection();
 
         let response: BlobListResponse = connection.get("admin-api/blobs").await?;
 
