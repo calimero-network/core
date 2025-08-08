@@ -315,24 +315,24 @@ pub fn generate_schema() -> ConfigSchema {
 
     config_schema.protocols = Some(ProtocolsSchema {
         ethereum: Some(EthereumProtocolSchema {
-            network: "mainnet".to_string(),
-            contract_id: "".to_string(),
-            signer: "".to_string(),
+            network: "mainnet".to_owned(),
+            contract_id: "".to_owned(),
+            signer: "".to_owned(),
         }),
         near: Some(NearProtocolSchema {
-            network: "testnet".to_string(),
-            contract_id: "".to_string(),
-            signer: "".to_string(),
+            network: "testnet".to_owned(),
+            contract_id: "".to_owned(),
+            signer: "".to_owned(),
         }),
         icp: Some(IcpProtocolSchema {
-            network: "testnet".to_string(),
-            contract_id: "".to_string(),
-            signer: "".to_string(),
+            network: "testnet".to_owned(),
+            contract_id: "".to_owned(),
+            signer: "".to_owned(),
         }),
         stellar: Some(StellarProtocolSchema {
-            network: "testnet".to_string(),
-            contract_id: "".to_string(),
-            signer: "".to_string(),
+            network: "testnet".to_owned(),
+            contract_id: "".to_owned(),
+            signer: "".to_owned(),
         }),
     });
 
