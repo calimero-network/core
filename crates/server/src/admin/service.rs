@@ -191,8 +191,9 @@ pub(crate) fn setup(
         )
         // Alias management
         .nest("/alias", alias::service())
-        // Health endpoints (previously unprotected)
         .route("/health", get(health_check_handler))
+        // Dummy endpoint used to figure out if we are running behind auth or not
+        .route("/is-authed", get(is_authed_handler))
         .route("/certificate", get(certificate_handler))
         .layer(Extension(Arc::clone(&shared_state)));
 
@@ -384,6 +385,10 @@ async fn health_check_handler() -> impl IntoResponse {
         },
     }
     .into_response()
+}
+
+async fn is_authed_handler() -> impl IntoResponse {
+    ApiResponse { payload: {} }.into_response()
 }
 
 async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
