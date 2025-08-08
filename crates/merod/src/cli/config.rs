@@ -153,7 +153,7 @@ impl ConfigCommand {
                 edits.push(arg.clone());
             } else if arg.key.ends_with('?') {
                 // Requesting a hint
-                let key = arg.key.trim_end_matches('?').to_string();
+                let key = arg.key.trim_end_matches('?').to_owned();
                 hints.push(key);
             } else {
                 // Printing a value - use the key directly
@@ -387,7 +387,7 @@ impl ConfigCommand {
 
                     // Get schema hint if available
                     let hint = get_field_hint(&new_path.split('.').collect::<Vec<_>>(), schema)
-                        .unwrap_or_else(|| "No description available".to_string());
+                        .unwrap_or_else(|| "No description available".to_owned());
 
                     println!("{}{}: {}", indent_str, key, hint);
                     Self::print_human_value(val, schema, indent + 1, &new_path)?;

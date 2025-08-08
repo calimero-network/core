@@ -266,12 +266,12 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
 
     if path[0] == "identity" {
         if path.len() == 1 {
-            return Some("Peer identity configuration (optional)".to_string());
+            return Some("Peer identity configuration (optional)".to_owned());
         }
         if let Some(identity) = &schema.identity {
             current = identity;
         } else {
-            return Some("Peer identity configuration (currently not set)".to_string());
+            return Some("Peer identity configuration (currently not set)".to_owned());
         }
     }
 
@@ -311,9 +311,9 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
             }
         } else if let Some(identity_schema) = current.downcast_ref::<IdentitySchema>() {
             match part.to_lowercase().as_str() {
-                "peer_id" => return Some("Peer ID in base58 format".to_string()),
+                "peer_id" => return Some("Peer ID in base58 format".to_owned()),
                 "keypair" => {
-                    return Some("Keypair in protobuf format encoded as base58".to_string())
+                    return Some("Keypair in protobuf format encoded as base58".to_owned())
                 }
                 _ => {}
             }
@@ -339,19 +339,19 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
             }
         } else if let Some(swarm_schema) = current.downcast_ref::<SwarmSchema>() {
             if part.to_lowercase().as_str() == "listen" {
-                return Some("List of multiaddresses to listen on".to_string());
+                return Some("List of multiaddresses to listen on".to_owned());
             }
         } else if let Some(server_schema) = current.downcast_ref::<ServerSchema>() {
             match part.to_lowercase().as_str() {
                 "listen" => {
-                    return Some("List of multiaddresses for RPC server to listen on".to_string());
+                    return Some("List of multiaddresses for RPC server to listen on".to_owned());
                 }
                 "admin" => {
                     if let Some(admin) = &server_schema.admin {
                         current = admin;
                         continue;
                     } else {
-                        return Some("Admin API configuration (optional)".to_string());
+                        return Some("Admin API configuration (optional)".to_owned());
                     }
                 }
                 "jsonrpc" => {
@@ -359,7 +359,7 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
                         current = jsonrpc;
                         continue;
                     } else {
-                        return Some("JSON-RPC configuration (optional)".to_string());
+                        return Some("JSON-RPC configuration (optional)".to_owned());
                     }
                 }
                 "websocket" => {
@@ -367,22 +367,22 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
                         current = websocket;
                         continue;
                     } else {
-                        return Some("WebSocket configuration (optional)".to_string());
+                        return Some("WebSocket configuration (optional)".to_owned());
                     }
                 }
                 _ => {}
             }
         } else if let Some(admin_schema) = current.downcast_ref::<AdminSchema>() {
             if part.to_lowercase().as_str() == "enabled" {
-                return Some("Whether admin API is enabled (boolean)".to_string());
+                return Some("Whether admin API is enabled (boolean)".to_owned());
             }
         } else if let Some(jsonrpc_schema) = current.downcast_ref::<JsonRpcSchema>() {
             if part.to_lowercase().as_str() == "enabled" {
-                return Some("Whether JSON-RPC is enabled (boolean)".to_string());
+                return Some("Whether JSON-RPC is enabled (boolean)".to_owned());
             }
         } else if let Some(ws_schema) = current.downcast_ref::<WsSchema>() {
             if part.to_lowercase().as_str() == "enabled" {
-                return Some("Whether WebSocket is enabled (boolean)".to_string());
+                return Some("Whether WebSocket is enabled (boolean)".to_owned());
             }
         } else if let Some(bootstrap_schema) = current.downcast_ref::<BootstrapSchema>() {
             if part.to_lowercase().as_str() == "nodes" {
@@ -392,13 +392,13 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
         } else if let Some(bootstrap_nodes_schema) = current.downcast_ref::<BootstrapNodesSchema>()
         {
             if part.to_lowercase().as_str() == "list" {
-                return Some("List of bootstrap node multiaddresses".to_string());
+                return Some("List of bootstrap node multiaddresses".to_owned());
             }
         } else if let Some(discovery_schema) = current.downcast_ref::<DiscoverySchema>() {
             match part.to_lowercase().as_str() {
-                "mdns" => return Some("Whether mDNS discovery is enabled (boolean)".to_string()),
+                "mdns" => return Some("Whether mDNS discovery is enabled (boolean)".to_owned()),
                 "advertise_address" => {
-                    return Some("Whether to advertise observed address (boolean)".to_string());
+                    return Some("Whether to advertise observed address (boolean)".to_owned());
                 }
                 "rendezvous" => {
                     current = &discovery_schema.rendezvous;
@@ -416,48 +416,48 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
             }
         } else if let Some(rendezvous_schema) = current.downcast_ref::<RendezvousSchema>() {
             match part.to_lowercase().as_str() {
-                "namespace" => return Some("Rendezvous namespace (string)".to_string()),
+                "namespace" => return Some("Rendezvous namespace (string)".to_owned()),
                 "discovery_rpm" => {
-                    return Some("Discovery requests per minute (float)".to_string());
+                    return Some("Discovery requests per minute (float)".to_owned());
                 }
                 "discovery_interval" => {
-                    return Some("Discovery interval in seconds (integer)".to_string());
+                    return Some("Discovery interval in seconds (integer)".to_owned());
                 }
                 "registrations_limit" => {
                     return Some(
-                        "Maximum number of rendezvous registrations (integer)".to_string(),
+                        "Maximum number of rendezvous registrations (integer)".to_owned(),
                     );
                 }
                 _ => {}
             }
         } else if let Some(relay_schema) = current.downcast_ref::<RelaySchema>() {
             if part.to_lowercase().as_str() == "registrations_limit" {
-                return Some("Maximum number of relay registrations (integer)".to_string());
+                return Some("Maximum number of relay registrations (integer)".to_owned());
             }
         } else if let Some(autonat_schema) = current.downcast_ref::<AutonatSchema>() {
             if part.to_lowercase().as_str() == "confidence_threshold" {
-                return Some("Minimum successful probes for NAT confidence (integer)".to_string());
+                return Some("Minimum successful probes for NAT confidence (integer)".to_owned());
             }
         } else if let Some(sync_schema) = current.downcast_ref::<SyncSchema>() {
             match part.to_lowercase().as_str() {
                 "timeout_ms" => {
-                    return Some("Sync timeout in milliseconds (integer)".to_string());
+                    return Some("Sync timeout in milliseconds (integer)".to_owned());
                 }
                 "interval_ms" => {
-                    return Some("Sync interval in milliseconds (integer)".to_string());
+                    return Some("Sync interval in milliseconds (integer)".to_owned());
                 }
                 "frequency_ms" => {
-                    return Some("Sync frequency in milliseconds (integer)".to_string());
+                    return Some("Sync frequency in milliseconds (integer)".to_owned());
                 }
                 _ => {}
             }
         } else if let Some(datastore_schema) = current.downcast_ref::<DataStoreSchema>() {
             if part.to_lowercase().as_str() == "path" {
-                return Some("Path to data store directory (string)".to_string());
+                return Some("Path to data store directory (string)".to_owned());
             }
         } else if let Some(blobstore_schema) = current.downcast_ref::<BlobStoreSchema>() {
             if part.to_lowercase().as_str() == "path" {
-                return Some("Path to blob store directory (string)".to_string());
+                return Some("Path to blob store directory (string)".to_owned());
             }
         } else if let Some(context_schema) = current.downcast_ref::<ContextSchema>() {
             if part.to_lowercase().as_str() == "client" {
@@ -490,7 +490,7 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
             }
         } else if let Some(relayer_signer_schema) = current.downcast_ref::<RelayerSignerSchema>() {
             if part.to_lowercase().as_str() == "url" {
-                return Some("Relayer URL (string)".to_string());
+                return Some("Relayer URL (string)".to_owned());
             }
         } else if let Some(local_signer_schema) = current.downcast_ref::<LocalSignerSchema>() {
             if part.to_lowercase().as_str() == "protocols" {
