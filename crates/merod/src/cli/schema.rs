@@ -424,9 +424,7 @@ pub fn get_field_hint(path: &[&str], schema: &ConfigSchema) -> Option<String> {
                     return Some("Discovery interval in seconds (integer)".to_owned());
                 }
                 "registrations_limit" => {
-                    return Some(
-                        "Maximum number of rendezvous registrations (integer)".to_owned(),
-                    );
+                    return Some("Maximum number of rendezvous registrations (integer)".to_owned());
                 }
                 _ => {}
             }
