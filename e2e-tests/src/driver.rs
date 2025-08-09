@@ -1,28 +1,22 @@
 use core::fmt::Write;
 use std::collections::btree_map::{BTreeMap, Entry as BTreeMapEntry};
-use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
-use std::net::{IpAddr, SocketAddr};
+use std::collections::hash_map::HashMap;
 use std::path::PathBuf;
 
+use calimero_sandbox::config::{DevnetConfig, ProtocolConfigs};
+use calimero_sandbox::protocol::ProtocolSandboxEnvironment;
+use calimero_sandbox::Devnet;
 use camino::Utf8Path;
 use eyre::{bail, Result as EyreResult};
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::from_slice;
 use tokio::fs::{read, read_dir, write};
-use tokio::net::{TcpListener, TcpSocket};
-use tokio::time::{sleep, Duration};
-use tokio::try_join;
 
 use crate::config::{Config, ProtocolSandboxConfig};
 use crate::meroctl::Meroctl;
 use crate::merod::Merod;
 use crate::output::OutputWriter;
-use crate::protocol::ethereum::EthereumSandboxEnvironment;
-use crate::protocol::icp::IcpSandboxEnvironment;
-use crate::protocol::near::NearSandboxEnvironment;
-use crate::protocol::stellar::StellarSandboxEnvironment;
-use crate::protocol::ProtocolSandboxEnvironment;
 use crate::steps::TestScenario;
 use crate::{Protocol, TestEnvironment};
 
@@ -78,9 +72,10 @@ pub struct Driver {
     config: Config,
 }
 
-pub struct Mero {
+pub struct MeroWithDevnet {
     ctl: Meroctl,
     ds: HashMap<String, Merod>,
+    devnet: Devnet,
 }
 
 impl Driver {
@@ -95,49 +90,8 @@ impl Driver {
         self.environment.init().await?;
 
         let mut report = TestRunReport::new();
-        let mut initialized_protocols: HashMap<Protocol, ProtocolSandboxEnvironment> =
-            HashMap::new();
 
         let protocols_dir = self.environment.input_dir.join("protocols");
-
-        for protocol in &self.environment.protocols {
-            if initialized_protocols.contains_key(protocol) {
-                continue;
-            }
-
-            for sandbox_cfg in &self.config.protocol_sandboxes {
-                let config_protocol = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(_) => Protocol::Stellar,
-                    ProtocolSandboxConfig::Near(_) => Protocol::Near,
-                    ProtocolSandboxConfig::Icp(_) => Protocol::Icp,
-                    ProtocolSandboxConfig::Ethereum(_) => Protocol::Ethereum,
-                };
-
-                if &config_protocol != protocol {
-                    continue;
-                }
-
-                let sandbox_env = match sandbox_cfg {
-                    ProtocolSandboxConfig::Stellar(config) => ProtocolSandboxEnvironment::Stellar(
-                        StellarSandboxEnvironment::init(config.clone())?,
-                    ),
-                    ProtocolSandboxConfig::Near(config) => ProtocolSandboxEnvironment::Near(
-                        NearSandboxEnvironment::init(config.clone()).await?,
-                    ),
-                    ProtocolSandboxConfig::Icp(config) => ProtocolSandboxEnvironment::Icp(
-                        IcpSandboxEnvironment::init(config.clone())?,
-                    ),
-                    ProtocolSandboxConfig::Ethereum(config) => {
-                        ProtocolSandboxEnvironment::Ethereum(EthereumSandboxEnvironment::init(
-                            config.clone(),
-                        )?)
-                    }
-                };
-
-                initialized_protocols.insert(*protocol, sandbox_env);
-                break;
-            }
-        }
 
         for protocol_name in &self.environment.protocols {
             let protocol_path = protocols_dir.join(protocol_name.as_str());
@@ -150,14 +104,12 @@ impl Driver {
                 continue;
             }
 
-            let Some(sandbox) = initialized_protocols.get(&protocol_name) else {
-                bail!(
-                    "Sandbox not initialized for protocol: {}",
-                    protocol_name.as_str()
-                );
-            };
+            let mero = self.setup_mero(protocol_name).await?;
 
-            let mero = self.setup_mero(&sandbox.clone()).await?;
+            // Get protocol environment from devnet
+            let protocol_env = mero
+                .devnet
+                .get_protocol_environment(protocol_name.as_str())?;
 
             let Some((inviter, invitees)) = self.pick_inviter_node(&mero.ds) else {
                 bail!(
@@ -185,7 +137,7 @@ impl Driver {
                     self.environment.output_writer,
                     protocol_name,
                     None,
-                    sandbox,
+                    protocol_env,
                 );
                 let test_file_path = app.path();
 
@@ -201,7 +153,7 @@ impl Driver {
 
                 self.environment
                     .output_writer
-                    .write_header(&format!("Running protocol {}", sandbox.name()), 1);
+                    .write_header(&format!("Running protocol {}", protocol_env.name()), 1);
 
                 report = self
                     .run_scenarios(&mut ctx, report, app_name, scenario, &test_file_path)
@@ -209,7 +161,7 @@ impl Driver {
 
                 self.environment
                     .output_writer
-                    .write_header(&format!("Finished protocol {}", sandbox.name()), 1);
+                    .write_header(&format!("Finished protocol {}", protocol_env.name()), 1);
             }
 
             self.stop_merods(&mero.ds).await;
@@ -232,85 +184,98 @@ impl Driver {
         report.result()
     }
 
-    async fn setup_mero(&self, sandbox: &ProtocolSandboxEnvironment) -> EyreResult<Mero> {
+    async fn setup_mero(&self, protocol_name: &Protocol) -> eyre::Result<MeroWithDevnet> {
         self.environment
             .output_writer
             .write_header("Starting merod nodes", 2);
 
+        let config = self.load_sandbox_config(protocol_name).await?;
+        let mut devnet = Devnet::new(config)?;
+
+        devnet.start().await?;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
         let mut merods = HashMap::new();
-
-        let swarm_host = self.config.network.swarm_host.to_string();
-        let mut swarm_port = self.config.network.start_swarm_port;
-
-        let server_host = self.config.network.server_host.to_string();
-        let mut server_port = self.config.network.start_server_port;
-
-        for i in 0..self.config.network.node_count {
-            let node_name = format!("node{}", i + 1);
-            if let HashMapEntry::Vacant(e) = merods.entry(node_name.clone()) {
-                let config_args = [format!(
-                    "discovery.rendezvous.namespace=\"calimero/e2e-tests/{}\"",
-                    self.environment.test_id
-                )];
-
-                let node_args = sandbox.node_args(&node_name).await?;
-                let config_args = config_args.iter().chain(node_args.iter());
-
-                let merod = Merod::new(
-                    node_name,
-                    self.environment.nodes_dir.clone(),
-                    &self.environment.logs_dir,
-                    self.environment.merod_binary.clone(),
-                    self.environment.output_writer,
-                );
-
-                let swarm_port =
-                    PortBinding::next_available(self.config.network.swarm_host, &mut swarm_port)
-                        .await?;
-
-                let server_port =
-                    PortBinding::next_available(self.config.network.server_host, &mut server_port)
-                        .await?;
-
-                merod
-                    .init(
-                        &swarm_host,
-                        &server_host,
-                        swarm_port.port(),
-                        server_port.port(),
-                        config_args.map(String::as_str),
-                    )
-                    .await?;
-
-                let swarm_addr = swarm_port.into_socket_addr();
-                let server_addr = server_port.into_socket_addr();
-
-                merod.run().await?;
-
-                let merod = e.insert(merod);
-
-                while let Err(_) = try_join!(
-                    TcpSocket::new_v4()?.connect(swarm_addr),
-                    TcpSocket::new_v4()?.connect(server_addr)
-                ) {
-                    if let Some(exit_code) = merod.try_wait().await? {
-                        bail!(
-                            "merod process exited with code {} before becoming ready",
-                            exit_code
-                        );
-                    }
-                    sleep(Duration::from_secs(1)).await;
-                }
+        for (name, node) in &devnet.nodes {
+            let merod = Merod::new(self.environment.merod_binary.clone());
+            let node_dir = self.environment.nodes_dir.join(name);
+            if !node_dir.exists() {
+                tokio::fs::create_dir_all(&node_dir).await?;
             }
+
+            // Pass the protocol args from the node
+            merod
+                .start(
+                    &self.environment.nodes_dir,
+                    name,
+                    node.protocol_args.clone(),
+                )
+                .await?;
+            merods.insert(name.clone(), merod);
         }
 
-        Ok(Mero {
+        // Wait longer for nodes to fully initialize
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+        Ok(MeroWithDevnet {
             ctl: Meroctl::new(
                 self.environment.nodes_dir.clone(),
                 self.environment.meroctl_binary.clone(),
                 self.environment.output_writer,
             ),
             ds: merods,
+            devnet,
+        })
+    }
+
+    async fn load_sandbox_config(&self, protocol: &Protocol) -> EyreResult<DevnetConfig> {
+        Ok(DevnetConfig {
+            node_count: self.config.network.node_count,
+            protocols: vec![protocol.as_str().to_owned()],
+            protocol_configs: ProtocolConfigs {
+                near: self
+                    .config
+                    .protocol_sandboxes
+                    .iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Near(near) => Some(near.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| eyre::eyre!("Near config not found"))?,
+                icp: self
+                    .config
+                    .protocol_sandboxes
+                    .iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Icp(icp) => Some(icp.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| eyre::eyre!("ICP config not found"))?,
+                stellar: self
+                    .config
+                    .protocol_sandboxes
+                    .iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Stellar(stellar) => Some(stellar.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| eyre::eyre!("Stellar config not found"))?,
+                ethereum: self
+                    .config
+                    .protocol_sandboxes
+                    .iter()
+                    .find_map(|c| match c {
+                        ProtocolSandboxConfig::Ethereum(ethereum) => Some(ethereum.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| eyre::eyre!("Ethereum config not found"))?,
+            },
+            swarm_host: self.config.network.swarm_host.to_string(),
+            start_swarm_port: self.config.network.start_swarm_port,
+            server_host: self.config.network.server_host.to_string(),
+            start_server_port: self.config.network.start_server_port,
+            home_dir: self.environment.nodes_dir.clone(),
+            node_name: "devnet".into(),
         })
     }
 
@@ -603,49 +568,12 @@ mod serde_eyre {
     }
 }
 
-struct PortBinding {
-    address: SocketAddr,
-    listener: TcpListener,
-}
-
-impl PortBinding {
-    async fn next_available(host: IpAddr, port: &mut u16) -> EyreResult<PortBinding> {
-        for _ in 0..100 {
-            let address = (host, *port).into();
-
-            let res = TcpListener::bind(address).await;
-
-            *port += 1;
-
-            if let Ok(listener) = res {
-                return Ok(PortBinding { address, listener });
-            }
-        }
-
-        bail!(
-            "unable to select a port in range {}..={}",
-            *port - 100,
-            *port - 1
-        );
-    }
-
-    fn port(&self) -> u16 {
-        self.address.port()
-    }
-
-    /// Drop the binding, returning the bound address.
-    fn into_socket_addr(self) -> SocketAddr {
-        drop(self.listener);
-        self.address
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::env;
     use std::net::IpAddr;
 
-    use super::PortBinding;
+    use calimero_sandbox::port_binding::PortBinding;
 
     #[tokio::test]
     async fn test_ports() -> eyre::Result<()> {

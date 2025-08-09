@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
 use std::pin::{pin, Pin};
 use std::sync::Arc;
@@ -40,9 +41,14 @@ pub struct NodeConfig {
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
     pub server: ServerConfig,
+    pub protocol_config: HashMap<String, String>,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
+    for (key, value) in &config.protocol_config {
+        std::env::set_var(key, value);
+    }
+
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);

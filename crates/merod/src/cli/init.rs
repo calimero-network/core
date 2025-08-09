@@ -60,7 +60,7 @@ pub enum ConfigProtocol {
 /// Initialize node configuration
 #[derive(Debug, Parser)]
 pub struct InitCommand {
-    /// List of bootstrap nodes
+    /// Number of bootstrap nodes
     #[clap(long, value_name = "ADDR")]
     pub boot_nodes: Vec<Multiaddr>,
 

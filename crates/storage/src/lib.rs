@@ -76,6 +76,7 @@ pub mod exports {
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
+    #[allow(missing_docs)]
     pub mod common;
 }
 
