@@ -1,6 +1,7 @@
 use super::Buffer;
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct Event<'a> {
     kind: Buffer<'a>,
     data: Buffer<'a>,
