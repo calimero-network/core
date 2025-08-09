@@ -8,8 +8,10 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+borsh = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 futures-util.workspace = true
+hex.workspace = true
 libp2p = { workspace = true, features = [
     "autonat",
     "dcutr",
@@ -32,11 +34,14 @@ libp2p-stream.workspace = true
 multiaddr.workspace = true
 owo-colors.workspace = true
 reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros"] }
 tokio-stream = { workspace = true, features = ["time"] }
 tracing.workspace = true
 
 calimero-network-primitives.workspace = true
+calimero-primitives.workspace = true
 calimero-utils-actix.workspace = true
 
 

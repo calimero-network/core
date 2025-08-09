@@ -257,3 +257,50 @@ pub fn blob_close(fd: u64) -> [u8; 32] {
         panic_str("Blob operation failed")
     }
 }
+
+// ========================================
+// NETWORK-AWARE BLOB API
+// ========================================
+
+/// Announce a blob to a specific context for network discovery.
+/// This makes the blob discoverable by other nodes in the context.
+/// Returns true if the announcement was successful.
+///
+/// # Security
+/// For security reasons, a context can only announce blobs to itself.
+/// If the provided context_id doesn't match the current context, this function returns false.
+///
+/// # Arguments
+/// * `blob_id` - The 32-byte ID of the blob to announce
+/// * `target_context_id` - The 32-byte ID of the context to announce the blob in (must match current context)
+///
+/// # Example
+/// ```no_run
+/// use calimero_sdk::env;
+///
+/// // Create and write a blob
+/// let fd = env::blob_create();
+/// env::blob_write(fd, b"Hello, World!");
+/// let blob_id = env::blob_close(fd);
+///
+/// // Announce it to the current context
+/// let current_context = env::context_id();
+/// let announced = env::blob_announce_to_context(&blob_id, &current_context);
+/// ```
+pub fn blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]) -> bool {
+    // Security check: only allow announcing to the current context
+    let current_context = context_id();
+    if current_context != *target_context_id {
+        // Attempting to announce to a different context is not allowed
+        return false;
+    }
+
+    unsafe {
+        sys::blob_announce_to_context(
+            Buffer::from(&blob_id[..]),
+            Buffer::from(&target_context_id[..]),
+        )
+        .try_into()
+    }
+    .unwrap_or_else(expected_boolean)
+}
