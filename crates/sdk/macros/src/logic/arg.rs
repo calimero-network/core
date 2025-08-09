@@ -5,6 +5,7 @@ use syn::{Error as SynError, FnArg, Ident, Pat, Path, Type};
 use crate::errors::{Errors, ParseError, Pretty};
 use crate::logic::ty::{LogicTy, LogicTyInput};
 use crate::logic::utils::typed_path;
+use serde_json::{json, Value};
 
 pub enum SelfType<'a> {
     Owned(&'a Type),
@@ -20,6 +21,15 @@ pub enum LogicArg<'a> {
 pub struct LogicArgTyped<'a> {
     pub ident: &'a Ident,
     pub ty: LogicTy,
+}
+
+impl LogicArgTyped<'_> {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "name": self.ident.to_string(),
+            "type": self.ty.to_json(),
+        })
+    }
 }
 
 impl ToTokens for LogicArgTyped<'_> {

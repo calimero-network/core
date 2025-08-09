@@ -20,10 +20,10 @@ pub enum Modifer {
 pub struct PublicLogicMethod<'a> {
     self_: Path,
 
-    name: &'a Ident,
+    pub name: &'a Ident,
     self_type: Option<SelfType<'a>>,
-    args: Vec<LogicArgTyped<'a>>,
-    ret: Option<LogicTy>,
+    pub args: Vec<LogicArgTyped<'a>>,
+    pub ret: Option<LogicTy>,
 
     has_refs: bool,
 
