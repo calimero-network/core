@@ -407,8 +407,10 @@ impl VMHostFunctions<'_> {
     }
 
     pub fn emit(&mut self, event_ptr: u64) -> VMLogicResult<()> {
-        let (kind_ptr, kind_len, data_ptr, data_len) =
-            unsafe { self.read_typed::<(u64, u64, u64, u64)>(event_ptr)? };
+        let event = unsafe { self.read_typed::<sys::Event<'_>>(event_ptr)? };
+
+        let kind_len = event.kind().len();
+        let data_len = event.data().len();
 
         let logic = self.borrow_logic();
 
@@ -426,8 +428,8 @@ impl VMHostFunctions<'_> {
             return Err(HostError::EventsOverflow.into());
         }
 
-        let kind = self.get_string(kind_ptr, kind_len)?;
-        let data = self.read_guest_memory(data_ptr, data_len)?;
+        let kind = self.get_string(event.kind().as_ptr() as u64, kind_len)?;
+        let data = self.read_guest_memory(event.data().as_ptr() as u64, data_len)?;
 
         self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
 
