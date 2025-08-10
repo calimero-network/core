@@ -2010,6 +2010,7 @@ dependencies = [
  "bytes",
  "calimero-node-primitives",
  "calimero-primitives",
+ "calimero-sys",
  "eyre",
  "fragile",
  "futures-util",

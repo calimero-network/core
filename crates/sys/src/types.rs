@@ -34,3 +34,8 @@ where
         }
     }
 }
+
+#[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
+compile_error!(
+    "calimero-sys assumes you're compiling for a 64-bit target or wasm32, which you are not. Please file an issue"
+);
