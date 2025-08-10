@@ -13,6 +13,7 @@ use std::vec;
 use borsh::from_slice as from_borsh_slice;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
+use calimero_sys as sys;
 use futures_util::{StreamExt, TryStreamExt};
 use ouroboros::self_referencing;
 use rand::RngCore;
@@ -295,8 +296,15 @@ impl VMHostFunctions<'_> {
 }
 
 impl VMHostFunctions<'_> {
-    pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> VMLogicResult<()> {
-        let file = self.get_string(file_ptr, file_len)?;
+    pub fn panic(&self, location_ptr: u64) -> VMLogicResult<()> {
+        let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
+
+        let file = location.file();
+        let line = location.line();
+        let column = location.column();
+
+        let file = self.get_string(file.as_ptr() as u64, file.len() as u64)?;
+
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message: "explicit panic".to_owned(),

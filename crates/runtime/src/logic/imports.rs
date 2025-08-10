@@ -20,7 +20,7 @@ impl<'a> VMLogic<'a> {
             store;
             logic: self;
 
-            fn panic(file_ptr: u64, file_len: u64, line: u32, column: u32);
+            fn panic(location_ptr: u64);
             fn panic_utf8(
                 msg_ptr: u64,
                 msg_len: u64,
