@@ -40,7 +40,7 @@ pub(crate) struct SyncManager {
     context_client: ContextClient,
     network_client: NetworkClient,
 
-    ctx_sync_rx: Option<mpsc::Receiver<Option<ContextId>>>,
+    ctx_sync_rx: Option<mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>>,
 }
 
 impl Clone for SyncManager {
@@ -97,7 +97,7 @@ impl SyncManager {
         node_client: NodeClient,
         context_client: ContextClient,
         network_client: NetworkClient,
-        ctx_sync_rx: mpsc::Receiver<Option<ContextId>>,
+        ctx_sync_rx: mpsc::Receiver<(Option<ContextId>, Option<PeerId>)>,
     ) -> Self {
         Self {
             sync_config,
@@ -138,6 +138,7 @@ impl SyncManager {
         };
 
         let mut requested_ctx = None;
+        let mut requested_peer = None;
 
         let Some(mut ctx_sync_rx) = self.ctx_sync_rx.take() else {
             error!("SyncManager can only be run once");
@@ -153,20 +154,22 @@ impl SyncManager {
                 Some(()) = async {
                     loop { advance(&mut futs, &mut state).await? }
                 } => {},
-                Some(ctx) = ctx_sync_rx.recv() => {
-                    debug!(?ctx, "Received an explicit sync request");
+                Some((ctx, peer)) = ctx_sync_rx.recv() => {
+                    debug!(?ctx, ?peer, "Received an explicit sync request");
 
                     requested_ctx = ctx;
+                    requested_peer = peer;
                 }
             }
 
-            let requested = requested_ctx.take();
+            let requested_ctx = requested_ctx.take();
+            let requested_peer = requested_peer.take();
 
-            let contexts = requested
+            let contexts = requested_ctx
                 .is_none()
                 .then(|| self.context_client.get_contexts(None));
 
-            let contexts = stream::iter(requested)
+            let contexts = stream::iter(requested_ctx)
                 .map(Ok)
                 .chain(stream::iter(contexts).flatten());
 
@@ -198,7 +201,7 @@ impl SyncManager {
                         let time_since = last_sync.elapsed();
 
                         if time_since < minimum {
-                            if requested.is_none() {
+                            if requested_ctx.is_none() {
                                 debug!(%context_id, ?time_since, ?minimum, "Skipping sync, last one was too recent");
 
                                 continue;
@@ -234,8 +237,11 @@ impl SyncManager {
                     return;
                 };
 
-                let fut = timeout_at(deadline, self.perform_interval_sync(context_id))
-                    .map(move |res| (context_id, start, res));
+                let fut = timeout_at(
+                    deadline,
+                    self.perform_interval_sync(context_id, requested_peer),
+                )
+                .map(move |res| (context_id, start, res));
 
                 futs.push(fut);
 
@@ -246,7 +252,13 @@ impl SyncManager {
         }
     }
 
-    async fn perform_interval_sync(&self, context_id: ContextId) {
+    async fn perform_interval_sync(&self, context_id: ContextId, peer_id: Option<PeerId>) {
+        if let Some(peer_id) = peer_id {
+            let _ignored = self.initiate_sync(context_id, peer_id).await;
+
+            return;
+        }
+
         let peers = self
             .network_client
             .mesh_peers(TopicHash::from_raw(context_id))
@@ -261,6 +273,26 @@ impl SyncManager {
                 break;
             }
         }
+    }
+
+    async fn initiate_sync(&self, context_id: ContextId, peer_id: PeerId) -> bool {
+        let start = Instant::now();
+
+        debug!(%context_id, %peer_id, "Attempting to sync with peer");
+
+        let res = self.initiate_sync_inner(context_id, peer_id).await;
+
+        let took = start.elapsed();
+
+        let Err(err) = res else {
+            debug!(%context_id, %peer_id, ?took, "Sync with peer successfully finished");
+
+            return true;
+        };
+
+        error!(%context_id, %peer_id, ?took, %err, "Failed to sync with peer");
+
+        false
     }
 
     async fn send(
@@ -311,26 +343,6 @@ impl SyncManager {
         let decoded = borsh::from_slice::<StreamMessage<'static>>(&decrypted)?;
 
         Ok(Some(decoded))
-    }
-
-    pub async fn initiate_sync(&self, context_id: ContextId, peer_id: PeerId) -> bool {
-        let start = Instant::now();
-
-        debug!(%context_id, %peer_id, "Attempting to sync with peer");
-
-        let res = self.initiate_sync_inner(context_id, peer_id).await;
-
-        let took = start.elapsed();
-
-        let Err(err) = res else {
-            debug!(%context_id, %peer_id, ?took, "Sync with peer successfully finished");
-
-            return true;
-        };
-
-        error!(%context_id, %peer_id, ?took, %err, "Failed to sync with peer");
-
-        false
     }
 
     async fn initiate_sync_inner(
@@ -443,6 +455,8 @@ impl SyncManager {
                 );
             }
         }
+
+        // todo! prevent initiating sync once we are already syncing
 
         let identities = self.context_client.context_members(&context.id, Some(true));
 
