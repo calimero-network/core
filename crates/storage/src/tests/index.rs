@@ -3,6 +3,136 @@ use crate::store::MainStorage;
 
 mod index__public_methods {
     use super::*;
+    use crate::interface::{Action, Interface};
+    use crate::store::MockedStorage;
+
+    #[test]
+    fn apply_action__sparse() {
+        let root_id = Id::root();
+        let p1_id = Id::new([51; 32]);
+
+        let a1 = Action::Update {
+            id: root_id,
+            data: vec![],
+            ancestors: vec![],
+            metadata: Metadata {
+                created_at: 1,
+                updated_at: 1.into(),
+            },
+        };
+
+        let a2 = Action::Update {
+            id: p1_id,
+            data: vec![33; 10],
+            ancestors: vec![ChildInfo::new(
+                root_id,
+                [37; 32],
+                Metadata {
+                    created_at: 43,
+                    updated_at: 22.into(),
+                },
+            )],
+            metadata: Metadata {
+                created_at: 1,
+                updated_at: 1.into(),
+            },
+        };
+
+        // --------------------------------------------------------------
+        // applying just the root, what do we find? just the root, simple
+        // --------------------------------------------------------------
+        assert!(<Interface<MockedStorage<0>>>::apply_action(a1.clone()).is_ok());
+
+        let e1 = <Index<MockedStorage<0>>>::get_index(root_id).unwrap();
+        let e2 = <Index<MockedStorage<0>>>::get_index(p1_id).unwrap();
+
+        let e1 = e1.unwrap();
+        assert!(e2.is_none(), "{e2:?}");
+
+        assert_eq!(e1.id, root_id);
+        assert_eq!(e1.parent_id, None);
+        assert_eq!(e1.children.len(), 0);
+        assert_ne!(e1.own_hash, [37; 32]);
+        assert_eq!(e1.metadata.created_at, 1);
+        assert_eq!(e1.metadata.updated_at, 1.into());
+
+        // --------------------------------------------------------------
+        // applying just a2, what do we find? a2 + a1 (sparse)
+        // --------------------------------------------------------------
+        assert!(<Interface<MockedStorage<1>>>::apply_action(a2.clone()).is_ok());
+
+        let e1 = <Index<MockedStorage<1>>>::get_index(root_id).unwrap();
+        let e2 = <Index<MockedStorage<1>>>::get_index(p1_id).unwrap();
+
+        let e1 = e1.unwrap();
+        let e2 = e2.unwrap();
+
+        assert_eq!(e1.id, root_id);
+        assert_eq!(e1.parent_id, None);
+        assert_eq!(e1.children.len(), 1);
+        assert_eq!(e1.own_hash, [37; 32]);
+        assert_eq!(e1.metadata.created_at, 43);
+        assert_eq!(e1.metadata.updated_at, 22.into());
+
+        assert_eq!(e2.id, p1_id);
+        assert_eq!(e2.parent_id, Some(Id::root()));
+        assert_eq!(e2.children.len(), 0);
+        assert_ne!(e2.own_hash, [37; 32]);
+        assert_eq!(e2.metadata.created_at, 1);
+        assert_eq!(e2.metadata.updated_at, 1.into());
+
+        // --------------------------------------------------------------
+        // applying a1, and then a2, what do we find?
+        // --------------------------------------------------------------
+        assert!(<Interface<MockedStorage<2>>>::apply_action(a1.clone()).is_ok());
+        assert!(<Interface<MockedStorage<2>>>::apply_action(a2.clone()).is_ok());
+
+        let e1 = <Index<MockedStorage<2>>>::get_index(root_id).unwrap();
+        let e2 = <Index<MockedStorage<2>>>::get_index(p1_id).unwrap();
+
+        let e1 = e1.unwrap();
+        let e2 = e2.unwrap();
+
+        assert_eq!(e1.id, root_id);
+        assert_eq!(e1.parent_id, None);
+        assert_eq!(e1.children.len(), 1);
+        assert_ne!(e1.own_hash, [37; 32]);
+        assert_eq!(e1.metadata.created_at, 1);
+        assert_eq!(e1.metadata.updated_at, 1.into());
+
+        assert_eq!(e2.id, p1_id);
+        assert_eq!(e2.parent_id, Some(Id::root()));
+        assert_eq!(e2.children.len(), 0);
+        assert_ne!(e2.own_hash, [37; 32]);
+        assert_eq!(e2.metadata.created_at, 1);
+        assert_eq!(e2.metadata.updated_at, 1.into());
+
+        // --------------------------------------------------------------
+        // applying a2, and then a1, what do we find?
+        // --------------------------------------------------------------
+        assert!(<Interface<MockedStorage<3>>>::apply_action(a2.clone()).is_ok());
+        assert!(<Interface<MockedStorage<3>>>::apply_action(a1.clone()).is_ok());
+
+        let e1 = <Index<MockedStorage<3>>>::get_index(root_id).unwrap();
+        let e2 = <Index<MockedStorage<3>>>::get_index(p1_id).unwrap();
+
+        let e1 = e1.unwrap();
+        let e2 = e2.unwrap();
+
+        assert_eq!(e1.id, root_id);
+        assert_eq!(e1.parent_id, None);
+        assert_eq!(e1.children.len(), 1);
+        assert_eq!(e1.own_hash, [37; 32]);
+        assert_eq!(e1.metadata.created_at, 43);
+        assert_eq!(e1.metadata.updated_at, 22.into());
+
+        assert_eq!(e2.id, p1_id);
+        assert_eq!(e2.parent_id, Some(Id::root()));
+        assert_eq!(e2.children.len(), 0);
+        assert_ne!(e2.own_hash, [37; 32]);
+        assert_eq!(e2.metadata.created_at, 1);
+        assert_eq!(e2.metadata.updated_at, 1.into());
+    }
 
     #[test]
     fn add_child_to() {
