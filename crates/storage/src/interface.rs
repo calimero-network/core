@@ -433,7 +433,28 @@ impl<S: StorageAdaptor> Interface<S> {
                 ancestors,
                 metadata,
             } => {
-                if let Some(parent) = ancestors.first() {
+                let mut parent = None;
+                for this in ancestors.iter().rev() {
+                    let parent = parent.replace(this);
+
+                    if <Index<S>>::has_index(this.id()) {
+                        continue;
+                    }
+
+                    let Some(parent) = parent else {
+                        <Index<S>>::add_root(*this)?;
+
+                        continue;
+                    };
+
+                    <Index<S>>::add_child_to(
+                        parent.id(),
+                        "no collection, remove this nonsense",
+                        *this,
+                    )?;
+                }
+
+                if let Some(parent) = parent {
                     let own_hash = Sha256::digest(&data).into();
 
                     <Index<S>>::add_child_to(
