@@ -48,7 +48,7 @@ impl Report for ListApplicationsResponse {
 
 impl ListCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         let response: ListApplicationsResponse = connection.get("admin-api/applications").await?;
 

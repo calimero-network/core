@@ -157,7 +157,7 @@ impl Report for GetProposalsResponse {
 
 impl ProposalsCommand {
     pub async fn run(&self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         match &self.command {
             ProposalsSubcommand::List {

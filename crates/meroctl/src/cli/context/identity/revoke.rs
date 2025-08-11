@@ -36,7 +36,7 @@ pub struct RevokePermissionCommand {
 
 impl RevokePermissionCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
             .await?

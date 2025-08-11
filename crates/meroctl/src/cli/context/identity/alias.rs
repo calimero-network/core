@@ -86,7 +86,7 @@ pub enum ContextIdentityAliasSubcommand {
 
 impl ContextIdentityAliasCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         match self.command {
             ContextIdentityAliasSubcommand::Add {

@@ -42,7 +42,7 @@ impl Report for BlobInfoResponse {
 
 impl InfoCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         let headers = connection
             .head(&format!("admin-api/blobs/{}", self.blob_id))

@@ -101,10 +101,10 @@ impl Environment {
         Self { output, connection }
     }
 
-    pub fn connection(&self) -> &ConnectionInfo {
-        self.connection
-            .as_ref()
-            .expect("Unable to create a connection.")
+    pub fn connection(&self) -> Result<&ConnectionInfo, CliError> {
+        self.connection.as_ref().ok_or(CliError::Other(eyre::eyre!(
+            "Unable to create a connection."
+        )))
     }
 }
 
@@ -148,6 +148,7 @@ impl RootCommand {
         Ok(())
     }
 
+    // TODO: add custom error for handling authentication
     async fn prepare_connection(&self, output: Output) -> Result<ConnectionInfo> {
         if let Some(node) = &self.args.node {
             // Use specific node - first check if it's registered

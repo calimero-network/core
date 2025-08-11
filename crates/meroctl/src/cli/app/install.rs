@@ -57,7 +57,7 @@ impl InstallCommand {
     }
 
     pub async fn install_app(&self, environment: &Environment) -> Result<ApplicationId> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         let metadata = self
             .metadata

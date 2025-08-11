@@ -29,7 +29,7 @@ impl Report for GetApplicationResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         let response: GetApplicationResponse = connection
             .get(&format!("admin-api/applications/{}", self.app_id))

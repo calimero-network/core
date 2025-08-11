@@ -34,7 +34,7 @@ impl Report for BlobDeleteResponse {
 
 impl DeleteCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection();
+        let connection = environment.connection()?;
 
         let response: BlobDeleteResponse = connection
             .delete(&format!("admin-api/blobs/{}", self.blob_id))
