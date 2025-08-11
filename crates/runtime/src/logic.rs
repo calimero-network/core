@@ -1,17 +1,19 @@
 #![allow(single_use_lifetimes, unused_lifetimes, reason = "False positive")]
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
-use core::fmt;
 use core::num::NonZeroU64;
+use core::{fmt, slice};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Cursor, Read};
+use std::mem::MaybeUninit;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::blobs::BlobId;
+use calimero_sys as sys;
 use futures_util::{StreamExt, TryStreamExt};
 use ouroboros::self_referencing;
 use rand::RngCore;
@@ -275,6 +277,17 @@ impl VMHostFunctions<'_> {
         Ok(buf)
     }
 
+    /// Reads a sized type from guest memory.
+    unsafe fn read_typed<T>(&self, ptr: u64) -> VMLogicResult<T> {
+        let mut value = MaybeUninit::<T>::uninit();
+
+        let raw = slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>());
+
+        self.borrow_memory().read(ptr, raw)?;
+
+        Ok(value.assume_init())
+    }
+
     fn get_string(&self, ptr: u64, len: u64) -> VMLogicResult<String> {
         let buf = self.read_guest_memory(ptr, len)?;
 
@@ -283,8 +296,15 @@ impl VMHostFunctions<'_> {
 }
 
 impl VMHostFunctions<'_> {
-    pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> VMLogicResult<()> {
-        let file = self.get_string(file_ptr, file_len)?;
+    pub fn panic(&self, location_ptr: u64) -> VMLogicResult<()> {
+        let location = unsafe { self.read_typed::<sys::Location<'_>>(location_ptr)? };
+
+        let file = location.file();
+        let line = location.line();
+        let column = location.column();
+
+        let file = self.get_string(file.as_ptr() as u64, file.len() as u64)?;
+
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message: "explicit panic".to_owned(),
@@ -386,13 +406,12 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    pub fn emit(
-        &mut self,
-        kind_ptr: u64,
-        kind_len: u64,
-        data_ptr: u64,
-        data_len: u64,
-    ) -> VMLogicResult<()> {
+    pub fn emit(&mut self, event_ptr: u64) -> VMLogicResult<()> {
+        let event = unsafe { self.read_typed::<sys::Event<'_>>(event_ptr)? };
+
+        let kind_len = event.kind().len();
+        let data_len = event.data().len();
+
         let logic = self.borrow_logic();
 
         if kind_len > logic.limits.max_event_kind_size {
@@ -409,8 +428,8 @@ impl VMHostFunctions<'_> {
             return Err(HostError::EventsOverflow.into());
         }
 
-        let kind = self.get_string(kind_ptr, kind_len)?;
-        let data = self.read_guest_memory(data_ptr, data_len)?;
+        let kind = self.get_string(event.kind().as_ptr() as u64, kind_len)?;
+        let data = self.read_guest_memory(event.data().as_ptr() as u64, data_len)?;
 
         self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
 

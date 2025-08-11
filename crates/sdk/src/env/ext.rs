@@ -3,11 +3,10 @@ use std::borrow::Cow;
 use std::str::FromStr;
 
 use borsh::{to_vec as to_borsh_vec, to_vec, BorshDeserialize, BorshSerialize};
+use calimero_sys::{self as sys, Buffer, BufferMut, Ref};
 use serde::{Deserialize, Serialize};
 
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
-use crate::sys;
-use crate::sys::{Buffer, BufferMut};
 
 /// A blockchain proposal action.
 ///
@@ -167,7 +166,10 @@ impl DraftProposal {
             reason = "We don't want to copy the buffer, but write to the same one that's returned"
         )]
         unsafe {
-            sys::send_proposal(Buffer::from(&*actions), BufferMut::new(&mut buf))
+            sys::send_proposal(
+                Ref::new(&Buffer::from(&*actions)),
+                Ref::new(&BufferMut::new(&mut buf)),
+            )
         }
 
         ProposalId(buf)
@@ -186,7 +188,7 @@ impl External {
     }
 
     pub fn approve(self, proposal_id: ProposalId) {
-        unsafe { sys::approve_proposal(BufferMut::new(&proposal_id)) }
+        unsafe { sys::approve_proposal(Ref::new(&BufferMut::new(&proposal_id))) }
     }
 }
 
@@ -262,9 +264,17 @@ pub unsafe fn fetch(
     let headers = Buffer::from(headers.as_slice());
     let body = Buffer::from(body);
 
-    let failed = unsafe { sys::fetch(url, method, headers, body, DATA_REGISTER) }
-        .try_into()
-        .unwrap_or_else(expected_boolean);
+    let failed = unsafe {
+        sys::fetch(
+            Ref::new(&url),
+            Ref::new(&method),
+            Ref::new(&headers),
+            Ref::new(&body),
+            DATA_REGISTER,
+        )
+    }
+    .try_into()
+    .unwrap_or_else(expected_boolean);
     let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
     if failed {
         return Err(String::from_utf8(data).unwrap_or_else(|_| {
