@@ -161,6 +161,13 @@ impl CalendarState {
         Ok(id)
     }
 
+    pub fn forward_event(
+        &mut self,
+        calendar_event: CalendarEvent,
+    ) -> app::Result<CalendarEvent> {
+        Ok(calendar_event)
+    }
+
     pub fn update_event(
         &mut self,
         event_id: String,

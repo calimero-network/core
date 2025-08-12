@@ -126,7 +126,12 @@ pub enum ScalarType {
     #[serde(rename = "string")]
     String,
     #[serde(rename = "bytes")]
-    Bytes,
+    Bytes {
+        size: usize,
+        encoding: String,
+    },
+    #[serde(rename = "unit")]
+    Unit,
 }
 
 /// Collection types
@@ -194,7 +199,23 @@ impl TypeRef {
 
     /// Create a bytes type
     pub fn bytes() -> Self {
-        TypeRef::Scalar(ScalarType::Bytes)
+        TypeRef::Scalar(ScalarType::Bytes {
+            size: 0,
+            encoding: "hex".to_string(),
+        })
+    }
+
+    /// Create a bytes type with size and encoding
+    pub fn bytes_with_size(size: usize, encoding: &str) -> Self {
+        TypeRef::Scalar(ScalarType::Bytes {
+            size,
+            encoding: encoding.to_string(),
+        })
+    }
+
+    /// Create a unit type
+    pub fn unit() -> Self {
+        TypeRef::Scalar(ScalarType::Unit)
     }
 
     /// Create a list type
