@@ -36,6 +36,7 @@ members = [
     "./crates/version",
 
     "./apps/kv-store",
+    "./apps/plantr",
 
     "./e2e-tests",
 ]
