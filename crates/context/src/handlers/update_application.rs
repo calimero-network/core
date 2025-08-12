@@ -112,7 +112,7 @@ pub async fn update_application_id(
         ),
     )?;
 
-    node_client.sync(Some(&context_id)).await?;
+    node_client.sync(Some(&context_id), None).await?;
 
     Ok(application)
 }

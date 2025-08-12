@@ -75,7 +75,7 @@ async fn delete_context(
     handle.delete(&key)?;
     handle.delete(&key::ContextConfig::new(context_id))?;
 
-    // fixme! store.handle() is prolematic here for lifetime reasons
+    // fixme! store.handle() is problematic here for lifetime reasons
     let mut datastore = handle.into_inner();
 
     delete_context_scoped::<key::ContextIdentity, 32>(&mut datastore, &context_id, [0; 32], None)?;

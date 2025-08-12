@@ -4,6 +4,7 @@ use actix::{AsyncContext, Handler, Message, WrapFuture};
 use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::messages::NetworkEvent;
+use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -13,7 +14,6 @@ use libp2p::PeerId;
 use owo_colors::OwoColorize;
 use tracing::{debug, info, warn};
 
-use crate::sync::SyncManager;
 use crate::utils::choose_stream;
 use crate::NodeManager;
 
@@ -101,14 +101,14 @@ impl Handler<NetworkEvent> for NodeManager {
                         height,
                         nonce,
                     } => {
+                        let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
-                        let sync_manager = self.sync_manager.clone();
 
                         let _ignored = ctx.spawn(
                             async move {
                                 if let Err(err) = handle_state_delta(
+                                    node_client,
                                     context_client,
-                                    sync_manager,
                                     source,
                                     context_id,
                                     author_id,
@@ -149,8 +149,8 @@ impl Handler<NetworkEvent> for NodeManager {
 }
 
 async fn handle_state_delta(
+    node_client: NodeClient,
     context_client: ContextClient,
-    sync_manager: SyncManager,
     source: PeerId,
     context_id: ContextId,
     author_id: PublicKey,
@@ -179,7 +179,7 @@ async fn handle_state_delta(
         if known_height >= height || height.get() - known_height.get() > 1 {
             debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
 
-            let _ignored = sync_manager.initiate_sync(context_id, source).await;
+            node_client.sync(Some(&context_id), Some(&source)).await?;
             return Ok(());
         }
     }
@@ -190,7 +190,7 @@ async fn handle_state_delta(
     else {
         debug!(%author_id, %context_id, "Missing sender key, initiating sync");
 
-        let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        node_client.sync(Some(&context_id), Some(&source)).await?;
         return Ok(());
     };
 
@@ -199,7 +199,7 @@ async fn handle_state_delta(
     let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
         debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
 
-        let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        node_client.sync(Some(&context_id), Some(&source)).await?;
         return Ok(());
     };
 
@@ -233,11 +233,18 @@ async fn handle_state_delta(
             %author_id,
             expected_root_hash = %root_hash,
             current_root_hash = %outcome.root_hash,
-            "State delta application led to root hash mismatch, initiating sync"
+            "State delta application led to root hash mismatch, ignoring for now"
         );
 
-        let _ignored = sync_manager.initiate_sync(context_id, source).await;
-        return Ok(());
+        //     debug!(
+        //         %context_id,
+        //         %author_id,
+        //         expected_root_hash = %root_hash,
+        //         current_root_hash = %outcome.root_hash,
+        //         "State delta application led to root hash mismatch, initiating sync"
+        //     );
+
+        //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
     }
 
     Ok(())
