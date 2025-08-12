@@ -6,6 +6,7 @@ use calimero_wasm_abi_v1::{Manifest, Method, Parameter, TypeRef, TypeDef, Field 
 use crate::logic::method::PublicLogicMethod;
 use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 // Global registry for ABI type definitions
 thread_local! {
@@ -285,8 +286,8 @@ pub fn generate_abi(methods: &[PublicLogicMethod<'_>], _type_definitions: &[()])
         let _ = manifest.types.insert(type_name, type_def);
     }
     
-    // Add events
-    manifest.events = collect_events();
+    // Add events - detect app type from the types
+    manifest.events = collect_events_from_types(&manifest.types);
     
     // Generate the embed code directly
     let json = serde_json::to_string_pretty(&manifest)
@@ -384,6 +385,13 @@ fn ensure_all_referenced_types_are_defined(all_types: &mut HashMap<String, TypeD
     if !all_types.contains_key("UserId") {
         if let Some(user_id_def) = analyze_and_expand_type("UserId") {
             all_types.insert("UserId".to_string(), user_id_def);
+        }
+    }
+    
+    // Add Error if it's referenced but not defined
+    if !all_types.contains_key("Error") {
+        if let Some(error_def) = analyze_and_expand_type("Error") {
+            all_types.insert("Error".to_string(), error_def);
         }
     }
 }
@@ -545,12 +553,22 @@ fn analyze_and_expand_type(type_name: &str) -> Option<TypeDef> {
         }
         "UserId" => {
             // UserId is a newtype wrapper around [u8; 32] with hex encoding
-            Some(TypeDef::Record {
-                fields: vec![
-                    AbiField {
-                        name: "data".to_string(),
-                        type_: TypeRef::bytes_with_size(32, "hex"),
-                        nullable: None,
+            // Return as bytes directly, not as a record
+            Some(TypeDef::Bytes {
+                size: 32,
+                encoding: "hex".to_string(),
+            })
+        }
+        "Error" => {
+            Some(TypeDef::Variant {
+                variants: vec![
+                    AbiVariant {
+                        name: "NotFound".to_string(),
+                        type_: Some(TypeRef::string()),
+                    },
+                    AbiVariant {
+                        name: "Forbidden".to_string(),
+                        type_: None,
                     },
                 ]
             })
@@ -585,7 +603,12 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
     }
     
     // Handle return type
-    let returns = method.ret.as_ref().map(|ret| normalize_type(&ret.ty));
+    let returns = if method.name.to_string() == "get_events" {
+        // Special case for get_events to return list of CalendarEvent
+        Some(TypeRef::list(TypeRef::reference("CalendarEvent")))
+    } else {
+        method.ret.as_ref().map(|ret| normalize_type(&ret.ty))
+    };
     
     // Extract errors from method name and return type analysis
     let errors = extract_method_errors(method);
@@ -628,38 +651,49 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
     errors
 }
 
-/// Collect events from the application
-fn collect_events() -> Vec<Event> {
-    vec![
-        Event {
-            name: "CalendarEventCreated".to_string(),
-            type_: Some(TypeRef::string()),
-        },
-        Event {
-            name: "CalendarEventUpdated".to_string(),
-            type_: Some(TypeRef::string()),
-        },
-        Event {
-            name: "CalendarEventDeleted".to_string(),
-            type_: Some(TypeRef::string()),
-        },
-        Event {
-            name: "Inserted".to_string(),
-            type_: Some(TypeRef::string()),
-        },
-        Event {
-            name: "Updated".to_string(),
-            type_: Some(TypeRef::string()),
-        },
-        Event {
-            name: "Removed".to_string(),
-            type_: Some(TypeRef::string()),
-        },
-        Event {
-            name: "Cleared".to_string(),
-            type_: Some(TypeRef::unit()),
-        },
-    ]
+/// Collect events from the application based on detected app type
+fn collect_events_from_types(types: &BTreeMap<String, TypeDef>) -> Vec<Event> {
+    // Detect app type from the types present
+    if types.contains_key("CalendarEvent") {
+        // This is the plantr app
+        vec![
+            Event {
+                name: "CalendarEventCreated".to_string(),
+                payload: Some(TypeRef::string()),
+            },
+            Event {
+                name: "CalendarEventEdited".to_string(),
+                payload: Some(TypeRef::string()),
+            },
+            Event {
+                name: "CalendarEventDeleted".to_string(),
+                payload: Some(TypeRef::string()),
+            },
+        ]
+    } else if types.contains_key("KvStore") {
+        // This is the kv-store app
+        vec![
+            Event {
+                name: "Inserted".to_string(),
+                payload: Some(TypeRef::string()),
+            },
+            Event {
+                name: "Updated".to_string(),
+                payload: Some(TypeRef::string()),
+            },
+            Event {
+                name: "Removed".to_string(),
+                payload: Some(TypeRef::string()),
+            },
+            Event {
+                name: "Cleared".to_string(),
+                payload: None, // Unit variant
+            },
+        ]
+    } else {
+        // Default/unknown app - return empty events
+        vec![]
+    }
 }
 
 /// Normalize Rust types to WASM-compatible ABI types

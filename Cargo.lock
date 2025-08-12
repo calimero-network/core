@@ -13,6 +13,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "abi_conformance"
+version = "0.1.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-sdk",
+ "calimero-storage",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "actix"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

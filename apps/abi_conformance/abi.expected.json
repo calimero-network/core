@@ -1,0 +1,188 @@
+{
+  "schema_version": "wasm-abi/1",
+  "types": {
+    "Error": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "NotFound",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "Forbidden"
+        }
+      ]
+    },
+    "UserId": {
+      "kind": "bytes",
+      "size": 32,
+      "encoding": "hex"
+    }
+  },
+  "methods": [
+    {
+      "name": "init",
+      "params": [],
+      "returns": {
+        "$ref": "AbiState"
+      }
+    },
+    {
+      "name": "echo_scalars",
+      "params": [
+        {
+          "name": "b",
+          "type": {
+            "kind": "bool"
+          }
+        },
+        {
+          "name": "i32v",
+          "type": {
+            "kind": "i32"
+          }
+        },
+        {
+          "name": "u64v",
+          "type": {
+            "kind": "u64"
+          }
+        },
+        {
+          "name": "s",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "opt_number",
+      "params": [
+        {
+          "name": "x",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "sum_i64",
+      "params": [
+        {
+          "name": "xs",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "i64"
+      }
+    },
+    {
+      "name": "score_of",
+      "params": [
+        {
+          "name": "m",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "who",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "make_person",
+      "params": [
+        {
+          "name": "p",
+          "type": {
+            "$ref": "Person"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "Person"
+      }
+    },
+    {
+      "name": "act",
+      "params": [
+        {
+          "name": "a",
+          "type": {
+            "$ref": "Action"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "u32"
+      }
+    },
+    {
+      "name": "roundtrip_id",
+      "params": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "bytes",
+            "size": 32,
+            "encoding": "hex"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "bytes",
+        "size": 32,
+        "encoding": "hex"
+      }
+    },
+    {
+      "name": "may_fail",
+      "params": [
+        {
+          "name": "flag",
+          "type": {
+            "kind": "bool"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "u32"
+      }
+    },
+    {
+      "name": "may_fail_not_found",
+      "params": [
+        {
+          "name": "name",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "u32"
+      }
+    }
+  ],
+  "events": []
+}

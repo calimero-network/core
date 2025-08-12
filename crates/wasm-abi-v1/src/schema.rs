@@ -33,6 +33,11 @@ pub enum TypeDef {
     Variant {
         variants: Vec<Variant>,
     },
+    #[serde(rename = "bytes")]
+    Bytes {
+        size: usize,
+        encoding: String,
+    },
 }
 
 /// Field in a record type
@@ -88,9 +93,9 @@ pub struct Error {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub name: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "payload")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub type_: Option<TypeRef>,
+    pub payload: Option<TypeRef>,
 }
 
 /// Type reference - either inline or reference to a named type
@@ -144,9 +149,68 @@ pub enum CollectionType {
     },
     #[serde(rename = "map")]
     Map {
+        #[serde(serialize_with = "serialize_map_key", deserialize_with = "deserialize_map_key")]
         key: Box<TypeRef>,
         value: Box<TypeRef>,
     },
+}
+
+/// Custom serializer for map keys to support compact string format
+fn serialize_map_key<S>(key: &Box<TypeRef>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match **key {
+        TypeRef::Scalar(ScalarType::String) => {
+            // Serialize as just "string" instead of {"kind": "string"}
+            serializer.serialize_str("string")
+        }
+        _ => {
+            // For non-string keys, serialize normally
+            key.serialize(serializer)
+        }
+    }
+}
+
+/// Custom deserializer for map keys to support compact string format
+fn deserialize_map_key<'de, D>(deserializer: D) -> Result<Box<TypeRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct MapKeyVisitor;
+
+    impl<'de> Visitor<'de> for MapKeyVisitor {
+        type Value = Box<TypeRef>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or a TypeRef object")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if value == "string" {
+                Ok(Box::new(TypeRef::string()))
+            } else {
+                Err(de::Error::invalid_value(de::Unexpected::Str(value), &self))
+            }
+        }
+
+        fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+        where
+            M: de::MapAccess<'de>,
+        {
+            // Deserialize as a normal TypeRef object
+            let type_ref = TypeRef::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(Box::new(type_ref))
+        }
+    }
+
+    deserializer.deserialize_any(MapKeyVisitor)
 }
 
 impl TypeRef {
