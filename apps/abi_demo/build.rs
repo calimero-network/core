@@ -16,6 +16,11 @@ fn main() {
     // Set up rerun triggers
     println!("cargo:rerun-if-changed=src/lib.rs");
     
-    // The ABI file will be generated during compilation by the macros
-    // We'll copy it in a post-build step or test
+    // Copy ABI file to target directory if it exists
+    if let Err(e) = abi_core::build::copy_to_target(
+        std::path::Path::new("target/abi/abi.json"),
+        "demo"
+    ) {
+        eprintln!("Warning: Could not copy ABI file: {}", e);
+    }
 } 

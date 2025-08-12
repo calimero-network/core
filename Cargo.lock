@@ -26,6 +26,7 @@ dependencies = [
 name = "abi-macros"
 version = "0.1.0"
 dependencies = [
+ "abi-core",
  "hex",
  "proc-macro2",
  "quote",

@@ -65,11 +65,24 @@ abi_core::write_canonical(&abi, &mut output)?;
 
 ## ABI Extraction
 
-Use the `xtask` command to extract ABI files from compiled modules:
+Use the `xtask` command to extract ABI files from compiled packages:
 
 ```bash
-cargo xtask abi extract --module demo --out target/abi/abi.json
+cargo xtask abi extract --package abi_demo --out target/abi/abi.json
 ```
+
+## Build Integration
+
+The `abi-export` feature enables automatic ABI generation during build:
+
+```bash
+# Build with ABI export enabled
+cargo build -p abi_demo --target wasm32-unknown-unknown --features abi-export
+
+# ABI will be automatically written to target/abi/abi.json
+```
+
+No macro changes required; `abi-export` only affects build-time metadata generation.
 
 ## Testing
 

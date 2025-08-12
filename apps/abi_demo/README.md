@@ -14,6 +14,18 @@ This is a demonstration application showing how to use the `abi-macros` crate to
 - **Error Handling**: Proper error types and handling
 - **Deterministic ABI**: Consistent output across builds
 
+## Quickstart
+
+```bash
+# Add WASM target
+rustup target add wasm32-unknown-unknown
+
+# Build with ABI export
+cargo build -p abi_demo --target wasm32-unknown-unknown --features abi-export
+
+# ABI written to apps/abi_demo/target/abi/abi.json
+```
+
 ## Usage
 
 ### Building the Demo
@@ -21,6 +33,9 @@ This is a demonstration application showing how to use the `abi-macros` crate to
 ```bash
 # Build the demo app
 cargo build -p abi_demo
+
+# Build with ABI export enabled
+cargo build -p abi_demo --target wasm32-unknown-unknown --features abi-export
 
 # Run tests
 cargo test -p abi_demo
@@ -30,10 +45,10 @@ cargo test -p abi_demo
 
 ```bash
 # Extract ABI using xtask
-cargo xtask abi extract --module demo --out target/abi/abi.json
+cargo xtask abi extract --package abi_demo --out target/abi/abi.json
 
-# Or manually copy from build output
-cp target/debug/build/abi_demo-*/out/calimero/abi/demo.json target/abi/abi.json
+# Or build with feature flag (ABI automatically written to target/abi/abi.json)
+cargo build -p abi_demo --target wasm32-unknown-unknown --features abi-export
 ```
 
 ### Generated ABI

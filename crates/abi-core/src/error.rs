@@ -27,4 +27,7 @@ pub enum AbiError {
     
     #[error("Unsupported type: {type_name}")]
     UnsupportedType { type_name: String },
+    
+    #[error("Build error: {0}")]
+    BuildError(String),
 } 

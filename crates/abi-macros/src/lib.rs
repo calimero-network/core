@@ -48,4 +48,6 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(AbiType)]
 pub fn derive_abi_type(input: TokenStream) -> TokenStream {
     derive::derive_abi_type_impl(input)
-} 
+}
+
+ 

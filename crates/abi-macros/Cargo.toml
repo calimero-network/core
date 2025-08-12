@@ -17,6 +17,10 @@ syn = { version = "1.0", features = ["full", "visit"] }
 serde_json = "1.0"
 sha2 = "0.10"
 hex = "0.4"
+abi-core = { path = "../abi-core", optional = true }
 
 [dev-dependencies]
-trybuild = "1.0" 
+trybuild = "1.0"
+
+[features]
+abi-export = ["abi-core"] 

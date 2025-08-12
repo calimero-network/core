@@ -22,5 +22,8 @@ pub use serializer::{write_canonical, sha256};
 
 pub type Result<T> = std::result::Result<T, AbiError>;
 
+#[cfg(feature = "abi-export")]
+pub mod build;
+
 #[cfg(test)]
 mod tests; 

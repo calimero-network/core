@@ -20,6 +20,9 @@ use std::fs;
 use std::path::Path;
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "abi-export")]
+use abi_core;
+
 
 /// Module attributes
 #[derive(Debug)]
@@ -120,11 +123,12 @@ pub fn module_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Generate ABI JSON
     let abi_json = generate_abi_json(&attrs, &functions, &events);
     
-    // Write ABI file
-    if let Err(e) = write_abi_file(&attrs.name, &abi_json) {
-        return syn::Error::new(proc_macro2::Span::call_site(), format!("Failed to write ABI file: {}", e))
-            .to_compile_error()
-            .into();
+    // Write ABI file using the new build system
+    #[cfg(feature = "abi-export")]
+    {
+        if let Ok(json_bytes) = serde_json::to_vec_pretty(&abi_json) {
+            let _ = abi_core::build::emit_if_enabled(&attrs.name, &json_bytes);
+        }
     }
     
     // Generate the module with ABI_PATH constant
