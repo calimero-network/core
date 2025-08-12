@@ -1,0 +1,18 @@
+[package]
+name = "abi_demo"
+version = "0.1.0"
+edition = "2021"
+authors = ["Calimero Limited <info@calimero.network>"]
+repository = "https://github.com/calimero-network/core"
+license = "MIT OR Apache-2.0"
+description = "Example SSApp demonstrating ABI generation"
+
+[dependencies]
+abi-macros = { path = "../../crates/abi-macros" }
+abi-core = { path = "../../crates/abi-core" }
+thiserror = "1.0"
+serde_json = "1.0"
+sha2 = "0.10"
+
+[build-dependencies]
+abi-core = { path = "../../crates/abi-core" } 

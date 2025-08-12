@@ -13,6 +13,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "abi-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "abi-extract"
+version = "0.1.0"
+dependencies = [
+ "abi-core",
+ "clap",
+ "eyre",
+]
+
+[[package]]
+name = "abi-macros"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "sha2 0.10.8",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "abi_demo"
+version = "0.1.0"
+dependencies = [
+ "abi-core",
+ "abi-macros",
+ "serde_json",
+ "sha2 0.10.8",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "actix"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

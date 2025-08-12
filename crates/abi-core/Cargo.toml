@@ -1,0 +1,14 @@
+[package]
+name = "abi-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Calimero Limited <info@calimero.network>"]
+repository = "https://github.com/calimero-network/core"
+license = "MIT OR Apache-2.0"
+description = "Core ABI schema types and canonical serialization for Calimero SDK"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0" 

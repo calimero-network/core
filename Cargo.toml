@@ -7,6 +7,8 @@ license = "MIT OR Apache-2.0"
 [workspace]
 resolver = "2"
 members = [
+    "./crates/abi-core",
+    "./crates/abi-macros",
     "./crates/auth",
     "./crates/cargo-mero",
     "./crates/config",
@@ -36,6 +38,8 @@ members = [
     "./crates/version",
 
     "./apps/kv-store",
+    "./examples/abi_demo",
+    "./tools/abi-extract",
 
     "./e2e-tests",
 ]
