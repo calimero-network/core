@@ -602,7 +602,7 @@ impl ContextCommand {
                 if all {
                     println!("{ind} Syncing all contexts...");
 
-                    node_client.sync(None).await?;
+                    node_client.sync(None, None).await?;
                 } else {
                     let context_id = node_client
                         .resolve_alias(context, None)?
@@ -613,7 +613,7 @@ impl ContextCommand {
                         pretty_alias(Some(context), &context_id)
                     );
 
-                    node_client.sync(Some(&context_id)).await?;
+                    node_client.sync(Some(&context_id), None).await?;
                 }
             }
         }

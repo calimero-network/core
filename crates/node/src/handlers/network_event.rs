@@ -6,6 +6,7 @@ use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::stream::{Message as StreamMessage, Stream};
+
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::blobs::BlobId;
@@ -20,7 +21,6 @@ use libp2p::PeerId;
 use owo_colors::OwoColorize;
 use tracing::{debug, info, warn};
 
-use crate::sync::SyncManager;
 use crate::utils::choose_stream;
 use crate::NodeManager;
 
@@ -52,7 +52,7 @@ struct BlobChunk {
 /// Handle blob requests that come over streams
 async fn handle_blob_request_stream(
     node_client: NodeClient,
-    peer_id: libp2p::PeerId,
+    peer_id: PeerId,
     blob_request: BlobRequest,
     mut stream: Box<Stream>,
 ) -> eyre::Result<()> {
@@ -251,6 +251,19 @@ impl Handler<NetworkEvent> for NodeManager {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
                     return;
                 };
+              
+                if !self
+                    .context_client
+                    .has_context(&context_id)
+                    .unwrap_or_default()
+                {
+                    debug!(
+                        %context_id,
+                        %peer_id,
+                        "Observed subscription to unknown context, ignoring.."
+                    );
+                    return;
+                }
 
                 info!("Peer '{}' subscribed to context '{}'", peer_id, context_id);
             }
@@ -287,14 +300,14 @@ impl Handler<NetworkEvent> for NodeManager {
                         height,
                         nonce,
                     } => {
+                        let node_client = self.node_client.clone();
                         let context_client = self.context_client.clone();
-                        let sync_manager = self.sync_manager.clone();
 
                         let _ignored = ctx.spawn(
                             async move {
                                 if let Err(err) = handle_state_delta(
+                                    node_client,
                                     context_client,
-                                    sync_manager,
                                     source,
                                     context_id,
                                     author_id,
@@ -437,9 +450,9 @@ impl Handler<NetworkEvent> for NodeManager {
 }
 
 async fn handle_state_delta(
+    node_client: NodeClient,
     context_client: ContextClient,
-    sync_manager: SyncManager,
-    source: libp2p::PeerId,
+    source: PeerId,
     context_id: ContextId,
     author_id: PublicKey,
     root_hash: Hash,
@@ -467,7 +480,7 @@ async fn handle_state_delta(
         if known_height >= height || height.get() - known_height.get() > 1 {
             debug!(%author_id, %context_id, "Received state delta much further ahead than known height, syncing..");
 
-            let _ignored = sync_manager.initiate_sync(context_id, source).await;
+            node_client.sync(Some(&context_id), Some(&source)).await?;
             return Ok(());
         }
     }
@@ -478,7 +491,7 @@ async fn handle_state_delta(
     else {
         debug!(%author_id, %context_id, "Missing sender key, initiating sync");
 
-        let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        node_client.sync(Some(&context_id), Some(&source)).await?;
         return Ok(());
     };
 
@@ -487,7 +500,7 @@ async fn handle_state_delta(
     let Some(artifact) = shared_key.decrypt(artifact, nonce) else {
         debug!(%author_id, %context_id, "State delta decryption failed, initiating sync");
 
-        let _ignored = sync_manager.initiate_sync(context_id, source).await;
+        node_client.sync(Some(&context_id), Some(&source)).await?;
         return Ok(());
     };
 
@@ -521,11 +534,18 @@ async fn handle_state_delta(
             %author_id,
             expected_root_hash = %root_hash,
             current_root_hash = %outcome.root_hash,
-            "State delta application led to root hash mismatch, initiating sync"
+            "State delta application led to root hash mismatch, ignoring for now"
         );
 
-        let _ignored = sync_manager.initiate_sync(context_id, source).await;
-        return Ok(());
+        //     debug!(
+        //         %context_id,
+        //         %author_id,
+        //         expected_root_hash = %root_hash,
+        //         current_root_hash = %outcome.root_hash,
+        //         "State delta application led to root hash mismatch, initiating sync"
+        //     );
+
+        //     let _ignored = sync_manager.initiate_sync(context_id, source).await;
     }
 
     Ok(())
