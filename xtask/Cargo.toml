@@ -1,13 +1,13 @@
 [package]
-name = "abi-extract"
+name = "xtask"
 version = "0.1.0"
 edition = "2021"
 authors = ["Calimero Limited <info@calimero.network>"]
 repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
-description = "CLI tool for extracting ABI files"
+description = "Build and development tasks for Calimero Core"
 
 [dependencies]
-abi-core = { path = "../../crates/abi-core" }
+abi-core = { path = "../crates/abi-core" }
 clap = { version = "4.4", features = ["derive"] }
 eyre = "0.6" 

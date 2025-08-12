@@ -20,6 +20,7 @@ use std::fs;
 use std::path::Path;
 use sha2::{Digest, Sha256};
 
+
 /// Module attributes
 #[derive(Debug)]
 struct ModuleAttrs {
@@ -153,14 +154,22 @@ fn parse_module_attrs(attr: &AttributeArgs) -> syn::Result<ModuleAttrs> {
                     if let syn::Lit::Str(lit) = &name_value.lit {
                         version = Some(lit.value());
                     }
+                } else {
+                    return Err(syn::Error::new_spanned(name_value, 
+                        format!("unknown attribute '{}'. Expected 'name' or 'version'", 
+                            name_value.path.get_ident().map(|i| i.to_string()).unwrap_or_default())));
                 }
             }
-            _ => {}
+            _ => {
+                return Err(syn::Error::new_spanned(arg, "expected name-value attribute"));
+            }
         }
     }
     
-    let name = name.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "name is required"))?;
-    let version = version.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "version is required"))?;
+    let name = name.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), 
+        "missing required 'name' attribute. Use #[abi::module(name = \"module_name\", version = \"0.1.0\")]"))?;
+    let version = version.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), 
+        "missing required 'version' attribute. Use #[abi::module(name = \"module_name\", version = \"0.1.0\")]"))?;
     
     Ok(ModuleAttrs { name, version })
 }

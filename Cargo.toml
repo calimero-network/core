@@ -38,8 +38,8 @@ members = [
     "./crates/version",
 
     "./apps/kv-store",
-    "./examples/abi_demo",
-    "./tools/abi-extract",
+    "./apps/abi_demo",
+    "./xtask",
 
     "./e2e-tests",
 ]

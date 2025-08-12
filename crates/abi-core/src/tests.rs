@@ -218,4 +218,45 @@ fn test_parameter_order_preservation() {
     assert_eq!(params[0]["name"], "first");
     assert_eq!(params[1]["name"], "second");
     assert_eq!(params[2]["name"], "third");
+}
+
+#[test]
+fn test_path_free_json() {
+    let mut abi = Abi::new(
+        "test_module".to_string(),
+        "1.0.0".to_string(),
+        "1.85.0".to_string(),
+        "abc123".to_string(),
+    );
+    
+    let function = AbiFunction {
+        name: "test_function".to_string(),
+        kind: FunctionKind::Query,
+        parameters: vec![
+            AbiParameter {
+                name: "param1".to_string(),
+                ty: AbiTypeRef::String,
+                direction: ParameterDirection::Input,
+            },
+        ],
+        return_type: None,
+    };
+    
+    abi.add_function(function);
+    
+    // Serialize to JSON
+    let mut output = Vec::new();
+    write_canonical(&abi, &mut output).unwrap();
+    
+    let json_string = String::from_utf8(output).unwrap();
+    
+    // Check that JSON contains no absolute paths or backslashes
+    assert!(!json_string.contains("\\"), "JSON should not contain backslashes");
+    assert!(!json_string.contains("/Users/"), "JSON should not contain absolute paths");
+    assert!(!json_string.contains("/home/"), "JSON should not contain absolute paths");
+    assert!(!json_string.contains("C:\\"), "JSON should not contain Windows absolute paths");
+    
+    // Verify it's valid JSON
+    let parsed: serde_json::Value = serde_json::from_str(&json_string).unwrap();
+    assert!(parsed.is_object());
 } 

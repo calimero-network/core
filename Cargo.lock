@@ -23,15 +23,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "abi-extract"
-version = "0.1.0"
-dependencies = [
- "abi-core",
- "clap",
- "eyre",
-]
-
-[[package]]
 name = "abi-macros"
 version = "0.1.0"
 dependencies = [
@@ -41,6 +32,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.8",
  "syn 1.0.109",
+ "trybuild",
 ]
 
 [[package]]
@@ -11750,6 +11742,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
 dependencies = [
  "xml-rs",
+]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "abi-core",
+ "clap",
+ "eyre",
 ]
 
 [[package]]
