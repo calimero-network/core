@@ -47,11 +47,11 @@ fn test_canonical_serialization() {
         parameters: vec![
             AbiParameter {
                 name: "param1".to_string(),
-                ty: AbiTypeRef::String,
+                ty: AbiTypeRef::inline_primitive("string".to_string()),
                 direction: ParameterDirection::Input,
             },
         ],
-        returns: Some(AbiTypeRef::String),
+        returns: Some(AbiTypeRef::inline_primitive("string".to_string())),
         errors: vec![],
     };
     abi.add_function(function);

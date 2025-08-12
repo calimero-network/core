@@ -28,34 +28,143 @@ pub struct AbiMetadata {
 
 /// ABI type reference with canonical ordering
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(tag = "type", content = "value")]
+#[serde(untagged)]
 pub enum AbiTypeRef {
-    /// Primitive types
-    Bool,
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
-    U128,
-    I128,
-    String,
-    
+    /// Reference to a type in the registry
+    Ref {
+        #[serde(rename = "$ref")]
+        r#ref: String,
+    },
+    /// Inline primitive types (for backward compatibility)
+    InlinePrimitive {
+        #[serde(rename = "type")]
+        kind: String,
+    },
+    /// Inline composite types (for backward compatibility)
+    InlineComposite {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<Box<AbiTypeRef>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        items: Option<Vec<AbiTypeRef>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        len: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key: Option<Box<AbiTypeRef>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<MapMode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fields: Option<Vec<FieldDef>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        newtype: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        variants: Option<Vec<VariantDef>>,
+    },
+}
+
+/// Map mode for Map types
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum MapMode {
+    /// Object mode for String-keyed maps
+    Object,
+    /// Entries mode for other key types
+    Entries,
+}
+
+/// Field definition for structs
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FieldDef {
+    /// Field name
+    pub name: String,
+    /// Field type
+    pub ty: AbiTypeRef,
+}
+
+/// Variant definition for enums
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VariantDef {
+    /// Variant name
+    pub name: String,
+    /// Variant kind
+    pub kind: VariantKind,
+}
+
+/// Variant kind
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(tag = "kind")]
+pub enum VariantKind {
+    /// Unit variant (no payload)
+    Unit,
+    /// Tuple variant (unnamed fields)
+    Tuple {
+        /// Tuple field types
+        items: Vec<AbiTypeRef>,
+    },
+    /// Struct variant (named fields)
+    Struct {
+        /// Struct field definitions
+        fields: Vec<FieldDef>,
+    },
+}
+
+/// Type definition for the registry
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(tag = "kind")]
+pub enum TypeDef {
+    /// Primitive type
+    Primitive {
+        /// Type name
+        name: String,
+    },
     /// Bytes type
     Bytes,
-    
-    /// Optional type
-    Option(Box<AbiTypeRef>),
-    
+    /// String type
+    String,
     /// Vector type
-    Vec(Box<AbiTypeRef>),
-    
-    /// Reference to another type (for structs/enums)
-    #[serde(rename = "ref")]
-    Ref(String),
+    Vec {
+        /// Item type
+        item: AbiTypeRef,
+    },
+    /// Optional type
+    Option {
+        /// Item type
+        item: AbiTypeRef,
+    },
+    /// Tuple type (1-4 items)
+    Tuple {
+        /// Tuple item types
+        items: Vec<AbiTypeRef>,
+    },
+    /// Fixed-size array
+    Array {
+        /// Item type
+        item: AbiTypeRef,
+        /// Array length
+        len: u32,
+    },
+    /// Map type with dual mode
+    Map {
+        /// Key type
+        key: AbiTypeRef,
+        /// Value type
+        value: AbiTypeRef,
+        /// Map mode
+        mode: MapMode,
+    },
+    /// Struct type
+    Struct {
+        /// Struct fields
+        fields: Vec<FieldDef>,
+        /// Whether this is a newtype struct
+        newtype: bool,
+    },
+    /// Enum type
+    Enum {
+        /// Enum variants
+        variants: Vec<VariantDef>,
+    },
 }
 
 /// Function parameter with direction
@@ -129,6 +238,9 @@ pub struct Abi {
     pub module_name: String,
     /// Module version
     pub module_version: String,
+    /// Type registry (optional, for advanced types)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub types: Option<BTreeMap<String, TypeDef>>,
     /// Functions (sorted by kind, then name)
     pub functions: BTreeMap<String, AbiFunction>,
     /// Events (sorted by name)
@@ -151,6 +263,7 @@ impl Abi {
             },
             module_name,
             module_version,
+            types: None,
             functions: BTreeMap::new(),
             events: BTreeMap::new(),
         }
@@ -165,10 +278,58 @@ impl Abi {
     pub fn add_event(&mut self, event: AbiEvent) {
         self.events.insert(event.name.clone(), event);
     }
+    
+    /// Add a type to the registry
+    pub fn add_type(&mut self, name: String, ty: TypeDef) {
+        if self.types.is_none() {
+            self.types = Some(BTreeMap::new());
+        }
+        if let Some(types) = &mut self.types {
+            types.insert(name, ty);
+        }
+    }
 }
 
 /// Trait for types that can be represented in the ABI
 pub trait AbiType {
     /// Return the ABI type name for this type
     fn abi_type() -> &'static str;
+}
+
+// Helper functions for creating type references
+impl AbiTypeRef {
+    /// Create a reference to a type in the registry
+    pub fn ref_(name: String) -> Self {
+        AbiTypeRef::Ref { r#ref: name }
+    }
+    
+    /// Create an inline primitive type
+    pub fn inline_primitive(kind: String) -> Self {
+        AbiTypeRef::InlinePrimitive { kind }
+    }
+    
+    /// Create an inline composite type
+    pub fn inline_composite(
+        kind: String,
+        value: Option<Box<AbiTypeRef>>,
+        items: Option<Vec<AbiTypeRef>>,
+        len: Option<u32>,
+        key: Option<Box<AbiTypeRef>>,
+        mode: Option<MapMode>,
+        fields: Option<Vec<FieldDef>>,
+        newtype: Option<bool>,
+        variants: Option<Vec<VariantDef>>,
+    ) -> Self {
+        AbiTypeRef::InlineComposite {
+            kind,
+            value,
+            items,
+            len,
+            key,
+            mode,
+            fields,
+            newtype,
+            variants,
+        }
+    }
 } 

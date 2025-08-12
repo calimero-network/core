@@ -21,7 +21,11 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 #[cfg(feature = "abi-export")]
-use abi_core;
+use abi_core::{Abi, AbiMetadata, AbiFunction, AbiEvent, AbiParameter, AbiTypeRef, TypeDef, FieldDef, VariantDef, VariantKind, MapMode};
+#[cfg(feature = "abi-export")]
+use abi_core::schema::{FunctionKind as CoreFunctionKind, ParameterDirection, ErrorAbi};
+
+use crate::types::AbiTypeRef as MacroAbiTypeRef;
 
 /// Module attributes
 #[derive(Debug)]
@@ -64,7 +68,7 @@ struct FunctionInfo {
     name: String,
     kind: FunctionKind,
     parameters: Vec<ParameterInfo>,
-    returns: Option<String>,
+    returns: Option<MacroAbiTypeRef>,
     errors: Vec<ErrorInfo>,
 }
 
@@ -77,20 +81,29 @@ enum FunctionKind {
 #[derive(Debug)]
 struct ParameterInfo {
     name: String,
-    ty: String,
+    ty: MacroAbiTypeRef,
 }
 
 #[derive(Debug)]
 struct ErrorInfo {
     name: String,
     code: String,
-    ty: Option<String>,
+    ty: Option<MacroAbiTypeRef>,
 }
 
 /// Event information collected from module
 #[derive(Debug)]
 struct EventInfo {
     name: String,
+    payload_type: Option<MacroAbiTypeRef>,
+}
+
+/// Type information collected from module
+#[derive(Debug)]
+#[cfg(feature = "abi-export")]
+struct TypeInfo {
+    name: String,
+    ty: TypeDef,
 }
 
 pub fn module_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -103,9 +116,13 @@ pub fn module_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     
-    // Collect functions and events from module
+    // Collect functions, events, and types from module
     let mut functions = Vec::new();
     let mut events = Vec::new();
+    #[cfg(feature = "abi-export")]
+    let mut types: Vec<TypeInfo> = Vec::new();
+    #[cfg(not(feature = "abi-export"))]
+    let mut types: Vec<()> = Vec::new();
     
     if let Some((_, ref content)) = item.content {
         for item in content {
@@ -119,20 +136,28 @@ pub fn module_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     if let Some(event_info) = collect_event(&struct_item) {
                         events.push(event_info);
                     }
+                    // Also collect types for registry
+                    #[cfg(feature = "abi-export")]
+                    if let Some(type_info) = collect_type(&struct_item) {
+                        types.push(type_info);
+                    }
+                }
+                Item::Enum(enum_item) => {
+                    // Collect enum types for registry
+                    #[cfg(feature = "abi-export")]
+                    if let Some(type_info) = collect_enum_type(&enum_item) {
+                        types.push(type_info);
+                    }
                 }
                 _ => {}
             }
         }
     }
     
-
-    
-    // Generate ABI JSON
-    let abi_json = generate_abi_json(&attrs, &functions, &events);
-    
-    // Write ABI file using the new build system
+    // Generate ABI JSON and write ABI file
     #[cfg(feature = "abi-export")]
     {
+        let abi_json = generate_abi_json(&attrs, &functions, &events, &types);
         if let Ok(json_bytes) = serde_json::to_vec_pretty(&abi_json) {
             let _ = abi_core::build::emit_if_enabled(&attrs.name, &json_bytes);
         }
@@ -205,146 +230,44 @@ fn collect_function(func: &syn::ItemFn) -> Option<FunctionInfo> {
     
     let kind = kind?;
     
-    // Extract function signature
-    let name = func.sig.ident.to_string();
+    // Parse function signature
     let mut parameters = Vec::new();
-    
     for param in &func.sig.inputs {
-        if let syn::FnArg::Typed(pat_type) = param {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                let param_name = pat_ident.ident.to_string();
-                let param_ty = type_to_string(&pat_type.ty);
-                parameters.push(ParameterInfo {
-                    name: param_name,
-                    ty: param_ty,
-                });
+        match param {
+            syn::FnArg::Typed(pat_type) => {
+                if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                    let param_name = pat_ident.ident.to_string();
+                    let param_type = MacroAbiTypeRef::from_rust_type(&pat_type.ty)
+                        .unwrap_or_else(|_| MacroAbiTypeRef::Ref("unknown".to_string()));
+                    
+                    parameters.push(ParameterInfo {
+                        name: param_name,
+                        ty: param_type,
+                    });
+                }
             }
+            _ => {}
         }
     }
     
-    // Analyze return type for Result<T,E> pattern
-    let (returns, errors) = analyze_return_type(&func.sig.output);
+    // Parse return type
+    let returns = match &func.sig.output {
+        syn::ReturnType::Default => None,
+        syn::ReturnType::Type(_, ty) => {
+            MacroAbiTypeRef::from_rust_type(&**ty).ok()
+        }
+    };
+    
+    // Generate errors based on return type
+    let errors = generate_errors_for_function(&func.sig.output);
     
     Some(FunctionInfo {
-        name,
+        name: func.sig.ident.to_string(),
         kind,
         parameters,
         returns,
         errors,
     })
-}
-
-fn analyze_return_type(output: &syn::ReturnType) -> (Option<String>, Vec<ErrorInfo>) {
-    match output {
-        syn::ReturnType::Default => (Some("()".to_string()), vec![]),
-        syn::ReturnType::Type(_, ty) => {
-            if let Some((success_ty, error_ty)) = extract_result_types(ty) {
-                let errors = derive_errors_from_enum(&error_ty);
-                (success_ty, errors)
-            } else {
-                (Some(type_to_string(ty)), vec![])
-            }
-        }
-    }
-}
-
-fn extract_result_types(ty: &Type) -> Option<(Option<String>, String)> {
-    if let Type::Path(type_path) = ty {
-        // Handle std::result::Result<T,E> (3 segments: std, result, Result)
-        if type_path.path.segments.len() == 3 
-            && type_path.path.segments[0].ident == "std"
-            && type_path.path.segments[1].ident == "result"
-            && type_path.path.segments[2].ident == "Result" {
-            if let PathArguments::AngleBracketed(args) = &type_path.path.segments[2].arguments {
-                if args.args.len() == 2 {
-                    let success_ty = generic_arg_to_string(&args.args[0]);
-                    let error_ty = generic_arg_to_string(&args.args[1]);
-                    
-                    // Handle unit type specially
-                    let success_ty = if success_ty == "()" { None } else { Some(success_ty) };
-                    
-                    return Some((success_ty, error_ty));
-                }
-            }
-        }
-        // Handle Result<T,E> (2 segments: Result, <T,E>)
-        else if type_path.path.segments.len() == 2 && type_path.path.segments[0].ident == "Result" {
-            if let PathArguments::AngleBracketed(args) = &type_path.path.segments[1].arguments {
-                if args.args.len() == 2 {
-                    let success_ty = generic_arg_to_string(&args.args[0]);
-                    let error_ty = generic_arg_to_string(&args.args[1]);
-                    
-                    // Handle unit type specially
-                    let success_ty = if success_ty == "()" { None } else { Some(success_ty) };
-                    
-                    return Some((success_ty, error_ty));
-                }
-            }
-        }
-    }
-    None
-}
-
-fn derive_errors_from_enum(error_ty: &str) -> Vec<ErrorInfo> {
-    // For PR1c, we'll use a simplified approach that generates error codes
-    // based on the error type name. In a full implementation,
-    // we would analyze the actual enum definition to extract variants.
-    
-    // Convert the error type name to a base for generating error codes
-    let base_name = error_ty.split("::").last().unwrap_or(error_ty);
-    
-    // Generate error patterns based on the error type name
-    let mut errors = Vec::new();
-    
-    match base_name {
-        "DemoError" => {
-            errors.push(ErrorInfo {
-                name: "InvalidGreeting".to_string(),
-                code: "INVALID_GREETING".to_string(),
-                ty: Some("String".to_string()),
-            });
-            errors.push(ErrorInfo {
-                name: "GreetingTooLong".to_string(),
-                code: "GREETING_TOO_LONG".to_string(),
-                ty: Some("usize".to_string()),
-            });
-        }
-        "ComputeError" => {
-            errors.push(ErrorInfo {
-                name: "DivisionByZero".to_string(),
-                code: "DIVISION_BY_ZERO".to_string(),
-                ty: None,
-            });
-            errors.push(ErrorInfo {
-                name: "Overflow".to_string(),
-                code: "OVERFLOW".to_string(),
-                ty: None,
-            });
-            errors.push(ErrorInfo {
-                name: "InvalidInput".to_string(),
-                code: "INVALID_INPUT".to_string(),
-                ty: Some("String".to_string()),
-            });
-        }
-        _ => {
-            // Fallback to generic errors
-            errors.push(ErrorInfo {
-                name: "InvalidInput".to_string(),
-                code: "INVALID_INPUT".to_string(),
-                ty: Some("String".to_string()),
-            });
-            errors.push(ErrorInfo {
-                name: "NotFound".to_string(),
-                code: "NOT_FOUND".to_string(),
-                ty: None,
-            });
-        }
-    }
-    
-    // Sort by code for determinism
-    errors.sort_by(|a, b| a.code.cmp(&b.code));
-    
-    errors
 }
 
 fn collect_event(struct_item: &syn::ItemStruct) -> Option<EventInfo> {
@@ -358,6 +281,7 @@ fn collect_event(struct_item: &syn::ItemStruct) -> Option<EventInfo> {
         if attr.path.is_ident("event") || attr.path.segments.last().map(|s| s.ident == "event").unwrap_or(false) {
             return Some(EventInfo {
                 name: struct_item.ident.to_string(),
+                payload_type: None, // For now, events don't have payload types
             });
         }
     }
@@ -365,113 +289,269 @@ fn collect_event(struct_item: &syn::ItemStruct) -> Option<EventInfo> {
     None
 }
 
-fn generic_arg_to_string(arg: &syn::GenericArgument) -> String {
-    match arg {
-        syn::GenericArgument::Type(ty) => type_to_string(ty),
-        _ => "unknown".to_string(),
+#[cfg(feature = "abi-export")]
+fn collect_type(struct_item: &syn::ItemStruct) -> Option<TypeInfo> {
+    // Check if struct is public
+    if !matches!(struct_item.vis, Visibility::Public(_)) {
+        return None;
+    }
+    
+    // Check for AbiType derive
+    for attr in &struct_item.attrs {
+        if attr.path.is_ident("derive") {
+            if let Ok(syn::Meta::List(list)) = attr.parse_meta() {
+                for nested in list.nested {
+                    if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = nested {
+                        if path.is_ident("AbiType") {
+                            // This struct has AbiType derive, collect it
+                            let name = struct_item.ident.to_string();
+                            let fields = struct_item.fields.iter().map(|field| {
+                                let field_name = field.ident.as_ref().unwrap().to_string();
+                                let field_type = MacroAbiTypeRef::from_rust_type(&field.ty)
+                                    .unwrap_or_else(|_| MacroAbiTypeRef::Ref("unknown".to_string()));
+                                FieldDef {
+                                    name: field_name,
+                                    ty: convert_macro_type_to_core_type(&field_type),
+                                }
+                            }).collect();
+                            
+                            let newtype = matches!(struct_item.fields, syn::Fields::Unnamed(_) if struct_item.fields.len() == 1);
+                            
+                            return Some(TypeInfo {
+                                name,
+                                ty: TypeDef::Struct { fields, newtype },
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+#[cfg(feature = "abi-export")]
+fn collect_enum_type(enum_item: &syn::ItemEnum) -> Option<TypeInfo> {
+    // Check if enum is public
+    if !matches!(enum_item.vis, Visibility::Public(_)) {
+        return None;
+    }
+    
+    // Check for AbiType derive
+    for attr in &enum_item.attrs {
+        if attr.path.is_ident("derive") {
+            if let Ok(syn::Meta::List(list)) = attr.parse_meta() {
+                for nested in list.nested {
+                    if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = nested {
+                        if path.is_ident("AbiType") {
+                            // This enum has AbiType derive, collect it
+                            let name = enum_item.ident.to_string();
+                            let variants = enum_item.variants.iter().map(|variant| {
+                                let variant_name = variant.ident.to_string();
+                                let variant_kind = match &variant.fields {
+                                    syn::Fields::Unit => VariantKind::Unit,
+                                    syn::Fields::Unnamed(fields) => {
+                                        let items = fields.unnamed.iter().map(|field| {
+                                            MacroAbiTypeRef::from_rust_type(&field.ty)
+                                                .map(|t| convert_macro_type_to_core_type(&t))
+                                                .unwrap_or_else(|_| AbiTypeRef::inline_primitive("unknown".to_string()))
+                                        }).collect();
+                                        VariantKind::Tuple { items }
+                                    }
+                                    syn::Fields::Named(fields) => {
+                                        let fields = fields.named.iter().map(|field| {
+                                            let field_name = field.ident.as_ref().unwrap().to_string();
+                                            let field_type = MacroAbiTypeRef::from_rust_type(&field.ty)
+                                                .map(|t| convert_macro_type_to_core_type(&t))
+                                                .unwrap_or_else(|_| AbiTypeRef::inline_primitive("unknown".to_string()));
+                                            FieldDef {
+                                                name: field_name,
+                                                ty: field_type,
+                                            }
+                                        }).collect();
+                                        VariantKind::Struct { fields }
+                                    }
+                                };
+                                
+                                VariantDef {
+                                    name: variant_name,
+                                    kind: variant_kind,
+                                }
+                            }).collect();
+                            
+                            return Some(TypeInfo {
+                                name,
+                                ty: TypeDef::Enum { variants },
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+#[cfg(feature = "abi-export")]
+fn convert_macro_type_to_core_type(macro_type: &MacroAbiTypeRef) -> AbiTypeRef {
+    match macro_type {
+        MacroAbiTypeRef::Bool => AbiTypeRef::inline_primitive("bool".to_string()),
+        MacroAbiTypeRef::U8 => AbiTypeRef::inline_primitive("u8".to_string()),
+        MacroAbiTypeRef::U16 => AbiTypeRef::inline_primitive("u16".to_string()),
+        MacroAbiTypeRef::U32 => AbiTypeRef::inline_primitive("u32".to_string()),
+        MacroAbiTypeRef::U64 => AbiTypeRef::inline_primitive("u64".to_string()),
+        MacroAbiTypeRef::I8 => AbiTypeRef::inline_primitive("i8".to_string()),
+        MacroAbiTypeRef::I16 => AbiTypeRef::inline_primitive("i16".to_string()),
+        MacroAbiTypeRef::I32 => AbiTypeRef::inline_primitive("i32".to_string()),
+        MacroAbiTypeRef::I64 => AbiTypeRef::inline_primitive("i64".to_string()),
+        MacroAbiTypeRef::U128 => AbiTypeRef::inline_primitive("u128".to_string()),
+        MacroAbiTypeRef::I128 => AbiTypeRef::inline_primitive("i128".to_string()),
+        MacroAbiTypeRef::String => AbiTypeRef::inline_primitive("string".to_string()),
+        MacroAbiTypeRef::Bytes => AbiTypeRef::inline_primitive("bytes".to_string()),
+        MacroAbiTypeRef::Option(inner) => {
+            let inner_core = convert_macro_type_to_core_type(inner);
+            AbiTypeRef::inline_composite(
+                "option".to_string(),
+                Some(Box::new(inner_core)),
+                None, None, None, None, None, None, None
+            )
+        }
+        MacroAbiTypeRef::Vec(inner) => {
+            let inner_core = convert_macro_type_to_core_type(inner);
+            AbiTypeRef::inline_composite(
+                "vec".to_string(),
+                Some(Box::new(inner_core)),
+                None, None, None, None, None, None, None
+            )
+        }
+        MacroAbiTypeRef::Tuple(items) => {
+            let items_core: Vec<AbiTypeRef> = items.iter().map(convert_macro_type_to_core_type).collect();
+            AbiTypeRef::inline_composite(
+                "tuple".to_string(),
+                None,
+                Some(items_core),
+                None, None, None, None, None, None
+            )
+        }
+        MacroAbiTypeRef::Array(item, len) => {
+            let item_core = convert_macro_type_to_core_type(item);
+            AbiTypeRef::inline_composite(
+                "array".to_string(),
+                Some(Box::new(item_core)),
+                None,
+                Some(*len),
+                None, None, None, None, None
+            )
+        }
+        MacroAbiTypeRef::Map(key, value, mode) => {
+            let key_core = convert_macro_type_to_core_type(key);
+            let value_core = convert_macro_type_to_core_type(value);
+            let mode_core = match mode {
+                crate::types::MapMode::Object => MapMode::Object,
+                crate::types::MapMode::Entries => MapMode::Entries,
+            };
+            AbiTypeRef::inline_composite(
+                "map".to_string(),
+                None,
+                None, None,
+                Some(Box::new(key_core)),
+                Some(mode_core),
+                None, None, None
+            )
+        }
+        MacroAbiTypeRef::Ref(name) => AbiTypeRef::ref_(name.clone()),
     }
 }
 
-fn type_to_string(ty: &syn::Type) -> String {
-    match ty {
-        syn::Type::Path(type_path) => {
-            let mut segments = Vec::new();
-            for segment in &type_path.path.segments {
-                segments.push(segment.ident.to_string());
-            }
-            segments.join("::")
-        }
-        syn::Type::Tuple(tuple) => {
-            if tuple.elems.is_empty() {
-                "()".to_string()
-            } else {
-                "tuple".to_string()
-            }
-        }
-        _ => "unknown".to_string(),
-    }
+fn generate_errors_for_function(return_type: &syn::ReturnType) -> Vec<ErrorInfo> {
+    // For now, generate generic errors
+    // In a full implementation, this would analyze the actual error types
+    vec![
+        ErrorInfo {
+            name: "InvalidInput".to_string(),
+            code: "INVALID_INPUT".to_string(),
+            ty: Some(MacroAbiTypeRef::String),
+        },
+        ErrorInfo {
+            name: "NotFound".to_string(),
+            code: "NOT_FOUND".to_string(),
+            ty: None,
+        },
+    ]
 }
 
-fn generate_abi_json(attrs: &ModuleAttrs, functions: &[FunctionInfo], events: &[EventInfo]) -> serde_json::Value {
-    // Generate source hash (simplified for PR1)
+#[cfg(feature = "abi-export")]
+fn generate_abi_json(attrs: &ModuleAttrs, functions: &[FunctionInfo], events: &[EventInfo], types: &[TypeInfo]) -> serde_json::Value {
+    // Generate source hash
     let mut hasher = Sha256::new();
     hasher.update(format!("{}{}", attrs.name, attrs.version).as_bytes());
     let source_hash = hex::encode(hasher.finalize());
     
-    let mut abi = serde_json::json!({
-        "metadata": {
-            "schema_version": "0.1.1",
-            "toolchain_version": "1.85.0",
-            "source_hash": source_hash
-        },
-        "module_name": attrs.name,
-        "module_version": attrs.version,
-        "functions": {},
-        "events": {}
-    });
+    // Create ABI using abi-core types
+    let mut abi = Abi::new(
+        attrs.name.clone(),
+        attrs.version.clone(),
+        "1.85.0".to_string(),
+        source_hash,
+    );
+    
+    // Add types to registry if any
+    for type_info in types {
+        abi.add_type(type_info.name.clone(), type_info.ty.clone());
+    }
     
     // Add functions
     for func in functions {
         let kind = match func.kind {
-            FunctionKind::Query => "query",
-            FunctionKind::Command => "command",
+            FunctionKind::Query => CoreFunctionKind::Query,
+            FunctionKind::Command => CoreFunctionKind::Command,
         };
         
-        let mut func_json = serde_json::json!({
-            "name": func.name,
-            "kind": kind,
-            "parameters": [],
-            "errors": []
+        let parameters = func.parameters.iter().map(|param| {
+            AbiParameter {
+                name: param.name.clone(),
+                ty: convert_macro_type_to_core_type(&param.ty),
+                direction: ParameterDirection::Input,
+            }
+        }).collect();
+        
+        let returns = func.returns.as_ref().map(|ret_ty| {
+            convert_macro_type_to_core_type(ret_ty)
         });
         
-        for param in &func.parameters {
-            func_json["parameters"].as_array_mut().unwrap().push(
-                serde_json::json!({
-                    "name": param.name,
-                    "ty": param.ty,
-                    "direction": "input"
-                })
-            );
-        }
-        
-        if let Some(ret_ty) = &func.returns {
-            if ret_ty == "()" {
-                func_json["returns"] = serde_json::json!(null);
-            } else {
-                func_json["returns"] = serde_json::json!({
-                    "type": ret_ty
-                });
+        let errors = func.errors.iter().map(|error| {
+            ErrorAbi {
+                name: error.name.clone(),
+                code: error.code.clone(),
+                ty: error.ty.as_ref().map(|ty| convert_macro_type_to_core_type(ty)),
             }
-        }
+        }).collect();
         
-        // Add errors
-        for error in &func.errors {
-            let mut error_json = serde_json::json!({
-                "name": error.name,
-                "code": error.code
-            });
-            
-            if let Some(ty) = &error.ty {
-                error_json["ty"] = serde_json::json!({
-                    "type": ty
-                });
-            }
-            
-            func_json["errors"].as_array_mut().unwrap().push(error_json);
-        }
+        let abi_function = AbiFunction {
+            name: func.name.clone(),
+            kind,
+            parameters,
+            returns,
+            errors,
+        };
         
-        abi["functions"][&func.name] = func_json;
+        abi.add_function(abi_function);
     }
     
     // Add events
     for event in events {
-        abi["events"][&event.name] = serde_json::json!({
-            "name": event.name,
-            "payload_type": null
-        });
+        let abi_event = AbiEvent {
+            name: event.name.clone(),
+            payload_type: event.payload_type.as_ref().map(|ty| convert_macro_type_to_core_type(ty)),
+        };
+        
+        abi.add_event(abi_event);
     }
     
-    abi
+    // Convert to JSON
+    serde_json::to_value(abi).unwrap()
 }
 
 fn write_abi_file(module_name: &str, abi_json: &serde_json::Value) -> std::io::Result<()> {

@@ -17,7 +17,10 @@ pub mod serializer;
 pub mod error;
 
 pub use error::AbiError;
-pub use schema::{Abi, AbiTypeRef, AbiMetadata, AbiFunction, AbiEvent, AbiParameter, AbiType};
+pub use schema::{
+    Abi, AbiTypeRef, AbiMetadata, AbiFunction, AbiEvent, AbiParameter, AbiType,
+    TypeDef, FieldDef, VariantDef, VariantKind, MapMode
+};
 pub use serializer::{write_canonical, sha256};
 
 pub type Result<T> = std::result::Result<T, AbiError>;

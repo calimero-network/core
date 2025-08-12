@@ -14,7 +14,8 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Ident, Token, Type, TypePath, GenericArgument, PathArguments};
+use quote::ToTokens;
+use syn::{parse::Parse, parse::ParseStream, Ident, Token, Type, TypePath, GenericArgument, PathArguments, TypeTuple, TypeArray, TypeSlice};
 
 /// ABI type reference for macro generation
 #[derive(Debug, Clone)]
@@ -34,7 +35,17 @@ pub enum AbiTypeRef {
     Bytes,
     Option(Box<AbiTypeRef>),
     Vec(Box<AbiTypeRef>),
+    Tuple(Vec<AbiTypeRef>),
+    Array(Box<AbiTypeRef>, u32),
+    Map(Box<AbiTypeRef>, Box<AbiTypeRef>, MapMode),
     Ref(String),
+}
+
+/// Map mode for Map types
+#[derive(Debug, Clone)]
+pub enum MapMode {
+    Object,
+    Entries,
 }
 
 impl AbiTypeRef {
@@ -43,11 +54,11 @@ impl AbiTypeRef {
         match ty {
             Type::Path(TypePath { path, .. }) => {
                 if path.leading_colon.is_some() {
-                    return Err(syn::Error::new_spanned(ty, "absolute paths not supported in PR1"));
+                    return Err(syn::Error::new_spanned(ty, "absolute paths not supported"));
                 }
                 
                 if path.segments.len() != 1 {
-                    return Err(syn::Error::new_spanned(ty, "complex paths not supported in PR1"));
+                    return Err(syn::Error::new_spanned(ty, "complex paths not supported"));
                 }
                 
                 let segment = &path.segments[0];
@@ -65,6 +76,9 @@ impl AbiTypeRef {
                     "i64" => Ok(AbiTypeRef::I64),
                     "u128" => Ok(AbiTypeRef::U128),
                     "i128" => Ok(AbiTypeRef::I128),
+                    "f32" | "f64" => {
+                        Err(syn::Error::new_spanned(ty, "floating point types are not supported in ABI"))
+                    }
                     "String" => Ok(AbiTypeRef::String),
                     "Vec" => {
                         if let PathArguments::AngleBracketed(args) = &segment.arguments {
@@ -100,13 +114,69 @@ impl AbiTypeRef {
                             Err(syn::Error::new_spanned(ty, "Option must have type parameters"))
                         }
                     }
+                    "BTreeMap" | "HashMap" => {
+                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if args.args.len() != 2 {
+                                return Err(syn::Error::new_spanned(ty, "Map must have exactly two type parameters"));
+                            }
+                            
+                            let key_arg = &args.args[0];
+                            let value_arg = &args.args[1];
+                            
+                            if let (GenericArgument::Type(key_ty), GenericArgument::Type(value_ty)) = (key_arg, value_arg) {
+                                let key_abi = Self::from_rust_type(key_ty)?;
+                                let value_abi = Self::from_rust_type(value_ty)?;
+                                
+                                // Determine map mode based on key type
+                                let mode = match &key_abi {
+                                    AbiTypeRef::String => MapMode::Object,
+                                    _ => MapMode::Entries,
+                                };
+                                
+                                Ok(AbiTypeRef::Map(Box::new(key_abi), Box::new(value_abi), mode))
+                            } else {
+                                Err(syn::Error::new_spanned(ty, "Map type parameters must be types"))
+                            }
+                        } else {
+                            Err(syn::Error::new_spanned(ty, "Map must have type parameters"))
+                        }
+                    }
                     _ => {
                         // For now, treat unknown types as references
                         Ok(AbiTypeRef::Ref(ident.to_string()))
                     }
                 }
             }
-            _ => Err(syn::Error::new_spanned(ty, "unsupported type in PR1")),
+            Type::Tuple(TypeTuple { elems, .. }) => {
+                if elems.len() > 4 {
+                    return Err(syn::Error::new_spanned(ty, "tuples with more than 4 elements are not supported"));
+                }
+                
+                let mut items = Vec::new();
+                for elem in elems {
+                    let item_abi = Self::from_rust_type(elem)?;
+                    items.push(item_abi);
+                }
+                
+                Ok(AbiTypeRef::Tuple(items))
+            }
+            Type::Array(TypeArray { elem, len, .. }) => {
+                let elem_abi = Self::from_rust_type(elem)?;
+                
+                // Parse the length expression
+                let len_expr = syn::parse2::<syn::Expr>(len.into_token_stream())?;
+                let len_value = match len_expr {
+                    syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) => {
+                        lit.base10_parse::<u32>()?
+                    }
+                    _ => {
+                        return Err(syn::Error::new_spanned(len, "array length must be a literal integer"));
+                    }
+                };
+                
+                Ok(AbiTypeRef::Array(Box::new(elem_abi), len_value))
+            }
+            _ => Err(syn::Error::new_spanned(ty, "unsupported type")),
         }
     }
     
@@ -138,10 +208,35 @@ impl AbiTypeRef {
                     "value": inner.to_json()
                 })
             }
+            AbiTypeRef::Tuple(items) => {
+                let items_json: Vec<serde_json::Value> = items.iter().map(|item| item.to_json()).collect();
+                serde_json::json!({
+                    "type": "tuple",
+                    "items": items_json
+                })
+            }
+            AbiTypeRef::Array(item, len) => {
+                serde_json::json!({
+                    "type": "array",
+                    "value": item.to_json(),
+                    "len": len
+                })
+            }
+            AbiTypeRef::Map(key, value, mode) => {
+                let mode_str = match mode {
+                    MapMode::Object => "object",
+                    MapMode::Entries => "entries",
+                };
+                serde_json::json!({
+                    "type": "map",
+                    "key": key.to_json(),
+                    "value": value.to_json(),
+                    "mode": mode_str
+                })
+            }
             AbiTypeRef::Ref(name) => {
                 serde_json::json!({
-                    "type": "ref",
-                    "value": name
+                    "$ref": name
                 })
             }
         }

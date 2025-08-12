@@ -1,0 +1,199 @@
+{
+  "metadata": {
+    "schema_version": "0.1.1",
+    "toolchain_version": "1.85.0",
+    "source_hash": "test_hash_for_determinism"
+  },
+  "module_name": "advanced_types_demo",
+  "module_version": "0.1.0",
+  "types": {
+    "advanced_types_demo::ComplexStruct": {
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "name",
+          "ty": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "data",
+          "ty": {
+            "type": "option",
+            "value": {
+              "type": "vec",
+              "value": {
+                "type": "u8"
+              }
+            }
+          }
+        },
+        {
+          "name": "metadata",
+          "ty": {
+            "type": "map",
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "u64"
+            },
+            "mode": "object"
+          }
+        }
+      ],
+      "newtype": false
+    },
+    "advanced_types_demo::UserId": {
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "0",
+          "ty": {
+            "type": "u128"
+          }
+        }
+      ],
+      "newtype": true
+    },
+    "advanced_types_demo::Status": {
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Pending",
+          "kind": "unit"
+        },
+        {
+          "name": "Active",
+          "kind": "tuple",
+          "items": [
+            {
+              "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "Completed",
+          "kind": "struct",
+          "fields": [
+            {
+              "name": "timestamp",
+              "ty": {
+                "type": "u64"
+              }
+            },
+            {
+              "name": "result",
+              "ty": {
+                "type": "string"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "functions": {
+    "get_user_info": {
+      "name": "get_user_info",
+      "kind": "query",
+      "parameters": [
+        {
+          "name": "user_id",
+          "ty": {
+            "$ref": "advanced_types_demo::UserId"
+          },
+          "direction": "input"
+        }
+      ],
+      "returns": {
+        "$ref": "advanced_types_demo::ComplexStruct"
+      },
+      "errors": [
+        {
+          "name": "NotFound",
+          "code": "NOT_FOUND",
+          "ty": {
+            "type": "u64"
+          }
+        }
+      ]
+    },
+    "update_status": {
+      "name": "update_status",
+      "kind": "command",
+      "parameters": [
+        {
+          "name": "user_id",
+          "ty": {
+            "$ref": "advanced_types_demo::UserId"
+          },
+          "direction": "input"
+        },
+        {
+          "name": "status",
+          "ty": {
+            "$ref": "advanced_types_demo::Status"
+          },
+          "direction": "input"
+        },
+        {
+          "name": "coords",
+          "ty": {
+            "type": "tuple",
+            "items": [
+              {
+                "type": "u8"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "direction": "input"
+        }
+      ],
+      "returns": {
+        "type": "array",
+        "value": {
+          "type": "u16"
+        },
+        "len": 4
+      },
+      "errors": [
+        {
+          "name": "InvalidStatus",
+          "code": "INVALID_STATUS",
+          "ty": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "NotFound",
+          "code": "NOT_FOUND",
+          "ty": {
+            "type": "u64"
+          }
+        },
+        {
+          "name": "OperationFailed",
+          "code": "OPERATION_FAILED"
+        }
+      ]
+    }
+  },
+  "events": {
+    "UserStatusChanged": {
+      "name": "UserStatusChanged",
+      "payload_type": {
+        "$ref": "advanced_types_demo::UserStatusChanged"
+      }
+    }
+  }
+} 
