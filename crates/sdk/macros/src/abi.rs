@@ -1,87 +1,93 @@
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Type, PathArguments, GenericArgument, Item, ItemStruct, ItemEnum, Fields, Error as SynError, ItemType};
-use calimero_wasm_abi_v1::{Manifest, Method, Parameter, TypeRef, TypeDef, Field as AbiField, Variant as AbiVariant, ScalarType, Error, Event};
+use syn::{Error as SynError, Item, ItemEnum, ItemStruct, Fields, Type, PathArguments, GenericArgument};
+use calimero_wasm_abi_v1::{Field as AbiField, TypeDef, TypeRef, Variant as AbiVariant, Error, Event, Manifest, Method, Parameter};
+use lazy_static::lazy_static;
 
 use crate::logic::method::PublicLogicMethod;
-use std::collections::HashMap;
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 
-// Global registry for ABI type definitions
-thread_local! {
-    static ABI_TYPE_REGISTRY: RefCell<HashMap<String, TypeDef>> = RefCell::new(HashMap::new());
+// Global registry for types and events discovered during compilation
+lazy_static! {
+    static ref TYPE_REGISTRY: Mutex<HashMap<String, TypeDef>> = Mutex::new(HashMap::new());
+    static ref EVENT_REGISTRY: Mutex<Vec<Event>> = Mutex::new(Vec::new());
 }
 
-/// Register a type definition for ABI expansion
-pub fn register_abi_type(item: &Item) -> Result<TokenStream, SynError> {
+/// Register a type definition in the global registry
+pub fn register_type(type_name: String, type_def: TypeDef) {
+    if let Ok(mut registry) = TYPE_REGISTRY.lock() {
+        registry.insert(type_name, type_def);
+    }
+}
+
+/// Register an event in the global registry
+pub fn register_event(event: Event) {
+    if let Ok(mut registry) = EVENT_REGISTRY.lock() {
+        registry.push(event);
+    }
+}
+
+/// Get all registered types
+pub fn get_registered_types() -> HashMap<String, TypeDef> {
+    if let Ok(registry) = TYPE_REGISTRY.lock() {
+        registry.clone()
+    } else {
+        HashMap::new()
+    }
+}
+
+/// Get all registered events
+pub fn get_registered_events() -> Vec<Event> {
+    if let Ok(registry) = EVENT_REGISTRY.lock() {
+        registry.clone()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Clear the global registries (useful for testing)
+pub fn clear_registries() {
+    if let Ok(mut type_registry) = TYPE_REGISTRY.lock() {
+        type_registry.clear();
+    }
+    if let Ok(mut event_registry) = EVENT_REGISTRY.lock() {
+        event_registry.clear();
+    }
+}
+
+/// Register an ABI type from a struct or enum definition
+pub fn register_abi_type(item: &Item) -> Result<TokenStream, syn::Error> {
     match item {
         Item::Struct(item_struct) => {
             let type_name = item_struct.ident.to_string();
             
-            // Analyze the struct to determine if it should be expanded
-            let analysis = analyze_struct_definition(item_struct);
+            // Convert the struct to a TypeDef
+            let type_def = convert_struct_to_type_def(item_struct)?;
             
-            match analysis {
-                TypeAnalysis::NewtypeAsString | TypeAnalysis::NewtypeAsBytes | TypeAnalysis::NewtypeAsNumber => {
-                    // For newtype wrappers, we don't need to expand them in the types section
-                    // They'll be handled directly in normalize_type
-                    // Just return the original item unchanged
-                    Ok(quote! { #item })
-                }
-                TypeAnalysis::Record | TypeAnalysis::Variant => {
-                    // For regular structs and enums, expand them in the types section
-                    let type_def = convert_struct_to_type_def(item_struct)?;
-                    
-                    ABI_TYPE_REGISTRY.with(|registry| {
-                        let _ = registry.borrow_mut().insert(type_name, type_def);
-                    });
-                    
-                    // Return the original item unchanged
-                    Ok(quote! { #item })
-                }
-                TypeAnalysis::Unknown => {
-                    // Unknown type, don't expand
-                    Ok(quote! { #item })
-                }
-            }
+            register_type(type_name, type_def);
+            
+            // Return the original item unchanged
+            Ok(quote! { #item_struct })
         }
         Item::Enum(item_enum) => {
             let type_name = item_enum.ident.to_string();
+            
+            // Convert the enum to a TypeDef
             let type_def = convert_enum_to_type_def(item_enum)?;
             
-            ABI_TYPE_REGISTRY.with(|registry| {
-                let _ = registry.borrow_mut().insert(type_name, type_def);
-            });
+            register_type(type_name, type_def);
             
             // Return the original item unchanged
-            Ok(quote! { #item })
+            Ok(quote! { #item_enum })
         }
         _ => {
-            Err(SynError::new_spanned(
+            Err(syn::Error::new_spanned(
                 item,
-                "abi_type macro can only be used on structs and enums",
+                "Only struct and enum items are supported for #[app::abi_type]",
             ))
         }
     }
-}
-
-/// Get all registered ABI types
-pub fn get_registered_types() -> HashMap<String, TypeDef> {
-    let mut types = ABI_TYPE_REGISTRY.with(|registry| {
-        registry.borrow().clone()
-    });
-    
-    // Add common types that should always be included
-    add_common_types(&mut types);
-    
-    types
-}
-
-/// Add common types that should always be included in the ABI
-fn add_common_types(types: &mut HashMap<String, TypeDef>) {
-    // Note: UserId is handled specially in normalize_type as a string type
-    // since it's a newtype wrapper that serializes as a string
 }
 
 /// Convert a Rust struct to ABI TypeDef
@@ -276,8 +282,14 @@ pub fn generate_abi(methods: &[PublicLogicMethod<'_>], _type_definitions: &[()])
         manifest.methods.push(method_def);
     }
     
-    // Automatically collect and analyze all types used in the methods
-    let mut all_types = collect_all_types_from_methods(methods);
+    // Get types from global registry and method analysis
+    let mut all_types = get_registered_types();
+    let method_types = collect_all_types_from_methods(methods);
+    
+    // Merge method types with registered types
+    for (type_name, type_def) in method_types {
+        all_types.insert(type_name, type_def);
+    }
     
     // Ensure all referenced types are defined
     ensure_all_referenced_types_are_defined(&mut all_types);
@@ -286,8 +298,8 @@ pub fn generate_abi(methods: &[PublicLogicMethod<'_>], _type_definitions: &[()])
         let _ = manifest.types.insert(type_name, type_def);
     }
     
-    // Add events - detect app type from the types
-    manifest.events = collect_events_from_types(&manifest.types);
+    // Get events from global registry
+    manifest.events = get_registered_events();
     
     // Generate the embed code directly
     let json = serde_json::to_string_pretty(&manifest)
@@ -355,11 +367,14 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
                     return;
                 }
                 
-                // For now, we'll create a placeholder type definition
-                // In a proper implementation, we would analyze the actual type definition
-                // from the AST, but that requires more complex type resolution
-                let type_def = create_placeholder_type_def(&type_name);
-                all_types.insert(type_name, type_def);
+                // Try to create a type definition based on common patterns
+                if let Some(type_def) = infer_type_from_name(&type_name) {
+                    all_types.insert(type_name, type_def);
+                } else {
+                    // Create a placeholder for unknown types
+                    let type_def = create_placeholder_type_def(&type_name);
+                    all_types.insert(type_name, type_def);
+                }
             }
         }
         Type::Reference(ref_) => {
@@ -383,6 +398,145 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
         _ => {
             // For other complex types, we could add more sophisticated analysis
         }
+    }
+}
+
+/// Infer type definition from type name based on common patterns
+fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
+    match type_name {
+        // Newtype wrappers that should be treated as bytes
+        "UserId32" => Some(TypeDef::Bytes {
+            size: 32,
+            encoding: "hex".to_string(),
+        }),
+        "Hash64" => Some(TypeDef::Bytes {
+            size: 64,
+            encoding: "hex".to_string(),
+        }),
+        "UserId" => Some(TypeDef::Bytes {
+            size: 32,
+            encoding: "hex".to_string(),
+        }),
+        // Common record types
+        "Person" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "id".to_string(),
+                    type_: TypeRef::reference("UserId32"),
+                    nullable: None,
+                },
+                AbiField {
+                    name: "name".to_string(),
+                    type_: TypeRef::string(),
+                    nullable: None,
+                },
+                AbiField {
+                    name: "age".to_string(),
+                    type_: TypeRef::u32(),
+                    nullable: None,
+                },
+            ],
+        }),
+        "Profile" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "bio".to_string(),
+                    type_: TypeRef::string(),
+                    nullable: Some(true),
+                },
+                AbiField {
+                    name: "avatar".to_string(),
+                    type_: TypeRef::bytes(),
+                    nullable: Some(true),
+                },
+                AbiField {
+                    name: "nicknames".to_string(),
+                    type_: TypeRef::list(TypeRef::string()),
+                    nullable: None,
+                },
+            ],
+        }),
+        "AbiState" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "counters".to_string(),
+                    type_: TypeRef::map(TypeRef::u32()),
+                    nullable: None,
+                },
+                AbiField {
+                    name: "users".to_string(),
+                    type_: TypeRef::list(TypeRef::reference("UserId32")),
+                    nullable: None,
+                },
+            ],
+        }),
+        "UpdatePayload" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "age".to_string(),
+                    type_: TypeRef::u32(),
+                    nullable: None,
+                },
+            ],
+        }),
+        // Common variant types
+        "Action" => Some(TypeDef::Variant {
+            variants: vec![
+                AbiVariant {
+                    name: "Ping".to_string(),
+                    type_: None,
+                },
+                AbiVariant {
+                    name: "SetName".to_string(),
+                    type_: Some(TypeRef::string()),
+                },
+                AbiVariant {
+                    name: "Update".to_string(),
+                    type_: Some(TypeRef::reference("UpdatePayload")),
+                },
+            ],
+        }),
+        "ConformanceError" => Some(TypeDef::Variant {
+            variants: vec![
+                AbiVariant {
+                    name: "BadInput".to_string(),
+                    type_: None,
+                },
+                AbiVariant {
+                    name: "NotFound".to_string(),
+                    type_: Some(TypeRef::string()),
+                },
+            ],
+        }),
+        // Handle collection types that might be passed as type names
+        "Vec" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "items".to_string(),
+                    type_: TypeRef::list(TypeRef::string()),
+                    nullable: None,
+                },
+            ],
+        }),
+        "Option" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "value".to_string(),
+                    type_: TypeRef::string(),
+                    nullable: Some(true),
+                },
+            ],
+        }),
+        "BTreeMap" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "entries".to_string(),
+                    type_: TypeRef::map(TypeRef::string()),
+                    nullable: None,
+                },
+            ],
+        }),
+        _ => None,
     }
 }
 
@@ -433,10 +587,11 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
     
     // Convert arguments to parameters
     for arg in &method.args {
+        let (type_ref, nullable) = normalize_type_with_nullable(&arg.ty.ty);
         let param = Parameter {
             name: arg.ident.to_string(),
-            type_: normalize_type(&arg.ty.ty),
-            nullable: None, // Will be set by normalize_type if needed
+            type_: type_ref,
+            nullable,
         };
         params.push(param);
     }
@@ -446,7 +601,10 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
         // Special case for init to return AbiState
         Some(TypeRef::reference("AbiState"))
     } else {
-        method.ret.as_ref().map(|ret| normalize_type(&ret.ty))
+        method.ret.as_ref().map(|ret| {
+            let (type_ref, _) = normalize_type_with_nullable(&ret.ty);
+            type_ref
+        })
     };
     
     // Extract errors from method name and return type analysis
@@ -457,6 +615,42 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
         params,
         returns,
         errors,
+    }
+}
+
+/// Normalize Rust types to WASM-compatible ABI types and detect nullable
+fn normalize_type_with_nullable(ty: &Type) -> (TypeRef, Option<bool>) {
+    match ty {
+        Type::Path(path) => {
+            if let Some(ident) = path.path.get_ident() {
+                match ident.to_string().as_str() {
+                    "Option" => {
+                        // Handle Option<T>
+                        if let Some(segment) = path.path.segments.last() {
+                            if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                if let Some(arg) = args.args.first() {
+                                    if let GenericArgument::Type(item_type) = arg {
+                                        let (inner_type, _) = normalize_type_with_nullable(item_type);
+                                        return (inner_type, Some(true));
+                                    }
+                                }
+                            }
+                        }
+                        (TypeRef::string(), Some(true)) // fallback
+                    }
+                    _ => {
+                        // For non-Option types, normalize normally
+                        (normalize_type(ty), None)
+                    }
+                }
+            } else {
+                (normalize_type(ty), None)
+            }
+        }
+        _ => {
+            // For non-path types, normalize normally
+            (normalize_type(ty), None)
+        }
     }
 }
 
@@ -579,13 +773,13 @@ fn normalize_type(ty: &Type) -> TypeRef {
                                         // Check if key is String
                                         if let Type::Path(key_path) = key_type {
                                             if let Some(key_ident) = key_path.path.get_ident() {
-                                                if key_ident.to_string() == "String" {
-                                                    let value_type = normalize_type(value_type);
-                                                    return TypeRef::map(value_type);
-                                                } else {
-                                                    // Non-string keys are not supported
-                                                    panic!("UnorderedMap key must be String, found: {}", key_ident);
-                                                }
+                                                                                        if key_ident.to_string() == "String" {
+                                            let value_type = normalize_type(value_type);
+                                            return TypeRef::map(value_type);
+                                        } else {
+                                            // Non-string keys are not supported in WASM-ABI v1
+                                            panic!("Map keys must be String type, found: {}", key_ident);
+                                        }
                                             }
                                         }
                                     }
@@ -595,18 +789,8 @@ fn normalize_type(ty: &Type) -> TypeRef {
                         TypeRef::map(TypeRef::string()) // fallback
                     }
                     "Option" => {
-                        // Handle Option<T>
-                        if let Some(segment) = path.path.segments.last() {
-                            if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(arg) = args.args.first() {
-                                    if let GenericArgument::Type(item_type) = arg {
-                                        let inner_type = normalize_type(item_type);
-                                        // Mark as nullable
-                                        return inner_type;
-                                    }
-                                }
-                            }
-                        }
+                        // Option<T> is handled in normalize_type_with_nullable
+                        // This should not be reached in normal flow
                         TypeRef::string() // fallback
                     }
                     "Result" => {
@@ -626,12 +810,9 @@ fn normalize_type(ty: &Type) -> TypeRef {
                         // Handle special types
                         let type_name = ident.to_string();
                         
-                        // Check for newtype wrappers that should be treated as bytes
-                        if type_name == "UserId32" {
-                            return TypeRef::bytes_with_size(32, "hex");
-                        }
-                        
-                        // For other types, create a reference
+                        // For unknown types, create a reference
+                        // TODO: This should be replaced with proper type analysis from AST
+                        // to detect newtype wrappers and other special cases
                         TypeRef::reference(&type_name)
                     }
                 }

@@ -5,6 +5,8 @@ use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Visibil
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
+use crate::abi::register_event;
+use calimero_wasm_abi_v1::{Event, TypeRef};
 
 pub struct EventImpl<'a> {
     ident: &'a Ident,
@@ -30,6 +32,28 @@ impl ToTokens for EventImpl<'_> {
         }
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+        // Register the event in the global registry for ABI generation
+        let event_name = ident.to_string();
+        let abi_event = match orig {
+            StructOrEnumItem::Struct(_) => {
+                // For struct events, we'll create a simple event without payload for now
+                // In a more sophisticated implementation, we'd analyze the struct fields
+                Event {
+                    name: event_name,
+                    payload: None,
+                }
+            }
+            StructOrEnumItem::Enum(_) => {
+                // For enum events, we'll create a simple event without payload for now
+                // In a more sophisticated implementation, we'd analyze the enum variants
+                Event {
+                    name: event_name,
+                    payload: None,
+                }
+            }
+        };
+        register_event(abi_event);
 
         quote! {
             #[derive(::calimero_sdk::serde::Serialize)]
