@@ -51,7 +51,7 @@ struct BlobChunk {
 /// Handle blob requests that come over streams
 async fn handle_blob_request_stream(
     node_client: NodeClient,
-    peer_id: libp2p::PeerId,
+    peer_id: PeerId,
     blob_request: BlobRequest,
     mut stream: Box<Stream>,
 ) -> eyre::Result<()> {
@@ -258,7 +258,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 {
                     debug!(
                         %context_id,
-                        %their_peer_id,
+                        %peer_id,
                         "Observed subscription to unknown context, ignoring.."
                     );
 
@@ -267,7 +267,7 @@ impl Handler<NetworkEvent> for NodeManager {
 
                 info!(
                     "Peer '{}' subscribed to context '{}'",
-                    their_peer_id.cyan(),
+                    peer_id.cyan(),
                     context_id.cyan()
                 );
             }
@@ -457,7 +457,6 @@ async fn handle_state_delta(
     node_client: NodeClient,
     context_client: ContextClient,
     source: PeerId,
-    sync_manager: SyncManager,
     context_id: ContextId,
     author_id: PublicKey,
     root_hash: Hash,
