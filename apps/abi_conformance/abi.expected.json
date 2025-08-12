@@ -45,6 +45,20 @@
         }
       ]
     },
+    "ConformanceError": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "BadInput"
+        },
+        {
+          "name": "NotFound",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
     "Hash64": {
       "kind": "bytes",
       "size": 64,
