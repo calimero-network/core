@@ -46,6 +46,7 @@ pub struct ExecutorId([u8; 32]);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
+#[app::abi_type]
 pub struct CalendarEvent {
     id: String,
     title: String,
@@ -60,6 +61,7 @@ pub struct CalendarEvent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
+#[app::abi_type]
 pub struct CreateCalendarEvent {
     title: String,
     description: String,

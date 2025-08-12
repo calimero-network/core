@@ -1763,6 +1763,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-abi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "wasmparser 0.118.2",
+]
+
+[[package]]
 name = "calimero-blobstore"
 version = "0.1.0"
 dependencies = [
@@ -2034,6 +2044,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "calimero-sdk-macros",
+ "calimero-wasm-abi-v1",
  "cfg-if",
  "serde",
  "serde_json",
@@ -2044,9 +2055,11 @@ dependencies = [
 name = "calimero-sdk-macros"
 version = "0.1.0"
 dependencies = [
+ "calimero-wasm-abi-v1",
  "prettyplease 0.2.25",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.100",
  "thiserror 1.0.69",
 ]
@@ -2191,6 +2204,17 @@ version = "0.8.0-rc.4"
 dependencies = [
  "eyre",
  "rustc_version 0.4.1",
+]
+
+[[package]]
+name = "calimero-wasm-abi-v1"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -11069,6 +11093,16 @@ name = "wasmparser"
 version = "0.116.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a58e28b80dd8340cb07b8242ae654756161f6fc8d0038123d679b7b99964fa50"
+dependencies = [
+ "indexmap 2.6.0",
+ "semver 1.0.23",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.118.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77f1154f1ab868e2a01d9834a805faca7bf8b50d041b4ca714d005d0dab1c50c"
 dependencies = [
  "indexmap 2.6.0",
  "semver 1.0.23",

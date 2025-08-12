@@ -34,11 +34,13 @@ members = [
     "./crates/store/impl/rocksdb",
     "./crates/utils/actix",
     "./crates/version",
+    "./crates/wasm-abi-v1",
 
     "./apps/kv-store",
     "./apps/plantr",
 
     "./e2e-tests",
+    "./tools/calimero-abi",
 ]
 
 [workspace.dependencies]
@@ -164,6 +166,7 @@ calimero-store.path = "./crates/store"
 calimero-store-rocksdb.path = "./crates/store/impl/rocksdb"
 calimero-utils-actix.path = "./crates/utils/actix"
 calimero-version.path = "./crates/version"
+calimero-wasm-abi-v1.path = "./crates/wasm-abi-v1"
 e2e-tests.path = "./e2e-tests"
 kv-store.path = "./apps/kv-store"
 meroctl.path = "./crates/meroctl"

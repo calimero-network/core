@@ -18,16 +18,16 @@ pub enum Modifer {
 }
 
 pub struct PublicLogicMethod<'a> {
-    self_: Path,
+    pub self_: Path,
 
-    name: &'a Ident,
-    self_type: Option<SelfType<'a>>,
-    args: Vec<LogicArgTyped<'a>>,
-    ret: Option<LogicTy>,
+    pub name: &'a Ident,
+    pub self_type: Option<SelfType<'a>>,
+    pub args: Vec<LogicArgTyped<'a>>,
+    pub ret: Option<LogicTy>,
 
-    has_refs: bool,
+    pub has_refs: bool,
 
-    modifiers: Vec<Modifer>,
+    pub modifiers: Vec<Modifer>,
 }
 
 impl ToTokens for LogicMethod<'_> {
