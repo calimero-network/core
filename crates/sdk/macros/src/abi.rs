@@ -355,10 +355,11 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
                     return;
                 }
                 
-                // Try to analyze and expand this type
-                if let Some(type_def) = analyze_and_expand_type(&type_name) {
-                    all_types.insert(type_name, type_def);
-                }
+                // For now, we'll create a placeholder type definition
+                // In a proper implementation, we would analyze the actual type definition
+                // from the AST, but that requires more complex type resolution
+                let type_def = create_placeholder_type_def(&type_name);
+                all_types.insert(type_name, type_def);
             }
         }
         Type::Reference(ref_) => {
@@ -373,27 +374,40 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
             // Recursively process the array element type
             collect_types_from_type(&array.elem, all_types);
         }
+        Type::Tuple(tuple) => {
+            // Process each element of the tuple
+            for elem in &tuple.elems {
+                collect_types_from_type(elem, all_types);
+            }
+        }
         _ => {
             // For other complex types, we could add more sophisticated analysis
         }
     }
 }
 
-/// Ensure all referenced types are included in the types section
-fn ensure_all_referenced_types_are_defined(all_types: &mut HashMap<String, TypeDef>) {
-            // Add UserId32 if it's referenced but not defined
-        if !all_types.contains_key("UserId32") {
-            if let Some(user_id_def) = analyze_and_expand_type("UserId32") {
-                all_types.insert("UserId32".to_string(), user_id_def);
-            }
-        }
-    
-    // Add Error if it's referenced but not defined
-    if !all_types.contains_key("Error") {
-        if let Some(error_def) = analyze_and_expand_type("Error") {
-            all_types.insert("Error".to_string(), error_def);
-        }
+/// Create a placeholder type definition for types we can't fully analyze yet
+/// In a proper implementation, this would analyze the actual type definition from the AST
+fn create_placeholder_type_def(type_name: &str) -> TypeDef {
+    // For now, we'll create a simple record type as a placeholder
+    // This should be replaced with actual type analysis
+    TypeDef::Record {
+        fields: vec![
+            AbiField {
+                name: "placeholder".to_string(),
+                type_: TypeRef::string(),
+                nullable: None,
+            },
+        ],
     }
+}
+
+/// Ensure all referenced types are included in the types section
+/// This function is now a no-op since types should be discovered automatically
+/// from the method signatures rather than hardcoded
+fn ensure_all_referenced_types_are_defined(_all_types: &mut HashMap<String, TypeDef>) {
+    // Types are now collected automatically from method signatures
+    // No need for hardcoded type additions
 }
 
 /// Check if a type is a basic type that doesn't need expansion
@@ -405,138 +419,12 @@ fn is_basic_type(type_name: &str) -> bool {
 }
 
 /// Analyze and expand a type definition
+/// This function is deprecated - types should be analyzed from the actual AST
+/// rather than hardcoded definitions
+#[deprecated(note = "Use actual type analysis from AST instead of hardcoded definitions")]
 fn analyze_and_expand_type(type_name: &str) -> Option<TypeDef> {
-    match type_name {
-        "Person" => {
-            Some(TypeDef::Record {
-                fields: vec![
-                    AbiField {
-                        name: "id".to_string(),
-                        type_: TypeRef::reference("UserId32"),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "name".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "age".to_string(),
-                        type_: TypeRef::u32(),
-                        nullable: None,
-                    },
-                ]
-            })
-        }
-        "Profile" => {
-            Some(TypeDef::Record {
-                fields: vec![
-                    AbiField {
-                        name: "bio".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: Some(true),
-                    },
-                    AbiField {
-                        name: "avatar".to_string(),
-                        type_: TypeRef::bytes(),
-                        nullable: Some(true),
-                    },
-                    AbiField {
-                        name: "nicknames".to_string(),
-                        type_: TypeRef::list(TypeRef::string()),
-                        nullable: None,
-                    },
-                ]
-            })
-        }
-        "Action" => {
-            Some(TypeDef::Variant {
-                variants: vec![
-                    AbiVariant {
-                        name: "Ping".to_string(),
-                        type_: None,
-                    },
-                    AbiVariant {
-                        name: "SetName".to_string(),
-                        type_: Some(TypeRef::string()),
-                    },
-                    AbiVariant {
-                        name: "Update".to_string(),
-                        type_: Some(TypeRef::reference("UpdatePayload")),
-                    },
-                ]
-            })
-        }
-        "AbiState" => {
-            Some(TypeDef::Record {
-                fields: vec![
-                    AbiField {
-                        name: "counters".to_string(),
-                        type_: TypeRef::map(TypeRef::u32()),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "users".to_string(),
-                        type_: TypeRef::list(TypeRef::reference("UserId32")),
-                        nullable: None,
-                    },
-                ]
-            })
-        }
-        "UpdatePayload" => {
-            Some(TypeDef::Record {
-                fields: vec![
-                    AbiField {
-                        name: "age".to_string(),
-                        type_: TypeRef::u32(),
-                        nullable: None,
-                    },
-                ]
-            })
-        }
-        "UserId32" => {
-            // UserId32 is a newtype wrapper around [u8; 32] with hex encoding
-            // Return as bytes directly, not as a record
-            Some(TypeDef::Bytes {
-                size: 32,
-                encoding: "hex".to_string(),
-            })
-        }
-        "Hash64" => {
-            // Hash64 is a newtype wrapper around [u8; 64] with hex encoding
-            // Return as bytes directly, not as a record
-            Some(TypeDef::Bytes {
-                size: 64,
-                encoding: "hex".to_string(),
-            })
-        }
-        "Error" => {
-            Some(TypeDef::Variant {
-                variants: vec![
-                    AbiVariant {
-                        name: "NotFound".to_string(),
-                        type_: Some(TypeRef::string()),
-                    },
-                    AbiVariant {
-                        name: "Forbidden".to_string(),
-                        type_: None,
-                    },
-                ]
-            })
-        }
-        "KvStore" => {
-            Some(TypeDef::Record {
-                fields: vec![
-                    AbiField {
-                        name: "items".to_string(),
-                        type_: TypeRef::map(TypeRef::string()),
-                        nullable: None,
-                    },
-                ]
-            })
-        }
-        _ => None, // Unknown type, will be referenced with $ref
-    }
+    // This function should be removed in favor of proper type analysis
+    None
 }
 
 /// Collect method information for ABI
