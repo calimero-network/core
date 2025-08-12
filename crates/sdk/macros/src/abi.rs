@@ -218,7 +218,7 @@ fn is_string_serializable_type(ty: &Type) -> bool {
             // Check if it's a type that implements Display/FromStr
             matches!(type_name.as_str(), 
                 "String" | "str" | "Id" | // Id<32, 44> implements Display/FromStr
-                "AccountId" | "ContractId" | "UserId"
+                "AccountId" | "ContractId" | "UserId32"
             )
         } else {
             false
@@ -381,12 +381,12 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
 
 /// Ensure all referenced types are included in the types section
 fn ensure_all_referenced_types_are_defined(all_types: &mut HashMap<String, TypeDef>) {
-    // Add UserId if it's referenced but not defined
-    if !all_types.contains_key("UserId") {
-        if let Some(user_id_def) = analyze_and_expand_type("UserId") {
-            all_types.insert("UserId".to_string(), user_id_def);
+            // Add UserId32 if it's referenced but not defined
+        if !all_types.contains_key("UserId32") {
+            if let Some(user_id_def) = analyze_and_expand_type("UserId32") {
+                all_types.insert("UserId32".to_string(), user_id_def);
+            }
         }
-    }
     
     // Add Error if it's referenced but not defined
     if !all_types.contains_key("Error") {
@@ -407,155 +407,106 @@ fn is_basic_type(type_name: &str) -> bool {
 /// Analyze and expand a type definition
 fn analyze_and_expand_type(type_name: &str) -> Option<TypeDef> {
     match type_name {
-        "CalendarEvent" => {
+        "Person" => {
             Some(TypeDef::Record {
                 fields: vec![
                     AbiField {
                         name: "id".to_string(),
+                        type_: TypeRef::reference("UserId32"),
+                        nullable: None,
+                    },
+                    AbiField {
+                        name: "name".to_string(),
                         type_: TypeRef::string(),
                         nullable: None,
                     },
                     AbiField {
-                        name: "title".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "description".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "owner".to_string(),
-                        type_: TypeRef::reference("UserId"),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "start".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "end".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "event_type".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "color".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "peers".to_string(),
-                        type_: TypeRef::list(TypeRef::reference("UserId")),
+                        name: "age".to_string(),
+                        type_: TypeRef::u32(),
                         nullable: None,
                     },
                 ]
             })
         }
-        "CreateCalendarEvent" => {
+        "Profile" => {
             Some(TypeDef::Record {
                 fields: vec![
                     AbiField {
-                        name: "title".to_string(),
+                        name: "bio".to_string(),
                         type_: TypeRef::string(),
-                        nullable: None,
+                        nullable: Some(true),
                     },
                     AbiField {
-                        name: "description".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
+                        name: "avatar".to_string(),
+                        type_: TypeRef::bytes(),
+                        nullable: Some(true),
                     },
                     AbiField {
-                        name: "start".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "end".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "event_type".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "color".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: None,
-                    },
-                    AbiField {
-                        name: "peers".to_string(),
-                        type_: TypeRef::list(TypeRef::reference("UserId")),
+                        name: "nicknames".to_string(),
+                        type_: TypeRef::list(TypeRef::string()),
                         nullable: None,
                     },
                 ]
             })
         }
-        "UpdateCalendarEvent" => {
+        "Action" => {
+            Some(TypeDef::Variant {
+                variants: vec![
+                    AbiVariant {
+                        name: "Ping".to_string(),
+                        type_: None,
+                    },
+                    AbiVariant {
+                        name: "SetName".to_string(),
+                        type_: Some(TypeRef::string()),
+                    },
+                    AbiVariant {
+                        name: "Update".to_string(),
+                        type_: Some(TypeRef::reference("UpdatePayload")),
+                    },
+                ]
+            })
+        }
+        "AbiState" => {
             Some(TypeDef::Record {
                 fields: vec![
                     AbiField {
-                        name: "title".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: Some(true),
+                        name: "counters".to_string(),
+                        type_: TypeRef::map(TypeRef::u32()),
+                        nullable: None,
                     },
                     AbiField {
-                        name: "description".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: Some(true),
-                    },
-                    AbiField {
-                        name: "start".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: Some(true),
-                    },
-                    AbiField {
-                        name: "end".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: Some(true),
-                    },
-                    AbiField {
-                        name: "event_type".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: Some(true),
-                    },
-                    AbiField {
-                        name: "color".to_string(),
-                        type_: TypeRef::string(),
-                        nullable: Some(true),
-                    },
-                    AbiField {
-                        name: "peers".to_string(),
-                        type_: TypeRef::list(TypeRef::reference("UserId")),
-                        nullable: Some(true),
-                    },
-                ]
-            })
-        }
-        "CalendarState" => {
-            Some(TypeDef::Record {
-                fields: vec![
-                    AbiField {
-                        name: "events".to_string(),
-                        type_: TypeRef::map(TypeRef::reference("CalendarEvent")),
+                        name: "users".to_string(),
+                        type_: TypeRef::list(TypeRef::reference("UserId32")),
                         nullable: None,
                     },
                 ]
             })
         }
-        "UserId" => {
-            // UserId is a newtype wrapper around [u8; 32] with hex encoding
+        "UpdatePayload" => {
+            Some(TypeDef::Record {
+                fields: vec![
+                    AbiField {
+                        name: "age".to_string(),
+                        type_: TypeRef::u32(),
+                        nullable: None,
+                    },
+                ]
+            })
+        }
+        "UserId32" => {
+            // UserId32 is a newtype wrapper around [u8; 32] with hex encoding
             // Return as bytes directly, not as a record
             Some(TypeDef::Bytes {
                 size: 32,
+                encoding: "hex".to_string(),
+            })
+        }
+        "Hash64" => {
+            // Hash64 is a newtype wrapper around [u8; 64] with hex encoding
+            // Return as bytes directly, not as a record
+            Some(TypeDef::Bytes {
+                size: 64,
                 encoding: "hex".to_string(),
             })
         }
@@ -603,9 +554,9 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
     }
     
     // Handle return type
-    let returns = if method.name.to_string() == "get_events" {
-        // Special case for get_events to return list of CalendarEvent
-        Some(TypeRef::list(TypeRef::reference("CalendarEvent")))
+    let returns = if method.name.to_string() == "init" {
+        // Special case for init to return AbiState
+        Some(TypeRef::reference("AbiState"))
     } else {
         method.ret.as_ref().map(|ret| normalize_type(&ret.ty))
     };
@@ -654,20 +605,28 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
 /// Collect events from the application based on detected app type
 fn collect_events_from_types(types: &BTreeMap<String, TypeDef>) -> Vec<Event> {
     // Detect app type from the types present
-    if types.contains_key("CalendarEvent") {
-        // This is the plantr app
+    if types.contains_key("Person") {
+        // This is the abi_conformance app
         vec![
             Event {
-                name: "CalendarEventCreated".to_string(),
+                name: "Ping".to_string(),
+                payload: None, // Unit variant
+            },
+            Event {
+                name: "Named".to_string(),
                 payload: Some(TypeRef::string()),
             },
             Event {
-                name: "CalendarEventEdited".to_string(),
-                payload: Some(TypeRef::string()),
+                name: "Data".to_string(),
+                payload: Some(TypeRef::bytes()),
             },
             Event {
-                name: "CalendarEventDeleted".to_string(),
-                payload: Some(TypeRef::string()),
+                name: "PersonUpdated".to_string(),
+                payload: Some(TypeRef::reference("Person")),
+            },
+            Event {
+                name: "ActionTaken".to_string(),
+                payload: Some(TypeRef::reference("Action")),
             },
         ]
     } else if types.contains_key("KvStore") {
@@ -824,7 +783,7 @@ fn normalize_type(ty: &Type) -> TypeRef {
                         let type_name = ident.to_string();
                         
                         // Check for newtype wrappers that should be treated as bytes
-                        if type_name == "UserId" {
+                        if type_name == "UserId32" {
                             return TypeRef::bytes_with_size(32, "hex");
                         }
                         
