@@ -2,7 +2,10 @@
 name = "abi_conformance"
 description = "Calimero ABI conformance test application"
 version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [lib]
 crate-type = ["cdylib"]

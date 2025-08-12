@@ -2,7 +2,10 @@
 name = "calimero-abi"
 description = "CLI tool for extracting Calimero WASM ABI"
 version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "calimero-abi"

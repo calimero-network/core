@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-wasm-abi-v1"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "jsonschema",
  "proc-macro2",

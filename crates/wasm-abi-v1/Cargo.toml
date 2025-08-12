@@ -1,8 +1,10 @@
 [package]
 name = "calimero-wasm-abi-v1"
 description = "WASM-level ABI v1 for Calimero applications"
-version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
