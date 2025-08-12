@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "schema_version": "0.1.1",
+    "toolchain_version": "1.75.0",
+    "source_hash": "f6789012345678901234567890abcdef1234567890abcdef1234567890abcdef"
+  },
+  "module_name": "test",
+  "module_version": "0.1.0",
+  "types": {},
+  "functions": {
+    "plain_return": {
+      "name": "plain_return",
+      "kind": "query",
+      "parameters": [
+        {
+          "name": "input",
+          "ty": {
+            "type": "string"
+          },
+          "direction": "input"
+        }
+      ],
+      "returns": {
+        "type": "u64"
+      },
+      "errors": []
+    },
+    "unit_return": {
+      "name": "unit_return",
+      "kind": "command",
+      "parameters": [
+        {
+          "name": "value",
+          "ty": {
+            "type": "string"
+          },
+          "direction": "input"
+        }
+      ],
+      "returns": null,
+      "errors": [
+        {
+          "name": "InvalidInput",
+          "code": "INVALID_INPUT",
+          "ty": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "NotFound",
+          "code": "NOT_FOUND",
+          "ty": null
+        }
+      ]
+    },
+    "result_return": {
+      "name": "result_return",
+      "kind": "query",
+      "parameters": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "u64"
+          },
+          "direction": "input"
+        }
+      ],
+      "returns": {
+        "type": "string"
+      },
+      "errors": [
+        {
+          "name": "NotFound",
+          "code": "NOT_FOUND",
+          "ty": null
+        },
+        {
+          "name": "InvalidId",
+          "code": "INVALID_ID",
+          "ty": {
+            "type": "u64"
+          }
+        }
+      ]
+    }
+  },
+  "events": {}
+} 

@@ -27,6 +27,7 @@ name = "abi-macros"
 version = "0.1.0"
 dependencies = [
  "abi-core",
+ "calimero-sdk-macros",
  "hex",
  "proc-macro2",
  "quote",
@@ -42,6 +43,8 @@ version = "0.1.0"
 dependencies = [
  "abi-core",
  "abi-macros",
+ "borsh",
+ "calimero-sdk",
  "serde_json",
  "sha2 0.10.8",
  "thiserror 1.0.69",

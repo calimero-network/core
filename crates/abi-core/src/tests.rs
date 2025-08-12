@@ -147,22 +147,22 @@ fn test_sha256_hash() {
 #[test]
 fn test_abi_type_ref_ordering() {
     let types = vec![
-        AbiTypeRef::Bool,
-        AbiTypeRef::U8,
-        AbiTypeRef::U16,
-        AbiTypeRef::U32,
-        AbiTypeRef::U64,
-        AbiTypeRef::I8,
-        AbiTypeRef::I16,
-        AbiTypeRef::I32,
-        AbiTypeRef::I64,
-        AbiTypeRef::U128,
-        AbiTypeRef::I128,
-        AbiTypeRef::String,
-        AbiTypeRef::Bytes,
-        AbiTypeRef::Option(Box::new(AbiTypeRef::String)),
-        AbiTypeRef::Vec(Box::new(AbiTypeRef::U32)),
-        AbiTypeRef::Ref("MyStruct".to_string()),
+        AbiTypeRef::inline_primitive("bool".to_string()),
+        AbiTypeRef::inline_primitive("u8".to_string()),
+        AbiTypeRef::inline_primitive("u16".to_string()),
+        AbiTypeRef::inline_primitive("u32".to_string()),
+        AbiTypeRef::inline_primitive("u64".to_string()),
+        AbiTypeRef::inline_primitive("i8".to_string()),
+        AbiTypeRef::inline_primitive("i16".to_string()),
+        AbiTypeRef::inline_primitive("i32".to_string()),
+        AbiTypeRef::inline_primitive("i64".to_string()),
+        AbiTypeRef::inline_primitive("u128".to_string()),
+        AbiTypeRef::inline_primitive("i128".to_string()),
+        AbiTypeRef::inline_primitive("string".to_string()),
+        AbiTypeRef::inline_primitive("bytes".to_string()),
+        AbiTypeRef::inline_composite("option".to_string(), Some(Box::new(AbiTypeRef::inline_primitive("string".to_string()))), None, None, None, None, None, None, None),
+        AbiTypeRef::inline_composite("vec".to_string(), None, Some(vec![AbiTypeRef::inline_primitive("u32".to_string())]), None, None, None, None, None, None),
+        AbiTypeRef::ref_("MyStruct".to_string()),
     ];
     
     // Test that types can be sorted
@@ -191,17 +191,17 @@ fn test_parameter_order_preservation() {
         parameters: vec![
             AbiParameter {
                 name: "first".to_string(),
-                ty: AbiTypeRef::U32,
+                ty: AbiTypeRef::inline_primitive("u32".to_string()),
                 direction: ParameterDirection::Input,
             },
             AbiParameter {
                 name: "second".to_string(),
-                ty: AbiTypeRef::String,
+                ty: AbiTypeRef::inline_primitive("string".to_string()),
                 direction: ParameterDirection::Input,
             },
             AbiParameter {
                 name: "third".to_string(),
-                ty: AbiTypeRef::Bool,
+                ty: AbiTypeRef::inline_primitive("bool".to_string()),
                 direction: ParameterDirection::Input,
             },
         ],
@@ -239,7 +239,7 @@ fn test_path_free_json() {
         parameters: vec![
             AbiParameter {
                 name: "param1".to_string(),
-                ty: AbiTypeRef::String,
+                ty: AbiTypeRef::inline_primitive("string".to_string()),
                 direction: ParameterDirection::Input,
             },
         ],
@@ -271,12 +271,12 @@ fn test_error_abi_creation() {
     let error = ErrorAbi {
         name: "InvalidInput".to_string(),
         code: "INVALID_INPUT".to_string(),
-        ty: Some(AbiTypeRef::String),
+        ty: Some(AbiTypeRef::inline_primitive("string".to_string())),
     };
     
     assert_eq!(error.name, "InvalidInput");
     assert_eq!(error.code, "INVALID_INPUT");
-    assert_eq!(error.ty, Some(AbiTypeRef::String));
+    assert_eq!(error.ty, Some(AbiTypeRef::inline_primitive("string".to_string())));
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn test_function_with_errors() {
         parameters: vec![
             AbiParameter {
                 name: "input".to_string(),
-                ty: AbiTypeRef::String,
+                ty: AbiTypeRef::inline_primitive("string".to_string()),
                 direction: ParameterDirection::Input,
             },
         ],
@@ -343,7 +343,7 @@ fn test_function_with_errors() {
             ErrorAbi {
                 name: "InvalidInput".to_string(),
                 code: "INVALID_INPUT".to_string(),
-                ty: Some(AbiTypeRef::String),
+                ty: Some(AbiTypeRef::inline_primitive("string".to_string())),
             },
             ErrorAbi {
                 name: "NotFound".to_string(),
@@ -383,11 +383,11 @@ fn test_function_with_result_return() {
         parameters: vec![
             AbiParameter {
                 name: "value".to_string(),
-                ty: AbiTypeRef::U64,
+                ty: AbiTypeRef::inline_primitive("u64".to_string()),
                 direction: ParameterDirection::Input,
             },
         ],
-        returns: Some(AbiTypeRef::U64),
+        returns: Some(AbiTypeRef::inline_primitive("u64".to_string())),
         errors: vec![
             ErrorAbi {
                 name: "Overflow".to_string(),
@@ -407,6 +407,6 @@ fn test_function_with_result_return() {
     let parsed: serde_json::Value = serde_json::from_str(&json_string).unwrap();
     
     let func = &parsed["functions"]["compute"];
-    assert_eq!(func["returns"]["type"], "U64");
+    assert_eq!(func["returns"]["type"], "u64");
     assert_eq!(func["errors"][0]["code"], "OVERFLOW");
 } 

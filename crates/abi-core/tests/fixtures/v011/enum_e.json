@@ -1,0 +1,55 @@
+{
+  "metadata": {
+    "schema_version": "0.1.1",
+    "toolchain_version": "1.75.0",
+    "source_hash": "b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef12345678"
+  },
+  "module_name": "test",
+  "module_version": "0.1.0",
+  "types": {
+    "test::E": {
+      "kind": "Enum",
+      "variants": [
+        {
+          "name": "A",
+          "kind": {
+            "kind": "Unit"
+          }
+        },
+        {
+          "name": "B",
+          "kind": {
+            "kind": "Tuple",
+            "items": [
+              {
+                "type": "u32"
+              }
+            ]
+          }
+        },
+        {
+          "name": "C",
+          "kind": {
+            "kind": "Struct",
+          "fields": [
+            {
+              "name": "x",
+              "ty": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "y",
+              "ty": {
+                "type": "u8"
+              }
+            }
+          ]
+          }
+        }
+      ]
+    }
+  },
+  "functions": {},
+  "events": {}
+} 

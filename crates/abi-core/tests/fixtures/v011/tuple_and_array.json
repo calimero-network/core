@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "schema_version": "0.1.1",
+    "toolchain_version": "1.75.0",
+    "source_hash": "e5f6789012345678901234567890abcdef1234567890abcdef1234567890abcd"
+  },
+  "module_name": "test",
+  "module_version": "0.1.0",
+  "types": {
+    "test::Tuple": {
+      "kind": "Tuple",
+      "items": [
+        {
+          "type": "u8"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "test::Array": {
+      "kind": "Array",
+      "item": {
+        "type": "u16"
+      },
+      "len": 4
+    },
+    "test::Newtype": {
+      "kind": "Struct",
+      "fields": [
+        {
+          "name": "0",
+          "ty": {
+            "type": "u128"
+          }
+        }
+      ],
+      "newtype": true
+    }
+  },
+  "functions": {},
+  "events": {}
+} 

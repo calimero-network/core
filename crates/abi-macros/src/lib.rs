@@ -17,30 +17,65 @@ mod function;
 mod event;
 mod derive;
 mod types;
+mod wrappers;
 
 use proc_macro::TokenStream;
 
-/// Module-level ABI generation macro
+// Wrapper macros that forward to existing SSApp macros
+// These are the public API that apps should use
+
+/// Wrapper for app::logic macro
+#[proc_macro_attribute]
+pub fn logic(attr: TokenStream, item: TokenStream) -> TokenStream {
+    wrappers::logic_wrapper(attr, item)
+}
+
+/// Wrapper for app::state macro
+#[proc_macro_attribute]
+pub fn state(attr: TokenStream, item: TokenStream) -> TokenStream {
+    wrappers::state_wrapper(attr, item)
+}
+
+/// Wrapper for app::init macro
+#[proc_macro_attribute]
+pub fn init(attr: TokenStream, item: TokenStream) -> TokenStream {
+    wrappers::init_wrapper(attr, item)
+}
+
+/// Wrapper for app::destroy macro
+#[proc_macro_attribute]
+pub fn destroy(attr: TokenStream, item: TokenStream) -> TokenStream {
+    wrappers::destroy_wrapper(attr, item)
+}
+
+/// Wrapper for app::event macro
+#[proc_macro_attribute]
+pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
+    wrappers::event_wrapper(attr, item)
+}
+
+// Hidden ABI-specific macros (not part of public API)
+#[doc(hidden)]
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module::module_impl(attr, item)
 }
 
-/// Query function marker
+#[doc(hidden)]
 #[proc_macro_attribute]
 pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {
     function::query_impl(attr, item)
 }
 
-/// Command function marker
+#[doc(hidden)]
 #[proc_macro_attribute]
 pub fn command(attr: TokenStream, item: TokenStream) -> TokenStream {
     function::command_impl(attr, item)
 }
 
-/// Event marker
+#[doc(hidden)]
 #[proc_macro_attribute]
-pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn abi_event(attr: TokenStream, item: TokenStream) -> TokenStream {
     event::event_impl(attr, item)
 }
 

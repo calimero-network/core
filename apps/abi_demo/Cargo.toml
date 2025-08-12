@@ -11,14 +11,17 @@ description = "Example SSApp demonstrating ABI generation"
 crate-type = ["cdylib"]
 
 [dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
 abi-macros = { path = "../../crates/abi-macros", features = ["abi-export"] }
 abi-core = { path = "../../crates/abi-core", features = ["abi-export"] }
 thiserror = "1.0"
 serde_json = "1.0"
 sha2 = "0.10"
+borsh = { version = "1.0", features = ["derive"] }
 
 [build-dependencies]
 abi-core = { path = "../../crates/abi-core", features = ["abi-export"] }
+serde_json = "1.0"
 
 [features]
 abi-export = []

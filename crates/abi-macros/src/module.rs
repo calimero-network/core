@@ -159,7 +159,7 @@ pub fn module_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     {
         let abi_json = generate_abi_json(&attrs, &functions, &events, &types);
         if let Ok(json_bytes) = serde_json::to_vec_pretty(&abi_json) {
-            let _ = abi_core::build::emit_if_enabled(&attrs.name, &json_bytes);
+            // Note: ABI generation is handled by build script
         }
     }
     

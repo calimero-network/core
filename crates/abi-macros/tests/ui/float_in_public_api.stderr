@@ -1,0 +1,11 @@
+error[E0432]: unresolved import `calimero_sdk`
+ --> tests/ui/float_in_public_api.rs:1:5
+  |
+1 | use calimero_sdk::app;
+  |     ^^^^^^^^^^^^ use of undeclared crate or module `calimero_sdk`
+
+error[E0601]: `main` function not found in crate `$CRATE`
+  --> tests/ui/float_in_public_api.rs:25:2
+   |
+25 | }
+   |  ^ consider adding a `main` function to `$DIR/tests/ui/float_in_public_api.rs`

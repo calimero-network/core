@@ -1,236 +1,268 @@
 # ABI Core
 
-Core types and serialization for Calimero ABI (Application Binary Interface) generation.
+Core ABI schema types and canonical serialization for Calimero SDK.
 
 ## Overview
 
-This crate provides the foundational types and serialization logic for generating ABIs from Rust code. It's designed to work with the `abi-macros` crate to automatically generate ABI definitions from annotated Rust modules.
+This crate provides the core types and serialization logic for generating canonical JSON ABI files from Rust code. It's designed to work with the `abi-macros` crate to produce deterministic, versioned ABI definitions.
 
 ## Features
 
-- **Canonical JSON Serialization**: Deterministic JSON output for ABI files
-- **SHA256 Hashing**: Cryptographic hashing of ABI definitions
-- **Type System**: Comprehensive type definitions for ABI parameters and return values
-- **Error Handling**: Support for Result<T,E> returns with structured error information
-- **Advanced Types**: Support for structs, enums, maps, tuples, and arrays
-- **Type Registry**: Optional type registry with `$ref` resolution for complex types
-- **Cross-Platform**: No absolute paths or platform-specific separators in output
+- **Schema Version 0.1.1**: Stable ABI schema with advanced type support
+- **Canonical Serialization**: Deterministic JSON output with sorted collections
+- **Advanced Types**: Structs, enums, maps, tuples, arrays with optional type registry
+- **Dual-Mode Maps**: String keys → object mode, other keys → entries mode
+- **Error Handling**: Structured error information with SCREAMING_SNAKE codes
+- **Path Hygiene**: No absolute paths or backslashes in generated JSON
 
-## Schema Version 0.1.1
+## Schema
 
-The ABI schema has been updated to replace Rust-centric `Result<T,E>` returns with a universal contract structure:
-
-### Function Shape
-
-Functions now have the following structure:
-- `returns`: `<TypeRef | null>` (success payload, `null` for unit type `()`)
-- `errors`: `[{ name, code, type?<TypeRef> }]` derived from enum `E`
-
-### Error Structure
-
-```rust
-pub struct ErrorAbi {
-    pub name: String,               // enum variant name (stable case)
-    pub code: String,               // SCREAMING_SNAKE_CASE of variant (stable)
-    pub ty: Option<TypeRef>,        // payload for tuple/struct variants, None for unit
-}
-```
-
-### Result<T,E> Mapping
-
-- `Result<T, E>` → `returns: T`, `errors: derive_from_enum(E)`
-- `Result<(), E>` → `returns: null`, `errors: derive_from_enum(E)`
-- Plain `T` → `returns: T`, `errors: []`
-
-## Supported Types (v0.1.1)
-
-### Primitive Types
-- `String` - UTF-8 string
-- `u8`, `u16`, `u32`, `u64`, `u128` - Unsigned integers
-- `i8`, `i16`, `i32`, `i64`, `i128` - Signed integers
-- `bool` - Boolean values
-
-### Container Types
-- `Vec<T>` - Vector of supported types
-- `Option<T>` - Optional types
-
-### Advanced Types (Additive)
-- **Structs**: Named fields with `#[derive(AbiType)]`
-- **Newtype Structs**: Single-field structs with `#[derive(AbiType)]`
-- **Enums**: Unit, tuple, and struct variants with `#[derive(AbiType)]`
-- **Maps**: `BTreeMap<K,V>` and `HashMap<K,V>` with dual mode:
-  - `Map<String, V>` → `"mode": "object"`
-  - `Map<K, V>` (K ≠ String) → `"mode": "entries"`
-- **Tuples**: `(T1, T2, ..., Tn)` up to 4 elements
-- **Arrays**: `[T; N]` fixed-size arrays
-
-### Error Types
-- Enum variants with `#[derive(AbiType)]`
-- Unit variants: `{ name, code, ty: null }`
-- Tuple/struct variants: `{ name, code, ty: <payload_type> }`
-
-### Type Registry
-
-Advanced types can be registered in an optional type registry:
+### ABI Structure
 
 ```json
 {
+  "metadata": {
+    "schema_version": "0.1.1",
+    "toolchain_version": "1.75.0",
+    "source_hash": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+  },
+  "module_name": "demo",
+  "module_version": "0.1.0",
   "types": {
     "module::TypeName": {
-      "kind": "struct",
-      "fields": [...],
-      "newtype": false
+      "kind": "struct|enum|map|tuple|array",
+      // ... type-specific fields
+    }
+  },
+  "functions": {
+    "function_name": {
+      "name": "function_name",
+      "kind": "query|command",
+      "parameters": [
+        {
+          "name": "param_name",
+          "ty": { "type": "string" },
+          "direction": "input"
+        }
+      ],
+      "returns": { "type": "string" } | null,
+      "errors": [
+        {
+          "name": "ErrorVariant",
+          "code": "ERROR_VARIANT",
+          "ty": { "type": "string" } | null
+        }
+      ]
+    }
+  },
+  "events": {
+    "event_name": {
+      "name": "event_name",
+      "payload_type": { "type": "string" } | null
     }
   }
 }
 ```
 
-When the registry is present, complex types use `$ref` references:
+### Type System
+
+#### Primitive Types
+- `String` → `{ "type": "string" }`
+- `u8`, `u16`, `u32`, `u64`, `u128` → `{ "type": "u8" }`, etc.
+- `i8`, `i16`, `i32`, `i64`, `i128` → `{ "type": "i8" }`, etc.
+- `bool` → `{ "type": "bool" }`
+
+#### Container Types
+- `Vec<T>` → `{ "type": "vec", "items": { "type": "T" } }`
+- `Option<T>` → `{ "type": "option", "value": { "type": "T" } }`
+
+#### Advanced Types
+
+**Structs**
 ```json
 {
-  "ty": {
-    "$ref": "module::TypeName"
+  "kind": "struct",
+  "fields": [
+    {
+      "name": "field_name",
+      "ty": { "type": "string" }
+    }
+  ],
+  "newtype": false
+}
+```
+
+**Enums**
+```json
+{
+  "kind": "enum",
+  "variants": [
+    {
+      "name": "UnitVariant",
+      "kind": "unit"
+    },
+    {
+      "name": "TupleVariant",
+      "kind": "tuple",
+      "items": [{ "type": "u32" }]
+    },
+    {
+      "name": "StructVariant",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "field_name",
+          "ty": { "type": "string" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Maps (Dual-Mode)**
+```json
+// String keys → object mode
+{
+  "kind": "map",
+  "key": { "type": "string" },
+  "value": { "type": "u64" },
+  "mode": "object"
+}
+
+// Other keys → entries mode
+{
+  "kind": "map",
+  "key": { "type": "u64" },
+  "value": { "type": "string" },
+  "mode": "entries"
+}
+```
+
+**Tuples & Arrays**
+```json
+// Tuple
+{
+  "kind": "tuple",
+  "items": [
+    { "type": "u8" },
+    { "type": "string" }
+  ]
+}
+
+// Array
+{
+  "kind": "array",
+  "item": { "type": "u16" },
+  "len": 4
+}
+```
+
+### Function ABI
+
+Functions use `{ "returns": <TypeRef|null>, "errors": [...] }` structure:
+
+- **Plain return**: `returns: { "type": "string" }`, `errors: []`
+- **Unit return**: `returns: null`, `errors: [...]`
+- **Result return**: `returns: { "type": "string" }`, `errors: [...]`
+
+Error variants use SCREAMING_SNAKE_CASE codes:
+- `InvalidInput` → `"code": "INVALID_INPUT"`
+- `NotFound` → `"code": "NOT_FOUND"`
+
+### Type Registry
+
+Advanced types can be referenced using `$ref`:
+
+```json
+{
+  "types": {
+    "module::User": {
+      "kind": "struct",
+      "fields": [...]
+    }
+  },
+  "functions": {
+    "get_user": {
+      "returns": {
+        "$ref": "module::User"
+      }
+    }
   }
 }
 ```
 
-When the registry is absent, types are inlined for backward compatibility.
-
-### Unsupported Types
-- `f32`, `f64` - Floating point numbers (compile-time error)
-- Unions - Not supported in ABI
-
 ## Usage
 
+### Basic Usage
+
 ```rust
-use abi_core::{Abi, AbiFunction, AbiTypeRef, FunctionKind, ParameterDirection, AbiParameter, ErrorAbi, TypeDef, FieldDef};
+use abi_core::{Abi, AbiTypeRef, TypeDef};
 
+// Create a new ABI
 let mut abi = Abi::new(
-    "my_module".to_string(),
-    "1.0.0".to_string(),
-    "1.85.0".to_string(),
-    "abc123".to_string(),
+    "demo".to_string(),
+    "0.1.0".to_string(),
+    "1.75.0".to_string(),
+    "source_hash".to_string(),
 );
 
-// Add a struct type to the registry
-let user_fields = vec![
-    FieldDef {
-        name: "id".to_string(),
-        ty: AbiTypeRef::inline_primitive("u64".to_string()),
-    },
-    FieldDef {
-        name: "name".to_string(),
-        ty: AbiTypeRef::inline_primitive("string".to_string()),
-    },
-];
-
-abi.add_type(
-    "my_module::User".to_string(),
-    TypeDef::Struct {
-        fields: user_fields,
-        newtype: false,
-    },
-);
-
-let function = AbiFunction {
-    name: "get_user".to_string(),
-    kind: FunctionKind::Query,
-    parameters: vec![
-        AbiParameter {
+// Add types to registry
+abi.add_type("demo::User".to_string(), TypeDef::Struct {
+    fields: vec![
+        FieldDef {
             name: "id".to_string(),
             ty: AbiTypeRef::inline_primitive("u64".to_string()),
-            direction: ParameterDirection::Input,
+        },
+        FieldDef {
+            name: "name".to_string(),
+            ty: AbiTypeRef::inline_primitive("string".to_string()),
         },
     ],
-    returns: Some(AbiTypeRef::ref_("my_module::User".to_string())),
-    errors: vec![
-        ErrorAbi {
-            name: "NotFound".to_string(),
-            code: "NOT_FOUND".to_string(),
-            ty: Some(AbiTypeRef::inline_primitive("u64".to_string())),
-        },
-    ],
-};
-
-abi.add_function(function);
+    newtype: false,
+});
 
 // Serialize to canonical JSON
-let mut output = Vec::new();
-abi_core::write_canonical(&abi, &mut output)?;
+let json = serde_json::to_string_pretty(&abi).expect("Failed to serialize");
 ```
 
-## ABI Extraction
+### Canonical Serialization
 
-Use the `xtask` command to extract ABI files from compiled packages:
+The crate provides canonical serialization that ensures deterministic output:
 
-```bash
-cargo xtask abi extract --package abi_demo --out target/abi/abi.json
-```
-
-## Build Integration
-
-The `abi-export` feature enables automatic ABI generation during build:
-
-```bash
-# Build with ABI export enabled
-cargo build -p abi_demo --target wasm32-unknown-unknown --features abi-export
-
-# ABI will be automatically written to target/abi/abi.json
-```
-
-No macro changes required; `abi-export` only affects build-time metadata generation.
-
-## Advanced Type Examples
-
-### Struct with `#[derive(AbiType)]`
 ```rust
-#[derive(AbiType)]
-pub struct User {
-    pub id: u64,
-    pub name: String,
-    pub metadata: Option<Vec<u8>>,
-}
-```
+use abi_core::{write_canonical, sha256};
 
-### Enum with `#[derive(AbiType)]`
-```rust
-#[derive(AbiType)]
-pub enum Status {
-    Pending,
-    Active(u32),
-    Completed { timestamp: u64, result: String },
-}
-```
+// Write canonical JSON
+write_canonical(&mut std::io::stdout(), &abi).expect("Failed to write");
 
-### Map Types
-```rust
-// String-keyed map (object mode)
-pub fn get_config() -> BTreeMap<String, u64> { ... }
-
-// Non-String-keyed map (entries mode)
-pub fn get_stats() -> BTreeMap<u64, String> { ... }
-```
-
-### Tuples and Arrays
-```rust
-pub fn get_coordinates() -> (u8, String) { ... }
-pub fn get_buffer() -> [u16; 4] { ... }
+// Get SHA256 hash
+let hash = sha256(&abi).expect("Failed to hash");
+println!("ABI SHA256: {:x}", hash);
 ```
 
 ## Testing
 
-Run the test suite:
+Run the test suite to verify functionality:
 
 ```bash
 cargo test -p abi-core
 ```
 
 The test suite includes:
-- Deterministic serialization tests
-- Parameter order preservation tests
-- Path-free JSON validation
-- Type coverage tests
-- Error handling tests
-- Result<T,E> mapping tests
-- Advanced types tests
-- Backward compatibility tests 
+- Golden fixture tests with SHA256 verification
+- Schema validation tests
+- Canonical serialization tests
+- Path hygiene tests
+- Type system tests
+
+## Build Integration
+
+Enable ABI export during build:
+
+```toml
+[dependencies]
+abi-core = { path = "../abi-core", features = ["abi-export"] }
+```
+
+The `abi-export` feature enables build-time ABI generation utilities. 

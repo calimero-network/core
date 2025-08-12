@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use abi_macros as abi;
-use abi_core::AbiType;
+use calimero_sdk::app;
 
 /// Example error type for greeting operations
 #[derive(Debug, thiserror::Error)]
@@ -36,19 +35,34 @@ pub enum ComputeError {
 }
 
 /// Example SSApp module with ABI generation
-#[abi::module(name = "demo", version = "0.1.0")]
-pub mod demo {
-    use super::*;
+#[app::state(emits = DemoEvent)]
+#[derive(Debug, borsh::BorshSerialize, borsh::BorshDeserialize)]
+pub struct DemoApp {
+    greeting: String,
+}
+
+#[derive(Debug)]
+#[app::event]
+pub enum DemoEvent {
+    GreetingChanged { old: String, new: String },
+}
+
+#[app::logic]
+impl DemoApp {
+    #[app::init]
+    pub fn init() -> Self {
+        Self {
+            greeting: "Hello, World!".to_string(),
+        }
+    }
     
     /// Query function to get a greeting (plain T return)
-    #[abi::query]
-    pub fn get_greeting(name: String) -> String {
+    pub fn get_greeting(&self, name: String) -> String {
         format!("Hello, {}!", name)
     }
     
     /// Command function to set a greeting (Result<(), E> return)
-    #[abi::command]
-    pub fn set_greeting(new_value: String) -> std::result::Result<(), DemoError> {
+    pub fn set_greeting(&mut self, new_value: String) -> app::Result<(), DemoError> {
         if new_value.is_empty() {
             return Err(DemoError::InvalidGreeting("Greeting cannot be empty".to_string()));
         }
@@ -57,14 +71,19 @@ pub mod demo {
             return Err(DemoError::GreetingTooLong(new_value.len()));
         }
         
-        // In a real app, this would store the greeting
-        println!("Setting greeting to: {}", new_value);
+        let old_greeting = self.greeting.clone();
+        self.greeting = new_value.clone();
+        
+        app::emit!(DemoEvent::GreetingChanged {
+            old: old_greeting,
+            new: new_value,
+        });
+        
         Ok(())
     }
     
     /// Query function to compute a value (Result<T, E> return)
-    #[abi::query]
-    pub fn compute(value: u64, divisor: u64) -> std::result::Result<u64, ComputeError> {
+    pub fn compute(&self, value: u64, divisor: u64) -> app::Result<u64, ComputeError> {
         if divisor == 0 {
             return Err(ComputeError::DivisionByZero);
         }
@@ -79,23 +98,16 @@ pub mod demo {
         
         Ok(value / divisor)
     }
-    
-    /// Event emitted when greeting changes
-    #[abi::event]
-    pub struct GreetingChanged {
-        pub old: String,
-        pub new: String,
-    }
 }
 
 #[cfg(feature = "abi-conformance")]
 pub mod conformance {
-    use abi_macros as abi;
+    use calimero_sdk::app;
     use abi_core::AbiType;
     use std::collections::BTreeMap;
     
     /// Example struct with various field types
-    #[derive(abi::AbiType)]
+    #[derive(AbiType)]
     pub struct ComplexStruct {
         pub id: u64,
         pub name: String,
@@ -104,11 +116,11 @@ pub mod conformance {
     }
     
     /// Example newtype struct
-    #[derive(abi::AbiType)]
+    #[derive(AbiType)]
     pub struct UserId(u128);
     
     /// Example enum with different variant types
-    #[derive(abi::AbiType)]
+    #[derive(AbiType)]
     pub enum Status {
         Pending,
         Active(u32),
@@ -127,13 +139,29 @@ pub mod conformance {
     }
     
     /// Conformance module with advanced types
-    #[abi::module(name = "conformance", version = "0.1.0")]
-    pub mod advanced {
-        use super::*;
+    #[app::state(emits = ConformanceEvent)]
+    #[derive(Debug, borsh::BorshSerialize, borsh::BorshDeserialize)]
+    pub struct ConformanceApp {
+        users: BTreeMap<UserId, ComplexStruct>,
+    }
+    
+    #[derive(Debug)]
+    #[app::event]
+    pub enum ConformanceEvent {
+        UserStatusChanged { user_id: UserId, old_status: Status, new_status: Status },
+    }
+    
+    #[app::logic]
+    impl ConformanceApp {
+        #[app::init]
+        pub fn init() -> Self {
+            Self {
+                users: BTreeMap::new(),
+            }
+        }
         
         /// Query function using complex struct
-        #[abi::query]
-        pub fn get_user_info(user_id: UserId) -> std::result::Result<ComplexStruct, AdvancedError> {
+        pub fn get_user_info(&self, user_id: UserId) -> app::Result<ComplexStruct, AdvancedError> {
             if user_id.0 == 0 {
                 return Err(AdvancedError::NotFound(user_id.0));
             }
@@ -152,12 +180,12 @@ pub mod conformance {
         }
         
         /// Command function using enum and tuple
-        #[abi::command]
         pub fn update_status(
+            &mut self,
             user_id: UserId,
             status: Status,
             coords: (u8, String),
-        ) -> std::result::Result<[u16; 4], AdvancedError> {
+        ) -> app::Result<[u16; 4], AdvancedError> {
             if user_id.0 == 0 {
                 return Err(AdvancedError::NotFound(user_id.0));
             }
@@ -178,14 +206,6 @@ pub mod conformance {
             
             Ok([1, 2, 3, 4])
         }
-        
-        /// Event with complex payload
-        #[abi::event]
-        pub struct UserStatusChanged {
-            pub user_id: UserId,
-            pub old_status: Status,
-            pub new_status: Status,
-        }
     }
 }
 
@@ -195,55 +215,63 @@ mod tests {
     
     #[test]
     fn test_get_greeting() {
-        let result = demo::get_greeting("World".to_string());
+        let app = DemoApp::init();
+        let result = app.get_greeting("World".to_string());
         assert_eq!(result, "Hello, World!");
     }
     
     #[test]
     fn test_set_greeting_success() {
-        let result = demo::set_greeting("Hello".to_string());
+        let mut app = DemoApp::init();
+        let result = app.set_greeting("Hello".to_string());
         assert!(result.is_ok());
     }
     
     #[test]
     fn test_set_greeting_error_empty() {
-        let result = demo::set_greeting("".to_string());
+        let mut app = DemoApp::init();
+        let result = app.set_greeting("".to_string());
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), DemoError::InvalidGreeting(_)));
     }
     
     #[test]
     fn test_set_greeting_error_too_long() {
+        let mut app = DemoApp::init();
         let long_greeting = "a".repeat(101);
-        let result = demo::set_greeting(long_greeting);
+        let result = app.set_greeting(long_greeting);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), DemoError::GreetingTooLong(101)));
     }
     
     #[test]
     fn test_compute_success() {
-        let result = demo::compute(10, 2);
+        let app = DemoApp::init();
+        let result = app.compute(10, 2);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 5);
     }
     
     #[test]
     fn test_compute_division_by_zero() {
-        let result = demo::compute(10, 0);
+        let app = DemoApp::init();
+        let result = app.compute(10, 0);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ComputeError::DivisionByZero));
     }
     
     #[test]
     fn test_compute_overflow() {
-        let result = demo::compute(u64::MAX, 1);
+        let app = DemoApp::init();
+        let result = app.compute(u64::MAX, 1);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ComputeError::Overflow));
     }
     
     #[test]
     fn test_compute_invalid_input() {
-        let result = demo::compute(0, 1);
+        let app = DemoApp::init();
+        let result = app.compute(0, 1);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ComputeError::InvalidInput(_)));
     }
@@ -251,12 +279,13 @@ mod tests {
     #[cfg(feature = "abi-conformance")]
     mod conformance_tests {
         use super::*;
-        use conformance::{UserId, ComplexStruct, Status, AdvancedError};
+        use conformance::{UserId, ComplexStruct, Status, AdvancedError, ConformanceApp};
         
         #[test]
         fn test_get_user_info_success() {
+            let app = ConformanceApp::init();
             let user_id = UserId(123);
-            let result = conformance::advanced::get_user_info(user_id);
+            let result = app.get_user_info(user_id);
             assert!(result.is_ok());
             
             let user = result.unwrap();
@@ -268,30 +297,33 @@ mod tests {
         
         #[test]
         fn test_get_user_info_not_found() {
+            let app = ConformanceApp::init();
             let user_id = UserId(0);
-            let result = conformance::advanced::get_user_info(user_id);
+            let result = app.get_user_info(user_id);
             assert!(result.is_err());
             assert!(matches!(result.unwrap_err(), AdvancedError::NotFound(0)));
         }
         
         #[test]
         fn test_update_status_success() {
+            let mut app = ConformanceApp::init();
             let user_id = UserId(123);
             let status = Status::Active(42);
             let coords = (50, "test".to_string());
             
-            let result = conformance::advanced::update_status(user_id, status, coords);
+            let result = app.update_status(user_id, status, coords);
             assert!(result.is_ok());
             assert_eq!(result.unwrap(), [1, 2, 3, 4]);
         }
         
         #[test]
         fn test_update_status_invalid_coordinate() {
+            let mut app = ConformanceApp::init();
             let user_id = UserId(123);
             let status = Status::Pending;
             let coords = (150, "test".to_string());
             
-            let result = conformance::advanced::update_status(user_id, status, coords);
+            let result = app.update_status(user_id, status, coords);
             assert!(result.is_err());
             assert!(matches!(result.unwrap_err(), AdvancedError::InvalidStatus(_)));
         }

@@ -1,0 +1,11 @@
+error[E0432]: unresolved import `calimero_sdk`
+ --> tests/ui/missing_abi_type.rs:1:5
+  |
+1 | use calimero_sdk::app;
+  |     ^^^^^^^^^^^^ use of undeclared crate or module `calimero_sdk`
+
+error[E0601]: `main` function not found in crate `$CRATE`
+  --> tests/ui/missing_abi_type.rs:23:2
+   |
+23 | }
+   |  ^ consider adding a `main` function to `$DIR/tests/ui/missing_abi_type.rs`

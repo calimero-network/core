@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "schema_version": "0.1.1",
+    "toolchain_version": "1.75.0",
+    "source_hash": "d4e5f6789012345678901234567890abcdef1234567890abcdef1234567890ab"
+  },
+  "module_name": "test",
+  "module_version": "0.1.0",
+  "types": {
+    "test::U64Map": {
+      "kind": "Map",
+      "key": {
+        "type": "u64"
+      },
+      "value": {
+        "type": "string"
+      },
+      "mode": "entries"
+    }
+  },
+  "functions": {},
+  "events": {}
+} 

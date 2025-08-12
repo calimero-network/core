@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use abi_core::{
-    Abi, AbiTypeRef, TypeDef, FieldDef, VariantDef, VariantKind, MapMode,
+use abi_core::schema::{
+    Abi, AbiTypeRef, TypeDef, FieldDef, VariantDef, VariantKind, MapMode, 
     FunctionKind, ParameterDirection, ErrorAbi, AbiParameter, AbiFunction, AbiEvent
 };
-use std::collections::BTreeMap;
 
 #[test]
 fn test_advanced_types_serialization() {
