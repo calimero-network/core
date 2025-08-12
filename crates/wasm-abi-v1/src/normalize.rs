@@ -1,5 +1,5 @@
 use crate::schema::TypeRef;
-use syn::{Type, TypePath, TypeReference, TypeArray, TypeTuple};
+use syn::{Type, TypeArray, TypePath, TypeReference, TypeTuple};
 use thiserror::Error;
 
 /// Error type for normalization failures
@@ -38,9 +38,7 @@ pub fn normalize_type(
 ) -> Result<TypeRef, NormalizeError> {
     match ty {
         // Handle references and lifetimes
-        Type::Reference(TypeReference { elem, .. }) => {
-            normalize_type(elem, wasm32, resolver)
-        }
+        Type::Reference(TypeReference { elem, .. }) => normalize_type(elem, wasm32, resolver),
 
         // Handle Option<T>
         Type::Path(TypePath { path, .. }) if is_option(path) => {
@@ -51,9 +49,7 @@ pub fn normalize_type(
         }
 
         // Handle Vec<u8> (bytes without size) - must come before generic Vec<T>
-        Type::Path(TypePath { path, .. }) if is_vec_u8(path) => {
-            Ok(TypeRef::bytes())
-        }
+        Type::Path(TypePath { path, .. }) if is_vec_u8(path) => Ok(TypeRef::bytes()),
 
         // Handle Vec<T>
         Type::Path(TypePath { path, .. }) if is_vec(path) => {
@@ -65,15 +61,15 @@ pub fn normalize_type(
         // Handle BTreeMap<String, V>
         Type::Path(TypePath { path, .. }) if is_btree_map(path) => {
             let (key_type, value_type) = extract_map_inner(ty)?;
-            
+
             // Check that key type is String (after normalization)
             let normalized_key = normalize_type(key_type, wasm32, resolver)?;
             if !is_string_type(&normalized_key) {
-                return Err(NormalizeError::UnsupportedMapKey(
-                    format!("non-string key type")
-                ));
+                return Err(NormalizeError::UnsupportedMapKey(format!(
+                    "non-string key type"
+                )));
             }
-            
+
             let normalized_value = normalize_type(value_type, wasm32, resolver)?;
             Ok(TypeRef::map(normalized_value))
         }
@@ -81,7 +77,7 @@ pub fn normalize_type(
         // Handle arrays [T; N]
         Type::Array(TypeArray { elem, len, .. }) => {
             let elem_type = &**elem;
-            
+
             // Check if it's [u8; N]
             if let Type::Path(TypePath { path, .. }) = elem_type {
                 if is_u8_type(path) {
@@ -89,55 +85,51 @@ pub fn normalize_type(
                     return Ok(TypeRef::bytes_with_size(size, "hex"));
                 }
             }
-            
-            Err(NormalizeError::UnsupportedArrayElement(
-                format!("non-u8 element type")
-            ))
+
+            Err(NormalizeError::UnsupportedArrayElement(format!(
+                "non-u8 element type"
+            )))
         }
 
         // Handle scalar types
-        Type::Path(TypePath { path, .. }) => {
-            normalize_scalar_type(path, wasm32, resolver)
-        }
+        Type::Path(TypePath { path, .. }) => normalize_scalar_type(path, wasm32, resolver),
 
         // Handle unit type ()
-        Type::Tuple(TypeTuple { elems, .. }) if elems.is_empty() => {
-            Ok(TypeRef::unit())
-        }
+        Type::Tuple(TypeTuple { elems, .. }) if elems.is_empty() => Ok(TypeRef::unit()),
 
         // Handle other types as references
-        _ => {
-            Err(NormalizeError::TypePathError(
-                format!("unsupported type")
-            ))
-        }
+        _ => Err(NormalizeError::TypePathError(format!("unsupported type"))),
     }
 }
 
 /// Check if a type path represents Option
 fn is_option(path: &syn::Path) -> bool {
-    path.segments.last()
+    path.segments
+        .last()
         .map(|seg| seg.ident == "Option")
         .unwrap_or(false)
 }
 
 /// Check if a type path represents Vec
 fn is_vec(path: &syn::Path) -> bool {
-    path.segments.last()
+    path.segments
+        .last()
         .map(|seg| seg.ident == "Vec")
         .unwrap_or(false)
 }
 
 /// Check if a type path represents BTreeMap
 fn is_btree_map(path: &syn::Path) -> bool {
-    path.segments.last()
+    path.segments
+        .last()
         .map(|seg| seg.ident == "BTreeMap")
         .unwrap_or(false)
 }
 
 /// Check if a type path represents u8
 fn is_u8_type(path: &syn::Path) -> bool {
-    path.segments.last()
+    path.segments
+        .last()
         .map(|seg| seg.ident == "u8")
         .unwrap_or(false)
 }
@@ -148,7 +140,11 @@ fn is_vec_u8(path: &syn::Path) -> bool {
         if last_seg.ident == "Vec" {
             if let syn::PathArguments::AngleBracketed(args) = &last_seg.arguments {
                 if args.args.len() == 1 {
-                    if let syn::GenericArgument::Type(Type::Path(TypePath { path: inner_path, .. })) = &args.args[0] {
+                    if let syn::GenericArgument::Type(Type::Path(TypePath {
+                        path: inner_path,
+                        ..
+                    })) = &args.args[0]
+                    {
                         return is_u8_type(inner_path);
                     }
                 }
@@ -171,7 +167,9 @@ fn extract_option_inner(ty: &syn::Type) -> Result<&syn::Type, NormalizeError> {
             }
         }
     }
-    Err(NormalizeError::TypePathError("failed to extract Option inner type".to_string()))
+    Err(NormalizeError::TypePathError(
+        "failed to extract Option inner type".to_string(),
+    ))
 }
 
 /// Extract the inner type from Vec<T>
@@ -187,7 +185,9 @@ fn extract_vec_inner(ty: &syn::Type) -> Result<&syn::Type, NormalizeError> {
             }
         }
     }
-    Err(NormalizeError::TypePathError("failed to extract Vec inner type".to_string()))
+    Err(NormalizeError::TypePathError(
+        "failed to extract Vec inner type".to_string(),
+    ))
 }
 
 /// Extract key and value types from BTreeMap<K, V>
@@ -196,25 +196,35 @@ fn extract_map_inner(ty: &syn::Type) -> Result<(&syn::Type, &syn::Type), Normali
         if let Some(last_seg) = path.segments.last() {
             if let syn::PathArguments::AngleBracketed(args) = &last_seg.arguments {
                 if args.args.len() == 2 {
-                    if let (syn::GenericArgument::Type(key_type), syn::GenericArgument::Type(value_type)) = 
-                        (&args.args[0], &args.args[1]) {
+                    if let (
+                        syn::GenericArgument::Type(key_type),
+                        syn::GenericArgument::Type(value_type),
+                    ) = (&args.args[0], &args.args[1])
+                    {
                         return Ok((key_type, value_type));
                     }
                 }
             }
         }
     }
-    Err(NormalizeError::TypePathError("failed to extract BTreeMap inner types".to_string()))
+    Err(NormalizeError::TypePathError(
+        "failed to extract BTreeMap inner types".to_string(),
+    ))
 }
 
 /// Extract array length from [T; N]
 fn extract_array_len(len: &syn::Expr) -> Result<usize, NormalizeError> {
-    if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) = len {
-        lit.base10_parse().map_err(|_| {
-            NormalizeError::TypePathError("failed to parse array length".to_string())
-        })
+    if let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(lit),
+        ..
+    }) = len
+    {
+        lit.base10_parse()
+            .map_err(|_| NormalizeError::TypePathError("failed to parse array length".to_string()))
     } else {
-        Err(NormalizeError::TypePathError("array length must be a literal integer".to_string()))
+        Err(NormalizeError::TypePathError(
+            "array length must be a literal integer".to_string(),
+        ))
     }
 }
 
@@ -231,7 +241,7 @@ fn normalize_scalar_type(
 ) -> Result<TypeRef, NormalizeError> {
     if let Some(last_seg) = path.segments.last() {
         let type_name = last_seg.ident.to_string();
-        
+
         match type_name.as_str() {
             "bool" => Ok(TypeRef::bool()),
             "i32" => Ok(TypeRef::i32()),
@@ -280,4 +290,4 @@ impl TypeRefExt for TypeRef {
         // This will be handled by the higher-level emitter
         // The actual nullable flag is set on the Parameter/Field level
     }
-} 
+}

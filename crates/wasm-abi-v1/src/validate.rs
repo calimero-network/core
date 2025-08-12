@@ -1,4 +1,4 @@
-use crate::schema::{Manifest, TypeRef, TypeDef, Method, Event, Error, Field, Variant};
+use crate::schema::{Error, Event, Field, Manifest, Method, TypeDef, TypeRef, Variant};
 use thiserror::Error;
 
 /// Error type for validation failures
@@ -6,25 +6,25 @@ use thiserror::Error;
 pub enum ValidationError {
     #[error("Option<T> type missing nullable=true: {path}")]
     MissingNullable { path: String },
-    
+
     #[error("Event/error uses 'type' key instead of 'payload': {path}")]
     UsesTypeKey { path: String },
-    
+
     #[error("Variable bytes has size=0: {path}")]
     VariableBytesWithSize { path: String },
-    
+
     #[error("Map key is not 'string': {path}")]
     NonStringMapKey { path: String },
-    
+
     #[error("Dangling $ref: {ref_name} at {path}")]
     DanglingRef { ref_name: String, path: String },
-    
+
     #[error("Types not sorted deterministically")]
     TypesNotSorted,
-    
+
     #[error("Methods not sorted deterministically")]
     MethodsNotSorted,
-    
+
     #[error("Events not sorted deterministically")]
     EventsNotSorted,
 }
@@ -33,25 +33,25 @@ pub enum ValidationError {
 pub fn validate_manifest(manifest: &Manifest) -> Result<(), ValidationError> {
     // Check determinism
     validate_determinism(manifest)?;
-    
+
     // Check all type references
     validate_type_refs(manifest)?;
-    
+
     // Check all methods
     for (i, method) in manifest.methods.iter().enumerate() {
         validate_method(method, &format!("methods[{}]", i), manifest)?;
     }
-    
+
     // Check all events
     for (i, event) in manifest.events.iter().enumerate() {
         validate_event(event, &format!("events[{}]", i))?;
     }
-    
+
     // Check all type definitions
     for (type_name, type_def) in &manifest.types {
         validate_type_def(type_def, &format!("types.{}", type_name), manifest)?;
     }
-    
+
     Ok(())
 }
 
@@ -62,91 +62,121 @@ fn validate_determinism(manifest: &Manifest) -> Result<(), ValidationError> {
     let type_names: Vec<_> = manifest.types.keys().collect();
     let mut sorted_names = type_names.clone();
     sorted_names.sort();
-    
+
     if type_names != sorted_names {
         return Err(ValidationError::TypesNotSorted);
     }
-    
+
     // Check methods are sorted
     let method_names: Vec<_> = manifest.methods.iter().map(|m| &m.name).collect();
     let mut sorted_method_names = method_names.clone();
     sorted_method_names.sort();
-    
+
     if method_names != sorted_method_names {
         return Err(ValidationError::MethodsNotSorted);
     }
-    
+
     // Check events are sorted
     let event_names: Vec<_> = manifest.events.iter().map(|e| &e.name).collect();
     let mut sorted_event_names = event_names.clone();
     sorted_event_names.sort();
-    
+
     if event_names != sorted_event_names {
         return Err(ValidationError::EventsNotSorted);
     }
-    
+
     Ok(())
 }
 
 /// Validate all type references in the manifest
 fn validate_type_refs(manifest: &Manifest) -> Result<(), ValidationError> {
     let mut refs = Vec::new();
-    
+
     // Collect all $ref from methods
     for (i, method) in manifest.methods.iter().enumerate() {
-        collect_refs_from_type_ref(&method.returns, &format!("methods[{}].returns", i), &mut refs);
+        collect_refs_from_type_ref(
+            &method.returns,
+            &format!("methods[{}].returns", i),
+            &mut refs,
+        );
         for (j, param) in method.params.iter().enumerate() {
-            collect_refs_from_type_ref(&Some(param.type_.clone()), &format!("methods[{}].params[{}].type", i, j), &mut refs);
+            collect_refs_from_type_ref(
+                &Some(param.type_.clone()),
+                &format!("methods[{}].params[{}].type", i, j),
+                &mut refs,
+            );
         }
         for (j, error) in method.errors.iter().enumerate() {
-            collect_refs_from_type_ref(&error.payload, &format!("methods[{}].errors[{}].payload", i, j), &mut refs);
+            collect_refs_from_type_ref(
+                &error.payload,
+                &format!("methods[{}].errors[{}].payload", i, j),
+                &mut refs,
+            );
         }
     }
-    
+
     // Collect all $ref from events
     for (i, event) in manifest.events.iter().enumerate() {
         collect_refs_from_type_ref(&event.payload, &format!("events[{}].payload", i), &mut refs);
     }
-    
+
     // Collect all $ref from type definitions
     for (type_name, type_def) in &manifest.types {
         collect_refs_from_type_def(type_def, &format!("types.{}", type_name), &mut refs);
     }
-    
+
     // Check all refs exist
     for (ref_name, path) in refs {
         if !manifest.types.contains_key(&ref_name) {
             return Err(ValidationError::DanglingRef { ref_name, path });
         }
     }
-    
+
     Ok(())
 }
 
 /// Collect all $ref from a TypeRef
-fn collect_refs_from_type_ref(type_ref: &Option<TypeRef>, path: &str, refs: &mut Vec<(String, String)>) {
+fn collect_refs_from_type_ref(
+    type_ref: &Option<TypeRef>,
+    path: &str,
+    refs: &mut Vec<(String, String)>,
+) {
     if let Some(type_ref) = type_ref {
         match type_ref {
             TypeRef::Reference { ref_ } => {
                 refs.push((ref_.clone(), path.to_string()));
             }
             TypeRef::Scalar(_) => {}
-            TypeRef::Collection(collection) => {
-                match collection {
-                    crate::schema::CollectionType::List { items } => {
-                        collect_refs_from_type_ref(&Some((**items).clone()), &format!("{}.items", path), refs);
-                    }
-                    crate::schema::CollectionType::Map { key, value } => {
-                        collect_refs_from_type_ref(&Some((**key).clone()), &format!("{}.key", path), refs);
-                        collect_refs_from_type_ref(&Some((**value).clone()), &format!("{}.value", path), refs);
-                    }
-                    crate::schema::CollectionType::Record { fields } => {
-                        for (i, field) in fields.iter().enumerate() {
-                            collect_refs_from_type_ref(&Some(field.type_.clone()), &format!("{}.fields[{}].type", path, i), refs);
-                        }
+            TypeRef::Collection(collection) => match collection {
+                crate::schema::CollectionType::List { items } => {
+                    collect_refs_from_type_ref(
+                        &Some((**items).clone()),
+                        &format!("{}.items", path),
+                        refs,
+                    );
+                }
+                crate::schema::CollectionType::Map { key, value } => {
+                    collect_refs_from_type_ref(
+                        &Some((**key).clone()),
+                        &format!("{}.key", path),
+                        refs,
+                    );
+                    collect_refs_from_type_ref(
+                        &Some((**value).clone()),
+                        &format!("{}.value", path),
+                        refs,
+                    );
+                }
+                crate::schema::CollectionType::Record { fields } => {
+                    for (i, field) in fields.iter().enumerate() {
+                        collect_refs_from_type_ref(
+                            &Some(field.type_.clone()),
+                            &format!("{}.fields[{}].type", path, i),
+                            refs,
+                        );
                     }
                 }
-            }
+            },
         }
     }
 }
@@ -156,12 +186,20 @@ fn collect_refs_from_type_def(type_def: &TypeDef, path: &str, refs: &mut Vec<(St
     match type_def {
         TypeDef::Record { fields } => {
             for (i, field) in fields.iter().enumerate() {
-                collect_refs_from_type_ref(&Some(field.type_.clone()), &format!("{}.fields[{}].type", path, i), refs);
+                collect_refs_from_type_ref(
+                    &Some(field.type_.clone()),
+                    &format!("{}.fields[{}].type", path, i),
+                    refs,
+                );
             }
         }
         TypeDef::Variant { variants } => {
             for (i, variant) in variants.iter().enumerate() {
-                collect_refs_from_type_ref(&variant.payload, &format!("{}.variants[{}].payload", path, i), refs);
+                collect_refs_from_type_ref(
+                    &variant.payload,
+                    &format!("{}.variants[{}].payload", path, i),
+                    refs,
+                );
             }
         }
         TypeDef::Bytes { .. } => {}
@@ -169,11 +207,19 @@ fn collect_refs_from_type_def(type_def: &TypeDef, path: &str, refs: &mut Vec<(St
 }
 
 /// Validate a method
-fn validate_method(method: &Method, path: &str, manifest: &Manifest) -> Result<(), ValidationError> {
+fn validate_method(
+    method: &Method,
+    path: &str,
+    manifest: &Manifest,
+) -> Result<(), ValidationError> {
     // Check parameters
     for (i, param) in method.params.iter().enumerate() {
-        validate_type_ref(&param.type_, &format!("{}.params[{}].type", path, i), manifest)?;
-        
+        validate_type_ref(
+            &param.type_,
+            &format!("{}.params[{}].type", path, i),
+            manifest,
+        )?;
+
         // Check nullable for Option<T>
         if is_option_type(&param.type_) && param.nullable != Some(true) {
             return Err(ValidationError::MissingNullable {
@@ -181,25 +227,29 @@ fn validate_method(method: &Method, path: &str, manifest: &Manifest) -> Result<(
             });
         }
     }
-    
+
     // Check return type
     if let Some(returns) = &method.returns {
         validate_type_ref(returns, &format!("{}.returns", path), manifest)?;
-        
+
         // Check nullable for Option<T>
         if is_option_type(returns) {
             // Note: We can't check nullable here since it's not part of the return type structure
             // This would need to be checked at the emitter level
         }
     }
-    
+
     // Check errors
     for (i, error) in method.errors.iter().enumerate() {
         if let Some(payload) = &error.payload {
-            validate_type_ref(payload, &format!("{}.errors[{}].payload", path, i), manifest)?;
+            validate_type_ref(
+                payload,
+                &format!("{}.errors[{}].payload", path, i),
+                manifest,
+            )?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -211,12 +261,20 @@ fn validate_event(event: &Event, path: &str) -> Result<(), ValidationError> {
 }
 
 /// Validate a type definition
-fn validate_type_def(type_def: &TypeDef, path: &str, manifest: &Manifest) -> Result<(), ValidationError> {
+fn validate_type_def(
+    type_def: &TypeDef,
+    path: &str,
+    manifest: &Manifest,
+) -> Result<(), ValidationError> {
     match type_def {
         TypeDef::Record { fields } => {
             for (i, field) in fields.iter().enumerate() {
-                validate_type_ref(&field.type_, &format!("{}.fields[{}].type", path, i), manifest)?;
-                
+                validate_type_ref(
+                    &field.type_,
+                    &format!("{}.fields[{}].type", path, i),
+                    manifest,
+                )?;
+
                 // Check nullable for Option<T>
                 if is_option_type(&field.type_) && field.nullable != Some(true) {
                     return Err(ValidationError::MissingNullable {
@@ -228,7 +286,11 @@ fn validate_type_def(type_def: &TypeDef, path: &str, manifest: &Manifest) -> Res
         TypeDef::Variant { variants } => {
             for (i, variant) in variants.iter().enumerate() {
                 if let Some(payload) = &variant.payload {
-                    validate_type_ref(payload, &format!("{}.variants[{}].payload", path, i), manifest)?;
+                    validate_type_ref(
+                        payload,
+                        &format!("{}.variants[{}].payload", path, i),
+                        manifest,
+                    )?;
                 }
             }
         }
@@ -242,12 +304,16 @@ fn validate_type_def(type_def: &TypeDef, path: &str, manifest: &Manifest) -> Res
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// Validate a type reference
-fn validate_type_ref(type_ref: &TypeRef, path: &str, manifest: &Manifest) -> Result<(), ValidationError> {
+fn validate_type_ref(
+    type_ref: &TypeRef,
+    path: &str,
+    manifest: &Manifest,
+) -> Result<(), ValidationError> {
     match type_ref {
         TypeRef::Reference { ref_ } => {
             if !manifest.types.contains_key(ref_) {
@@ -257,20 +323,18 @@ fn validate_type_ref(type_ref: &TypeRef, path: &str, manifest: &Manifest) -> Res
                 });
             }
         }
-        TypeRef::Scalar(scalar) => {
-            match scalar {
-                crate::schema::ScalarType::Bytes { size, .. } => {
-                    if let Some(size_val) = size {
-                        if *size_val == 0 {
-                            return Err(ValidationError::VariableBytesWithSize {
-                                path: path.to_string(),
-                            });
-                        }
+        TypeRef::Scalar(scalar) => match scalar {
+            crate::schema::ScalarType::Bytes { size, .. } => {
+                if let Some(size_val) = size {
+                    if *size_val == 0 {
+                        return Err(ValidationError::VariableBytesWithSize {
+                            path: path.to_string(),
+                        });
                     }
                 }
-                _ => {}
             }
-        }
+            _ => {}
+        },
         TypeRef::Collection(collection) => {
             match collection {
                 crate::schema::CollectionType::List { items } => {
@@ -291,13 +355,17 @@ fn validate_type_ref(type_ref: &TypeRef, path: &str, manifest: &Manifest) -> Res
                 }
                 crate::schema::CollectionType::Record { fields } => {
                     for (i, field) in fields.iter().enumerate() {
-                        validate_type_ref(&field.type_, &format!("{}.fields[{}].type", path, i), manifest)?;
+                        validate_type_ref(
+                            &field.type_,
+                            &format!("{}.fields[{}].type", path, i),
+                            manifest,
+                        )?;
                     }
                 }
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -313,17 +381,17 @@ fn is_option_type(_type_ref: &TypeRef) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{Manifest, TypeRef, TypeDef, Method, Parameter};
+    use crate::schema::{Manifest, Method, Parameter, TypeDef, TypeRef};
 
     #[test]
     fn test_validate_manifest_basic() {
         let mut manifest = Manifest::default();
-        
+
         // Add a simple type
-        manifest.types.insert("TestType".to_string(), TypeDef::Record {
-            fields: vec![]
-        });
-        
+        manifest
+            .types
+            .insert("TestType".to_string(), TypeDef::Record { fields: vec![] });
+
         // Add a simple method
         manifest.methods.push(Method {
             name: "test_method".to_string(),
@@ -332,7 +400,7 @@ mod tests {
             returns_nullable: None,
             errors: vec![],
         });
-        
+
         // Should pass validation
         assert!(validate_manifest(&manifest).is_ok());
     }
@@ -340,7 +408,7 @@ mod tests {
     #[test]
     fn test_validate_dangling_ref() {
         let mut manifest = Manifest::default();
-        
+
         // Add a method that references a non-existent type
         manifest.methods.push(Method {
             name: "test".to_string(),
@@ -349,7 +417,7 @@ mod tests {
             returns_nullable: None,
             errors: vec![],
         });
-        
+
         // Should fail validation
         let result = validate_manifest(&manifest);
         assert!(result.is_err());
@@ -360,4 +428,4 @@ mod tests {
             _ => panic!("Expected DanglingRef error"),
         }
     }
-} 
+}

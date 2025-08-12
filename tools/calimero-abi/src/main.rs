@@ -18,11 +18,11 @@ enum Commands {
         /// Input WASM file
         #[arg(value_name = "WASM_FILE")]
         wasm_file: PathBuf,
-        
+
         /// Output JSON file
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
-        
+
         /// Verify ABI using get_abi* exports
         #[arg(long)]
         verify: bool,
@@ -48,12 +48,12 @@ fn main() -> anyhow::Result<()> {
 fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> anyhow::Result<()> {
     // Read the WASM file
     let wasm_bytes = fs::read(wasm_file)?;
-    
+
     // Parse the WASM file
     let parser = WasmParser::new(0);
     let mut abi_section: Option<Vec<u8>> = None;
     let mut has_get_abi_exports = false;
-    
+
     for payload in parser.parse_all(&wasm_bytes) {
         match payload? {
             Payload::CustomSection(section) => {
@@ -64,7 +64,10 @@ fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> anyh
             Payload::ExportSection(reader) => {
                 for export in reader {
                     let export = export?;
-                    if export.name == "get_abi_ptr" || export.name == "get_abi_len" || export.name == "get_abi" {
+                    if export.name == "get_abi_ptr"
+                        || export.name == "get_abi_len"
+                        || export.name == "get_abi"
+                    {
                         has_get_abi_exports = true;
                     }
                 }
@@ -72,27 +75,27 @@ fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> anyh
             _ => {}
         }
     }
-    
+
     // Check if we found the ABI section
     let abi_json = match abi_section {
         Some(data) => {
             let json_str = String::from_utf8(data)?;
-            
+
             // Validate JSON
             serde_json::from_str::<serde_json::Value>(&json_str)?;
-            
+
             json_str
         }
         None => {
             anyhow::bail!("No 'calimero_abi_v1' custom section found in WASM file");
         }
     };
-    
+
     // Verify if requested
     if verify && !has_get_abi_exports {
         anyhow::bail!("Verification failed: get_abi* exports not found in WASM file");
     }
-    
+
     // Determine output path
     let output_path = match output {
         Some(path) => path.to_path_buf(),
@@ -102,15 +105,15 @@ fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> anyh
             path
         }
     };
-    
+
     // Write the ABI JSON
     fs::write(&output_path, abi_json)?;
-    
+
     println!("ABI extracted successfully to: {}", output_path.display());
-    
+
     if verify {
         println!("Verification passed: get_abi* exports found");
     }
-    
+
     Ok(())
-} 
+}

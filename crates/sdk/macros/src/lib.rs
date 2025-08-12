@@ -45,10 +45,10 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn abi_type(args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
     let _args = parse_macro_input!({ input } => args as Empty);
-    
+
     // Parse the input to determine if it's a struct or enum
     let item = parse_macro_input!(input as syn::Item);
-    
+
     let tokens = match abi::register_abi_type(&item) {
         Ok(data) => data,
         Err(err) => err.to_compile_error(),

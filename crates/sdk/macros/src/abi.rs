@@ -1,10 +1,15 @@
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use calimero_wasm_abi_v1::{
+    Error, Event, Field as AbiField, Manifest, Method, Parameter, TypeDef, TypeRef,
+    Variant as AbiVariant,
+};
+use lazy_static::lazy_static;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Error as SynError, Item, ItemEnum, ItemStruct, Fields, Type, PathArguments, GenericArgument};
-use calimero_wasm_abi_v1::{Field as AbiField, TypeDef, TypeRef, Variant as AbiVariant, Error, Event, Manifest, Method, Parameter};
-use lazy_static::lazy_static;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
+use syn::{
+    Error as SynError, Fields, GenericArgument, Item, ItemEnum, ItemStruct, PathArguments, Type,
+};
 
 use crate::logic::method::PublicLogicMethod;
 
@@ -61,46 +66,44 @@ pub fn register_abi_type(item: &Item) -> Result<TokenStream, syn::Error> {
     match item {
         Item::Struct(item_struct) => {
             let type_name = item_struct.ident.to_string();
-            
+
             // Convert the struct to a TypeDef
             let type_def = convert_struct_to_type_def(item_struct)?;
-            
+
             register_type(type_name, type_def);
-            
+
             // Return the original item unchanged
             Ok(quote! { #item_struct })
         }
         Item::Enum(item_enum) => {
             let type_name = item_enum.ident.to_string();
-            
+
             // Convert the enum to a TypeDef
             let type_def = convert_enum_to_type_def(item_enum)?;
-            
+
             register_type(type_name, type_def);
-            
+
             // Return the original item unchanged
             Ok(quote! { #item_enum })
         }
-        _ => {
-            Err(syn::Error::new_spanned(
-                item,
-                "Only struct and enum items are supported for #[app::abi_type]",
-            ))
-        }
+        _ => Err(syn::Error::new_spanned(
+            item,
+            "Only struct and enum items are supported for #[app::abi_type]",
+        )),
     }
 }
 
 /// Convert a Rust struct to ABI TypeDef
 fn convert_struct_to_type_def(item_struct: &ItemStruct) -> Result<TypeDef, SynError> {
     let mut fields = Vec::new();
-    
+
     match &item_struct.fields {
         Fields::Named(named_fields) => {
             for field in &named_fields.named {
                 if let Some(ident) = &field.ident {
                     let field_type = normalize_type(&field.ty);
                     let nullable = is_option_type(&field.ty);
-                    
+
                     fields.push(AbiField {
                         name: ident.to_string(),
                         type_: field_type,
@@ -119,14 +122,14 @@ fn convert_struct_to_type_def(item_struct: &ItemStruct) -> Result<TypeDef, SynEr
             // Unit structs - no fields
         }
     }
-    
+
     Ok(TypeDef::Record { fields })
 }
 
 /// Convert a Rust enum to ABI TypeDef
 fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, SynError> {
     let mut variants = Vec::new();
-    
+
     for variant in &item_enum.variants {
         let variant_type = match &variant.fields {
             Fields::Named(_) => {
@@ -143,14 +146,14 @@ fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, SynError> {
             }
             Fields::Unit => None,
         };
-        
+
         variants.push(AbiVariant {
             name: variant.ident.to_string(),
             code: None,
             payload: variant_type,
         });
     }
-    
+
     Ok(TypeDef::Variant { variants })
 }
 
@@ -168,7 +171,7 @@ fn is_option_type(ty: &Type) -> bool {
 fn analyze_type_definition(type_name: &str) -> Option<TypeAnalysis> {
     // We have access to the source code during macro expansion
     // We can parse the actual struct definition to determine its nature
-    
+
     // For now, let's implement a simple approach that can be extended
     match type_name {
         "UserId" => {
@@ -179,7 +182,7 @@ fn analyze_type_definition(type_name: &str) -> Option<TypeAnalysis> {
         }
         "AccountId" => Some(TypeAnalysis::NewtypeAsString),
         "ContractId" => Some(TypeAnalysis::NewtypeAsString),
-        _ => None
+        _ => None,
     }
 }
 
@@ -189,7 +192,7 @@ fn analyze_struct_definition(item_struct: &ItemStruct) -> TypeAnalysis {
         Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
             // This is a newtype wrapper (single field tuple struct)
             let inner_type = &fields.unnamed[0].ty;
-            
+
             // Analyze the inner type to determine serialization behavior
             if is_string_serializable_type(inner_type) {
                 TypeAnalysis::NewtypeAsString
@@ -223,7 +226,8 @@ fn is_string_serializable_type(ty: &Type) -> bool {
         if let Some(ident) = type_path.path.get_ident() {
             let type_name = ident.to_string();
             // Check if it's a type that implements Display/FromStr
-            matches!(type_name.as_str(), 
+            matches!(
+                type_name.as_str(),
                 "String" | "str" | "Id" | // Id<32, 44> implements Display/FromStr
                 "AccountId" | "ContractId" | "UserId32"
             )
@@ -265,12 +269,12 @@ fn is_number_serializable_type(ty: &Type) -> bool {
 
 #[derive(Debug, Clone)]
 enum TypeAnalysis {
-    NewtypeAsString,    // Newtype wrapper that serializes as string
-    NewtypeAsBytes,     // Newtype wrapper that serializes as bytes
-    NewtypeAsNumber,    // Newtype wrapper that serializes as number
-    Record,             // Regular struct with fields
-    Variant,            // Enum with variants
-    Unknown,            // Unknown type, use reference
+    NewtypeAsString, // Newtype wrapper that serializes as string
+    NewtypeAsBytes,  // Newtype wrapper that serializes as bytes
+    NewtypeAsNumber, // Newtype wrapper that serializes as number
+    Record,          // Regular struct with fields
+    Variant,         // Enum with variants
+    Unknown,         // Unknown type, use reference
 }
 
 /// Generate ABI manifest from public methods
@@ -278,56 +282,56 @@ pub fn generate_abi(methods: &[PublicLogicMethod<'_>], _type_definitions: &[()])
     // For now, we'll use the existing approach but with improved type handling
     // In the future, this should be replaced with the new emitter
     let mut manifest = Manifest::default();
-    
+
     // Collect all methods
     for method in methods {
         let method_def = collect_method(method);
         manifest.methods.push(method_def);
     }
-    
+
     // Get types from global registry and method analysis
     let mut all_types = get_registered_types();
     let method_types = collect_all_types_from_methods(methods);
-    
+
     // Merge method types with registered types
     for (type_name, type_def) in method_types {
         all_types.insert(type_name, type_def);
     }
-    
+
     // Ensure all referenced types are defined
     ensure_all_referenced_types_are_defined(&mut all_types);
-    
+
     for (type_name, type_def) in all_types {
         let _ = manifest.types.insert(type_name, type_def);
     }
-    
+
     // Get events from global registry
     manifest.events = get_registered_events();
-    
+
     // Generate the embed code directly
-    let json = serde_json::to_string_pretty(&manifest)
-        .expect("Failed to serialize manifest to JSON");
-    
+    let json =
+        serde_json::to_string_pretty(&manifest).expect("Failed to serialize manifest to JSON");
+
     let json_bytes = json.as_bytes();
     let byte_array_literal = proc_macro2::Literal::byte_string(json_bytes);
     let len_literal = proc_macro2::Literal::usize_unsuffixed(json_bytes.len());
-    
+
     quote! {
         // Embed ABI manifest
         #[cfg_attr(target_os = "macos", link_section = "__DATA,calimero_abi_v1")]
         #[cfg_attr(not(target_os = "macos"), link_section = "calimero_abi_v1")]
         static ABI: [u8; #len_literal] = *#byte_array_literal;
-        
+
         #[no_mangle]
         pub extern "C" fn get_abi_ptr() -> u32 {
             ABI.as_ptr() as u32
         }
-        
+
         #[no_mangle]
         pub extern "C" fn get_abi_len() -> u32 {
             ABI.len() as u32
         }
-        
+
         #[no_mangle]
         pub extern "C" fn get_abi() -> u32 {
             get_abi_ptr()
@@ -338,18 +342,18 @@ pub fn generate_abi(methods: &[PublicLogicMethod<'_>], _type_definitions: &[()])
 /// Collect all types used in method parameters and return values
 fn collect_all_types_from_methods(methods: &[PublicLogicMethod<'_>]) -> HashMap<String, TypeDef> {
     let mut all_types = HashMap::new();
-    
+
     for method in methods {
         // Collect types from parameters
         for arg in &method.args {
             collect_types_from_type(&arg.ty.ty, &mut all_types);
         }
-        
+
         // Collect types from return value
         if let Some(ret) = &method.ret {
             collect_types_from_type(&ret.ty, &mut all_types);
         }
-        
+
         // Collect error types from Result<T, E> return types
         if let Some(ret) = &method.ret {
             if let Type::Path(path) = &ret.ty {
@@ -370,7 +374,7 @@ fn collect_all_types_from_methods(methods: &[PublicLogicMethod<'_>]) -> HashMap<
             }
         }
     }
-    
+
     all_types
 }
 
@@ -380,7 +384,7 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
         Type::Path(type_path) => {
             if let Some(ident) = type_path.path.get_ident() {
                 let type_name = ident.to_string();
-                
+
                 // Handle Option<T> - recursively process the inner type
                 if type_name == "Option" {
                     if let Some(segment) = type_path.path.segments.last() {
@@ -394,7 +398,7 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
                         }
                     }
                 }
-                
+
                 // Handle Result<T, E> - recursively process the success type
                 if type_name == "Result" {
                     if let Some(segment) = type_path.path.segments.last() {
@@ -414,7 +418,7 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
                         }
                     }
                 }
-                
+
                 // Handle path-based types like app::Result<T, E>
                 if type_path.path.segments.len() > 1 {
                     if let Some(last_segment) = type_path.path.segments.last() {
@@ -436,7 +440,7 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
                         }
                     }
                 }
-                
+
                 // Handle Vec<T> - recursively process the inner type
                 if type_name == "Vec" {
                     if let Some(segment) = type_path.path.segments.last() {
@@ -450,7 +454,7 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
                         }
                     }
                 }
-                
+
                 // Handle BTreeMap<K, V> - recursively process the value type
                 if type_name == "BTreeMap" {
                     if let Some(segment) = type_path.path.segments.last() {
@@ -464,17 +468,17 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
                         }
                     }
                 }
-                
+
                 // Skip basic types that don't need expansion
                 if is_basic_type(&type_name) {
                     return;
                 }
-                
+
                 // Skip types we've already processed
                 if all_types.contains_key(&type_name) {
                     return;
                 }
-                
+
                 // Try to create a type definition based on common patterns
                 if let Some(type_def) = infer_type_from_name(&type_name) {
                     all_types.insert(type_name, type_def);
@@ -579,13 +583,11 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
             ],
         }),
         "UpdatePayload" => Some(TypeDef::Record {
-            fields: vec![
-                AbiField {
-                    name: "age".to_string(),
-                    type_: TypeRef::u32(),
-                    nullable: None,
-                },
-            ],
+            fields: vec![AbiField {
+                name: "age".to_string(),
+                type_: TypeRef::u32(),
+                nullable: None,
+            }],
         }),
         // Common variant types
         "Action" => Some(TypeDef::Variant {
@@ -622,41 +624,33 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
             ],
         }),
         "UpdatePayload" => Some(TypeDef::Record {
-            fields: vec![
-                AbiField {
-                    name: "age".to_string(),
-                    type_: TypeRef::u32(),
-                    nullable: None,
-                },
-            ],
+            fields: vec![AbiField {
+                name: "age".to_string(),
+                type_: TypeRef::u32(),
+                nullable: None,
+            }],
         }),
         // Handle collection types that might be passed as type names
         "Vec" => Some(TypeDef::Record {
-            fields: vec![
-                AbiField {
-                    name: "items".to_string(),
-                    type_: TypeRef::list(TypeRef::string()),
-                    nullable: None,
-                },
-            ],
+            fields: vec![AbiField {
+                name: "items".to_string(),
+                type_: TypeRef::list(TypeRef::string()),
+                nullable: None,
+            }],
         }),
         "Option" => Some(TypeDef::Record {
-            fields: vec![
-                AbiField {
-                    name: "value".to_string(),
-                    type_: TypeRef::string(),
-                    nullable: Some(true),
-                },
-            ],
+            fields: vec![AbiField {
+                name: "value".to_string(),
+                type_: TypeRef::string(),
+                nullable: Some(true),
+            }],
         }),
         "BTreeMap" => Some(TypeDef::Record {
-            fields: vec![
-                AbiField {
-                    name: "entries".to_string(),
-                    type_: TypeRef::map(TypeRef::string()),
-                    nullable: None,
-                },
-            ],
+            fields: vec![AbiField {
+                name: "entries".to_string(),
+                type_: TypeRef::map(TypeRef::string()),
+                nullable: None,
+            }],
         }),
         _ => None,
     }
@@ -668,13 +662,11 @@ fn create_placeholder_type_def(type_name: &str) -> TypeDef {
     // For now, we'll create a simple record type as a placeholder
     // This should be replaced with actual type analysis
     TypeDef::Record {
-        fields: vec![
-            AbiField {
-                name: "placeholder".to_string(),
-                type_: TypeRef::string(),
-                nullable: None,
-            },
-        ],
+        fields: vec![AbiField {
+            name: "placeholder".to_string(),
+            type_: TypeRef::string(),
+            nullable: None,
+        }],
     }
 }
 
@@ -683,28 +675,44 @@ fn create_placeholder_type_def(type_name: &str) -> TypeDef {
 fn ensure_all_referenced_types_are_defined(all_types: &mut HashMap<String, TypeDef>) {
     // Add ConformanceError if it's not already present
     if !all_types.contains_key("ConformanceError") {
-        all_types.insert("ConformanceError".to_string(), TypeDef::Variant {
-            variants: vec![
-                AbiVariant {
-                    name: "BadInput".to_string(),
-                    code: None,
-                    payload: None,
-                },
-                AbiVariant {
-                    name: "NotFound".to_string(),
-                    code: None,
-                    payload: Some(TypeRef::string()),
-                },
-            ],
-        });
+        all_types.insert(
+            "ConformanceError".to_string(),
+            TypeDef::Variant {
+                variants: vec![
+                    AbiVariant {
+                        name: "BadInput".to_string(),
+                        code: None,
+                        payload: None,
+                    },
+                    AbiVariant {
+                        name: "NotFound".to_string(),
+                        code: None,
+                        payload: Some(TypeRef::string()),
+                    },
+                ],
+            },
+        );
     }
 }
 
 /// Check if a type is a basic type that doesn't need expansion
 fn is_basic_type(type_name: &str) -> bool {
-    matches!(type_name, 
-        "bool" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | 
-        "usize" | "isize" | "String" | "str" | "Vec" | "Option" | "Result"
+    matches!(
+        type_name,
+        "bool"
+            | "i32"
+            | "i64"
+            | "u32"
+            | "u64"
+            | "f32"
+            | "f64"
+            | "usize"
+            | "isize"
+            | "String"
+            | "str"
+            | "Vec"
+            | "Option"
+            | "Result"
     )
 }
 
@@ -720,7 +728,7 @@ fn analyze_and_expand_type(type_name: &str) -> Option<TypeDef> {
 /// Collect method information for ABI
 fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
     let mut params = Vec::new();
-    
+
     // Convert arguments to parameters
     for arg in &method.args {
         let (type_ref, nullable) = normalize_type_with_nullable(&arg.ty.ty);
@@ -731,7 +739,7 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
         };
         params.push(param);
     }
-    
+
     // Handle return type
     let (returns, returns_nullable) = if method.name.to_string() == "init" {
         // Special case for init to return AbiState
@@ -746,7 +754,8 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
                         if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
                             if let Some(arg) = args.args.first() {
                                 if let GenericArgument::Type(item_type) = arg {
-                                    let (type_ref, nullable) = normalize_type_with_nullable(item_type);
+                                    let (type_ref, nullable) =
+                                        normalize_type_with_nullable(item_type);
                                     (Some(type_ref), nullable)
                                 } else {
                                     (None, None)
@@ -780,10 +789,10 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
     } else {
         (None, None)
     };
-    
+
     // Extract errors from method name and return type analysis
     let errors = extract_method_errors(method);
-    
+
     Method {
         name: method.name.to_string(),
         params,
@@ -813,7 +822,7 @@ fn normalize_type_with_nullable(ty: &Type) -> (TypeRef, Option<bool>) {
                     return (TypeRef::string(), Some(true)); // fallback
                 }
             }
-            
+
             // For non-Option types, normalize normally
             (normalize_type(ty), None)
         }
@@ -827,7 +836,7 @@ fn normalize_type_with_nullable(ty: &Type) -> (TypeRef, Option<bool>) {
 /// Extract errors that a method can return
 fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
     let mut errors = Vec::new();
-    
+
     // Check return type for Result<T, E> patterns
     if let Some(ret) = &method.ret {
         if let Type::Path(path) = &ret.ty {
@@ -843,7 +852,7 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
                                     if let Type::Path(error_path) = error_type {
                                         if let Some(error_ident) = error_path.path.get_ident() {
                                             let error_name = error_ident.to_string();
-                                            
+
                                             // Handle specific error types
                                             match error_name.as_str() {
                                                 "ConformanceError" => {
@@ -874,7 +883,7 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
             }
         }
     }
-    
+
     // Fallback to method name patterns
     match method.name.to_string().as_str() {
         "update_event" | "delete_event" => {
@@ -897,7 +906,7 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
         }
         _ => {}
     }
-    
+
     errors
 }
 
@@ -931,7 +940,7 @@ fn normalize_type(ty: &Type) -> TypeRef {
             }
         }
     }
-    
+
     // Use the new normalizer from wasm-abi-v1 for non-Option types
     match calimero_wasm_abi_v1::normalize_type(ty, true, &DummyResolver) {
         Ok(type_ref) => type_ref,
@@ -946,7 +955,9 @@ fn normalize_type(ty: &Type) -> TypeRef {
                             match last_segment.ident.to_string().as_str() {
                                 "Result" => {
                                     // Handle Result<T, E> - extract T as return type
-                                    if let PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                                    if let PathArguments::AngleBracketed(args) =
+                                        &last_segment.arguments
+                                    {
                                         if let Some(arg) = args.args.first() {
                                             if let GenericArgument::Type(item_type) = arg {
                                                 return normalize_type(item_type);
@@ -980,7 +991,8 @@ fn normalize_type(ty: &Type) -> TypeRef {
                             "Vec" => {
                                 // Handle Vec<T>
                                 if let Some(segment) = path.path.segments.last() {
-                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments
+                                    {
                                         if let Some(arg) = args.args.first() {
                                             if let GenericArgument::Type(item_type) = arg {
                                                 let inner_type = normalize_type(item_type);
@@ -994,7 +1006,8 @@ fn normalize_type(ty: &Type) -> TypeRef {
                             "Vector" => {
                                 // Handle Vector<T> (storage collection)
                                 if let Some(segment) = path.path.segments.last() {
-                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments
+                                    {
                                         if let Some(arg) = args.args.first() {
                                             if let GenericArgument::Type(item_type) = arg {
                                                 let inner_type = normalize_type(item_type);
@@ -1008,15 +1021,22 @@ fn normalize_type(ty: &Type) -> TypeRef {
                             "UnorderedMap" => {
                                 // Handle UnorderedMap<K, V>
                                 if let Some(segment) = path.path.segments.last() {
-                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments
+                                    {
                                         if args.args.len() >= 2 {
-                                            if let (GenericArgument::Type(key_type), GenericArgument::Type(value_type)) = 
-                                                (&args.args[0], &args.args[1]) {
+                                            if let (
+                                                GenericArgument::Type(key_type),
+                                                GenericArgument::Type(value_type),
+                                            ) = (&args.args[0], &args.args[1])
+                                            {
                                                 // Check if key is String
                                                 if let Type::Path(key_path) = key_type {
-                                                    if let Some(key_ident) = key_path.path.get_ident() {
+                                                    if let Some(key_ident) =
+                                                        key_path.path.get_ident()
+                                                    {
                                                         if key_ident.to_string() == "String" {
-                                                            let value_type = normalize_type(value_type);
+                                                            let value_type =
+                                                                normalize_type(value_type);
                                                             return TypeRef::map(value_type);
                                                         } else {
                                                             // Non-string keys are not supported in WASM-ABI v1
@@ -1038,7 +1058,8 @@ fn normalize_type(ty: &Type) -> TypeRef {
                             "Result" => {
                                 // Handle Result<T, E> - extract T as return type
                                 if let Some(segment) = path.path.segments.last() {
-                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments
+                                    {
                                         if let Some(arg) = args.args.first() {
                                             if let GenericArgument::Type(item_type) = arg {
                                                 return normalize_type(item_type);
@@ -1051,7 +1072,7 @@ fn normalize_type(ty: &Type) -> TypeRef {
                             _ => {
                                 // Handle special types
                                 let type_name = ident.to_string();
-                                
+
                                 // For unknown types, create a reference
                                 // TODO: This should be replaced with proper type analysis from AST
                                 // to detect newtype wrappers and other special cases
@@ -1098,5 +1119,3 @@ impl calimero_wasm_abi_v1::TypeResolver for DummyResolver {
         None
     }
 }
-
- 

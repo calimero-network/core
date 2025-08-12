@@ -1,11 +1,11 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Visibility, Type};
+use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Type, Visibility};
 
+use crate::abi::register_event;
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
-use crate::abi::register_event;
 use calimero_wasm_abi_v1::{Event, TypeRef};
 
 /// Dummy resolver for the normalizer
@@ -73,10 +73,14 @@ impl ToTokens for EventImpl<'_> {
                             let mut fields = Vec::new();
                             for field in &named_fields.named {
                                 if let Some(ident) = &field.ident {
-                                    let type_ref = calimero_wasm_abi_v1::normalize_type(&field.ty, true, &DummyResolver)
-                                        .unwrap_or_else(|_| calimero_wasm_abi_v1::TypeRef::string());
+                                    let type_ref = calimero_wasm_abi_v1::normalize_type(
+                                        &field.ty,
+                                        true,
+                                        &DummyResolver,
+                                    )
+                                    .unwrap_or_else(|_| calimero_wasm_abi_v1::TypeRef::string());
                                     let nullable = is_option_type(&field.ty);
-                                    
+
                                     fields.push(calimero_wasm_abi_v1::Field {
                                         name: ident.to_string(),
                                         type_: type_ref,
@@ -85,13 +89,19 @@ impl ToTokens for EventImpl<'_> {
                                 }
                             }
                             Some(calimero_wasm_abi_v1::TypeRef::Collection(
-                                calimero_wasm_abi_v1::CollectionType::Record { fields }
+                                calimero_wasm_abi_v1::CollectionType::Record { fields },
                             ))
                         }
                         syn::Fields::Unnamed(fields) => {
                             if fields.unnamed.len() == 1 {
-                                Some(calimero_wasm_abi_v1::normalize_type(&fields.unnamed[0].ty, true, &DummyResolver)
-                                    .unwrap_or_else(|_| calimero_wasm_abi_v1::TypeRef::string()))
+                                Some(
+                                    calimero_wasm_abi_v1::normalize_type(
+                                        &fields.unnamed[0].ty,
+                                        true,
+                                        &DummyResolver,
+                                    )
+                                    .unwrap_or_else(|_| calimero_wasm_abi_v1::TypeRef::string()),
+                                )
                             } else {
                                 // Multiple unnamed fields - treat as generic
                                 Some(calimero_wasm_abi_v1::TypeRef::string())
@@ -99,7 +109,7 @@ impl ToTokens for EventImpl<'_> {
                         }
                         syn::Fields::Unit => None,
                     };
-                    
+
                     events.push(Event {
                         name: variant.ident.to_string(),
                         payload,
@@ -108,7 +118,7 @@ impl ToTokens for EventImpl<'_> {
                 events
             }
         };
-        
+
         for event in abi_events {
             register_event(event);
         }

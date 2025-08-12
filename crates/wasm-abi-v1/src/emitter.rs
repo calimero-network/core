@@ -1,8 +1,11 @@
-use crate::schema::{Manifest, Method, Parameter, TypeRef, TypeDef, Field, Variant, Error, Event};
-use crate::normalize::{normalize_type, TypeResolver, ResolvedLocal};
+use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
+use crate::schema::{Error, Event, Field, Manifest, Method, Parameter, TypeDef, TypeRef, Variant};
 use crate::validate::validate_manifest;
-use syn::{ItemImpl, ImplItem, ImplItemFn, FnArg, Pat, PatIdent, Type, ReturnType, Visibility, Item, ItemStruct, ItemEnum, Fields, Variant as SynVariant};
 use std::collections::{BTreeMap, HashMap};
+use syn::{
+    Fields, FnArg, ImplItem, ImplItemFn, Item, ItemEnum, ItemImpl, ItemStruct, Pat, PatIdent,
+    ReturnType, Type, Variant as SynVariant, Visibility,
+};
 use thiserror::Error;
 
 /// Error type for emitter failures
@@ -60,7 +63,7 @@ impl TypeResolver for CrateTypeResolver {
 pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
     let mut resolver = CrateTypeResolver::new();
     let mut manifest = Manifest::default();
-    
+
     // First pass: collect all type definitions
     for item in items {
         match item {
@@ -68,7 +71,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                 let type_name = item_struct.ident.to_string();
                 let type_def = convert_struct_to_type_def(item_struct)?;
                 resolver.add_type_definition(type_name.clone(), type_def.clone());
-                
+
                 // Determine if it's a newtype wrapper
                 if let Fields::Unnamed(fields) = &item_struct.fields {
                     if fields.unnamed.len() == 1 {
@@ -78,7 +81,10 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                 if let Some(ident) = path.path.get_ident() {
                                     if ident == "u8" {
                                         let size = extract_array_len(&array.len)?;
-                                        resolver.add_local_type(type_name, ResolvedLocal::NewtypeBytes { size });
+                                        resolver.add_local_type(
+                                            type_name,
+                                            ResolvedLocal::NewtypeBytes { size },
+                                        );
                                         continue;
                                     }
                                 }
@@ -86,7 +92,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                         }
                     }
                 }
-                
+
                 resolver.add_local_type(type_name, ResolvedLocal::Record);
             }
             Item::Enum(item_enum) => {
@@ -98,7 +104,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
             _ => {}
         }
     }
-    
+
     // Second pass: collect methods and events
     for item in items {
         match item {
@@ -112,7 +118,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
             _ => {}
         }
     }
-    
+
     // Third pass: collect events
     for item in items {
         if let Item::Enum(item_enum) = item {
@@ -122,40 +128,40 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
             }
         }
     }
-    
+
     // Add all type definitions to manifest
     for (name, def) in resolver.type_definitions {
         manifest.types.insert(name, def);
     }
-    
+
     // Ensure all referenced types are defined
     ensure_all_referenced_types_defined(&mut manifest);
-    
+
     // Sort methods and events for determinism
     manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
     manifest.events.sort_by(|a, b| a.name.cmp(&b.name));
-    
+
     // Validate the manifest
     validate_manifest(&manifest)?;
-    
+
     Ok(manifest)
 }
 
 /// Check if an impl block has the app::logic attribute
 fn has_app_logic_attribute(item_impl: &ItemImpl) -> bool {
     item_impl.attrs.iter().any(|attr| {
-        attr.path().segments.len() == 2 &&
-        attr.path().segments[0].ident == "app" &&
-        attr.path().segments[1].ident == "logic"
+        attr.path().segments.len() == 2
+            && attr.path().segments[0].ident == "app"
+            && attr.path().segments[1].ident == "logic"
     })
 }
 
 /// Check if an enum has the app::event attribute
 fn has_app_event_attribute(item_enum: &ItemEnum) -> bool {
     item_enum.attrs.iter().any(|attr| {
-        attr.path().segments.len() == 2 &&
-        attr.path().segments[0].ident == "app" &&
-        attr.path().segments[1].ident == "event"
+        attr.path().segments.len() == 2
+            && attr.path().segments[0].ident == "app"
+            && attr.path().segments[1].ident == "event"
     })
 }
 
@@ -165,7 +171,7 @@ fn collect_methods_from_impl(
     resolver: &CrateTypeResolver,
 ) -> Result<Vec<Method>, EmitterError> {
     let mut methods = Vec::new();
-    
+
     for item in &item_impl.items {
         if let ImplItem::Fn(method) = item {
             // Only include public methods
@@ -175,7 +181,7 @@ fn collect_methods_from_impl(
             }
         }
     }
-    
+
     Ok(methods)
 }
 
@@ -185,7 +191,7 @@ fn convert_method_to_abi(
     resolver: &CrateTypeResolver,
 ) -> Result<Method, EmitterError> {
     let mut params = Vec::new();
-    
+
     // Process method parameters
     for arg in &method.sig.inputs {
         match arg {
@@ -193,7 +199,7 @@ fn convert_method_to_abi(
                 if let Pat::Ident(PatIdent { ident, .. }) = &*pat_type.pat {
                     let type_ref = normalize_type(&pat_type.ty, true, resolver)?;
                     let nullable = is_option_type(&pat_type.ty);
-                    
+
                     params.push(Parameter {
                         name: ident.to_string(),
                         type_: type_ref,
@@ -207,7 +213,7 @@ fn convert_method_to_abi(
             }
         }
     }
-    
+
     // Process return type
     let (returns, returns_nullable) = match &method.sig.output {
         ReturnType::Default => (None, None),
@@ -217,10 +223,10 @@ fn convert_method_to_abi(
             (Some(type_ref), if nullable { Some(true) } else { None })
         }
     };
-    
+
     // Extract errors from return type
     let errors = extract_errors_from_return_type(&method.sig.output, resolver)?;
-    
+
     Ok(Method {
         name: method.sig.ident.to_string(),
         params,
@@ -246,7 +252,7 @@ fn extract_errors_from_return_type(
     resolver: &CrateTypeResolver,
 ) -> Result<Vec<Error>, EmitterError> {
     let mut errors = Vec::new();
-    
+
     if let ReturnType::Type(_, ty) = return_type {
         if let Type::Path(path) = &**ty {
             // Check if it's app::Result<T, E>
@@ -261,7 +267,9 @@ fn extract_errors_from_return_type(
                                     if let Type::Path(error_path) = error_type {
                                         if let Some(error_ident) = error_path.path.get_ident() {
                                             let error_name = error_ident.to_string();
-                                            if let Some(type_def) = resolver.get_type_definition(&error_name) {
+                                            if let Some(type_def) =
+                                                resolver.get_type_definition(&error_name)
+                                            {
                                                 if let TypeDef::Variant { variants } = type_def {
                                                     for variant in variants {
                                                         let code = variant.name.to_uppercase();
@@ -283,21 +291,21 @@ fn extract_errors_from_return_type(
             }
         }
     }
-    
+
     Ok(errors)
 }
 
 /// Convert a struct to TypeDef
 fn convert_struct_to_type_def(item_struct: &ItemStruct) -> Result<TypeDef, EmitterError> {
     let mut fields = Vec::new();
-    
+
     match &item_struct.fields {
         Fields::Named(named_fields) => {
             for field in &named_fields.named {
                 if let Some(ident) = &field.ident {
                     let type_ref = normalize_type(&field.ty, true, &CrateTypeResolver::new())?;
                     let nullable = is_option_type(&field.ty);
-                    
+
                     fields.push(Field {
                         name: ident.to_string(),
                         type_: type_ref,
@@ -308,21 +316,21 @@ fn convert_struct_to_type_def(item_struct: &ItemStruct) -> Result<TypeDef, Emitt
         }
         Fields::Unnamed(_) => {
             return Err(EmitterError::TypeResolutionError(
-                "tuple structs are not supported in ABI type definitions".to_string()
+                "tuple structs are not supported in ABI type definitions".to_string(),
             ));
         }
         Fields::Unit => {
             // Unit structs - no fields
         }
     }
-    
+
     Ok(TypeDef::Record { fields })
 }
 
 /// Convert an enum to TypeDef
 fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, EmitterError> {
     let mut variants = Vec::new();
-    
+
     for variant in &item_enum.variants {
         let variant_type = match &variant.fields {
             Fields::Named(named_fields) => {
@@ -332,7 +340,7 @@ fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, EmitterErro
                     if let Some(ident) = &field.ident {
                         let type_ref = normalize_type(&field.ty, true, &CrateTypeResolver::new())?;
                         let nullable = is_option_type(&field.ty);
-                        
+
                         fields.push(Field {
                             name: ident.to_string(),
                             type_: type_ref,
@@ -340,11 +348,17 @@ fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, EmitterErro
                         });
                     }
                 }
-                Some(TypeRef::Collection(crate::schema::CollectionType::Record { fields }))
+                Some(TypeRef::Collection(crate::schema::CollectionType::Record {
+                    fields,
+                }))
             }
             Fields::Unnamed(fields) => {
                 if fields.unnamed.len() == 1 {
-                    Some(normalize_type(&fields.unnamed[0].ty, true, &CrateTypeResolver::new())?)
+                    Some(normalize_type(
+                        &fields.unnamed[0].ty,
+                        true,
+                        &CrateTypeResolver::new(),
+                    )?)
                 } else {
                     // Multiple unnamed fields - treat as generic
                     Some(TypeRef::string())
@@ -352,14 +366,14 @@ fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, EmitterErro
             }
             Fields::Unit => None,
         };
-        
+
         variants.push(Variant {
             name: variant.ident.to_string(),
             code: None,
             payload: variant_type,
         });
     }
-    
+
     Ok(TypeDef::Variant { variants })
 }
 
@@ -369,7 +383,7 @@ fn collect_events_from_enum(
     resolver: &CrateTypeResolver,
 ) -> Result<Vec<Event>, EmitterError> {
     let mut events = Vec::new();
-    
+
     for variant in &item_enum.variants {
         let payload = match &variant.fields {
             Fields::Named(named_fields) => {
@@ -379,7 +393,7 @@ fn collect_events_from_enum(
                     if let Some(ident) = &field.ident {
                         let type_ref = normalize_type(&field.ty, true, resolver)?;
                         let nullable = is_option_type(&field.ty);
-                        
+
                         fields.push(Field {
                             name: ident.to_string(),
                             type_: type_ref,
@@ -387,7 +401,9 @@ fn collect_events_from_enum(
                         });
                     }
                 }
-                Some(TypeRef::Collection(crate::schema::CollectionType::Record { fields }))
+                Some(TypeRef::Collection(crate::schema::CollectionType::Record {
+                    fields,
+                }))
             }
             Fields::Unnamed(fields) => {
                 if fields.unnamed.len() == 1 {
@@ -399,25 +415,29 @@ fn collect_events_from_enum(
             }
             Fields::Unit => None,
         };
-        
+
         events.push(Event {
             name: variant.ident.to_string(),
             payload,
         });
     }
-    
+
     Ok(events)
 }
 
 /// Extract array length from [T; N]
 fn extract_array_len(len: &syn::Expr) -> Result<usize, EmitterError> {
-    if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }) = len {
+    if let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(lit),
+        ..
+    }) = len
+    {
         lit.base10_parse().map_err(|_| {
             EmitterError::TypeResolutionError("failed to parse array length".to_string())
         })
     } else {
         Err(EmitterError::TypeResolutionError(
-            "array length must be a literal integer".to_string()
+            "array length must be a literal integer".to_string(),
         ))
     }
 }
@@ -429,4 +449,4 @@ fn ensure_all_referenced_types_defined(manifest: &mut Manifest) {
     // 2. Ensure each referenced type exists in manifest.types
     // 3. Add placeholder types for any missing references
     // For now, we assume all types are properly defined
-} 
+}

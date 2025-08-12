@@ -26,13 +26,9 @@ impl Default for Manifest {
 #[serde(tag = "kind")]
 pub enum TypeDef {
     #[serde(rename = "record")]
-    Record {
-        fields: Vec<Field>,
-    },
+    Record { fields: Vec<Field> },
     #[serde(rename = "variant")]
-    Variant {
-        variants: Vec<Variant>,
-    },
+    Variant { variants: Vec<Variant> },
     #[serde(rename = "bytes")]
     Bytes {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,7 +102,10 @@ pub struct Event {
 #[serde(untagged)]
 pub enum TypeRef {
     /// Reference to a named type
-    Reference { #[serde(rename = "$ref")] ref_: String },
+    Reference {
+        #[serde(rename = "$ref")]
+        ref_: String,
+    },
     /// Inline scalar type
     Scalar(ScalarType),
     /// Inline collection type
@@ -148,19 +147,18 @@ pub enum ScalarType {
 #[serde(tag = "kind")]
 pub enum CollectionType {
     #[serde(rename = "list")]
-    List {
-        items: Box<TypeRef>,
-    },
+    List { items: Box<TypeRef> },
     #[serde(rename = "map")]
     Map {
-        #[serde(serialize_with = "serialize_map_key", deserialize_with = "deserialize_map_key")]
+        #[serde(
+            serialize_with = "serialize_map_key",
+            deserialize_with = "deserialize_map_key"
+        )]
         key: Box<TypeRef>,
         value: Box<TypeRef>,
     },
     #[serde(rename = "record")]
-    Record {
-        fields: Vec<Field>,
-    },
+    Record { fields: Vec<Field> },
 }
 
 /// Custom serializer for map keys to support compact string format
@@ -313,28 +311,26 @@ mod tests {
     #[test]
     fn test_manifest_serialization() {
         let mut manifest = Manifest::default();
-        
+
         // Add a simple method
         manifest.methods.push(Method {
             name: "test_method".to_string(),
-            params: vec![
-                Parameter {
-                    name: "param1".to_string(),
-                    type_: TypeRef::string(),
-                    nullable: None,
-                }
-            ],
+            params: vec![Parameter {
+                name: "param1".to_string(),
+                type_: TypeRef::string(),
+                nullable: None,
+            }],
             returns: Some(TypeRef::i32()),
             returns_nullable: None,
             errors: Vec::new(),
         });
-        
+
         // Serialize and deserialize
         let json = serde_json::to_string_pretty(&manifest).unwrap();
         let deserialized: Manifest = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(manifest.schema_version, deserialized.schema_version);
         assert_eq!(manifest.methods.len(), deserialized.methods.len());
         assert_eq!(manifest.methods[0].name, deserialized.methods[0].name);
     }
-} 
+}

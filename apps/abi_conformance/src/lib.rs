@@ -1,17 +1,21 @@
+use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use calimero_sdk::app;
 use std::collections::BTreeMap;
 use thiserror::Error;
 
 // Newtype bytes
-#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct UserId32([u8; 32]);
 
 // Note: [u8; 64] doesn't implement Serialize/Deserialize, so we'll use Vec<u8> for Hash64
-#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 #[serde(crate = "calimero_sdk::serde")]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct Hash64(Vec<u8>);
@@ -70,16 +74,16 @@ pub enum Event {
 #[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
-    counters: BTreeMap<String, u32>,   // map<string,u32>
-    users: Vec<UserId32>,              // list<UserId32>
+    counters: BTreeMap<String, u32>, // map<string,u32>
+    users: Vec<UserId32>,            // list<UserId32>
 }
 
 // Expose AbiState as a public type for ABI
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct AbiStateExposed {
-    counters: BTreeMap<String, u32>,   // map<string,u32>
-    users: Vec<UserId32>,              // list<UserId32>
+    counters: BTreeMap<String, u32>, // map<string,u32>
+    users: Vec<UserId32>,            // list<UserId32>
 }
 
 #[app::logic]
@@ -228,4 +232,4 @@ impl AbiState {
             })
         }
     }
-} 
+}
