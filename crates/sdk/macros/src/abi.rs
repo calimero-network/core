@@ -146,7 +146,8 @@ fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, SynError> {
         
         variants.push(AbiVariant {
             name: variant.ident.to_string(),
-            type_: variant_type,
+            code: None,
+            payload: variant_type,
         });
     }
     
@@ -513,15 +514,15 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
     match type_name {
         // Newtype wrappers that should be treated as bytes
         "UserId32" => Some(TypeDef::Bytes {
-            size: 32,
+            size: Some(32),
             encoding: "hex".to_string(),
         }),
         "Hash64" => Some(TypeDef::Bytes {
-            size: 64,
+            size: Some(64),
             encoding: "hex".to_string(),
         }),
         "UserId" => Some(TypeDef::Bytes {
-            size: 32,
+            size: Some(32),
             encoding: "hex".to_string(),
         }),
         // Common record types
@@ -591,15 +592,18 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
             variants: vec![
                 AbiVariant {
                     name: "Ping".to_string(),
-                    type_: None,
+                    code: None,
+                    payload: None,
                 },
                 AbiVariant {
                     name: "SetName".to_string(),
-                    type_: Some(TypeRef::string()),
+                    code: None,
+                    payload: Some(TypeRef::string()),
                 },
                 AbiVariant {
                     name: "Update".to_string(),
-                    type_: Some(TypeRef::reference("UpdatePayload")),
+                    code: None,
+                    payload: Some(TypeRef::reference("UpdatePayload")),
                 },
             ],
         }),
@@ -607,11 +611,13 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
             variants: vec![
                 AbiVariant {
                     name: "BadInput".to_string(),
-                    type_: None,
+                    code: None,
+                    payload: None,
                 },
                 AbiVariant {
                     name: "NotFound".to_string(),
-                    type_: Some(TypeRef::string()),
+                    code: None,
+                    payload: Some(TypeRef::string()),
                 },
             ],
         }),
@@ -681,11 +687,13 @@ fn ensure_all_referenced_types_are_defined(all_types: &mut HashMap<String, TypeD
             variants: vec![
                 AbiVariant {
                     name: "BadInput".to_string(),
-                    type_: None,
+                    code: None,
+                    payload: None,
                 },
                 AbiVariant {
                     name: "NotFound".to_string(),
-                    type_: Some(TypeRef::string()),
+                    code: None,
+                    payload: Some(TypeRef::string()),
                 },
             ],
         });
@@ -725,34 +733,52 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
     }
     
     // Handle return type
-    let returns = if method.name.to_string() == "init" {
+    let (returns, returns_nullable) = if method.name.to_string() == "init" {
         // Special case for init to return AbiState
-        Some(TypeRef::reference("AbiState"))
-    } else {
-        method.ret.as_ref().map(|ret| {
-            // Handle Result<T, E> - extract T as return type
-            if let Type::Path(path) = &ret.ty {
-                if path.path.segments.len() >= 2 {
-                    if let Some(last_seg) = path.path.segments.last() {
-                        if last_seg.ident == "Result" {
-                            // Extract T from Result<T, E>
-                            if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
-                                if let Some(arg) = args.args.first() {
-                                    if let GenericArgument::Type(item_type) = arg {
-                                        let (type_ref, _) = normalize_type_with_nullable(item_type);
-                                        return type_ref;
-                                    }
+        (Some(TypeRef::reference("AbiState")), None)
+    } else if let Some(ret) = &method.ret {
+        // Handle Result<T, E> - extract T as return type
+        if let Type::Path(path) = &ret.ty {
+            if path.path.segments.len() >= 2 {
+                if let Some(last_seg) = path.path.segments.last() {
+                    if last_seg.ident == "Result" {
+                        // Extract T from Result<T, E>
+                        if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
+                            if let Some(arg) = args.args.first() {
+                                if let GenericArgument::Type(item_type) = arg {
+                                    let (type_ref, nullable) = normalize_type_with_nullable(item_type);
+                                    (Some(type_ref), nullable)
+                                } else {
+                                    (None, None)
                                 }
+                            } else {
+                                (None, None)
                             }
+                        } else {
+                            (None, None)
                         }
+                    } else {
+                        // For non-Result types, normalize normally
+                        let (type_ref, nullable) = normalize_type_with_nullable(&ret.ty);
+                        (Some(type_ref), nullable)
                     }
+                } else {
+                    // For non-Result types, normalize normally
+                    let (type_ref, nullable) = normalize_type_with_nullable(&ret.ty);
+                    (Some(type_ref), nullable)
                 }
+            } else {
+                // For non-Result types, normalize normally
+                let (type_ref, nullable) = normalize_type_with_nullable(&ret.ty);
+                (Some(type_ref), nullable)
             }
-            
+        } else {
             // For non-Result types, normalize normally
-            let (type_ref, _) = normalize_type_with_nullable(&ret.ty);
-            type_ref
-        })
+            let (type_ref, nullable) = normalize_type_with_nullable(&ret.ty);
+            (Some(type_ref), nullable)
+        }
+    } else {
+        (None, None)
     };
     
     // Extract errors from method name and return type analysis
@@ -762,6 +788,7 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
         name: method.name.to_string(),
         params,
         returns,
+        returns_nullable,
         errors,
     }
 }
@@ -771,16 +798,15 @@ fn normalize_type_with_nullable(ty: &Type) -> (TypeRef, Option<bool>) {
     match ty {
         Type::Path(path) => {
             // Check if this is Option<T>
-            if let Some(ident) = path.path.get_ident() {
-                if ident.to_string() == "Option" {
+            if let Some(first_segment) = path.path.segments.first() {
+                let ident_str = first_segment.ident.to_string();
+                if ident_str == "Option" {
                     // Handle Option<T>
-                    if let Some(segment) = path.path.segments.last() {
-                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                            if let Some(arg) = args.args.first() {
-                                if let GenericArgument::Type(item_type) = arg {
-                                    let (inner_type, _) = normalize_type_with_nullable(item_type);
-                                    return (inner_type, Some(true));
-                                }
+                    if let PathArguments::AngleBracketed(args) = &first_segment.arguments {
+                        if let Some(arg) = args.args.first() {
+                            if let GenericArgument::Type(item_type) = arg {
+                                let (inner_type, _) = normalize_type_with_nullable(item_type);
+                                return (inner_type, Some(true));
                             }
                         }
                     }
@@ -823,18 +849,18 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
                                                 "ConformanceError" => {
                                                     errors.push(Error {
                                                         code: "BAD_INPUT".to_string(),
-                                                        type_: None,
+                                                        payload: None,
                                                     });
                                                     errors.push(Error {
                                                         code: "NOT_FOUND".to_string(),
-                                                        type_: Some(TypeRef::string()),
+                                                        payload: Some(TypeRef::string()),
                                                     });
                                                 }
                                                 _ => {
                                                     // For unknown error types, create generic errors
                                                     errors.push(Error {
                                                         code: "ERROR".to_string(),
-                                                        type_: None,
+                                                        payload: None,
                                                     });
                                                 }
                                             }
@@ -855,18 +881,18 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
             // These methods can return NotFound and Forbidden errors
             errors.push(Error {
                 code: "NOT_FOUND".to_string(),
-                type_: None,
+                payload: None,
             });
             errors.push(Error {
                 code: "FORBIDDEN".to_string(),
-                type_: None,
+                payload: None,
             });
         }
         "get_result" => {
             // This method can return NotFound error
             errors.push(Error {
                 code: "NOT_FOUND".to_string(),
-                type_: None,
+                payload: None,
             });
         }
         _ => {}

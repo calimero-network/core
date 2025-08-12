@@ -1,5 +1,6 @@
 use crate::schema::{Manifest, Method, Parameter, TypeRef, TypeDef, Field, Variant, Error, Event};
 use crate::normalize::{normalize_type, TypeResolver, ResolvedLocal};
+use crate::validate::validate_manifest;
 use syn::{ItemImpl, ImplItem, ImplItemFn, FnArg, Pat, PatIdent, Type, ReturnType, Visibility, Item, ItemStruct, ItemEnum, Fields, Variant as SynVariant};
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -15,6 +16,8 @@ pub enum EmitterError {
     NormalizeError(#[from] crate::normalize::NormalizeError),
     #[error("failed to resolve local type: {0}")]
     TypeResolutionError(String),
+    #[error("validation error: {0}")]
+    ValidationError(#[from] crate::validate::ValidationError),
 }
 
 /// Crate-level type resolver that can detect local types
@@ -128,6 +131,13 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
     // Ensure all referenced types are defined
     ensure_all_referenced_types_defined(&mut manifest);
     
+    // Sort methods and events for determinism
+    manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
+    manifest.events.sort_by(|a, b| a.name.cmp(&b.name));
+    
+    // Validate the manifest
+    validate_manifest(&manifest)?;
+    
     Ok(manifest)
 }
 
@@ -199,11 +209,12 @@ fn convert_method_to_abi(
     }
     
     // Process return type
-    let returns = match &method.sig.output {
-        ReturnType::Default => None,
+    let (returns, returns_nullable) = match &method.sig.output {
+        ReturnType::Default => (None, None),
         ReturnType::Type(_, ty) => {
             let type_ref = normalize_type(ty, true, resolver)?;
-            Some(type_ref)
+            let nullable = is_option_type(ty);
+            (Some(type_ref), if nullable { Some(true) } else { None })
         }
     };
     
@@ -214,6 +225,7 @@ fn convert_method_to_abi(
         name: method.sig.ident.to_string(),
         params,
         returns,
+        returns_nullable,
         errors,
     })
 }
@@ -255,7 +267,7 @@ fn extract_errors_from_return_type(
                                                         let code = variant.name.to_uppercase();
                                                         let error = Error {
                                                             code,
-                                                            type_: variant.type_.clone(),
+                                                            payload: variant.payload.clone(),
                                                         };
                                                         errors.push(error);
                                                     }
@@ -343,7 +355,8 @@ fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, EmitterErro
         
         variants.push(Variant {
             name: variant.ident.to_string(),
-            type_: variant_type,
+            code: None,
+            payload: variant_type,
         });
     }
     

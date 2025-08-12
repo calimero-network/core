@@ -35,7 +35,8 @@ pub enum TypeDef {
     },
     #[serde(rename = "bytes")]
     Bytes {
-        size: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<usize>,
         encoding: String,
     },
 }
@@ -54,9 +55,10 @@ pub struct Field {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variant {
     pub name: String,
-    #[serde(rename = "type")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub type_: Option<TypeRef>,
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<TypeRef>,
 }
 
 /// Method definition
@@ -66,6 +68,8 @@ pub struct Method {
     pub params: Vec<Parameter>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub returns: Option<TypeRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returns_nullable: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub errors: Vec<Error>,
 }
@@ -84,9 +88,8 @@ pub struct Parameter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Error {
     pub code: String,
-    #[serde(rename = "type")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub type_: Option<TypeRef>,
+    pub payload: Option<TypeRef>,
 }
 
 /// Event definition
@@ -132,7 +135,8 @@ pub enum ScalarType {
     String,
     #[serde(rename = "bytes")]
     Bytes {
-        size: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<usize>,
         encoding: String,
     },
     #[serde(rename = "unit")]
@@ -265,10 +269,10 @@ impl TypeRef {
         TypeRef::Scalar(ScalarType::String)
     }
 
-    /// Create a bytes type
+    /// Create a bytes type (variable length)
     pub fn bytes() -> Self {
         TypeRef::Scalar(ScalarType::Bytes {
-            size: 0,
+            size: None,
             encoding: "hex".to_string(),
         })
     }
@@ -276,7 +280,7 @@ impl TypeRef {
     /// Create a bytes type with size and encoding
     pub fn bytes_with_size(size: usize, encoding: &str) -> Self {
         TypeRef::Scalar(ScalarType::Bytes {
-            size,
+            size: Some(size),
             encoding: encoding.to_string(),
         })
     }
@@ -321,6 +325,7 @@ mod tests {
                 }
             ],
             returns: Some(TypeRef::i32()),
+            returns_nullable: None,
             errors: Vec::new(),
         });
         
