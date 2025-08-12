@@ -99,7 +99,7 @@ pub struct Event {
 }
 
 /// Type reference - either inline or reference to a named type
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TypeRef {
     /// Reference to a named type
@@ -111,7 +111,7 @@ pub enum TypeRef {
 }
 
 /// Scalar types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum ScalarType {
     #[serde(rename = "bool")]
@@ -140,7 +140,7 @@ pub enum ScalarType {
 }
 
 /// Collection types
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum CollectionType {
     #[serde(rename = "list")]
