@@ -221,7 +221,7 @@ fn is_string_type(type_ref: &TypeRef) -> bool {
 /// Normalize a scalar type
 fn normalize_scalar_type(
     path: &syn::Path,
-    _wasm32: bool,
+    wasm32: bool,
     _resolver: &dyn TypeResolver,
 ) -> Result<TypeRef, NormalizeError> {
     if path.segments.len() != 1 {
@@ -233,13 +233,32 @@ fn normalize_scalar_type(
     let ident = &path.segments[0].ident;
     match ident.to_string().as_str() {
         "bool" => Ok(TypeRef::bool()),
+        "i8" => Ok(TypeRef::i32()),
+        "i16" => Ok(TypeRef::i32()),
         "i32" => Ok(TypeRef::i32()),
         "i64" => Ok(TypeRef::i64()),
+        "u8" => Ok(TypeRef::u32()),
+        "u16" => Ok(TypeRef::u32()),
         "u32" => Ok(TypeRef::u32()),
         "u64" => Ok(TypeRef::u64()),
         "f32" => Ok(TypeRef::f32()),
         "f64" => Ok(TypeRef::f64()),
         "String" => Ok(TypeRef::string()),
+        "str" => Ok(TypeRef::string()),
+        "usize" => {
+            if wasm32 {
+                Ok(TypeRef::u32())
+            } else {
+                Ok(TypeRef::u64())
+            }
+        }
+        "isize" => {
+            if wasm32 {
+                Ok(TypeRef::i32())
+            } else {
+                Ok(TypeRef::i64())
+            }
+        }
         _ => {
             // Check if it's a local type
             if let Some(resolved) = _resolver.resolve_local(&ident.to_string()) {

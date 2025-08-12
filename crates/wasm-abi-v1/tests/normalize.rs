@@ -44,6 +44,7 @@ fn parse_type(ty_str: &str) -> syn::Type {
 fn test_scalar_types() {
     let resolver = MockResolver::new();
 
+    // Basic scalar types
     assert_eq!(
         normalize_type(&parse_type("bool"), true, &resolver).unwrap(),
         TypeRef::bool()
@@ -250,13 +251,13 @@ fn test_newtype_bytes() {
     resolver.add_newtype_bytes("UserId32", 32);
     resolver.add_newtype_bytes("Hash64", 64);
 
-    // UserId32 -> $ref:"UserId32" (upstream will define it as bytes{size:32})
+    // UserId32 -> bytes{size:32} (not a reference)
     let result = normalize_type(&parse_type("UserId32"), true, &resolver).unwrap();
-    assert_eq!(result, TypeRef::reference("UserId32"));
+    assert_eq!(result, TypeRef::bytes_with_size(32, "hex"));
 
-    // Hash64 -> $ref:"Hash64" (upstream will define it as bytes{size:64})
+    // Hash64 -> bytes{size:64} (not a reference)
     let result = normalize_type(&parse_type("Hash64"), true, &resolver).unwrap();
-    assert_eq!(result, TypeRef::reference("Hash64"));
+    assert_eq!(result, TypeRef::bytes_with_size(64, "hex"));
 }
 
 #[test]
@@ -278,13 +279,11 @@ fn test_record_and_variant_types() {
 fn test_unknown_external_types() {
     let resolver = MockResolver::new();
 
-    // Unknown types should be returned as references
-    let result = normalize_type(&parse_type("ExternalType"), true, &resolver).unwrap();
-    assert_eq!(result, TypeRef::reference("ExternalType"));
+    // Unknown types should fail with TypePathError
+    assert!(normalize_type(&parse_type("ExternalType"), true, &resolver).is_err());
 
-    // Fully qualified paths should also work
-    let result = normalize_type(&parse_type("std::collections::HashMap"), true, &resolver).unwrap();
-    assert_eq!(result, TypeRef::reference("HashMap"));
+    // Fully qualified paths should also fail
+    assert!(normalize_type(&parse_type("std::collections::HashMap"), true, &resolver).is_err());
 }
 
 #[test]
@@ -306,9 +305,9 @@ fn test_nested_generics() {
     let result = normalize_type(&parse_type("Option<Vec<u32>>"), true, &resolver).unwrap();
     assert_eq!(result, TypeRef::list(TypeRef::u32()));
 
-    // Option<Vec<UserId32>> -> list<UserId32> with nullable
+    // Option<Vec<UserId32>> -> list<bytes{size:32}> with nullable
     let result = normalize_type(&parse_type("Option<Vec<UserId32>>"), true, &resolver).unwrap();
-    assert_eq!(result, TypeRef::list(TypeRef::reference("UserId32")));
+    assert_eq!(result, TypeRef::list(TypeRef::bytes_with_size(32, "hex")));
 
     // Vec<Option<Person>> -> list<Person> (nullable handled at field level)
     let result = normalize_type(&parse_type("Vec<Option<Person>>"), true, &resolver).unwrap();
@@ -338,7 +337,7 @@ fn test_complex_nested_scenarios() {
         TypeRef::map(TypeRef::list(TypeRef::reference("Person")))
     );
 
-    // Vec<Option<BTreeMap<String, UserId32>>> -> list<map<string, UserId32>>
+    // Vec<Option<BTreeMap<String, UserId32>>> -> list<map<string, bytes{size:32}>>
     let result = normalize_type(
         &parse_type("Vec<Option<BTreeMap<String, UserId32>>>"),
         true,
@@ -347,6 +346,6 @@ fn test_complex_nested_scenarios() {
     .unwrap();
     assert_eq!(
         result,
-        TypeRef::list(TypeRef::map(TypeRef::reference("UserId32")))
+        TypeRef::list(TypeRef::map(TypeRef::bytes_with_size(32, "hex")))
     );
 }
