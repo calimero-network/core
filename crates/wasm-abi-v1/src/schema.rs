@@ -41,7 +41,7 @@ pub enum TypeDef {
 }
 
 /// Field in a record type
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     #[serde(rename = "type")]
@@ -152,6 +152,10 @@ pub enum CollectionType {
         #[serde(serialize_with = "serialize_map_key", deserialize_with = "deserialize_map_key")]
         key: Box<TypeRef>,
         value: Box<TypeRef>,
+    },
+    #[serde(rename = "record")]
+    Record {
+        fields: Vec<Field>,
     },
 }
 

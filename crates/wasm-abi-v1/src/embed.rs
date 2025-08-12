@@ -10,7 +10,8 @@ macro_rules! embed_abi {
         const ABI_JSON: &str = $manifest;
         
         // Create the custom section with the ABI JSON
-        #[link_section = "calimero_abi_v1"]
+        #[cfg_attr(target_os = "macos", link_section = "__DATA,calimero_abi_v1")]
+        #[cfg_attr(not(target_os = "macos"), link_section = "calimero_abi_v1")]
         static ABI: [u8; ABI_JSON.len()] = *ABI_JSON.as_bytes();
         
         // Export functions to access the ABI at runtime

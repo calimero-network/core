@@ -1,0 +1,204 @@
+{
+  "schema_version": "wasm-abi/1",
+  "types": {
+    "ConformanceError": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "BadInput"
+        },
+        {
+          "name": "NotFound",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "KvStore": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "placeholder",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    }
+  },
+  "methods": [
+    {
+      "name": "init",
+      "params": [],
+      "returns": {
+        "$ref": "AbiState"
+      }
+    },
+    {
+      "name": "set",
+      "params": [
+        {
+          "name": "key",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "value",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "unit"
+      }
+    },
+    {
+      "name": "entries",
+      "params": [],
+      "returns": {
+        "kind": "map",
+        "key": "string",
+        "value": {
+          "kind": "string"
+        }
+      }
+    },
+    {
+      "name": "len",
+      "params": [],
+      "returns": {
+        "kind": "u32"
+      }
+    },
+    {
+      "name": "get",
+      "params": [
+        {
+          "name": "key",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "get_unchecked",
+      "params": [
+        {
+          "name": "key",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "get_result",
+      "params": [
+        {
+          "name": "key",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      },
+      "errors": [
+        {
+          "code": "NOT_FOUND"
+        }
+      ]
+    },
+    {
+      "name": "remove",
+      "params": [
+        {
+          "name": "key",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "clear",
+      "params": [],
+      "returns": {
+        "kind": "unit"
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "Inserted",
+      "payload": {
+        "kind": "record",
+        "fields": [
+          {
+            "name": "key",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "value",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Updated",
+      "payload": {
+        "kind": "record",
+        "fields": [
+          {
+            "name": "key",
+            "type": {
+              "kind": "string"
+            }
+          },
+          {
+            "name": "value",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Removed",
+      "payload": {
+        "kind": "record",
+        "fields": [
+          {
+            "name": "key",
+            "type": {
+              "kind": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Cleared"
+    }
+  ]
+}

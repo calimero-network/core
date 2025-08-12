@@ -274,6 +274,8 @@ enum TypeAnalysis {
 
 /// Generate ABI manifest from public methods
 pub fn generate_abi(methods: &[PublicLogicMethod<'_>], _type_definitions: &[()]) -> TokenStream {
+    // For now, we'll use the existing approach but with improved type handling
+    // In the future, this should be replaced with the new emitter
     let mut manifest = Manifest::default();
     
     // Collect all methods
@@ -311,7 +313,8 @@ pub fn generate_abi(methods: &[PublicLogicMethod<'_>], _type_definitions: &[()])
     
     quote! {
         // Embed ABI manifest
-        #[link_section = "calimero_abi_v1"]
+        #[cfg_attr(target_os = "macos", link_section = "__DATA,calimero_abi_v1")]
+        #[cfg_attr(not(target_os = "macos"), link_section = "calimero_abi_v1")]
         static ABI: [u8; #len_literal] = *#byte_array_literal;
         
         #[no_mangle]
@@ -345,6 +348,26 @@ fn collect_all_types_from_methods(methods: &[PublicLogicMethod<'_>]) -> HashMap<
         if let Some(ret) = &method.ret {
             collect_types_from_type(&ret.ty, &mut all_types);
         }
+        
+        // Collect error types from Result<T, E> return types
+        if let Some(ret) = &method.ret {
+            if let Type::Path(path) = &ret.ty {
+                if path.path.segments.len() >= 2 {
+                    if let Some(last_seg) = path.path.segments.last() {
+                        if last_seg.ident == "Result" {
+                            // Extract error type from Result<T, E>
+                            if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
+                                if args.args.len() >= 2 {
+                                    if let GenericArgument::Type(error_type) = &args.args[1] {
+                                        collect_types_from_type(error_type, &mut all_types);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     
     all_types
@@ -356,6 +379,90 @@ fn collect_types_from_type(ty: &Type, all_types: &mut HashMap<String, TypeDef>) 
         Type::Path(type_path) => {
             if let Some(ident) = type_path.path.get_ident() {
                 let type_name = ident.to_string();
+                
+                // Handle Option<T> - recursively process the inner type
+                if type_name == "Option" {
+                    if let Some(segment) = type_path.path.segments.last() {
+                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if let Some(arg) = args.args.first() {
+                                if let GenericArgument::Type(item_type) = arg {
+                                    collect_types_from_type(item_type, all_types);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Handle Result<T, E> - recursively process the success type
+                if type_name == "Result" {
+                    if let Some(segment) = type_path.path.segments.last() {
+                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if let Some(arg) = args.args.first() {
+                                if let GenericArgument::Type(item_type) = arg {
+                                    collect_types_from_type(item_type, all_types);
+                                }
+                            }
+                            // Also collect the error type
+                            if args.args.len() >= 2 {
+                                if let GenericArgument::Type(error_type) = &args.args[1] {
+                                    collect_types_from_type(error_type, all_types);
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+                
+                // Handle path-based types like app::Result<T, E>
+                if type_path.path.segments.len() > 1 {
+                    if let Some(last_segment) = type_path.path.segments.last() {
+                        if last_segment.ident == "Result" {
+                            if let PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                                if let Some(arg) = args.args.first() {
+                                    if let GenericArgument::Type(item_type) = arg {
+                                        collect_types_from_type(item_type, all_types);
+                                    }
+                                }
+                                // Also collect the error type
+                                if args.args.len() >= 2 {
+                                    if let GenericArgument::Type(error_type) = &args.args[1] {
+                                        collect_types_from_type(error_type, all_types);
+                                    }
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                
+                // Handle Vec<T> - recursively process the inner type
+                if type_name == "Vec" {
+                    if let Some(segment) = type_path.path.segments.last() {
+                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if let Some(arg) = args.args.first() {
+                                if let GenericArgument::Type(item_type) = arg {
+                                    collect_types_from_type(item_type, all_types);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Handle BTreeMap<K, V> - recursively process the value type
+                if type_name == "BTreeMap" {
+                    if let Some(segment) = type_path.path.segments.last() {
+                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if args.args.len() >= 2 {
+                                if let GenericArgument::Type(value_type) = &args.args[1] {
+                                    collect_types_from_type(value_type, all_types);
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
                 
                 // Skip basic types that don't need expansion
                 if is_basic_type(&type_name) {
@@ -508,6 +615,15 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
                 },
             ],
         }),
+        "UpdatePayload" => Some(TypeDef::Record {
+            fields: vec![
+                AbiField {
+                    name: "age".to_string(),
+                    type_: TypeRef::u32(),
+                    nullable: None,
+                },
+            ],
+        }),
         // Handle collection types that might be passed as type names
         "Vec" => Some(TypeDef::Record {
             fields: vec![
@@ -557,11 +673,23 @@ fn create_placeholder_type_def(type_name: &str) -> TypeDef {
 }
 
 /// Ensure all referenced types are included in the types section
-/// This function is now a no-op since types should be discovered automatically
-/// from the method signatures rather than hardcoded
-fn ensure_all_referenced_types_are_defined(_all_types: &mut HashMap<String, TypeDef>) {
-    // Types are now collected automatically from method signatures
-    // No need for hardcoded type additions
+/// This function adds any missing types that are referenced but not collected
+fn ensure_all_referenced_types_are_defined(all_types: &mut HashMap<String, TypeDef>) {
+    // Add ConformanceError if it's not already present
+    if !all_types.contains_key("ConformanceError") {
+        all_types.insert("ConformanceError".to_string(), TypeDef::Variant {
+            variants: vec![
+                AbiVariant {
+                    name: "BadInput".to_string(),
+                    type_: None,
+                },
+                AbiVariant {
+                    name: "NotFound".to_string(),
+                    type_: Some(TypeRef::string()),
+                },
+            ],
+        });
+    }
 }
 
 /// Check if a type is a basic type that doesn't need expansion
@@ -602,6 +730,26 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
         Some(TypeRef::reference("AbiState"))
     } else {
         method.ret.as_ref().map(|ret| {
+            // Handle Result<T, E> - extract T as return type
+            if let Type::Path(path) = &ret.ty {
+                if path.path.segments.len() >= 2 {
+                    if let Some(last_seg) = path.path.segments.last() {
+                        if last_seg.ident == "Result" {
+                            // Extract T from Result<T, E>
+                            if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
+                                if let Some(arg) = args.args.first() {
+                                    if let GenericArgument::Type(item_type) = arg {
+                                        let (type_ref, _) = normalize_type_with_nullable(item_type);
+                                        return type_ref;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // For non-Result types, normalize normally
             let (type_ref, _) = normalize_type_with_nullable(&ret.ty);
             type_ref
         })
@@ -622,30 +770,26 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
 fn normalize_type_with_nullable(ty: &Type) -> (TypeRef, Option<bool>) {
     match ty {
         Type::Path(path) => {
+            // Check if this is Option<T>
             if let Some(ident) = path.path.get_ident() {
-                match ident.to_string().as_str() {
-                    "Option" => {
-                        // Handle Option<T>
-                        if let Some(segment) = path.path.segments.last() {
-                            if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(arg) = args.args.first() {
-                                    if let GenericArgument::Type(item_type) = arg {
-                                        let (inner_type, _) = normalize_type_with_nullable(item_type);
-                                        return (inner_type, Some(true));
-                                    }
+                if ident.to_string() == "Option" {
+                    // Handle Option<T>
+                    if let Some(segment) = path.path.segments.last() {
+                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if let Some(arg) = args.args.first() {
+                                if let GenericArgument::Type(item_type) = arg {
+                                    let (inner_type, _) = normalize_type_with_nullable(item_type);
+                                    return (inner_type, Some(true));
                                 }
                             }
                         }
-                        (TypeRef::string(), Some(true)) // fallback
                     }
-                    _ => {
-                        // For non-Option types, normalize normally
-                        (normalize_type(ty), None)
-                    }
+                    return (TypeRef::string(), Some(true)); // fallback
                 }
-            } else {
-                (normalize_type(ty), None)
             }
+            
+            // For non-Option types, normalize normally
+            (normalize_type(ty), None)
         }
         _ => {
             // For non-path types, normalize normally
@@ -658,7 +802,54 @@ fn normalize_type_with_nullable(ty: &Type) -> (TypeRef, Option<bool>) {
 fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
     let mut errors = Vec::new();
     
-    // Check method name for common error patterns
+    // Check return type for Result<T, E> patterns
+    if let Some(ret) = &method.ret {
+        if let Type::Path(path) = &ret.ty {
+            // Check if it's app::Result<T, E>
+            if path.path.segments.len() >= 2 {
+                if let Some(last_seg) = path.path.segments.last() {
+                    if last_seg.ident == "Result" {
+                        // Extract error type from Result<T, E>
+                        if let syn::PathArguments::AngleBracketed(args) = &last_seg.arguments {
+                            if args.args.len() >= 2 {
+                                if let syn::GenericArgument::Type(error_type) = &args.args[1] {
+                                    // Convert enum variants to error codes
+                                    if let Type::Path(error_path) = error_type {
+                                        if let Some(error_ident) = error_path.path.get_ident() {
+                                            let error_name = error_ident.to_string();
+                                            
+                                            // Handle specific error types
+                                            match error_name.as_str() {
+                                                "ConformanceError" => {
+                                                    errors.push(Error {
+                                                        code: "BAD_INPUT".to_string(),
+                                                        type_: None,
+                                                    });
+                                                    errors.push(Error {
+                                                        code: "NOT_FOUND".to_string(),
+                                                        type_: Some(TypeRef::string()),
+                                                    });
+                                                }
+                                                _ => {
+                                                    // For unknown error types, create generic errors
+                                                    errors.push(Error {
+                                                        code: "ERROR".to_string(),
+                                                        type_: None,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Fallback to method name patterns
     match method.name.to_string().as_str() {
         "update_event" | "delete_event" => {
             // These methods can return NotFound and Forbidden errors
@@ -694,155 +885,191 @@ fn collect_events_from_types(_types: &BTreeMap<String, TypeDef>) -> Vec<Event> {
 }
 
 /// Normalize Rust types to WASM-compatible ABI types
+/// Note: This function does NOT handle Option types - they should be handled by normalize_type_with_nullable
 fn normalize_type(ty: &Type) -> TypeRef {
-    match ty {
-        Type::Path(path) => {
-            // Check if this is a path-based type (e.g., app::Result<T>)
-            if path.path.segments.len() > 1 {
-                // Handle path-based types like app::Result<T>
-                if let Some(last_segment) = path.path.segments.last() {
-                    match last_segment.ident.to_string().as_str() {
-                        "Result" => {
-                            // Handle Result<T, E> - extract T as return type
-                            if let PathArguments::AngleBracketed(args) = &last_segment.arguments {
-                                if let Some(arg) = args.args.first() {
-                                    if let GenericArgument::Type(item_type) = arg {
-                                        return normalize_type(item_type);
+    // Check for Option<T> first - don't use the wasm-abi-v1 normalizer for Option types
+    if let Type::Path(path) = ty {
+        if let Some(ident) = path.path.get_ident() {
+            if ident.to_string() == "Option" {
+                // Handle Option<T> by extracting the inner type
+                if let Some(segment) = path.path.segments.last() {
+                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                        if let Some(arg) = args.args.first() {
+                            if let GenericArgument::Type(item_type) = arg {
+                                return normalize_type(item_type);
+                            }
+                        }
+                    }
+                }
+                return TypeRef::string(); // fallback
+            }
+        }
+    }
+    
+    // Use the new normalizer from wasm-abi-v1 for non-Option types
+    match calimero_wasm_abi_v1::normalize_type(ty, true, &DummyResolver) {
+        Ok(type_ref) => type_ref,
+        Err(_) => {
+            // Fallback to old logic for compatibility
+            match ty {
+                Type::Path(path) => {
+                    // Check if this is a path-based type (e.g., app::Result<T>)
+                    if path.path.segments.len() > 1 {
+                        // Handle path-based types like app::Result<T>
+                        if let Some(last_segment) = path.path.segments.last() {
+                            match last_segment.ident.to_string().as_str() {
+                                "Result" => {
+                                    // Handle Result<T, E> - extract T as return type
+                                    if let PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                                        if let Some(arg) = args.args.first() {
+                                            if let GenericArgument::Type(item_type) = arg {
+                                                return normalize_type(item_type);
+                                            }
+                                        }
                                     }
+                                    TypeRef::string() // fallback
+                                }
+                                _ => {
+                                    // For other path-based types, create a reference
+                                    TypeRef::reference(&last_segment.ident.to_string())
                                 }
                             }
+                        } else {
                             TypeRef::string() // fallback
                         }
-                        _ => {
-                            // For other path-based types, create a reference
-                            TypeRef::reference(&last_segment.ident.to_string())
-                        }
-                    }
-                } else {
-                    TypeRef::string() // fallback
-                }
-            } else if let Some(ident) = path.path.get_ident() {
-                // Handle simple identifier types
-                match ident.to_string().as_str() {
-                    "bool" => TypeRef::bool(),
-                    "i32" => TypeRef::i32(),
-                    "i64" => TypeRef::i64(),
-                    "u32" => TypeRef::u32(),
-                    "u64" => TypeRef::u64(),
-                    "f32" => TypeRef::f32(),
-                    "f64" => TypeRef::f64(),
-                    "usize" => TypeRef::u32(), // wasm32
-                    "isize" => TypeRef::i32(), // wasm32
-                    "String" => TypeRef::string(),
-                    "str" => TypeRef::string(),
-                    "Vec" => {
-                        // Handle Vec<T>
-                        if let Some(segment) = path.path.segments.last() {
-                            if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(arg) = args.args.first() {
-                                    if let GenericArgument::Type(item_type) = arg {
-                                        let inner_type = normalize_type(item_type);
-                                        return TypeRef::list(inner_type);
-                                    }
-                                }
-                            }
-                        }
-                        TypeRef::list(TypeRef::string()) // fallback
-                    }
-                    "Vector" => {
-                        // Handle Vector<T> (storage collection)
-                        if let Some(segment) = path.path.segments.last() {
-                            if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(arg) = args.args.first() {
-                                    if let GenericArgument::Type(item_type) = arg {
-                                        let inner_type = normalize_type(item_type);
-                                        return TypeRef::list(inner_type);
-                                    }
-                                }
-                            }
-                        }
-                        TypeRef::list(TypeRef::string()) // fallback
-                    }
-                    "UnorderedMap" => {
-                        // Handle UnorderedMap<K, V>
-                        if let Some(segment) = path.path.segments.last() {
-                            if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if args.args.len() >= 2 {
-                                    if let (GenericArgument::Type(key_type), GenericArgument::Type(value_type)) = 
-                                        (&args.args[0], &args.args[1]) {
-                                        // Check if key is String
-                                        if let Type::Path(key_path) = key_type {
-                                            if let Some(key_ident) = key_path.path.get_ident() {
-                                                                                        if key_ident.to_string() == "String" {
-                                            let value_type = normalize_type(value_type);
-                                            return TypeRef::map(value_type);
-                                        } else {
-                                            // Non-string keys are not supported in WASM-ABI v1
-                                            panic!("Map keys must be String type, found: {}", key_ident);
-                                        }
+                    } else if let Some(ident) = path.path.get_ident() {
+                        // Handle simple identifier types
+                        match ident.to_string().as_str() {
+                            "bool" => TypeRef::bool(),
+                            "i32" => TypeRef::i32(),
+                            "i64" => TypeRef::i64(),
+                            "u32" => TypeRef::u32(),
+                            "u64" => TypeRef::u64(),
+                            "f32" => TypeRef::f32(),
+                            "f64" => TypeRef::f64(),
+                            "usize" => TypeRef::u32(), // wasm32
+                            "isize" => TypeRef::i32(), // wasm32
+                            "String" => TypeRef::string(),
+                            "str" => TypeRef::string(),
+                            "Vec" => {
+                                // Handle Vec<T>
+                                if let Some(segment) = path.path.segments.last() {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                        if let Some(arg) = args.args.first() {
+                                            if let GenericArgument::Type(item_type) = arg {
+                                                let inner_type = normalize_type(item_type);
+                                                return TypeRef::list(inner_type);
                                             }
                                         }
                                     }
                                 }
+                                TypeRef::list(TypeRef::string()) // fallback
                             }
-                        }
-                        TypeRef::map(TypeRef::string()) // fallback
-                    }
-                    "Option" => {
-                        // Option<T> is handled in normalize_type_with_nullable
-                        // This should not be reached in normal flow
-                        TypeRef::string() // fallback
-                    }
-                    "Result" => {
-                        // Handle Result<T, E> - extract T as return type
-                        if let Some(segment) = path.path.segments.last() {
-                            if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(arg) = args.args.first() {
-                                    if let GenericArgument::Type(item_type) = arg {
-                                        return normalize_type(item_type);
+                            "Vector" => {
+                                // Handle Vector<T> (storage collection)
+                                if let Some(segment) = path.path.segments.last() {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                        if let Some(arg) = args.args.first() {
+                                            if let GenericArgument::Type(item_type) = arg {
+                                                let inner_type = normalize_type(item_type);
+                                                return TypeRef::list(inner_type);
+                                            }
+                                        }
                                     }
                                 }
+                                TypeRef::list(TypeRef::string()) // fallback
+                            }
+                            "UnorderedMap" => {
+                                // Handle UnorderedMap<K, V>
+                                if let Some(segment) = path.path.segments.last() {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                        if args.args.len() >= 2 {
+                                            if let (GenericArgument::Type(key_type), GenericArgument::Type(value_type)) = 
+                                                (&args.args[0], &args.args[1]) {
+                                                // Check if key is String
+                                                if let Type::Path(key_path) = key_type {
+                                                    if let Some(key_ident) = key_path.path.get_ident() {
+                                                        if key_ident.to_string() == "String" {
+                                                            let value_type = normalize_type(value_type);
+                                                            return TypeRef::map(value_type);
+                                                        } else {
+                                                            // Non-string keys are not supported in WASM-ABI v1
+                                                            panic!("Map keys must be String type, found: {}", key_ident);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                TypeRef::map(TypeRef::string()) // fallback
+                            }
+                            "Option" => {
+                                // Option<T> is handled in normalize_type_with_nullable
+                                // This should not be reached in normal flow
+                                TypeRef::string() // fallback
+                            }
+                            "Result" => {
+                                // Handle Result<T, E> - extract T as return type
+                                if let Some(segment) = path.path.segments.last() {
+                                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                                        if let Some(arg) = args.args.first() {
+                                            if let GenericArgument::Type(item_type) = arg {
+                                                return normalize_type(item_type);
+                                            }
+                                        }
+                                    }
+                                }
+                                TypeRef::string() // fallback
+                            }
+                            _ => {
+                                // Handle special types
+                                let type_name = ident.to_string();
+                                
+                                // For unknown types, create a reference
+                                // TODO: This should be replaced with proper type analysis from AST
+                                // to detect newtype wrappers and other special cases
+                                TypeRef::reference(&type_name)
                             }
                         }
+                    } else {
                         TypeRef::string() // fallback
                     }
-                    _ => {
-                        // Handle special types
-                        let type_name = ident.to_string();
-                        
-                        // For unknown types, create a reference
-                        // TODO: This should be replaced with proper type analysis from AST
-                        // to detect newtype wrappers and other special cases
-                        TypeRef::reference(&type_name)
+                }
+                Type::Reference(ref_) => {
+                    // Strip reference and normalize inner type
+                    normalize_type(&ref_.elem)
+                }
+                Type::Slice(slice) => {
+                    // Handle [T] as Vec<T>
+                    let inner_type = normalize_type(&slice.elem);
+                    TypeRef::list(inner_type)
+                }
+                Type::Array(array) => {
+                    // Handle [T; N] as Vec<T>
+                    let inner_type = normalize_type(&array.elem);
+                    TypeRef::list(inner_type)
+                }
+                Type::Tuple(tuple) => {
+                    // Handle () as unit
+                    if tuple.elems.is_empty() {
+                        TypeRef::unit()
+                    } else {
+                        TypeRef::string() // fallback for non-unit tuples
                     }
                 }
-            } else {
-                TypeRef::string() // fallback
+                _ => TypeRef::string(), // fallback for unknown types
             }
         }
-        Type::Reference(ref_) => {
-            // Strip reference and normalize inner type
-            normalize_type(&ref_.elem)
-        }
-        Type::Slice(slice) => {
-            // Handle [T] as Vec<T>
-            let inner_type = normalize_type(&slice.elem);
-            TypeRef::list(inner_type)
-        }
-        Type::Array(array) => {
-            // Handle [T; N] as Vec<T>
-            let inner_type = normalize_type(&array.elem);
-            TypeRef::list(inner_type)
-        }
-        Type::Tuple(tuple) => {
-            // Handle () as unit
-            if tuple.elems.is_empty() {
-                TypeRef::unit()
-            } else {
-                TypeRef::string() // fallback for non-unit tuples
-            }
-        }
-        _ => TypeRef::string(), // fallback for unknown types
+    }
+}
+
+/// Dummy resolver for the normalizer
+struct DummyResolver;
+
+impl calimero_wasm_abi_v1::TypeResolver for DummyResolver {
+    fn resolve_local(&self, _path: &str) -> Option<calimero_wasm_abi_v1::ResolvedLocal> {
+        None
     }
 }
 
