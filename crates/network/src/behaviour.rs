@@ -88,7 +88,7 @@ impl Behaviour {
                             kad_config,
                         );
 
-                        kad.set_mode(Some(kad::Mode::Client));
+                        kad.set_mode(Some(kad::Mode::Server));
 
                         for (peer_id, addr) in bootstrap_peers {
                             let _ = kad.add_address(&peer_id, addr);

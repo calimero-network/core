@@ -1,7 +1,9 @@
+use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
 use libp2p::core::transport::ListenerId;
 pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
-use libp2p::Multiaddr;
 pub use libp2p::PeerId;
+use libp2p::{Multiaddr, StreamProtocol};
 use tokio::sync::oneshot;
 
 use crate::stream::Stream;
@@ -48,6 +50,19 @@ pub enum NetworkMessage {
     MeshPeerCount {
         request: MeshPeerCount,
         outcome: oneshot::Sender<<MeshPeerCount as actix::Message>::Result>,
+    },
+    // Blob discovery messages
+    AnnounceBlob {
+        request: AnnounceBlob,
+        outcome: oneshot::Sender<<AnnounceBlob as actix::Message>::Result>,
+    },
+    QueryBlob {
+        request: QueryBlob,
+        outcome: oneshot::Sender<<QueryBlob as actix::Message>::Result>,
+    },
+    RequestBlob {
+        request: RequestBlob,
+        outcome: oneshot::Sender<<RequestBlob as actix::Message>::Result>,
     },
 }
 
@@ -124,6 +139,43 @@ impl actix::Message for Unsubscribe {
     type Result = eyre::Result<IdentTopic>;
 }
 
+// Blob discovery messages
+
+/// Announce a blob to the DHT for a specific context
+#[derive(Clone, Copy, Debug)]
+pub struct AnnounceBlob {
+    pub blob_id: BlobId,
+    pub context_id: ContextId,
+    pub size: u64,
+}
+
+impl actix::Message for AnnounceBlob {
+    type Result = eyre::Result<()>;
+}
+
+/// Query for blob availability in the DHT
+#[derive(Clone, Copy, Debug)]
+pub struct QueryBlob {
+    pub blob_id: BlobId,
+    pub context_id: Option<ContextId>, // None for global queries
+}
+
+impl actix::Message for QueryBlob {
+    type Result = eyre::Result<Vec<PeerId>>;
+}
+
+/// Request a blob from a specific peer
+#[derive(Clone, Copy, Debug)]
+pub struct RequestBlob {
+    pub blob_id: BlobId,
+    pub context_id: ContextId,
+    pub peer_id: PeerId,
+}
+
+impl actix::Message for RequestBlob {
+    type Result = eyre::Result<Option<Vec<u8>>>;
+}
+
 #[derive(Debug)]
 pub enum NetworkEvent {
     ListeningOn {
@@ -145,6 +197,30 @@ pub enum NetworkEvent {
     StreamOpened {
         peer_id: PeerId,
         stream: Box<Stream>,
+        protocol: StreamProtocol,
+    },
+    // Blob discovery events
+    BlobRequested {
+        blob_id: BlobId,
+        context_id: ContextId,
+        requesting_peer: PeerId,
+    },
+    BlobProvidersFound {
+        blob_id: BlobId,
+        context_id: Option<ContextId>,
+        providers: Vec<PeerId>,
+    },
+    BlobDownloaded {
+        blob_id: BlobId,
+        context_id: ContextId,
+        data: Vec<u8>,
+        from_peer: PeerId,
+    },
+    BlobDownloadFailed {
+        blob_id: BlobId,
+        context_id: ContextId,
+        from_peer: PeerId,
+        error: String,
     },
 }
 
