@@ -8,7 +8,9 @@
           "name": "counters",
           "type": {
             "kind": "map",
-            "key": "string",
+            "key": {
+              "kind": "string"
+            },
             "value": {
               "kind": "u32"
             }
@@ -375,18 +377,12 @@
         {
           "name": "ps",
           "type": {
-            "kind": "list",
-            "items": {
-              "$ref": "Person"
-            }
+            "kind": "string"
           }
         }
       ],
       "returns": {
-        "kind": "list",
-        "items": {
-          "$ref": "Person"
-        }
+        "kind": "string"
       }
     },
     {
@@ -395,18 +391,12 @@
         {
           "name": "xs",
           "type": {
-            "kind": "list",
-            "items": {
-              "$ref": "UserId32"
-            }
+            "kind": "string"
           }
         }
       ],
       "returns": {
-        "kind": "list",
-        "items": {
-          "$ref": "UserId32"
-        }
+        "kind": "string"
       }
     },
     {
@@ -416,7 +406,9 @@
           "name": "m",
           "type": {
             "kind": "map",
-            "key": "string",
+            "key": {
+              "kind": "string"
+            },
             "value": {
               "kind": "u32"
             }
@@ -425,7 +417,9 @@
       ],
       "returns": {
         "kind": "map",
-        "key": "string",
+        "key": {
+          "kind": "string"
+        },
         "value": {
           "kind": "u32"
         }
@@ -438,7 +432,9 @@
           "name": "m",
           "type": {
             "kind": "map",
-            "key": "string",
+            "key": {
+              "kind": "string"
+            },
             "value": {
               "kind": "list",
               "items": {
@@ -450,7 +446,9 @@
       ],
       "returns": {
         "kind": "map",
-        "key": "string",
+        "key": {
+          "kind": "string"
+        },
         "value": {
           "kind": "list",
           "items": {
@@ -465,20 +463,12 @@
         {
           "name": "m",
           "type": {
-            "kind": "map",
-            "key": "string",
-            "value": {
-              "$ref": "Person"
-            }
+            "kind": "string"
           }
         }
       ],
       "returns": {
-        "kind": "map",
-        "key": "string",
-        "value": {
-          "$ref": "Person"
-        }
+        "kind": "string"
       }
     },
     {
@@ -622,13 +612,13 @@
     {
       "name": "PersonUpdated",
       "payload": {
-        "$ref": "Person"
+        "kind": "string"
       }
     },
     {
       "name": "ActionTaken",
       "payload": {
-        "$ref": "Action"
+        "kind": "string"
       }
     }
   ]
