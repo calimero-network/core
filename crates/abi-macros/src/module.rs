@@ -159,7 +159,17 @@ pub fn module_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     {
         let abi_json = generate_abi_json(&attrs, &functions, &events, &types);
         if let Ok(json_bytes) = serde_json::to_vec_pretty(&abi_json) {
-            // Note: ABI generation is handled by build script
+            // Write ABI to CALIMERO_ABI_OUT if set, otherwise to OUT_DIR
+            if let Ok(abi_out) = std::env::var("CALIMERO_ABI_OUT") {
+                if let Err(e) = std::fs::write(&abi_out, json_bytes) {
+                    eprintln!("Warning: Could not write ABI file to {}: {}", abi_out, e);
+                }
+            } else {
+                // Fallback to OUT_DIR
+                if let Err(e) = write_abi_file(&attrs.name, &abi_json) {
+                    eprintln!("Warning: Could not write ABI file: {}", e);
+                }
+            }
         }
     }
     

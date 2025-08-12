@@ -54,13 +54,16 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
     wrappers::event_wrapper(attr, item)
 }
 
-// Hidden ABI-specific macros (not part of public API)
-#[doc(hidden)]
+/// Module macro for ABI generation
+/// 
+/// This macro wraps an entire SSApp module and generates ABI when the abi-export feature is enabled.
+/// Usage: #[abi::module(name = "demo", version = "0.1.0")]
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     module::module_impl(attr, item)
 }
 
+// Hidden ABI-specific macros (not part of public API)
 #[doc(hidden)]
 #[proc_macro_attribute]
 pub fn query(attr: TokenStream, item: TokenStream) -> TokenStream {

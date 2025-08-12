@@ -22,12 +22,26 @@ pub fn logic_wrapper(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr_tokens = TokenStream2::from(attr);
     let item_tokens = TokenStream2::from(item);
     
-    let expanded = quote! {
-        #[::calimero_sdk_macros::logic(#attr_tokens)]
-        #item_tokens
-    };
+    #[cfg(feature = "abi-export")]
+    {
+        // Generate ABI when feature is enabled
+        let expanded = quote! {
+            #[::calimero_sdk_macros::logic(#attr_tokens)]
+            #item_tokens
+            
+            // ABI generation will be handled by the module macro
+        };
+        expanded.into()
+    }
     
-    expanded.into()
+    #[cfg(not(feature = "abi-export"))]
+    {
+        let expanded = quote! {
+            #[::calimero_sdk_macros::logic(#attr_tokens)]
+            #item_tokens
+        };
+        expanded.into()
+    }
 }
 
 /// Wrapper for app::state macro
@@ -36,12 +50,26 @@ pub fn state_wrapper(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr_tokens = TokenStream2::from(attr);
     let item_tokens = TokenStream2::from(item);
     
-    let expanded = quote! {
-        #[::calimero_sdk_macros::state(#attr_tokens)]
-        #item_tokens
-    };
+    #[cfg(feature = "abi-export")]
+    {
+        // Generate ABI when feature is enabled
+        let expanded = quote! {
+            #[::calimero_sdk_macros::state(#attr_tokens)]
+            #item_tokens
+            
+            // ABI generation will be handled by the module macro
+        };
+        expanded.into()
+    }
     
-    expanded.into()
+    #[cfg(not(feature = "abi-export"))]
+    {
+        let expanded = quote! {
+            #[::calimero_sdk_macros::state(#attr_tokens)]
+            #item_tokens
+        };
+        expanded.into()
+    }
 }
 
 /// Wrapper for app::init macro
