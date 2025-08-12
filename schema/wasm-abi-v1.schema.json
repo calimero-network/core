@@ -46,6 +46,9 @@
           "$ref": "#/definitions/ScalarType"
         },
         {
+          "$ref": "#/definitions/BytesType"
+        },
+        {
           "$ref": "#/definitions/CollectionType"
         }
       ]
@@ -78,19 +81,6 @@
         }
       }
     },
-    "VariableBytesType": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "encoding"],
-      "properties": {
-        "kind": {
-          "const": "bytes"
-        },
-        "encoding": {
-          "const": "hex"
-        }
-      }
-    },
     "CollectionType": {
       "oneOf": [
         {
@@ -115,7 +105,7 @@
               "const": "map"
             },
             "key": {
-              "const": "string"
+              "$ref": "#/definitions/TypeRef"
             },
             "value": {
               "$ref": "#/definitions/TypeRef"

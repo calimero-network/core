@@ -1,4 +1,4 @@
-use calimero_wasm_abi_v1::{Event, TypeRef};
+use calimero_wasm_abi_v1::Event;
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Type, Visibility};
@@ -21,7 +21,7 @@ impl calimero_wasm_abi_v1::TypeResolver for DummyResolver {
 fn is_option_type(ty: &Type) -> bool {
     if let Type::Path(path) = ty {
         if let Some(ident) = path.path.get_ident() {
-            return ident.to_string() == "Option";
+            return *ident == "Option";
         }
     }
     false

@@ -162,7 +162,7 @@ fn convert_enum_to_type_def(item_enum: &ItemEnum) -> Result<TypeDef, SynError> {
 fn is_option_type(ty: &Type) -> bool {
     if let Type::Path(type_path) = ty {
         if let Some(ident) = type_path.path.get_ident() {
-            return ident.to_string() == "Option";
+            return *ident == "Option";
         }
     }
     false
@@ -520,31 +520,31 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         // Newtype wrappers that should be treated as bytes
         "UserId32" => Some(TypeDef::Bytes {
             size: Some(32),
-            encoding: "hex".to_string(),
+            encoding: "hex".to_owned(),
         }),
         "Hash64" => Some(TypeDef::Bytes {
             size: Some(64),
-            encoding: "hex".to_string(),
+            encoding: "hex".to_owned(),
         }),
         "UserId" => Some(TypeDef::Bytes {
             size: Some(32),
-            encoding: "hex".to_string(),
+            encoding: "hex".to_owned(),
         }),
         // Common record types
         "Person" => Some(TypeDef::Record {
             fields: vec![
                 AbiField {
-                    name: "id".to_string(),
+                    name: "id".to_owned(),
                     type_: TypeRef::reference("UserId32"),
                     nullable: None,
                 },
                 AbiField {
-                    name: "name".to_string(),
+                    name: "name".to_owned(),
                     type_: TypeRef::string(),
                     nullable: None,
                 },
                 AbiField {
-                    name: "age".to_string(),
+                    name: "age".to_owned(),
                     type_: TypeRef::u32(),
                     nullable: None,
                 },
@@ -553,17 +553,17 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         "Profile" => Some(TypeDef::Record {
             fields: vec![
                 AbiField {
-                    name: "bio".to_string(),
+                    name: "bio".to_owned(),
                     type_: TypeRef::string(),
                     nullable: Some(true),
                 },
                 AbiField {
-                    name: "avatar".to_string(),
+                    name: "avatar".to_owned(),
                     type_: TypeRef::bytes(),
                     nullable: Some(true),
                 },
                 AbiField {
-                    name: "nicknames".to_string(),
+                    name: "nicknames".to_owned(),
                     type_: TypeRef::list(TypeRef::string()),
                     nullable: None,
                 },
@@ -572,12 +572,12 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         "AbiState" => Some(TypeDef::Record {
             fields: vec![
                 AbiField {
-                    name: "counters".to_string(),
+                    name: "counters".to_owned(),
                     type_: TypeRef::map(TypeRef::u32()),
                     nullable: None,
                 },
                 AbiField {
-                    name: "users".to_string(),
+                    name: "users".to_owned(),
                     type_: TypeRef::list(TypeRef::reference("UserId32")),
                     nullable: None,
                 },
@@ -585,7 +585,7 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         }),
         "UpdatePayload" => Some(TypeDef::Record {
             fields: vec![AbiField {
-                name: "age".to_string(),
+                name: "age".to_owned(),
                 type_: TypeRef::u32(),
                 nullable: None,
             }],
@@ -594,17 +594,17 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         "Action" => Some(TypeDef::Variant {
             variants: vec![
                 AbiVariant {
-                    name: "Ping".to_string(),
+                    name: "Ping".to_owned(),
                     code: None,
                     payload: None,
                 },
                 AbiVariant {
-                    name: "SetName".to_string(),
+                    name: "SetName".to_owned(),
                     code: None,
                     payload: Some(TypeRef::string()),
                 },
                 AbiVariant {
-                    name: "Update".to_string(),
+                    name: "Update".to_owned(),
                     code: None,
                     payload: Some(TypeRef::reference("UpdatePayload")),
                 },
@@ -613,12 +613,12 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         "ConformanceError" => Some(TypeDef::Variant {
             variants: vec![
                 AbiVariant {
-                    name: "BadInput".to_string(),
+                    name: "BadInput".to_owned(),
                     code: None,
                     payload: None,
                 },
                 AbiVariant {
-                    name: "NotFound".to_string(),
+                    name: "NotFound".to_owned(),
                     code: None,
                     payload: Some(TypeRef::string()),
                 },
@@ -626,7 +626,7 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         }),
         "UpdatePayload" => Some(TypeDef::Record {
             fields: vec![AbiField {
-                name: "age".to_string(),
+                name: "age".to_owned(),
                 type_: TypeRef::u32(),
                 nullable: None,
             }],
@@ -634,21 +634,21 @@ fn infer_type_from_name(type_name: &str) -> Option<TypeDef> {
         // Handle collection types that might be passed as type names
         "Vec" => Some(TypeDef::Record {
             fields: vec![AbiField {
-                name: "items".to_string(),
+                name: "items".to_owned(),
                 type_: TypeRef::list(TypeRef::string()),
                 nullable: None,
             }],
         }),
         "Option" => Some(TypeDef::Record {
             fields: vec![AbiField {
-                name: "value".to_string(),
+                name: "value".to_owned(),
                 type_: TypeRef::string(),
                 nullable: Some(true),
             }],
         }),
         "BTreeMap" => Some(TypeDef::Record {
             fields: vec![AbiField {
-                name: "entries".to_string(),
+                name: "entries".to_owned(),
                 type_: TypeRef::map(TypeRef::string()),
                 nullable: None,
             }],
@@ -664,7 +664,7 @@ fn create_placeholder_type_def(type_name: &str) -> TypeDef {
     // This should be replaced with actual type analysis
     TypeDef::Record {
         fields: vec![AbiField {
-            name: "placeholder".to_string(),
+            name: "placeholder".to_owned(),
             type_: TypeRef::string(),
             nullable: None,
         }],
@@ -677,16 +677,16 @@ fn ensure_all_referenced_types_are_defined(all_types: &mut HashMap<String, TypeD
     // Add ConformanceError if it's not already present
     if !all_types.contains_key("ConformanceError") {
         all_types.insert(
-            "ConformanceError".to_string(),
+            "ConformanceError".to_owned(),
             TypeDef::Variant {
                 variants: vec![
                     AbiVariant {
-                        name: "BadInput".to_string(),
+                        name: "BadInput".to_owned(),
                         code: None,
                         payload: None,
                     },
                     AbiVariant {
-                        name: "NotFound".to_string(),
+                        name: "NotFound".to_owned(),
                         code: None,
                         payload: Some(TypeRef::string()),
                     },
@@ -721,7 +721,7 @@ fn is_basic_type(type_name: &str) -> bool {
 /// This function is deprecated - types should be analyzed from the actual AST
 /// rather than hardcoded definitions
 #[deprecated(note = "Use actual type analysis from AST instead of hardcoded definitions")]
-fn analyze_and_expand_type(type_name: &str) -> Option<TypeDef> {
+const fn analyze_and_expand_type(type_name: &str) -> Option<TypeDef> {
     // This function should be removed in favor of proper type analysis
     None
 }
@@ -742,7 +742,7 @@ fn collect_method(method: &PublicLogicMethod<'_>) -> Method {
     }
 
     // Handle return type
-    let (returns, returns_nullable) = if method.name.to_string() == "init" {
+    let (returns, returns_nullable) = if *method.name == "init" {
         // Special case for init to return AbiState
         (Some(TypeRef::reference("AbiState")), None)
     } else if let Some(ret) = &method.ret {
@@ -846,9 +846,9 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
                 if let Some(last_seg) = path.path.segments.last() {
                     if last_seg.ident == "Result" {
                         // Extract error type from Result<T, E>
-                        if let syn::PathArguments::AngleBracketed(args) = &last_seg.arguments {
+                        if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
                             if args.args.len() >= 2 {
-                                if let syn::GenericArgument::Type(error_type) = &args.args[1] {
+                                if let GenericArgument::Type(error_type) = &args.args[1] {
                                     // Convert enum variants to error codes
                                     if let Type::Path(error_path) = error_type {
                                         if let Some(error_ident) = error_path.path.get_ident() {
@@ -858,18 +858,18 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
                                             match error_name.as_str() {
                                                 "ConformanceError" => {
                                                     errors.push(Error {
-                                                        code: "BAD_INPUT".to_string(),
+                                                        code: "BAD_INPUT".to_owned(),
                                                         payload: None,
                                                     });
                                                     errors.push(Error {
-                                                        code: "NOT_FOUND".to_string(),
+                                                        code: "NOT_FOUND".to_owned(),
                                                         payload: Some(TypeRef::string()),
                                                     });
                                                 }
                                                 _ => {
                                                     // For unknown error types, create generic errors
                                                     errors.push(Error {
-                                                        code: "ERROR".to_string(),
+                                                        code: "ERROR".to_owned(),
                                                         payload: None,
                                                     });
                                                 }
@@ -890,18 +890,18 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
         "update_event" | "delete_event" => {
             // These methods can return NotFound and Forbidden errors
             errors.push(Error {
-                code: "NOT_FOUND".to_string(),
+                code: "NOT_FOUND".to_owned(),
                 payload: None,
             });
             errors.push(Error {
-                code: "FORBIDDEN".to_string(),
+                code: "FORBIDDEN".to_owned(),
                 payload: None,
             });
         }
         "get_result" => {
             // This method can return NotFound error
             errors.push(Error {
-                code: "NOT_FOUND".to_string(),
+                code: "NOT_FOUND".to_owned(),
                 payload: None,
             });
         }
@@ -914,7 +914,7 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
 /// Collect events from the application
 /// This function should be updated to receive actual event definitions from the AST
 /// rather than hardcoding events for specific apps
-fn collect_events_from_types(_types: &BTreeMap<String, TypeDef>) -> Vec<Event> {
+const fn collect_events_from_types(_types: &BTreeMap<String, TypeDef>) -> Vec<Event> {
     // TODO: This should be replaced with automatic event discovery from #[app::event] macros
     // For now, return empty events to avoid hardcoded app-specific logic
     vec![]
@@ -926,7 +926,7 @@ fn normalize_type(ty: &Type) -> TypeRef {
     // Check for Option<T> first - don't use the wasm-abi-v1 normalizer for Option types
     if let Type::Path(path) = ty {
         if let Some(ident) = path.path.get_ident() {
-            if ident.to_string() == "Option" {
+            if *ident == "Option" {
                 // Handle Option<T> by extracting the inner type
                 if let Some(segment) = path.path.segments.last() {
                     if let PathArguments::AngleBracketed(args) = &segment.arguments {
@@ -1035,13 +1035,13 @@ fn normalize_type(ty: &Type) -> TypeRef {
                                                     if let Some(key_ident) =
                                                         key_path.path.get_ident()
                                                     {
-                                                        if key_ident.to_string() == "String" {
+                                                        if *key_ident == "String" {
                                                             let value_type =
                                                                 normalize_type(value_type);
                                                             return TypeRef::map(value_type);
                                                         } else {
                                                             // Non-string keys are not supported in WASM-ABI v1
-                                                            panic!("Map keys must be String type, found: {}", key_ident);
+                                                            panic!("Map keys must be String type, found: {key_ident}");
                                                         }
                                                     }
                                                 }
