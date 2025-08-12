@@ -490,57 +490,13 @@ fn extract_method_errors(method: &PublicLogicMethod<'_>) -> Vec<Error> {
     errors
 }
 
-/// Collect events from the application based on detected app type
-fn collect_events_from_types(types: &BTreeMap<String, TypeDef>) -> Vec<Event> {
-    // Detect app type from the types present
-    if types.contains_key("Person") {
-        // This is the abi_conformance app
-        vec![
-            Event {
-                name: "Ping".to_string(),
-                payload: None, // Unit variant
-            },
-            Event {
-                name: "Named".to_string(),
-                payload: Some(TypeRef::string()),
-            },
-            Event {
-                name: "Data".to_string(),
-                payload: Some(TypeRef::bytes()),
-            },
-            Event {
-                name: "PersonUpdated".to_string(),
-                payload: Some(TypeRef::reference("Person")),
-            },
-            Event {
-                name: "ActionTaken".to_string(),
-                payload: Some(TypeRef::reference("Action")),
-            },
-        ]
-    } else if types.contains_key("KvStore") {
-        // This is the kv-store app
-        vec![
-            Event {
-                name: "Inserted".to_string(),
-                payload: Some(TypeRef::string()),
-            },
-            Event {
-                name: "Updated".to_string(),
-                payload: Some(TypeRef::string()),
-            },
-            Event {
-                name: "Removed".to_string(),
-                payload: Some(TypeRef::string()),
-            },
-            Event {
-                name: "Cleared".to_string(),
-                payload: None, // Unit variant
-            },
-        ]
-    } else {
-        // Default/unknown app - return empty events
-        vec![]
-    }
+/// Collect events from the application
+/// This function should be updated to receive actual event definitions from the AST
+/// rather than hardcoding events for specific apps
+fn collect_events_from_types(_types: &BTreeMap<String, TypeDef>) -> Vec<Event> {
+    // TODO: This should be replaced with automatic event discovery from #[app::event] macros
+    // For now, return empty events to avoid hardcoded app-specific logic
+    vec![]
 }
 
 /// Normalize Rust types to WASM-compatible ABI types
