@@ -4,27 +4,41 @@ use calimero_sdk::app;
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-// Use the same pattern as plantr for UserId
-mod types {
-    pub mod id;
-}
-
-types::id::define!(pub UserId<32, 44>);
-
-// Record
-#[derive(Clone, Debug, Serialize, Deserialize)]
+// Newtype bytes
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(crate = "calimero_sdk::serde")]
-#[app::abi_type]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct UserId32([u8; 32]);
+
+// Note: [u8; 64] doesn't implement Serialize/Deserialize, so we'll use Vec<u8> for Hash64
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct Hash64(Vec<u8>);
+
+// Records
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[borsh(crate = "calimero_sdk::borsh")]
 pub struct Person {
-    id: UserId,
+    id: UserId32,
     name: String,
     age: u32,
 }
 
-// Variants
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(crate = "calimero_sdk::serde")]
-#[app::abi_type]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct Profile {
+    bio: Option<String>,
+    avatar: Option<Vec<u8>>,
+    nicknames: Vec<String>,
+}
+
+// Variants
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[borsh(crate = "calimero_sdk::borsh")]
 pub enum Action {
     Ping,
     SetName(String),
@@ -47,7 +61,8 @@ pub enum Event {
     Ping,
     Named(String),
     Data(Vec<u8>),
-    Updated(Person),
+    PersonUpdated(Person),
+    ActionTaken(Action),
 }
 
 // State (record used by init)
@@ -56,16 +71,15 @@ pub enum Event {
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
     counters: BTreeMap<String, u32>,   // map<string,u32>
-    users: Vec<UserId>,                // list<UserId>
+    users: Vec<UserId32>,              // list<UserId32>
 }
 
 // Expose AbiState as a public type for ABI
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
-#[app::abi_type]
 pub struct AbiStateExposed {
     counters: BTreeMap<String, u32>,   // map<string,u32>
-    users: Vec<UserId>,                // list<UserId>
+    users: Vec<UserId32>,              // list<UserId32>
 }
 
 #[app::logic]
@@ -78,33 +92,102 @@ impl AbiState {
         }
     }
 
-    // Scalars
-    pub fn echo_scalars(b: bool, i32v: i32, u64v: u64, s: String) -> String {
-        format!("bool:{}, i32:{}, u64:{}, string:{}", b, i32v, u64v, s)
+    // Unit return
+    pub fn noop() -> () {
+        ()
+    }
+
+    // Scalars in/out
+    pub fn echo_bool(b: bool) -> bool {
+        b
+    }
+
+    pub fn echo_i32(v: i32) -> i32 {
+        v
+    }
+
+    pub fn echo_i64(v: i64) -> i64 {
+        v
+    }
+
+    pub fn echo_u32(v: u32) -> u32 {
+        v
+    }
+
+    pub fn echo_u64(v: u64) -> u64 {
+        v
+    }
+
+    pub fn echo_f32(v: f32) -> f32 {
+        v
+    }
+
+    pub fn echo_f64(v: f64) -> f64 {
+        v
+    }
+
+    pub fn echo_string(s: String) -> String {
+        s
+    }
+
+    pub fn echo_bytes(b: Vec<u8>) -> Vec<u8> {
+        b
     }
 
     // Optionals
-    pub fn opt_number(x: Option<u32>) -> Option<u32> {
-        x.map(|v| v + 1)
+    pub fn opt_u32(x: Option<u32>) -> Option<u32> {
+        x
+    }
+
+    pub fn opt_string(x: Option<String>) -> Option<String> {
+        x
+    }
+
+    pub fn opt_record(p: Option<Person>) -> Option<Person> {
+        p
+    }
+
+    pub fn opt_id(x: Option<UserId32>) -> Option<UserId32> {
+        x
     }
 
     // Lists
-    pub fn sum_i64(xs: Vec<i64>) -> i64 {
-        xs.iter().sum()
+    pub fn list_u32(xs: Vec<u32>) -> Vec<u32> {
+        xs
+    }
+
+    pub fn list_strings(xs: Vec<String>) -> Vec<String> {
+        xs
+    }
+
+    pub fn list_records(ps: Vec<Person>) -> Vec<Person> {
+        ps
+    }
+
+    pub fn list_ids(xs: Vec<UserId32>) -> Vec<UserId32> {
+        xs
     }
 
     // Maps (string key only)
-    pub fn score_of(m: BTreeMap<String, u32>, who: String) -> Option<u32> {
-        m.get(&who).copied()
+    pub fn map_u32(m: BTreeMap<String, u32>) -> BTreeMap<String, u32> {
+        m
+    }
+
+    pub fn map_list_u32(m: BTreeMap<String, Vec<u32>>) -> BTreeMap<String, Vec<u32>> {
+        m
+    }
+
+    pub fn map_record(m: BTreeMap<String, Person>) -> BTreeMap<String, Person> {
+        m
     }
 
     // Records
     pub fn make_person(p: Person) -> Person {
-        Person {
-            id: p.id,
-            name: format!("{}_modified", p.name),
-            age: p.age + 1,
-        }
+        p
+    }
+
+    pub fn profile_roundtrip(p: Profile) -> Profile {
+        p
     }
 
     // Variants
@@ -116,9 +199,13 @@ impl AbiState {
         }
     }
 
-    // Bytes newtype
-    pub fn roundtrip_id(id: UserId) -> UserId {
-        id
+    // Newtype bytes
+    pub fn roundtrip_id(x: UserId32) -> UserId32 {
+        x
+    }
+
+    pub fn roundtrip_hash(h: Hash64) -> Hash64 {
+        h
     }
 
     // Errors
@@ -130,11 +217,15 @@ impl AbiState {
         }
     }
 
-    pub fn may_fail_not_found(name: String) -> app::Result<u32, ConformanceError> {
+    pub fn find_person(name: String) -> app::Result<Person, ConformanceError> {
         if name.is_empty() {
             Err(ConformanceError::NotFound("empty name".to_string()))
         } else {
-            Ok(name.len() as u32)
+            Ok(Person {
+                id: UserId32([0; 32]),
+                name,
+                age: 25,
+            })
         }
     }
 } 

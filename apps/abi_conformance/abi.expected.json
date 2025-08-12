@@ -1,24 +1,132 @@
 {
   "schema_version": "wasm-abi/1",
   "types": {
-    "Error": {
-      "kind": "variant",
-      "variants": [
+    "UserId32": {
+      "kind": "bytes",
+      "size": 32,
+      "encoding": "hex"
+    },
+    "Hash64": {
+      "kind": "bytes",
+      "size": 64,
+      "encoding": "hex"
+    },
+    "Person": {
+      "kind": "record",
+      "fields": [
         {
-          "name": "NotFound",
+          "name": "id",
+          "type": {
+            "$ref": "UserId32"
+          }
+        },
+        {
+          "name": "name",
           "type": {
             "kind": "string"
           }
         },
         {
-          "name": "Forbidden"
+          "name": "age",
+          "type": {
+            "kind": "u32"
+          }
         }
       ]
     },
-    "UserId": {
-      "kind": "bytes",
-      "size": 32,
-      "encoding": "hex"
+    "Profile": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "bio",
+          "type": {
+            "kind": "string",
+            "nullable": true
+          }
+        },
+        {
+          "name": "avatar",
+          "type": {
+            "kind": "bytes",
+            "nullable": true
+          }
+        },
+        {
+          "name": "nicknames",
+          "type": {
+            "kind": "list",
+            "items": {
+              "kind": "string"
+            }
+          }
+        }
+      ]
+    },
+    "Action": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "Ping"
+        },
+        {
+          "name": "SetName",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "Update",
+          "type": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "age",
+                "type": {
+                  "kind": "u32"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "ConformanceError": {
+      "kind": "variant",
+      "variants": [
+        {
+          "name": "BadInput"
+        },
+        {
+          "name": "NotFound",
+          "type": {
+            "kind": "string"
+          }
+        }
+      ]
+    },
+    "AbiState": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "counters",
+          "type": {
+            "kind": "map",
+            "key": "string",
+            "value": {
+              "kind": "u32"
+            }
+          }
+        },
+        {
+          "name": "users",
+          "type": {
+            "kind": "list",
+            "items": {
+              "$ref": "UserId32"
+            }
+          }
+        }
+      ]
     }
   },
   "methods": [
@@ -30,26 +138,113 @@
       }
     },
     {
-      "name": "echo_scalars",
+      "name": "noop",
+      "params": [],
+      "returns": {
+        "kind": "unit"
+      }
+    },
+    {
+      "name": "echo_bool",
       "params": [
         {
           "name": "b",
           "type": {
             "kind": "bool"
           }
-        },
+        }
+      ],
+      "returns": {
+        "kind": "bool"
+      }
+    },
+    {
+      "name": "echo_i32",
+      "params": [
         {
-          "name": "i32v",
+          "name": "v",
           "type": {
             "kind": "i32"
           }
-        },
+        }
+      ],
+      "returns": {
+        "kind": "i32"
+      }
+    },
+    {
+      "name": "echo_i64",
+      "params": [
         {
-          "name": "u64v",
+          "name": "v",
+          "type": {
+            "kind": "i64"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "i64"
+      }
+    },
+    {
+      "name": "echo_u32",
+      "params": [
+        {
+          "name": "v",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "u32"
+      }
+    },
+    {
+      "name": "echo_u64",
+      "params": [
+        {
+          "name": "v",
           "type": {
             "kind": "u64"
           }
-        },
+        }
+      ],
+      "returns": {
+        "kind": "u64"
+      }
+    },
+    {
+      "name": "echo_f32",
+      "params": [
+        {
+          "name": "v",
+          "type": {
+            "kind": "f32"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "f32"
+      }
+    },
+    {
+      "name": "echo_f64",
+      "params": [
+        {
+          "name": "v",
+          "type": {
+            "kind": "f64"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "f64"
+      }
+    },
+    {
+      "name": "echo_string",
+      "params": [
         {
           "name": "s",
           "type": {
@@ -62,51 +257,233 @@
       }
     },
     {
-      "name": "opt_number",
+      "name": "echo_bytes",
+      "params": [
+        {
+          "name": "b",
+          "type": {
+            "kind": "bytes"
+          }
+        }
+      ],
+      "returns": {
+        "kind": "bytes"
+      }
+    },
+    {
+      "name": "opt_u32",
       "params": [
         {
           "name": "x",
           "type": {
-            "kind": "string"
+            "kind": "u32",
+            "nullable": true
           }
         }
       ],
       "returns": {
-        "kind": "string"
+        "kind": "u32",
+        "nullable": true
       }
     },
     {
-      "name": "sum_i64",
+      "name": "opt_string",
+      "params": [
+        {
+          "name": "x",
+          "type": {
+            "kind": "string",
+            "nullable": true
+          }
+        }
+      ],
+      "returns": {
+        "kind": "string",
+        "nullable": true
+      }
+    },
+    {
+      "name": "opt_record",
+      "params": [
+        {
+          "name": "p",
+          "type": {
+            "$ref": "Person",
+            "nullable": true
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "Person",
+        "nullable": true
+      }
+    },
+    {
+      "name": "opt_id",
+      "params": [
+        {
+          "name": "x",
+          "type": {
+            "$ref": "UserId32",
+            "nullable": true
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "UserId32",
+        "nullable": true
+      }
+    },
+    {
+      "name": "list_u32",
       "params": [
         {
           "name": "xs",
           "type": {
-            "kind": "string"
+            "kind": "list",
+            "items": {
+              "kind": "u32"
+            }
           }
         }
       ],
       "returns": {
-        "kind": "i64"
+        "kind": "list",
+        "items": {
+          "kind": "u32"
+        }
       }
     },
     {
-      "name": "score_of",
+      "name": "list_strings",
+      "params": [
+        {
+          "name": "xs",
+          "type": {
+            "kind": "list",
+            "items": {
+              "kind": "string"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "kind": "list",
+        "items": {
+          "kind": "string"
+        }
+      }
+    },
+    {
+      "name": "list_records",
+      "params": [
+        {
+          "name": "ps",
+          "type": {
+            "kind": "list",
+            "items": {
+              "$ref": "Person"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "kind": "list",
+        "items": {
+          "$ref": "Person"
+        }
+      }
+    },
+    {
+      "name": "list_ids",
+      "params": [
+        {
+          "name": "xs",
+          "type": {
+            "kind": "list",
+            "items": {
+              "$ref": "UserId32"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "kind": "list",
+        "items": {
+          "$ref": "UserId32"
+        }
+      }
+    },
+    {
+      "name": "map_u32",
       "params": [
         {
           "name": "m",
           "type": {
-            "kind": "string"
-          }
-        },
-        {
-          "name": "who",
-          "type": {
-            "kind": "string"
+            "kind": "map",
+            "key": "string",
+            "value": {
+              "kind": "u32"
+            }
           }
         }
       ],
       "returns": {
-        "kind": "string"
+        "kind": "map",
+        "key": "string",
+        "value": {
+          "kind": "u32"
+        }
+      }
+    },
+    {
+      "name": "map_list_u32",
+      "params": [
+        {
+          "name": "m",
+          "type": {
+            "kind": "map",
+            "key": "string",
+            "value": {
+              "kind": "list",
+              "items": {
+                "kind": "u32"
+              }
+            }
+          }
+        }
+      ],
+      "returns": {
+        "kind": "map",
+        "key": "string",
+        "value": {
+          "kind": "list",
+          "items": {
+            "kind": "u32"
+          }
+        }
+      }
+    },
+    {
+      "name": "map_record",
+      "params": [
+        {
+          "name": "m",
+          "type": {
+            "kind": "map",
+            "key": "string",
+            "value": {
+              "$ref": "Person"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "kind": "map",
+        "key": "string",
+        "value": {
+          "$ref": "Person"
+        }
       }
     },
     {
@@ -121,6 +498,20 @@
       ],
       "returns": {
         "$ref": "Person"
+      }
+    },
+    {
+      "name": "profile_roundtrip",
+      "params": [
+        {
+          "name": "p",
+          "type": {
+            "$ref": "Profile"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "Profile"
       }
     },
     {
@@ -141,18 +532,28 @@
       "name": "roundtrip_id",
       "params": [
         {
-          "name": "id",
+          "name": "x",
           "type": {
-            "kind": "bytes",
-            "size": 32,
-            "encoding": "hex"
+            "$ref": "UserId32"
           }
         }
       ],
       "returns": {
-        "kind": "bytes",
-        "size": 32,
-        "encoding": "hex"
+        "$ref": "UserId32"
+      }
+    },
+    {
+      "name": "roundtrip_hash",
+      "params": [
+        {
+          "name": "h",
+          "type": {
+            "$ref": "Hash64"
+          }
+        }
+      ],
+      "returns": {
+        "$ref": "Hash64"
       }
     },
     {
@@ -167,10 +568,15 @@
       ],
       "returns": {
         "kind": "u32"
-      }
+      },
+      "errors": [
+        {
+          "code": "BAD_INPUT"
+        }
+      ]
     },
     {
-      "name": "may_fail_not_found",
+      "name": "find_person",
       "params": [
         {
           "name": "name",
@@ -180,9 +586,45 @@
         }
       ],
       "returns": {
-        "kind": "u32"
-      }
+        "$ref": "Person"
+      },
+      "errors": [
+        {
+          "code": "NOT_FOUND",
+          "payload": {
+            "kind": "string"
+          }
+        }
+      ]
     }
   ],
-  "events": []
+  "events": [
+    {
+      "name": "Ping"
+    },
+    {
+      "name": "Named",
+      "payload": {
+        "kind": "string"
+      }
+    },
+    {
+      "name": "Data",
+      "payload": {
+        "kind": "bytes"
+      }
+    },
+    {
+      "name": "PersonUpdated",
+      "payload": {
+        "$ref": "Person"
+      }
+    },
+    {
+      "name": "ActionTaken",
+      "payload": {
+        "$ref": "Action"
+      }
+    }
+  ]
 }
