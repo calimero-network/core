@@ -66,7 +66,7 @@ fn test_abi_structure() {
     
     // Check metadata fields
     let metadata = &abi["metadata"];
-    assert_eq!(metadata["schema_version"], "0.1.0");
+    assert_eq!(metadata["schema_version"], "0.1.1");
     assert!(metadata.get("toolchain_version").is_some());
     assert!(metadata.get("source_hash").is_some());
     
@@ -78,6 +78,19 @@ fn test_abi_structure() {
     let functions = &abi["functions"];
     assert!(functions.get("get_greeting").is_some());
     assert!(functions.get("set_greeting").is_some());
+    assert!(functions.get("compute").is_some());
+    
+    // Check function structure (new schema v0.1.1)
+    let get_greeting = &functions["get_greeting"];
+    assert!(get_greeting.get("returns").is_some());
+    assert!(get_greeting.get("errors").is_some());
+    assert_eq!(get_greeting["returns"]["type"], "String");
+    assert_eq!(get_greeting["errors"], serde_json::json!([]));
+    
+    let set_greeting = &functions["set_greeting"];
+    assert!(set_greeting.get("returns").is_none()); // Result<(), E> has no returns field
+    assert!(set_greeting.get("errors").is_some());
+    assert!(set_greeting["errors"].as_array().unwrap().len() > 0);
     
     // Check events
     let events = &abi["events"];

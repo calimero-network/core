@@ -77,6 +77,17 @@ pub enum ParameterDirection {
     Output,
 }
 
+/// Error information for function returns
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ErrorAbi {
+    /// Error variant name (exact Rust identifier, case-preserving)
+    pub name: String,
+    /// Error code (SCREAMING_SNAKE_CASE, stable)
+    pub code: String,
+    /// Error payload type (for tuple/struct variants, None for unit variants)
+    pub ty: Option<AbiTypeRef>,
+}
+
 /// ABI function (query or command)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AbiFunction {
@@ -86,8 +97,10 @@ pub struct AbiFunction {
     pub kind: FunctionKind,
     /// Function parameters (preserving declared order)
     pub parameters: Vec<AbiParameter>,
-    /// Return type (if any)
-    pub return_type: Option<AbiTypeRef>,
+    /// Return type (success payload, None for unit type ())
+    pub returns: Option<AbiTypeRef>,
+    /// Error variants (sorted by code)
+    pub errors: Vec<ErrorAbi>,
 }
 
 /// Function kind
@@ -132,7 +145,7 @@ impl Abi {
     ) -> Self {
         Self {
             metadata: AbiMetadata {
-                schema_version: "0.1.0".to_string(),
+                schema_version: "0.1.1".to_string(),
                 toolchain_version,
                 source_hash,
             },

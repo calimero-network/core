@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::schema::{FunctionKind, ParameterDirection};
+use crate::schema::{FunctionKind, ParameterDirection, ErrorAbi};
 
 #[test]
 fn test_abi_creation() {
@@ -26,7 +26,7 @@ fn test_abi_creation() {
     
     assert_eq!(abi.module_name, "test_module");
     assert_eq!(abi.module_version, "1.0.0");
-    assert_eq!(abi.metadata.schema_version, "0.1.0");
+    assert_eq!(abi.metadata.schema_version, "0.1.1");
     assert_eq!(abi.metadata.toolchain_version, "1.85.0");
     assert_eq!(abi.metadata.source_hash, "abc123");
 }
@@ -51,7 +51,8 @@ fn test_canonical_serialization() {
                 direction: ParameterDirection::Input,
             },
         ],
-        return_type: Some(AbiTypeRef::String),
+        returns: Some(AbiTypeRef::String),
+        errors: vec![],
     };
     abi.add_function(function);
     
@@ -88,14 +89,16 @@ fn test_deterministic_serialization() {
         name: "func1".to_string(),
         kind: FunctionKind::Query,
         parameters: vec![],
-        return_type: None,
+        returns: None,
+        errors: vec![],
     };
     
     let function2 = AbiFunction {
         name: "func2".to_string(),
         kind: FunctionKind::Command,
         parameters: vec![],
-        return_type: None,
+        returns: None,
+        errors: vec![],
     };
     
     abi1.add_function(function1.clone());
@@ -202,7 +205,8 @@ fn test_parameter_order_preservation() {
                 direction: ParameterDirection::Input,
             },
         ],
-        return_type: None,
+        returns: None,
+        errors: vec![],
     };
     
     abi.add_function(function);
@@ -239,7 +243,8 @@ fn test_path_free_json() {
                 direction: ParameterDirection::Input,
             },
         ],
-        return_type: None,
+        returns: None,
+        errors: vec![],
     };
     
     abi.add_function(function);
@@ -259,4 +264,149 @@ fn test_path_free_json() {
     // Verify it's valid JSON
     let parsed: serde_json::Value = serde_json::from_str(&json_string).unwrap();
     assert!(parsed.is_object());
+} 
+
+#[test]
+fn test_error_abi_creation() {
+    let error = ErrorAbi {
+        name: "InvalidInput".to_string(),
+        code: "INVALID_INPUT".to_string(),
+        ty: Some(AbiTypeRef::String),
+    };
+    
+    assert_eq!(error.name, "InvalidInput");
+    assert_eq!(error.code, "INVALID_INPUT");
+    assert_eq!(error.ty, Some(AbiTypeRef::String));
+}
+
+#[test]
+fn test_error_abi_unit_variant() {
+    let error = ErrorAbi {
+        name: "NotFound".to_string(),
+        code: "NOT_FOUND".to_string(),
+        ty: None,
+    };
+    
+    assert_eq!(error.name, "NotFound");
+    assert_eq!(error.code, "NOT_FOUND");
+    assert_eq!(error.ty, None);
+}
+
+#[test]
+fn test_error_abi_sorting() {
+    let mut errors = vec![
+        ErrorAbi {
+            name: "ZError".to_string(),
+            code: "Z_ERROR".to_string(),
+            ty: None,
+        },
+        ErrorAbi {
+            name: "AError".to_string(),
+            code: "A_ERROR".to_string(),
+            ty: None,
+        },
+        ErrorAbi {
+            name: "BError".to_string(),
+            code: "B_ERROR".to_string(),
+            ty: None,
+        },
+    ];
+    
+    errors.sort();
+    
+    assert_eq!(errors[0].code, "A_ERROR");
+    assert_eq!(errors[1].code, "B_ERROR");
+    assert_eq!(errors[2].code, "Z_ERROR");
+}
+
+#[test]
+fn test_function_with_errors() {
+    let mut abi = Abi::new(
+        "test_module".to_string(),
+        "1.0.0".to_string(),
+        "1.85.0".to_string(),
+        "abc123".to_string(),
+    );
+    
+    let function = AbiFunction {
+        name: "test_function".to_string(),
+        kind: FunctionKind::Command,
+        parameters: vec![
+            AbiParameter {
+                name: "input".to_string(),
+                ty: AbiTypeRef::String,
+                direction: ParameterDirection::Input,
+            },
+        ],
+        returns: None,
+        errors: vec![
+            ErrorAbi {
+                name: "InvalidInput".to_string(),
+                code: "INVALID_INPUT".to_string(),
+                ty: Some(AbiTypeRef::String),
+            },
+            ErrorAbi {
+                name: "NotFound".to_string(),
+                code: "NOT_FOUND".to_string(),
+                ty: None,
+            },
+        ],
+    };
+    
+    abi.add_function(function);
+    
+    // Serialize and verify errors are included
+    let mut output = Vec::new();
+    write_canonical(&abi, &mut output).unwrap();
+    
+    let json_string = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_string).unwrap();
+    
+    let errors = &parsed["functions"]["test_function"]["errors"];
+    assert_eq!(errors.as_array().unwrap().len(), 2);
+    assert_eq!(errors[0]["code"], "INVALID_INPUT");
+    assert_eq!(errors[1]["code"], "NOT_FOUND");
+}
+
+#[test]
+fn test_function_with_result_return() {
+    let mut abi = Abi::new(
+        "test_module".to_string(),
+        "1.0.0".to_string(),
+        "1.85.0".to_string(),
+        "abc123".to_string(),
+    );
+    
+    let function = AbiFunction {
+        name: "compute".to_string(),
+        kind: FunctionKind::Query,
+        parameters: vec![
+            AbiParameter {
+                name: "value".to_string(),
+                ty: AbiTypeRef::U64,
+                direction: ParameterDirection::Input,
+            },
+        ],
+        returns: Some(AbiTypeRef::U64),
+        errors: vec![
+            ErrorAbi {
+                name: "Overflow".to_string(),
+                code: "OVERFLOW".to_string(),
+                ty: None,
+            },
+        ],
+    };
+    
+    abi.add_function(function);
+    
+    // Serialize and verify returns and errors
+    let mut output = Vec::new();
+    write_canonical(&abi, &mut output).unwrap();
+    
+    let json_string = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_string).unwrap();
+    
+    let func = &parsed["functions"]["compute"];
+    assert_eq!(func["returns"]["type"], "U64");
+    assert_eq!(func["errors"][0]["code"], "OVERFLOW");
 } 

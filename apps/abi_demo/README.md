@@ -13,6 +13,7 @@ This is a demonstration application showing how to use the `abi-macros` crate to
 - **Events**: Structured events with typed payloads
 - **Error Handling**: Proper error types and handling
 - **Deterministic ABI**: Consistent output across builds
+- **Schema v0.1.1**: New function structure with `returns` and `errors` fields
 
 ## Quickstart
 
@@ -56,6 +57,7 @@ cargo build -p abi_demo --target wasm32-unknown-unknown --features abi-export
 The demo generates an ABI with:
 - **Query**: `get_greeting(name: String) -> String`
 - **Command**: `set_greeting(new_value: String) -> Result<(), DemoError>`
+- **Query**: `compute(value: u64, divisor: u64) -> Result<u64, ComputeError>`
 - **Event**: `GreetingChanged { old: String, new: String }`
 
 ## Code Structure
@@ -63,11 +65,24 @@ The demo generates an ABI with:
 ```rust
 use abi_macros as abi;
 
-/// Example error type
+/// Example error type for greeting operations
 #[derive(Debug, thiserror::Error)]
 pub enum DemoError {
     #[error("Invalid greeting: {0}")]
     InvalidGreeting(String),
+    #[error("Greeting too long: {0}")]
+    GreetingTooLong(usize),
+}
+
+/// Example error type for computation operations
+#[derive(Debug, thiserror::Error)]
+pub enum ComputeError {
+    #[error("Division by zero")]
+    DivisionByZero,
+    #[error("Overflow occurred")]
+    Overflow,
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 /// Example SSApp module with ABI generation
@@ -75,19 +90,42 @@ pub enum DemoError {
 pub mod demo {
     use super::*;
     
-    /// Query function to get a greeting
+    /// Query function to get a greeting (plain T return)
     #[abi::query]
     pub fn get_greeting(name: String) -> String {
         format!("Hello, {}!", name)
     }
     
-    /// Command function to set a greeting
+    /// Command function to set a greeting (Result<(), E> return)
     #[abi::command]
-    pub fn set_greeting(new_value: String) -> Result<(), DemoError> {
+    pub fn set_greeting(new_value: String) -> std::result::Result<(), DemoError> {
         if new_value.is_empty() {
             return Err(DemoError::InvalidGreeting("Greeting cannot be empty".to_string()));
         }
+        
+        if new_value.len() > 100 {
+            return Err(DemoError::GreetingTooLong(new_value.len()));
+        }
+        
         Ok(())
+    }
+    
+    /// Query function to compute a value (Result<T, E> return)
+    #[abi::query]
+    pub fn compute(value: u64, divisor: u64) -> std::result::Result<u64, ComputeError> {
+        if divisor == 0 {
+            return Err(ComputeError::DivisionByZero);
+        }
+        
+        if value > u64::MAX / 2 {
+            return Err(ComputeError::Overflow);
+        }
+        
+        if value == 0 {
+            return Err(ComputeError::InvalidInput("Value cannot be zero".to_string()));
+        }
+        
+        Ok(value / divisor)
     }
     
     /// Event emitted when greeting changes
@@ -135,7 +173,7 @@ The generated ABI file (`target/abi/abi.json`) contains:
 ```json
 {
   "metadata": {
-    "schema_version": "0.1.0",
+    "schema_version": "0.1.1",
     "toolchain_version": "1.85.0",
     "source_hash": "..."
   },
@@ -152,7 +190,10 @@ The generated ABI file (`target/abi/abi.json`) contains:
           "direction": "input"
         }
       ],
-      "return_type": "String"
+      "returns": {
+        "type": "String"
+      },
+      "errors": []
     },
     "set_greeting": {
       "name": "set_greeting",
@@ -162,6 +203,58 @@ The generated ABI file (`target/abi/abi.json`) contains:
           "name": "new_value",
           "ty": "String",
           "direction": "input"
+        }
+      ],
+      "errors": [
+        {
+          "name": "InvalidGreeting",
+          "code": "INVALID_GREETING",
+          "ty": {
+            "type": "String"
+          }
+        },
+        {
+          "name": "GreetingTooLong",
+          "code": "GREETING_TOO_LONG",
+          "ty": {
+            "type": "usize"
+          }
+        }
+      ]
+    },
+    "compute": {
+      "name": "compute",
+      "kind": "query",
+      "parameters": [
+        {
+          "name": "value",
+          "ty": "u64",
+          "direction": "input"
+        },
+        {
+          "name": "divisor",
+          "ty": "u64",
+          "direction": "input"
+        }
+      ],
+      "returns": {
+        "type": "u64"
+      },
+      "errors": [
+        {
+          "name": "DivisionByZero",
+          "code": "DIVISION_BY_ZERO"
+        },
+        {
+          "name": "InvalidInput",
+          "code": "INVALID_INPUT",
+          "ty": {
+            "type": "String"
+          }
+        },
+        {
+          "name": "Overflow",
+          "code": "OVERFLOW"
         }
       ]
     }
@@ -175,6 +268,15 @@ The generated ABI file (`target/abi/abi.json`) contains:
 }
 ```
 
+### Schema v0.1.1 Changes
+
+The new ABI schema (v0.1.1) replaces the old `return_type` field with:
+
+- **`returns`**: Success payload type (missing for unit type `()`)
+- **`errors`**: Array of error variants with `name`, `code`, and optional `ty` fields
+
+This provides a more universal contract structure that's not tied to Rust's `Result<T,E>` type.
+
 ## Development
 
 This demo serves as a reference implementation for:
@@ -182,5 +284,6 @@ This demo serves as a reference implementation for:
 - Error handling patterns
 - Testing strategies
 - ABI extraction workflows
+- Schema v0.1.1 compliance
 
 Use this as a starting point for your own SSApp development. 

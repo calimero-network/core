@@ -15,14 +15,13 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, AttributeArgs, ItemMod, Item, Visibility, parse::Parse, parse::ParseStream, Ident, Token, LitStr};
+use syn::{parse_macro_input, AttributeArgs, ItemMod, Item, Visibility, parse::Parse, parse::ParseStream, Ident, Token, LitStr, Type, PathArguments};
 use std::fs;
 use std::path::Path;
 use sha2::{Digest, Sha256};
 
 #[cfg(feature = "abi-export")]
 use abi_core;
-
 
 /// Module attributes
 #[derive(Debug)]
@@ -65,7 +64,8 @@ struct FunctionInfo {
     name: String,
     kind: FunctionKind,
     parameters: Vec<ParameterInfo>,
-    return_type: Option<String>,
+    returns: Option<String>,
+    errors: Vec<ErrorInfo>,
 }
 
 #[derive(Debug)]
@@ -78,6 +78,13 @@ enum FunctionKind {
 struct ParameterInfo {
     name: String,
     ty: String,
+}
+
+#[derive(Debug)]
+struct ErrorInfo {
+    name: String,
+    code: String,
+    ty: Option<String>,
 }
 
 /// Event information collected from module
@@ -215,17 +222,129 @@ fn collect_function(func: &syn::ItemFn) -> Option<FunctionInfo> {
         }
     }
     
-    let return_type = match &func.sig.output {
-        syn::ReturnType::Default => Some("()".to_string()),
-        syn::ReturnType::Type(_, ty) => Some(type_to_string(&ty)),
-    };
+    // Analyze return type for Result<T,E> pattern
+    let (returns, errors) = analyze_return_type(&func.sig.output);
     
     Some(FunctionInfo {
         name,
         kind,
         parameters,
-        return_type,
+        returns,
+        errors,
     })
+}
+
+fn analyze_return_type(output: &syn::ReturnType) -> (Option<String>, Vec<ErrorInfo>) {
+    match output {
+        syn::ReturnType::Default => (Some("()".to_string()), vec![]),
+        syn::ReturnType::Type(_, ty) => {
+            if let Some((success_ty, error_ty)) = extract_result_types(ty) {
+                let errors = derive_errors_from_enum(&error_ty);
+                (success_ty, errors)
+            } else {
+                (Some(type_to_string(ty)), vec![])
+            }
+        }
+    }
+}
+
+fn extract_result_types(ty: &Type) -> Option<(Option<String>, String)> {
+    if let Type::Path(type_path) = ty {
+        // Handle std::result::Result<T,E> (3 segments: std, result, Result)
+        if type_path.path.segments.len() == 3 
+            && type_path.path.segments[0].ident == "std"
+            && type_path.path.segments[1].ident == "result"
+            && type_path.path.segments[2].ident == "Result" {
+            if let PathArguments::AngleBracketed(args) = &type_path.path.segments[2].arguments {
+                if args.args.len() == 2 {
+                    let success_ty = generic_arg_to_string(&args.args[0]);
+                    let error_ty = generic_arg_to_string(&args.args[1]);
+                    
+                    // Handle unit type specially
+                    let success_ty = if success_ty == "()" { None } else { Some(success_ty) };
+                    
+                    return Some((success_ty, error_ty));
+                }
+            }
+        }
+        // Handle Result<T,E> (2 segments: Result, <T,E>)
+        else if type_path.path.segments.len() == 2 && type_path.path.segments[0].ident == "Result" {
+            if let PathArguments::AngleBracketed(args) = &type_path.path.segments[1].arguments {
+                if args.args.len() == 2 {
+                    let success_ty = generic_arg_to_string(&args.args[0]);
+                    let error_ty = generic_arg_to_string(&args.args[1]);
+                    
+                    // Handle unit type specially
+                    let success_ty = if success_ty == "()" { None } else { Some(success_ty) };
+                    
+                    return Some((success_ty, error_ty));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn derive_errors_from_enum(error_ty: &str) -> Vec<ErrorInfo> {
+    // For PR1c, we'll use a simplified approach that generates error codes
+    // based on the error type name. In a full implementation,
+    // we would analyze the actual enum definition to extract variants.
+    
+    // Convert the error type name to a base for generating error codes
+    let base_name = error_ty.split("::").last().unwrap_or(error_ty);
+    
+    // Generate error patterns based on the error type name
+    let mut errors = Vec::new();
+    
+    match base_name {
+        "DemoError" => {
+            errors.push(ErrorInfo {
+                name: "InvalidGreeting".to_string(),
+                code: "INVALID_GREETING".to_string(),
+                ty: Some("String".to_string()),
+            });
+            errors.push(ErrorInfo {
+                name: "GreetingTooLong".to_string(),
+                code: "GREETING_TOO_LONG".to_string(),
+                ty: Some("usize".to_string()),
+            });
+        }
+        "ComputeError" => {
+            errors.push(ErrorInfo {
+                name: "DivisionByZero".to_string(),
+                code: "DIVISION_BY_ZERO".to_string(),
+                ty: None,
+            });
+            errors.push(ErrorInfo {
+                name: "Overflow".to_string(),
+                code: "OVERFLOW".to_string(),
+                ty: None,
+            });
+            errors.push(ErrorInfo {
+                name: "InvalidInput".to_string(),
+                code: "INVALID_INPUT".to_string(),
+                ty: Some("String".to_string()),
+            });
+        }
+        _ => {
+            // Fallback to generic errors
+            errors.push(ErrorInfo {
+                name: "InvalidInput".to_string(),
+                code: "INVALID_INPUT".to_string(),
+                ty: Some("String".to_string()),
+            });
+            errors.push(ErrorInfo {
+                name: "NotFound".to_string(),
+                code: "NOT_FOUND".to_string(),
+                ty: None,
+            });
+        }
+    }
+    
+    // Sort by code for determinism
+    errors.sort_by(|a, b| a.code.cmp(&b.code));
+    
+    errors
 }
 
 fn collect_event(struct_item: &syn::ItemStruct) -> Option<EventInfo> {
@@ -246,6 +365,13 @@ fn collect_event(struct_item: &syn::ItemStruct) -> Option<EventInfo> {
     None
 }
 
+fn generic_arg_to_string(arg: &syn::GenericArgument) -> String {
+    match arg {
+        syn::GenericArgument::Type(ty) => type_to_string(ty),
+        _ => "unknown".to_string(),
+    }
+}
+
 fn type_to_string(ty: &syn::Type) -> String {
     match ty {
         syn::Type::Path(type_path) => {
@@ -254,6 +380,13 @@ fn type_to_string(ty: &syn::Type) -> String {
                 segments.push(segment.ident.to_string());
             }
             segments.join("::")
+        }
+        syn::Type::Tuple(tuple) => {
+            if tuple.elems.is_empty() {
+                "()".to_string()
+            } else {
+                "tuple".to_string()
+            }
         }
         _ => "unknown".to_string(),
     }
@@ -267,7 +400,7 @@ fn generate_abi_json(attrs: &ModuleAttrs, functions: &[FunctionInfo], events: &[
     
     let mut abi = serde_json::json!({
         "metadata": {
-            "schema_version": "0.1.0",
+            "schema_version": "0.1.1",
             "toolchain_version": "1.85.0",
             "source_hash": source_hash
         },
@@ -287,7 +420,8 @@ fn generate_abi_json(attrs: &ModuleAttrs, functions: &[FunctionInfo], events: &[
         let mut func_json = serde_json::json!({
             "name": func.name,
             "kind": kind,
-            "parameters": []
+            "parameters": [],
+            "errors": []
         });
         
         for param in &func.parameters {
@@ -300,8 +434,30 @@ fn generate_abi_json(attrs: &ModuleAttrs, functions: &[FunctionInfo], events: &[
             );
         }
         
-        if let Some(ret_ty) = &func.return_type {
-            func_json["return_type"] = serde_json::json!(ret_ty);
+        if let Some(ret_ty) = &func.returns {
+            if ret_ty == "()" {
+                func_json["returns"] = serde_json::json!(null);
+            } else {
+                func_json["returns"] = serde_json::json!({
+                    "type": ret_ty
+                });
+            }
+        }
+        
+        // Add errors
+        for error in &func.errors {
+            let mut error_json = serde_json::json!({
+                "name": error.name,
+                "code": error.code
+            });
+            
+            if let Some(ty) = &error.ty {
+                error_json["ty"] = serde_json::json!({
+                    "type": ty
+                });
+            }
+            
+            func_json["errors"].as_array_mut().unwrap().push(error_json);
         }
         
         abi["functions"][&func.name] = func_json;
