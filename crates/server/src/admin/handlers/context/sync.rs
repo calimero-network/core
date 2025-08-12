@@ -15,7 +15,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     let context_id = context_id.map(|Path(c)| c);
 
-    let result = state.node_client.sync(context_id.as_ref()).await;
+    let result = state.node_client.sync(context_id.as_ref(), None).await;
 
     match result {
         Ok(()) => ApiResponse {

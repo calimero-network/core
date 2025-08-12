@@ -14,6 +14,7 @@ use calimero_utils_actix::LazyRecipient;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
+use libp2p::PeerId;
 use rand::Rng;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info};
@@ -32,7 +33,7 @@ pub struct NodeClient {
     network_client: NetworkClient,
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
-    ctx_sync_tx: mpsc::Sender<Option<ContextId>>,
+    ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
 }
 
 impl NodeClient {
@@ -42,7 +43,7 @@ impl NodeClient {
         network_client: NetworkClient,
         node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
-        ctx_sync_tx: mpsc::Sender<Option<ContextId>>,
+        ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
     ) -> Self {
         Self {
             datastore,
@@ -157,8 +158,14 @@ impl NodeClient {
         }
     }
 
-    pub async fn sync(&self, context_id: Option<&ContextId>) -> eyre::Result<()> {
-        self.ctx_sync_tx.send(context_id.copied()).await?;
+    pub async fn sync(
+        &self,
+        context_id: Option<&ContextId>,
+        peer_id: Option<&PeerId>,
+    ) -> eyre::Result<()> {
+        self.ctx_sync_tx
+            .send((context_id.copied(), peer_id.copied()))
+            .await?;
 
         Ok(())
     }

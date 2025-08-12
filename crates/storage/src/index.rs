@@ -338,6 +338,15 @@ impl<S: StorageAdaptor> Index<S> {
         }
     }
 
+    /// Checks if an index exists for a given entity ID.
+    ///
+    /// # Parameters
+    ///
+    /// * `id` - The [`Id`] of the entity to check for an index.
+    pub(crate) fn has_index(id: Id) -> bool {
+        S::storage_read(Key::Index(id)).is_some()
+    }
+
     /// Retrieves the ID of the parent of a given entity.
     ///
     /// # Parameters
