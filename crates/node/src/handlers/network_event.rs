@@ -6,7 +6,6 @@ use calimero_context_primitives::client::ContextClient;
 use calimero_crypto::{Nonce, SharedKey};
 use calimero_network_primitives::messages::NetworkEvent;
 use calimero_network_primitives::stream::{Message as StreamMessage, Stream};
-
 use calimero_node_primitives::client::NodeClient;
 use calimero_node_primitives::sync::BroadcastMessage;
 use calimero_primitives::blobs::BlobId;
@@ -15,10 +14,9 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use futures_util::{SinkExt, StreamExt};
+use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, timeout};
-use libp2p::PeerId;
-use owo_colors::OwoColorize;
 use tracing::{debug, info, warn};
 
 use crate::utils::choose_stream;
@@ -215,7 +213,7 @@ async fn handle_blob_request_stream(
 /// Handle streams that arrived on the blob protocol
 async fn handle_blob_protocol_stream(
     node_client: NodeClient,
-    peer_id: libp2p::PeerId,
+    peer_id: PeerId,
     mut stream: Box<Stream>,
 ) -> eyre::Result<()> {
     info!(%peer_id, "Starting blob protocol stream handler");
@@ -251,7 +249,7 @@ impl Handler<NetworkEvent> for NodeManager {
                 let Ok(context_id): Result<ContextId, _> = topic.as_str().parse() else {
                     return;
                 };
-              
+
                 if !self
                     .context_client
                     .has_context(&context_id)
