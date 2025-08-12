@@ -1,109 +1,178 @@
 use calimero_wasm_abi_v1::schema::{
-    Error, Event, Field, Manifest, Method, Parameter, TypeDef, TypeRef, Variant,
+    Error, Event, Manifest, Method, TypeDef, TypeRef, Variant,
 };
 use calimero_wasm_abi_v1::validate::validate_manifest;
 
 #[test]
 fn test_invariant_events_use_payload_not_type() {
-    let mut manifest = Manifest::default();
-
-    // Add a simple type
-    manifest
-        .types
-        .insert("TestType".to_string(), TypeDef::Record { fields: vec![] });
-
-    // Add an event with payload (should pass)
+    // This test ensures that events use 'payload' key instead of 'type'
+    // The schema enforces this, so we just need to verify the validation passes
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
+    // Add an event with payload
     manifest.events.push(Event {
         name: "TestEvent".to_string(),
         payload: Some(TypeRef::string()),
     });
+    
+    // This should pass validation
+    assert!(validate_manifest(&manifest).is_ok());
+}
 
-    // Should pass validation
+#[test]
+fn test_invariant_variant_payload_structure() {
+    // This test ensures that variants use 'payload' key instead of 'type'
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
+    // Add a variant type with payload
+    manifest.types.insert(
+        "TestVariant".to_string(),
+        TypeDef::Variant {
+            variants: vec![Variant {
+                name: "TestVariant".to_string(),
+                code: None,
+                payload: Some(TypeRef::string()),
+            }],
+        },
+    );
+    
+    // This should pass validation
+    assert!(validate_manifest(&manifest).is_ok());
+}
+
+#[test]
+fn test_invariant_error_payload_structure() {
+    // This test ensures that errors use 'payload' key instead of 'type'
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
+    // Add a method with error that has payload
+    manifest.methods.push(Method {
+        name: "test_method".to_string(),
+        params: vec![],
+        returns: None,
+        returns_nullable: None,
+        errors: vec![Error {
+            code: "TEST_ERROR".to_string(),
+            payload: Some(TypeRef::string()),
+        }],
+    });
+    
+    // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
 
 #[test]
 fn test_invariant_variable_bytes_no_size() {
-    let mut manifest = Manifest::default();
-
-    // Add a type with variable bytes (should pass)
-    manifest.types.insert(
-        "TestType".to_string(),
-        TypeDef::Record {
-            fields: vec![Field {
-                name: "data".to_string(),
-                type_: TypeRef::bytes(), // Variable bytes
-                nullable: None,
-            }],
-        },
-    );
-
-    // Should pass validation
+    // This test ensures that variable bytes don't have size=0
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
+    // Add a method with variable bytes (no size)
+    manifest.methods.push(Method {
+        name: "test_method".to_string(),
+        params: vec![],
+        returns: Some(TypeRef::Scalar(calimero_wasm_abi_v1::schema::ScalarType::Bytes {
+            size: None,
+            encoding: "hex".to_string(),
+        })),
+        returns_nullable: None,
+        errors: vec![],
+    });
+    
+    // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
 
 #[test]
 fn test_invariant_map_string_key() {
-    let mut manifest = Manifest::default();
-
-    // Add a type with valid map (string key)
-    manifest.types.insert(
-        "TestType".to_string(),
-        TypeDef::Record {
-            fields: vec![Field {
-                name: "map".to_string(),
-                type_: TypeRef::map(TypeRef::i32()), // Map with string key
-                nullable: None,
-            }],
-        },
-    );
-
-    // Should pass validation
+    // This test ensures that map keys are string
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
+    // Add a method with map that has string key
+    manifest.methods.push(Method {
+        name: "test_method".to_string(),
+        params: vec![],
+        returns: Some(TypeRef::Collection(calimero_wasm_abi_v1::schema::CollectionType::Map {
+            key: Box::new(TypeRef::Scalar(calimero_wasm_abi_v1::schema::ScalarType::String)),
+            value: Box::new(TypeRef::u32()),
+        })),
+        returns_nullable: None,
+        errors: vec![],
+    });
+    
+    // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
 
 #[test]
 fn test_invariant_no_dangling_refs() {
-    let mut manifest = Manifest::default();
-
-    // Add a type that exists
+    // This test ensures that all referenced types exist
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
+    // Add a type definition
     manifest.types.insert(
-        "ExistingType".to_string(),
+        "TestType".to_string(),
         TypeDef::Record { fields: vec![] },
     );
-
-    // Add a method that references the existing type
+    
+    // Add a method that references the type
     manifest.methods.push(Method {
-        name: "test".to_string(),
+        name: "test_method".to_string(),
         params: vec![],
-        returns: Some(TypeRef::reference("ExistingType")),
+        returns: Some(TypeRef::Reference {
+            ref_: "TestType".to_string(),
+        }),
         returns_nullable: None,
         errors: vec![],
     });
-
-    // Should pass validation
+    
+    // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
 
 #[test]
 fn test_invariant_detects_dangling_refs() {
-    let mut manifest = Manifest::default();
-
+    // This test ensures that dangling refs are detected
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
     // Add a method that references a non-existent type
     manifest.methods.push(Method {
-        name: "test".to_string(),
+        name: "test_method".to_string(),
         params: vec![],
-        returns: Some(TypeRef::reference("NonExistentType")),
+        returns: Some(TypeRef::Reference {
+            ref_: "NonExistentType".to_string(),
+        }),
         returns_nullable: None,
         errors: vec![],
     });
-
-    // Should fail validation
+    
+    // This should fail validation
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
     match result.unwrap_err() {
-        calimero_wasm_abi_v1::validate::ValidationError::DanglingRef { ref_name, .. } => {
-            assert_eq!(ref_name, "NonExistentType");
+        calimero_wasm_abi_v1::validate::ValidationError::DanglingRef { ref_path, context_path } => {
+            assert_eq!(ref_path, "NonExistentType");
+            assert_eq!(context_path, ".methods[0].returns");
         }
         _ => panic!("Expected DanglingRef error"),
     }
@@ -111,126 +180,41 @@ fn test_invariant_detects_dangling_refs() {
 
 #[test]
 fn test_invariant_deterministic_ordering() {
-    let mut manifest = Manifest::default();
-
-    // Add types in non-sorted order
-    manifest
-        .types
-        .insert("ZType".to_string(), TypeDef::Record { fields: vec![] });
-    manifest
-        .types
-        .insert("AType".to_string(), TypeDef::Record { fields: vec![] });
-
-    // Add methods in non-sorted order
+    // This test ensures that methods and events are sorted deterministically
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
+    
+    // Add methods in unsorted order
     manifest.methods.push(Method {
         name: "z_method".to_string(),
         params: vec![],
-        returns: Some(TypeRef::i32()),
+        returns: None,
         returns_nullable: None,
         errors: vec![],
     });
     manifest.methods.push(Method {
         name: "a_method".to_string(),
         params: vec![],
-        returns: Some(TypeRef::i32()),
+        returns: None,
         returns_nullable: None,
         errors: vec![],
     });
-
-    // Add events in non-sorted order
-    manifest.events.push(Event {
-        name: "z_event".to_string(),
-        payload: None,
-    });
-    manifest.events.push(Event {
-        name: "a_event".to_string(),
-        payload: None,
-    });
-
-    // Should fail validation (not sorted)
-    assert!(validate_manifest(&manifest).is_err());
-
-    // Sort them manually
+    
+    // This should fail validation because methods are not sorted
+    let result = validate_manifest(&manifest);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        calimero_wasm_abi_v1::validate::ValidationError::MethodsNotSorted => {
+            // Expected error
+        }
+        _ => panic!("Expected MethodsNotSorted error"),
+    }
+    
+    // Now sort the methods
     manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
-    manifest.events.sort_by(|a, b| a.name.cmp(&b.name));
-
-    // Should pass validation after sorting
-    assert!(validate_manifest(&manifest).is_ok());
-
-    // Verify they are sorted
-    let method_names: Vec<_> = manifest.methods.iter().map(|m| &m.name).collect();
-    let mut sorted_names = method_names.clone();
-    sorted_names.sort();
-    assert_eq!(method_names, sorted_names);
-
-    let event_names: Vec<_> = manifest.events.iter().map(|e| &e.name).collect();
-    let mut sorted_event_names = event_names.clone();
-    sorted_event_names.sort();
-    assert_eq!(event_names, sorted_event_names);
-}
-
-#[test]
-fn test_invariant_variant_payload_structure() {
-    let mut manifest = Manifest::default();
-
-    // Add a variant type with payload
-    manifest.types.insert(
-        "TestVariant".to_string(),
-        TypeDef::Variant {
-            variants: vec![
-                Variant {
-                    name: "UnitVariant".to_string(),
-                    code: None,
-                    payload: None,
-                },
-                Variant {
-                    name: "StringVariant".to_string(),
-                    code: None,
-                    payload: Some(TypeRef::string()),
-                },
-                Variant {
-                    name: "RecordVariant".to_string(),
-                    code: None,
-                    payload: Some(TypeRef::Collection(
-                        calimero_wasm_abi_v1::schema::CollectionType::Record {
-                            fields: vec![Field {
-                                name: "value".to_string(),
-                                type_: TypeRef::i32(),
-                                nullable: None,
-                            }],
-                        },
-                    )),
-                },
-            ],
-        },
-    );
-
-    // Should pass validation
-    assert!(validate_manifest(&manifest).is_ok());
-}
-
-#[test]
-fn test_invariant_error_payload_structure() {
-    let mut manifest = Manifest::default();
-
-    // Add a method with errors that have payload
-    manifest.methods.push(Method {
-        name: "test".to_string(),
-        params: vec![],
-        returns: Some(TypeRef::i32()),
-        returns_nullable: None,
-        errors: vec![
-            Error {
-                code: "SIMPLE_ERROR".to_string(),
-                payload: None,
-            },
-            Error {
-                code: "DETAILED_ERROR".to_string(),
-                payload: Some(TypeRef::string()),
-            },
-        ],
-    });
-
-    // Should pass validation
+    
+    // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }

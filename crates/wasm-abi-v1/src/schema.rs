@@ -162,20 +162,11 @@ pub enum CollectionType {
 }
 
 /// Custom serializer for map keys to support compact string format
-fn serialize_map_key<S>(key: &Box<TypeRef>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_map_key<S>(key: &TypeRef, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    match **key {
-        TypeRef::Scalar(ScalarType::String) => {
-            // Serialize as just "string" instead of {"kind": "string"}
-            serializer.serialize_str("string")
-        }
-        _ => {
-            // For non-string keys, serialize normally
-            key.serialize(serializer)
-        }
-    }
+    key.serialize(serializer)
 }
 
 /// Custom deserializer for map keys to support compact string format

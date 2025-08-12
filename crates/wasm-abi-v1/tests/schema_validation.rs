@@ -1,4 +1,3 @@
-use calimero_wasm_abi_v1::schema::Manifest;
 use jsonschema::JSONSchema;
 use serde_json::Value;
 
@@ -10,8 +9,10 @@ fn test_schema_validation_basic() {
     let schema = JSONSchema::compile(&schema_value).unwrap();
     
     // Create a basic manifest
-    let mut manifest = calimero_wasm_abi_v1::schema::Manifest::default();
-    manifest.schema_version = "wasm-abi/1".to_string();
+    let mut manifest = calimero_wasm_abi_v1::schema::Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        ..Default::default()
+    };
     
     // Add a simple method
     manifest.methods.push(calimero_wasm_abi_v1::schema::Method {
@@ -27,7 +28,11 @@ fn test_schema_validation_basic() {
     
     // Validate against schema
     let validation_result = schema.validate(&manifest_json);
-    assert!(validation_result.is_ok(), "Schema validation failed: {:?}", validation_result.err().map(|e| e.collect::<Vec<_>>()));
+    assert!(
+        validation_result.is_ok(),
+        "Schema validation failed: {:?}",
+        validation_result.err().map(|e| e.collect::<Vec<_>>())
+    );
 }
 
 // Commented out due to schema structure issues - core functionality works correctly
@@ -159,7 +164,11 @@ fn test_schema_validation_events() {
         ]
     });
     let validation_result = schema.validate(&event_with_payload_manifest);
-    assert!(validation_result.is_ok(), "Event with payload validation failed: {:?}", validation_result.err().map(|e| e.collect::<Vec<_>>()));
+    assert!(
+        validation_result.is_ok(),
+        "Event with payload validation failed: {:?}",
+        validation_result.err().map(|e| e.collect::<Vec<_>>())
+    );
     
     // Test event without payload in a complete manifest
     let event_without_payload_manifest = serde_json::json!({
@@ -173,5 +182,9 @@ fn test_schema_validation_events() {
         ]
     });
     let validation_result = schema.validate(&event_without_payload_manifest);
-    assert!(validation_result.is_ok(), "Event without payload validation failed: {:?}", validation_result.err().map(|e| e.collect::<Vec<_>>()));
+    assert!(
+        validation_result.is_ok(),
+        "Event without payload validation failed: {:?}",
+        validation_result.err().map(|e| e.collect::<Vec<_>>())
+    );
 }
