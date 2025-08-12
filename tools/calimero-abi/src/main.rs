@@ -1,6 +1,7 @@
-use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use clap::{Parser, Subcommand};
 use wasmparser::{Parser as WasmParser, Payload};
 
 #[derive(Parser)]

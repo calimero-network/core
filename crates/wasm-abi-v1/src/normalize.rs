@@ -1,6 +1,7 @@
-use crate::schema::TypeRef;
 use syn::{Type, TypeArray, TypePath, TypeReference, TypeTuple};
 use thiserror::Error;
+
+use crate::schema::TypeRef;
 
 /// Error type for normalization failures
 #[derive(Debug, Error)]
@@ -98,7 +99,9 @@ pub fn normalize_type(
         Type::Tuple(TypeTuple { elems, .. }) if elems.is_empty() => Ok(TypeRef::unit()),
 
         // Handle other types as references
-        _ => Err(NormalizeError::TypePathError("unsupported type".to_string())),
+        _ => Err(NormalizeError::TypePathError(
+            "unsupported type".to_string(),
+        )),
     }
 }
 
@@ -118,7 +121,9 @@ fn extract_option_inner(ty: &Type) -> Result<&Type, NormalizeError> {
             }
         }
     }
-    Err(NormalizeError::TypePathError("invalid Option type".to_string()))
+    Err(NormalizeError::TypePathError(
+        "invalid Option type".to_string(),
+    ))
 }
 
 /// Check if a path represents Vec<T>
@@ -133,7 +138,10 @@ fn is_vec_u8(path: &syn::Path) -> bool {
     }
     if let Some(segment) = path.segments.first() {
         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-            if let Some(syn::GenericArgument::Type(Type::Path(TypePath { path: inner_path, .. }))) = args.args.first() {
+            if let Some(syn::GenericArgument::Type(Type::Path(TypePath {
+                path: inner_path, ..
+            }))) = args.args.first()
+            {
                 return is_u8_type(inner_path);
             }
         }
@@ -152,7 +160,9 @@ fn extract_vec_inner(ty: &Type) -> Result<&Type, NormalizeError> {
             }
         }
     }
-    Err(NormalizeError::TypePathError("invalid Vec type".to_string()))
+    Err(NormalizeError::TypePathError(
+        "invalid Vec type".to_string(),
+    ))
 }
 
 /// Check if a path represents BTreeMap<K, V>
@@ -166,8 +176,10 @@ fn extract_map_inner(ty: &Type) -> Result<(&Type, &Type), NormalizeError> {
         if let Some(segment) = path.segments.first() {
             if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                 if args.args.len() >= 2 {
-                    if let (syn::GenericArgument::Type(key_type), syn::GenericArgument::Type(value_type)) =
-                        (&args.args[0], &args.args[1])
+                    if let (
+                        syn::GenericArgument::Type(key_type),
+                        syn::GenericArgument::Type(value_type),
+                    ) = (&args.args[0], &args.args[1])
                     {
                         return Ok((key_type, value_type));
                     }
@@ -175,7 +187,9 @@ fn extract_map_inner(ty: &Type) -> Result<(&Type, &Type), NormalizeError> {
             }
         }
     }
-    Err(NormalizeError::TypePathError("invalid BTreeMap type".to_string()))
+    Err(NormalizeError::TypePathError(
+        "invalid BTreeMap type".to_string(),
+    ))
 }
 
 /// Check if a path represents u8
@@ -190,9 +204,8 @@ fn extract_array_len(len: &syn::Expr) -> Result<usize, NormalizeError> {
         ..
     }) = len
     {
-        lit.base10_parse().map_err(|_| {
-            NormalizeError::TypePathError("failed to parse array length".to_string())
-        })
+        lit.base10_parse()
+            .map_err(|_| NormalizeError::TypePathError("failed to parse array length".to_string()))
     } else {
         Err(NormalizeError::TypePathError(
             "array length must be a literal integer".to_string(),
@@ -212,7 +225,9 @@ fn normalize_scalar_type(
     _resolver: &dyn TypeResolver,
 ) -> Result<TypeRef, NormalizeError> {
     if path.segments.len() != 1 {
-        return Err(NormalizeError::TypePathError("invalid scalar type path".to_string()));
+        return Err(NormalizeError::TypePathError(
+            "invalid scalar type path".to_string(),
+        ));
     }
 
     let ident = &path.segments[0].ident;
@@ -236,7 +251,10 @@ fn normalize_scalar_type(
                     ResolvedLocal::Variant => Ok(TypeRef::reference(&ident.to_string())),
                 }
             } else {
-                Err(NormalizeError::TypePathError(format!("unknown type: {}", ident)))
+                Err(NormalizeError::TypePathError(format!(
+                    "unknown type: {}",
+                    ident
+                )))
             }
         }
     }

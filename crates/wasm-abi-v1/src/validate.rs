@@ -1,5 +1,6 @@
-use crate::schema::{Manifest, TypeRef, TypeDef, Method, Event};
 use thiserror::Error;
+
+use crate::schema::{Event, Manifest, Method, TypeDef, TypeRef};
 
 #[derive(Error, Debug)]
 pub enum ValidationError {
@@ -12,7 +13,10 @@ pub enum ValidationError {
     #[error("Map key is not 'string': {path}")]
     MapKeyNotString { path: String },
     #[error("Dangling $ref: {ref_path} at {context_path}")]
-    DanglingRef { ref_path: String, context_path: String },
+    DanglingRef {
+        ref_path: String,
+        context_path: String,
+    },
     #[error("Methods not sorted deterministically")]
     MethodsNotSorted,
     #[error("Events not sorted deterministically")]
@@ -23,7 +27,7 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), ValidationError> {
     // Check for dangling $ref
     let mut refs = Vec::new();
     collect_refs_from_manifest(manifest, "", &mut refs);
-    
+
     for (ref_path, context_path) in &refs {
         if !manifest.types.contains_key(ref_path) {
             return Err(ValidationError::DanglingRef {
@@ -32,26 +36,26 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), ValidationError> {
             });
         }
     }
-    
+
     // Check map keys are string
     for (type_name, type_def) in &manifest.types {
         validate_type_def(type_def, &format!("types.{}", type_name))?;
     }
-    
+
     // Check methods are sorted
     for i in 1..manifest.methods.len() {
         if manifest.methods[i - 1].name > manifest.methods[i].name {
             return Err(ValidationError::MethodsNotSorted);
         }
     }
-    
+
     // Check events are sorted
     for i in 1..manifest.events.len() {
         if manifest.events[i - 1].name > manifest.events[i].name {
             return Err(ValidationError::EventsNotSorted);
         }
     }
-    
+
     Ok(())
 }
 
@@ -86,7 +90,7 @@ fn validate_field(field: &crate::schema::Field, path: &str) -> Result<(), Valida
         // This is a simplified check - in a real implementation, we'd check if the type is Option<T>
         // For now, we'll skip this check as it requires more complex type analysis
     }
-    
+
     validate_type_ref(&field.type_, path)
 }
 
@@ -102,13 +106,19 @@ fn validate_type_ref(type_ref: &TypeRef, path: &str) -> Result<(), ValidationErr
         TypeRef::Reference { ref_: _ref_name } => {
             // This will be checked for dangling refs in the main validation
         }
-        TypeRef::Scalar(scalar) => if let crate::schema::ScalarType::Bytes { size: Some(size_val), .. } = scalar {
-            if *size_val == 0 {
-                return Err(ValidationError::VariableBytesWithSize {
-                    path: path.to_string(),
-                });
+        TypeRef::Scalar(scalar) => {
+            if let crate::schema::ScalarType::Bytes {
+                size: Some(size_val),
+                ..
+            } = scalar
+            {
+                if *size_val == 0 {
+                    return Err(ValidationError::VariableBytesWithSize {
+                        path: path.to_string(),
+                    });
+                }
             }
-        },
+        }
         TypeRef::Collection(collection) => {
             match collection {
                 crate::schema::CollectionType::Record { fields } => {
@@ -142,13 +152,13 @@ fn collect_refs_from_manifest(manifest: &Manifest, path: &str, refs: &mut Vec<(S
         let method_path = format!("{}.methods[{}]", path, i);
         collect_refs_from_method(method, &method_path, refs);
     }
-    
+
     // Collect refs from events
     for (i, event) in manifest.events.iter().enumerate() {
         let event_path = format!("{}.events[{}]", path, i);
         collect_refs_from_event(event, &event_path, refs);
     }
-    
+
     // Collect refs from types
     for (type_name, type_def) in &manifest.types {
         let type_path = format!("{}.types.{}", path, type_name);
@@ -162,12 +172,12 @@ fn collect_refs_from_method(method: &Method, path: &str, refs: &mut Vec<(String,
         let param_path = format!("{}.params[{}]", path, i);
         collect_refs_from_type_ref(&param.type_, &param_path, refs);
     }
-    
+
     // Collect refs from return type
     if let Some(returns) = &method.returns {
         collect_refs_from_type_ref(returns, &format!("{}.returns", path), refs);
     }
-    
+
     // Collect refs from errors
     for (i, error) in method.errors.iter().enumerate() {
         let error_path = format!("{}.errors[{}]", path, i);
@@ -213,22 +223,20 @@ fn collect_refs_from_type_ref(type_ref: &TypeRef, path: &str, refs: &mut Vec<(St
         TypeRef::Scalar(_) => {
             // Scalars don't have refs
         }
-        TypeRef::Collection(collection) => {
-            match collection {
-                crate::schema::CollectionType::Record { fields } => {
-                    for field in fields {
-                        let field_path = format!("{}.{}", path, field.name);
-                        collect_refs_from_type_ref(&field.type_, &field_path, refs);
-                    }
-                }
-                crate::schema::CollectionType::List { items } => {
-                    collect_refs_from_type_ref(items, &format!("{}.items", path), refs);
-                }
-                crate::schema::CollectionType::Map { value, .. } => {
-                    collect_refs_from_type_ref(value, &format!("{}.value", path), refs);
+        TypeRef::Collection(collection) => match collection {
+            crate::schema::CollectionType::Record { fields } => {
+                for field in fields {
+                    let field_path = format!("{}.{}", path, field.name);
+                    collect_refs_from_type_ref(&field.type_, &field_path, refs);
                 }
             }
-        }
+            crate::schema::CollectionType::List { items } => {
+                collect_refs_from_type_ref(items, &format!("{}.items", path), refs);
+            }
+            crate::schema::CollectionType::Map { value, .. } => {
+                collect_refs_from_type_ref(value, &format!("{}.value", path), refs);
+            }
+        },
     }
 }
 
@@ -276,7 +284,10 @@ mod tests {
         let result = validate_manifest(&manifest);
         assert!(result.is_err());
         match result.unwrap_err() {
-            ValidationError::DanglingRef { ref_path, context_path } => {
+            ValidationError::DanglingRef {
+                ref_path,
+                context_path,
+            } => {
                 assert_eq!(ref_path, "NonExistentType");
                 assert_eq!(context_path, ".methods[0].returns");
             }
@@ -284,4 +295,3 @@ mod tests {
         }
     }
 }
-

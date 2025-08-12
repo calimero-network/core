@@ -1,11 +1,14 @@
+use std::collections::HashMap;
+
+use syn::{
+    FnArg, GenericArgument, Item, ItemImpl, Pat, PatType, PathArguments, ReturnType, Type,
+    Visibility,
+};
+use thiserror::Error;
+
 use crate::normalize::{normalize_type, TypeResolver};
 use crate::schema::{Manifest, Method, Parameter, TypeDef};
 use crate::validate::validate_manifest;
-use std::collections::HashMap;
-use syn::{
-    FnArg, GenericArgument, Item, ItemImpl, Pat, PatType, PathArguments, ReturnType, Type, Visibility,
-};
-use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum EmitterError {
@@ -60,7 +63,7 @@ fn collect_methods_from_impl(
     resolver: &CrateTypeResolver,
 ) -> Result<Vec<Method>, EmitterError> {
     let mut methods = Vec::new();
-    
+
     for item in &item_impl.items {
         if let syn::ImplItem::Fn(method) = item {
             // Check if this is a public method
@@ -70,7 +73,7 @@ fn collect_methods_from_impl(
             }
         }
     }
-    
+
     Ok(methods)
 }
 
@@ -79,7 +82,7 @@ fn convert_method_to_abi(
     resolver: &CrateTypeResolver,
 ) -> Result<Method, EmitterError> {
     let mut params = Vec::new();
-    
+
     // Convert parameters
     for param in &method.sig.inputs {
         if let FnArg::Typed(PatType { pat, ty, .. }) = param {
@@ -94,7 +97,7 @@ fn convert_method_to_abi(
             }
         }
     }
-    
+
     // Convert return type
     let (returns, returns_nullable) = match &method.sig.output {
         ReturnType::Default => (None, None),
@@ -104,7 +107,7 @@ fn convert_method_to_abi(
             (Some(type_ref), if nullable { Some(true) } else { None })
         }
     };
-    
+
     // Extract errors from return type if it's a Result
     let mut errors = Vec::new();
     if let ReturnType::Type(_, ty) = &method.sig.output {
@@ -137,7 +140,7 @@ fn convert_method_to_abi(
             }
         }
     }
-    
+
     Ok(Method {
         name: method.sig.ident.to_string(),
         params,
@@ -161,9 +164,9 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     let resolver = CrateTypeResolver::new();
-    
+
     for item in items {
         if let Item::Impl(item_impl) = item {
             // Check if this is an app logic impl
@@ -173,11 +176,11 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
             }
         }
     }
-    
+
     // Sort for determinism
     manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
     manifest.events.sort_by(|a, b| a.name.cmp(&b.name));
-    
+
     validate_manifest(&manifest)?;
     Ok(manifest)
 }

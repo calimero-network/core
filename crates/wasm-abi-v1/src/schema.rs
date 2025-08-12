@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 /// The main ABI manifest containing all type definitions, methods, and events
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,8 +175,9 @@ fn deserialize_map_key<'de, D>(deserializer: D) -> Result<Box<TypeRef>, D::Error
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::{self, Visitor};
     use std::fmt;
+
+    use serde::de::{self, Visitor};
 
     struct MapKeyVisitor;
 

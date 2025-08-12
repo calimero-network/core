@@ -1,3 +1,6 @@
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
+
 use calimero_wasm_abi_v1::{
     Error, Event, Field as AbiField, Manifest, Method, Parameter, TypeDef, TypeRef,
     Variant as AbiVariant,
@@ -5,8 +8,6 @@ use calimero_wasm_abi_v1::{
 use lazy_static::lazy_static;
 use proc_macro2::TokenStream;
 use quote::quote;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
 use syn::{
     Error as SynError, Fields, GenericArgument, Item, ItemEnum, ItemStruct, PathArguments, Type,
 };

@@ -1,3 +1,4 @@
+use calimero_wasm_abi_v1::{Event, TypeRef};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Type, Visibility};
@@ -6,7 +7,6 @@ use crate::abi::register_event;
 use crate::errors::{Errors, ParseError};
 use crate::items::StructOrEnumItem;
 use crate::reserved::{idents, lifetimes};
-use calimero_wasm_abi_v1::{Event, TypeRef};
 
 /// Dummy resolver for the normalizer
 struct DummyResolver;

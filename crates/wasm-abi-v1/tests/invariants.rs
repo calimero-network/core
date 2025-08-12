@@ -1,6 +1,4 @@
-use calimero_wasm_abi_v1::schema::{
-    Error, Event, Manifest, Method, TypeDef, TypeRef, Variant,
-};
+use calimero_wasm_abi_v1::schema::{Error, Event, Manifest, Method, TypeDef, TypeRef, Variant};
 use calimero_wasm_abi_v1::validate::validate_manifest;
 
 #[test]
@@ -11,13 +9,13 @@ fn test_invariant_events_use_payload_not_type() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add an event with payload
     manifest.events.push(Event {
         name: "TestEvent".to_string(),
         payload: Some(TypeRef::string()),
     });
-    
+
     // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
@@ -29,7 +27,7 @@ fn test_invariant_variant_payload_structure() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add a variant type with payload
     manifest.types.insert(
         "TestVariant".to_string(),
@@ -41,7 +39,7 @@ fn test_invariant_variant_payload_structure() {
             }],
         },
     );
-    
+
     // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
@@ -53,7 +51,7 @@ fn test_invariant_error_payload_structure() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add a method with error that has payload
     manifest.methods.push(Method {
         name: "test_method".to_string(),
@@ -65,7 +63,7 @@ fn test_invariant_error_payload_structure() {
             payload: Some(TypeRef::string()),
         }],
     });
-    
+
     // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
@@ -77,19 +75,21 @@ fn test_invariant_variable_bytes_no_size() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add a method with variable bytes (no size)
     manifest.methods.push(Method {
         name: "test_method".to_string(),
         params: vec![],
-        returns: Some(TypeRef::Scalar(calimero_wasm_abi_v1::schema::ScalarType::Bytes {
-            size: None,
-            encoding: "hex".to_string(),
-        })),
+        returns: Some(TypeRef::Scalar(
+            calimero_wasm_abi_v1::schema::ScalarType::Bytes {
+                size: None,
+                encoding: "hex".to_string(),
+            },
+        )),
         returns_nullable: None,
         errors: vec![],
     });
-    
+
     // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
@@ -101,19 +101,23 @@ fn test_invariant_map_string_key() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add a method with map that has string key
     manifest.methods.push(Method {
         name: "test_method".to_string(),
         params: vec![],
-        returns: Some(TypeRef::Collection(calimero_wasm_abi_v1::schema::CollectionType::Map {
-            key: Box::new(TypeRef::Scalar(calimero_wasm_abi_v1::schema::ScalarType::String)),
-            value: Box::new(TypeRef::u32()),
-        })),
+        returns: Some(TypeRef::Collection(
+            calimero_wasm_abi_v1::schema::CollectionType::Map {
+                key: Box::new(TypeRef::Scalar(
+                    calimero_wasm_abi_v1::schema::ScalarType::String,
+                )),
+                value: Box::new(TypeRef::u32()),
+            },
+        )),
         returns_nullable: None,
         errors: vec![],
     });
-    
+
     // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
@@ -125,13 +129,12 @@ fn test_invariant_no_dangling_refs() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add a type definition
-    manifest.types.insert(
-        "TestType".to_string(),
-        TypeDef::Record { fields: vec![] },
-    );
-    
+    manifest
+        .types
+        .insert("TestType".to_string(), TypeDef::Record { fields: vec![] });
+
     // Add a method that references the type
     manifest.methods.push(Method {
         name: "test_method".to_string(),
@@ -142,7 +145,7 @@ fn test_invariant_no_dangling_refs() {
         returns_nullable: None,
         errors: vec![],
     });
-    
+
     // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }
@@ -154,7 +157,7 @@ fn test_invariant_detects_dangling_refs() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add a method that references a non-existent type
     manifest.methods.push(Method {
         name: "test_method".to_string(),
@@ -165,12 +168,15 @@ fn test_invariant_detects_dangling_refs() {
         returns_nullable: None,
         errors: vec![],
     });
-    
+
     // This should fail validation
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
     match result.unwrap_err() {
-        calimero_wasm_abi_v1::validate::ValidationError::DanglingRef { ref_path, context_path } => {
+        calimero_wasm_abi_v1::validate::ValidationError::DanglingRef {
+            ref_path,
+            context_path,
+        } => {
             assert_eq!(ref_path, "NonExistentType");
             assert_eq!(context_path, ".methods[0].returns");
         }
@@ -185,7 +191,7 @@ fn test_invariant_deterministic_ordering() {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add methods in unsorted order
     manifest.methods.push(Method {
         name: "z_method".to_string(),
@@ -201,7 +207,7 @@ fn test_invariant_deterministic_ordering() {
         returns_nullable: None,
         errors: vec![],
     });
-    
+
     // This should fail validation because methods are not sorted
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
@@ -211,10 +217,10 @@ fn test_invariant_deterministic_ordering() {
         }
         _ => panic!("Expected MethodsNotSorted error"),
     }
-    
+
     // Now sort the methods
     manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
-    
+
     // This should pass validation
     assert!(validate_manifest(&manifest).is_ok());
 }

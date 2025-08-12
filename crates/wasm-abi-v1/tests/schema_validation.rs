@@ -7,13 +7,13 @@ fn test_schema_validation_basic() {
     let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
-    
+
     // Create a basic manifest
     let mut manifest = calimero_wasm_abi_v1::schema::Manifest {
         schema_version: "wasm-abi/1".to_string(),
         ..Default::default()
     };
-    
+
     // Add a simple method
     manifest.methods.push(calimero_wasm_abi_v1::schema::Method {
         name: "test_method".to_string(),
@@ -22,10 +22,10 @@ fn test_schema_validation_basic() {
         returns_nullable: None,
         errors: vec![],
     });
-    
+
     // Serialize to JSON
     let manifest_json = serde_json::to_value(&manifest).unwrap();
-    
+
     // Validate against schema
     let validation_result = schema.validate(&manifest_json);
     assert!(
@@ -43,11 +43,11 @@ fn test_schema_validation_conformance() {
     let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
-    
+
     // Load the conformance manifest
     let conformance_json = include_str!("../../../apps/abi_conformance/abi.expected.json");
     let conformance_value: Value = serde_json::from_str(conformance_json).unwrap();
-    
+
     // Validate against schema
     let validation_result = schema.validate(&conformance_value);
     assert!(validation_result.is_ok(), "Conformance manifest validation failed: {:?}", validation_result.err().map(|e| e.collect::<Vec<_>>()));
@@ -62,7 +62,7 @@ fn test_schema_validation_bytes_types() {
     let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
-    
+
     // Test fixed bytes in a complete manifest
     let fixed_bytes_manifest = serde_json::json!({
         "schema_version": "wasm-abi/1",
@@ -78,7 +78,7 @@ fn test_schema_validation_bytes_types() {
     });
     let validation_result = schema.validate(&fixed_bytes_manifest);
     assert!(validation_result.is_ok(), "Fixed bytes validation failed: {:?}", validation_result.err().map(|e| e.collect::<Vec<_>>()));
-    
+
     // Test variable bytes in a complete manifest
     let variable_bytes_manifest = serde_json::json!({
         "schema_version": "wasm-abi/1",
@@ -101,7 +101,7 @@ fn test_schema_validation_map_keys() {
     let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
-    
+
     // Test valid map with string key in a complete manifest
     let valid_map_manifest = serde_json::json!({
         "schema_version": "wasm-abi/1",
@@ -119,7 +119,7 @@ fn test_schema_validation_map_keys() {
     });
     let validation_result = schema.validate(&valid_map_manifest);
     assert!(validation_result.is_ok(), "Valid map validation failed: {:?}", validation_result.err().map(|e| e.collect::<Vec<_>>()));
-    
+
     // Test invalid map with non-string key in a complete manifest
     let invalid_map_manifest = serde_json::json!({
         "schema_version": "wasm-abi/1",
@@ -148,7 +148,7 @@ fn test_schema_validation_events() {
     let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
-    
+
     // Test event with payload in a complete manifest
     let event_with_payload_manifest = serde_json::json!({
         "schema_version": "wasm-abi/1",
@@ -169,7 +169,7 @@ fn test_schema_validation_events() {
         "Event with payload validation failed: {:?}",
         validation_result.err().map(|e| e.collect::<Vec<_>>())
     );
-    
+
     // Test event without payload in a complete manifest
     let event_without_payload_manifest = serde_json::json!({
         "schema_version": "wasm-abi/1",

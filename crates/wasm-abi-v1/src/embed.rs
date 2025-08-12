@@ -1,5 +1,6 @@
-use crate::schema::Manifest;
 use serde_json;
+
+use crate::schema::Manifest;
 
 /// Embed the ABI manifest into the WASM binary as a custom section
 /// This macro generates the custom section and exports the get_abi* functions
