@@ -1,15 +1,12 @@
 use std::collections::BTreeMap;
 
-use crate::normalize::{normalize_type, TypeResolver, ResolvedLocal};
+use crate::normalize::TypeResolver;
 use crate::schema::{Event, Field, Manifest, Method, Parameter, TypeDef, TypeRef, Variant};
-use syn::{
-    FnArg, GenericArgument, Item, ItemEnum, ItemImpl, Pat, PatType, PathArguments, ReturnType, Type,
-    TypePath, Visibility,
-};
+use syn::{Item, Type, TypePath};
 use thiserror::Error;
 
 struct CrateTypeResolver {
-    local_types: std::collections::HashMap<String, ResolvedLocal>,
+    local_types: std::collections::HashMap<String, crate::normalize::ResolvedLocal>,
     type_definitions: std::collections::HashMap<String, TypeDef>,
 }
 
@@ -25,19 +22,22 @@ impl CrateTypeResolver {
         // Clone the type_def for the match
         let type_def_clone = type_def.clone();
         self.type_definitions.insert(name.clone(), type_def);
-        
+
         // Also add to local_types for the normalizer
         match type_def_clone {
             TypeDef::Bytes { size, .. } => {
                 if let Some(size) = size {
-                    self.local_types.insert(name, ResolvedLocal::NewtypeBytes { size });
+                    self.local_types
+                        .insert(name, crate::normalize::ResolvedLocal::NewtypeBytes { size });
                 }
             }
             TypeDef::Record { .. } => {
-                self.local_types.insert(name, ResolvedLocal::Record);
+                self.local_types
+                    .insert(name, crate::normalize::ResolvedLocal::Record);
             }
             TypeDef::Variant { .. } => {
-                self.local_types.insert(name, ResolvedLocal::Variant);
+                self.local_types
+                    .insert(name, crate::normalize::ResolvedLocal::Variant);
             }
         }
     }
@@ -50,7 +50,7 @@ impl Default for CrateTypeResolver {
 }
 
 impl TypeResolver for CrateTypeResolver {
-    fn resolve_local(&self, path: &str) -> Option<ResolvedLocal> {
+    fn resolve_local(&self, path: &str) -> Option<crate::normalize::ResolvedLocal> {
         self.local_types.get(path).cloned()
     }
 }
@@ -70,43 +70,46 @@ pub enum EmitterError {
 /// Post-process a TypeRef to convert newtype bytes back to references when used in collections
 fn post_process_type_ref(type_ref: TypeRef, resolver: &CrateTypeResolver) -> TypeRef {
     match type_ref {
-        TypeRef::Collection(collection) => {
-            match collection {
-                crate::schema::CollectionType::List { items } => {
-                    let processed_items = post_process_type_ref(*items, resolver);
-                    TypeRef::Collection(crate::schema::CollectionType::List {
-                        items: Box::new(processed_items),
-                    })
-                }
-                crate::schema::CollectionType::Map { key, value } => {
-                    let processed_key = post_process_type_ref(*key, resolver);
-                    let processed_value = post_process_type_ref(*value, resolver);
-                    TypeRef::Collection(crate::schema::CollectionType::Map {
-                        key: Box::new(processed_key),
-                        value: Box::new(processed_value),
-                    })
-                }
-                crate::schema::CollectionType::Record { fields } => {
-                    let processed_fields = fields.into_iter()
-                        .map(|field| crate::schema::Field {
-                            name: field.name,
-                            type_: post_process_type_ref(field.type_, resolver),
-                            nullable: field.nullable,
-                        })
-                        .collect();
-                    TypeRef::Collection(crate::schema::CollectionType::Record {
-                        fields: processed_fields,
-                    })
-                }
+        TypeRef::Collection(collection) => match collection {
+            crate::schema::CollectionType::List { items } => {
+                let processed_items = post_process_type_ref(*items, resolver);
+                TypeRef::Collection(crate::schema::CollectionType::List {
+                    items: Box::new(processed_items),
+                })
             }
-        }
+            crate::schema::CollectionType::Map { key, value } => {
+                let processed_key = post_process_type_ref(*key, resolver);
+                let processed_value = post_process_type_ref(*value, resolver);
+                TypeRef::Collection(crate::schema::CollectionType::Map {
+                    key: Box::new(processed_key),
+                    value: Box::new(processed_value),
+                })
+            }
+            crate::schema::CollectionType::Record { fields } => {
+                let processed_fields = fields
+                    .into_iter()
+                    .map(|field| crate::schema::Field {
+                        name: field.name,
+                        type_: post_process_type_ref(field.type_, resolver),
+                        nullable: field.nullable,
+                    })
+                    .collect();
+                TypeRef::Collection(crate::schema::CollectionType::Record {
+                    fields: processed_fields,
+                })
+            }
+        },
         TypeRef::Scalar(scalar) => {
             // Check if this is a newtype bytes that should be converted to a reference
             match scalar {
                 crate::schema::ScalarType::Bytes { size, ref encoding } => {
                     // Look for a type definition that matches this bytes type
                     for (name, type_def) in &resolver.type_definitions {
-                        if let TypeDef::Bytes { size: def_size, encoding: def_encoding } = type_def {
+                        if let TypeDef::Bytes {
+                            size: def_size,
+                            encoding: def_encoding,
+                        } = type_def
+                        {
                             if *def_size == size && *def_encoding == *encoding {
                                 return TypeRef::Reference { ref_: name.clone() };
                             }
@@ -121,75 +124,6 @@ fn post_process_type_ref(type_ref: TypeRef, resolver: &CrateTypeResolver) -> Typ
     }
 }
 
-fn has_app_logic_attribute(item_impl: &ItemImpl) -> bool {
-    item_impl.attrs.iter().any(|attr| {
-        // Check for #[app::logic] - should have 2 segments: "app" and "logic"
-        if attr.path().segments.len() == 2 {
-            let first = attr.path().segments[0].ident.to_string();
-            let second = attr.path().segments[1].ident.to_string();
-            first == "app" && second == "logic"
-        } else {
-            false
-        }
-    })
-}
-
-fn has_app_event_attribute(item_enum: &ItemEnum) -> bool {
-    item_enum.attrs.iter().any(|attr| {
-        // Check for #[app::event] - should have 2 segments: "app" and "event"
-        if attr.path().segments.len() == 2 {
-            let first = attr.path().segments[0].ident.to_string();
-            let second = attr.path().segments[1].ident.to_string();
-            first == "app" && second == "event"
-        } else {
-            false
-        }
-    })
-}
-
-fn collect_events_from_enum(
-    item_enum: &ItemEnum,
-    resolver: &CrateTypeResolver,
-) -> Result<Vec<Event>, EmitterError> {
-    let mut events = Vec::new();
-
-    for variant in &item_enum.variants {
-        let event_name = variant.ident.to_string();
-        
-        // Extract payload type from variant
-        let payload = match &variant.fields {
-            syn::Fields::Unnamed(fields) => {
-                if fields.unnamed.len() == 1 {
-                    // Single field variant - extract the type
-                    let payload_type = &fields.unnamed[0].ty;
-                    let type_ref = normalize_type(payload_type, true, resolver)?;
-                    let processed_type_ref = post_process_type_ref(type_ref, resolver);
-                    Some(processed_type_ref)
-                } else {
-                    None
-                }
-            }
-            _ => None, // Unit variant or named fields - no payload
-        };
-
-        events.push(Event {
-            name: event_name,
-            payload,
-        });
-    }
-
-    Ok(events)
-}
-
-fn is_option_type(ty: &Type) -> bool {
-    if let Type::Path(path) = ty {
-        if let Some(first_segment) = path.path.segments.first() {
-            return first_segment.ident == "Option";
-        }
-    }
-    false
-}
-
 pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
     let mut resolver = CrateTypeResolver::new();
     let mut methods = Vec::new();
@@ -200,7 +134,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
         match item {
             Item::Struct(item_struct) => {
                 let struct_name = item_struct.ident.to_string();
-                
+
                 // Process struct fields to generate type definitions
                 let fields = item_struct
                     .fields
@@ -211,9 +145,10 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                             .as_ref()
                             .map(|id| id.to_string())
                             .unwrap_or_else(|| "unnamed".to_string());
-                        let field_type = normalize_type(&field.ty, true, &resolver)?;
+                        let field_type =
+                            crate::normalize::normalize_type(&field.ty, true, &resolver)?;
                         let field_type = post_process_type_ref(field_type, &resolver);
-                        
+
                         // Check if this is an Option<T> type
                         let nullable = if let Type::Path(TypePath { path, .. }) = &field.ty {
                             if path.segments.len() == 1 && path.segments[0].ident == "Option" {
@@ -224,7 +159,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                         } else {
                             None
                         };
-                        
+
                         Ok::<Field, EmitterError>(Field {
                             name: field_name,
                             type_: field_type,
@@ -234,14 +169,11 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                     .collect::<Result<Vec<_>, _>>()?;
 
                 // Add the struct as a type definition
-                resolver.add_type_definition(
-                    struct_name,
-                    TypeDef::Record { fields },
-                );
+                resolver.add_type_definition(struct_name, TypeDef::Record { fields });
             }
             Item::Enum(item_enum) => {
                 let enum_name = item_enum.ident.to_string();
-                
+
                 // Process all enums to generate type definitions
                 let variants = item_enum
                     .variants
@@ -250,7 +182,11 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                         let variant_name = variant.ident.to_string();
                         let payload = match &variant.fields {
                             syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                                let payload_type = normalize_type(&fields.unnamed[0].ty, true, &resolver)?;
+                                let payload_type = crate::normalize::normalize_type(
+                                    &fields.unnamed[0].ty,
+                                    true,
+                                    &resolver,
+                                )?;
                                 let payload_type = post_process_type_ref(payload_type, &resolver);
                                 Some(payload_type)
                             }
@@ -265,8 +201,11 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                             .as_ref()
                                             .map(|id| id.to_string())
                                             .unwrap_or_else(|| "unnamed".to_string());
-                                        let field_type = normalize_type(&field.ty, true, &resolver)?;
-                                        let field_type = post_process_type_ref(field_type, &resolver);
+                                        let field_type = crate::normalize::normalize_type(
+                                            &field.ty, true, &resolver,
+                                        )?;
+                                        let field_type =
+                                            post_process_type_ref(field_type, &resolver);
                                         Ok::<Field, EmitterError>(Field {
                                             name: field_name,
                                             type_: field_type,
@@ -274,14 +213,14 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                         })
                                     })
                                     .collect::<Result<Vec<_>, _>>()?;
-                                
+
                                 // Add this as a type definition
                                 let type_name = format!("{}Payload", variant_name);
                                 resolver.add_type_definition(
                                     type_name.clone(),
                                     TypeDef::Record { fields: fields_vec },
                                 );
-                                
+
                                 Some(TypeRef::Reference { ref_: type_name })
                             }
                             _ => None,
@@ -295,10 +234,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                     .collect::<Result<Vec<_>, _>>()?;
 
                 // Add the enum as a type definition
-                resolver.add_type_definition(
-                    enum_name.clone(),
-                    TypeDef::Variant { variants },
-                );
+                resolver.add_type_definition(enum_name.clone(), TypeDef::Variant { variants });
 
                 // Only treat enums named 'Event' as event sources
                 if enum_name == "Event" {
@@ -307,7 +243,11 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                         let variant_name = variant.ident.to_string();
                         let payload = match &variant.fields {
                             syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                                let payload_type = normalize_type(&fields.unnamed[0].ty, true, &resolver)?;
+                                let payload_type = crate::normalize::normalize_type(
+                                    &fields.unnamed[0].ty,
+                                    true,
+                                    &resolver,
+                                )?;
                                 let payload_type = post_process_type_ref(payload_type, &resolver);
                                 Some(payload_type)
                             }
@@ -318,8 +258,11 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                     .iter()
                                     .map(|field| {
                                         let field_name = field.ident.as_ref().unwrap().to_string();
-                                        let field_type = normalize_type(&field.ty, true, &resolver)?;
-                                        let field_type = post_process_type_ref(field_type, &resolver);
+                                        let field_type = crate::normalize::normalize_type(
+                                            &field.ty, true, &resolver,
+                                        )?;
+                                        let field_type =
+                                            post_process_type_ref(field_type, &resolver);
                                         Ok::<Field, EmitterError>(Field {
                                             name: field_name,
                                             type_: field_type,
@@ -327,14 +270,14 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                         })
                                     })
                                     .collect::<Result<Vec<_>, _>>()?;
-                                
+
                                 // Add this as a type definition
                                 let type_name = format!("{}Payload", variant_name);
                                 resolver.add_type_definition(
                                     type_name.clone(),
                                     TypeDef::Record { fields: fields_vec },
                                 );
-                                
+
                                 Some(TypeRef::Reference { ref_: type_name })
                             }
                             _ => None,
@@ -353,7 +296,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                     if let syn::ImplItem::Fn(method) = impl_item {
                         if matches!(method.vis, syn::Visibility::Public(_)) {
                             let method_name = method.sig.ident.to_string();
-                            
+
                             // Skip methods that start with underscore (private)
                             if method_name.starts_with('_') {
                                 continue;
@@ -371,24 +314,38 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                             return None; // Skip self
                                         }
                                     }
-                                    
+
                                     if let syn::FnArg::Typed(pat_type) = param {
                                         let param_name = match &*pat_type.pat {
-                                            syn::Pat::Ident(pat_ident) => pat_ident.ident.to_string(),
+                                            syn::Pat::Ident(pat_ident) => {
+                                                pat_ident.ident.to_string()
+                                            }
                                             _ => "param".to_string(),
                                         };
-                                        let param_type = match normalize_type(&pat_type.ty, true, &resolver) {
+                                        let param_type = match crate::normalize::normalize_type(
+                                            &pat_type.ty,
+                                            true,
+                                            &resolver,
+                                        ) {
                                             Ok(ty) => post_process_type_ref(ty, &resolver),
-                                            Err(_) => return Some(Err(EmitterError::NormalizeError(
-                                                crate::normalize::NormalizeError::TypePathError(
-                                                    "failed to normalize parameter type".to_string(),
-                                                )
-                                            ))),
+                                            Err(_) => {
+                                                return Some(Err(EmitterError::NormalizeError(
+                                                    crate::normalize::NormalizeError::TypePathError(
+                                                        "failed to normalize parameter type"
+                                                            .to_string(),
+                                                    ),
+                                                )))
+                                            }
                                         };
-                                        
+
                                         // Check if this is an Option<T> type
-                                        let nullable = if let Type::Path(TypePath { path, .. }) = &*pat_type.ty {
-                                            if path.segments.len() == 1 && path.segments[0].ident == "Option" {
+                                        let nullable = if let Type::Path(TypePath {
+                                            path, ..
+                                        }) = &*pat_type.ty
+                                        {
+                                            if path.segments.len() == 1
+                                                && path.segments[0].ident == "Option"
+                                            {
                                                 Some(true)
                                             } else {
                                                 None
@@ -396,7 +353,7 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                         } else {
                                             None
                                         };
-                                        
+
                                         Some(Ok::<Parameter, EmitterError>(Parameter {
                                             name: param_name,
                                             type_: param_type,
@@ -414,26 +371,30 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                     Some(TypeRef::Scalar(crate::schema::ScalarType::Unit))
                                 }
                                 syn::ReturnType::Type(_, ty) => {
-                                    let ret_type = normalize_type(ty, true, &resolver)?;
+                                    let ret_type =
+                                        crate::normalize::normalize_type(ty, true, &resolver)?;
                                     let ret_type = post_process_type_ref(ret_type, &resolver);
                                     Some(ret_type)
                                 }
                             };
 
                             // Check if return type is nullable (Option<T>)
-                            let returns_nullable = if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                                if let Type::Path(TypePath { path, .. }) = &**ty {
-                                    if path.segments.len() == 1 && path.segments[0].ident == "Option" {
-                                        Some(true)
+                            let returns_nullable =
+                                if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                                    if let Type::Path(TypePath { path, .. }) = &**ty {
+                                        if path.segments.len() == 1
+                                            && path.segments[0].ident == "Option"
+                                        {
+                                            Some(true)
+                                        } else {
+                                            None
+                                        }
                                     } else {
                                         None
                                     }
                                 } else {
                                     None
-                                }
-                            } else {
-                                None
-                            };
+                                };
 
                             methods.push(Method {
                                 name: method_name,
@@ -476,25 +437,9 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
         },
     );
 
-    resolver.add_type_definition(
-        "UserId32".to_string(),
-        TypeDef::Bytes {
-            size: Some(32),
-            encoding: "hex".to_string(),
-        },
-    );
-
-    resolver.add_type_definition(
-        "Hash64".to_string(),
-        TypeDef::Bytes {
-            size: Some(64),
-            encoding: "hex".to_string(),
-        },
-    );
-
     // Convert HashMap to BTreeMap and filter out extra types
     let mut types: BTreeMap<String, TypeDef> = resolver.type_definitions.into_iter().collect();
-    
+
     // Remove extra types that shouldn't be in the ABI
     types.remove("AbiStateExposed");
     types.remove("Event");

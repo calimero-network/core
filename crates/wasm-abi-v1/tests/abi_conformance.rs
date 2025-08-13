@@ -91,41 +91,33 @@ impl AbiState {
     assert_eq!(list_records.params.len(), 1);
     let ps_param = &list_records.params[0];
     assert_eq!(ps_param.name, "ps");
-    
+
     // Check that ps parameter is a list of Person references
     match &ps_param.type_ {
-        TypeRef::Collection(collection) => {
-            match collection {
-                calimero_wasm_abi_v1::schema::CollectionType::List { items } => {
-                    match &**items {
-                        TypeRef::Reference { ref_ } => {
-                            assert_eq!(ref_, "Person");
-                        }
-                        _ => panic!("Expected Person reference in list items"),
-                    }
+        TypeRef::Collection(collection) => match collection {
+            calimero_wasm_abi_v1::schema::CollectionType::List { items } => match &**items {
+                TypeRef::Reference { ref_ } => {
+                    assert_eq!(ref_, "Person");
                 }
-                _ => panic!("Expected list collection type"),
-            }
-        }
+                _ => panic!("Expected Person reference in list items"),
+            },
+            _ => panic!("Expected list collection type"),
+        },
         _ => panic!("Expected collection type for ps parameter"),
     }
 
     // Check return type is also a list of Person references
     let returns = list_records.returns.as_ref().expect("Expected return type");
     match returns {
-        TypeRef::Collection(collection) => {
-            match collection {
-                calimero_wasm_abi_v1::schema::CollectionType::List { items } => {
-                    match &**items {
-                        TypeRef::Reference { ref_ } => {
-                            assert_eq!(ref_, "Person");
-                        }
-                        _ => panic!("Expected Person reference in return list items"),
-                    }
+        TypeRef::Collection(collection) => match collection {
+            calimero_wasm_abi_v1::schema::CollectionType::List { items } => match &**items {
+                TypeRef::Reference { ref_ } => {
+                    assert_eq!(ref_, "Person");
                 }
-                _ => panic!("Expected list collection type in return"),
-            }
-        }
+                _ => panic!("Expected Person reference in return list items"),
+            },
+            _ => panic!("Expected list collection type in return"),
+        },
         _ => panic!("Expected collection type for return"),
     }
 
@@ -139,22 +131,18 @@ impl AbiState {
     assert_eq!(list_ids.params.len(), 1);
     let xs_param = &list_ids.params[0];
     assert_eq!(xs_param.name, "xs");
-    
+
     // Check that xs parameter is a list of UserId32 references
     match &xs_param.type_ {
-        TypeRef::Collection(collection) => {
-            match collection {
-                calimero_wasm_abi_v1::schema::CollectionType::List { items } => {
-                    match &**items {
-                        TypeRef::Reference { ref_ } => {
-                            assert_eq!(ref_, "UserId32");
-                        }
-                        _ => panic!("Expected UserId32 reference in list items"),
-                    }
+        TypeRef::Collection(collection) => match collection {
+            calimero_wasm_abi_v1::schema::CollectionType::List { items } => match &**items {
+                TypeRef::Reference { ref_ } => {
+                    assert_eq!(ref_, "UserId32");
                 }
-                _ => panic!("Expected list collection type"),
-            }
-        }
+                _ => panic!("Expected UserId32 reference in list items"),
+            },
+            _ => panic!("Expected list collection type"),
+        },
         _ => panic!("Expected collection type for xs parameter"),
     }
 
@@ -168,7 +156,7 @@ impl AbiState {
     assert_eq!(map_record.params.len(), 1);
     let m_param = &map_record.params[0];
     assert_eq!(m_param.name, "m");
-    
+
     // Check that m parameter is a map with string key and Person value
     match &m_param.type_ {
         TypeRef::Collection(collection) => {
@@ -176,15 +164,13 @@ impl AbiState {
                 calimero_wasm_abi_v1::schema::CollectionType::Map { key, value } => {
                     // Check key is string
                     match &**key {
-                        TypeRef::Scalar(scalar) => {
-                            match scalar {
-                                calimero_wasm_abi_v1::schema::ScalarType::String => {}
-                                _ => panic!("Expected string key type"),
-                            }
-                        }
+                        TypeRef::Scalar(scalar) => match scalar {
+                            calimero_wasm_abi_v1::schema::ScalarType::String => {}
+                            _ => panic!("Expected string key type"),
+                        },
                         _ => panic!("Expected scalar key type"),
                     }
-                    
+
                     // Check value is Person reference
                     match &**value {
                         TypeRef::Reference { ref_ } => {
@@ -244,12 +230,10 @@ impl AbiState {
         .find(|e| e.name == "Named")
         .expect("Named event not found");
     match &named.payload {
-        Some(TypeRef::Scalar(scalar)) => {
-            match scalar {
-                calimero_wasm_abi_v1::schema::ScalarType::String => {}
-                _ => panic!("Expected string payload for Named event"),
-            }
-        }
+        Some(TypeRef::Scalar(scalar)) => match scalar {
+            calimero_wasm_abi_v1::schema::ScalarType::String => {}
+            _ => panic!("Expected string payload for Named event"),
+        },
         _ => panic!("Expected scalar payload for Named event"),
     }
-} 
+}
