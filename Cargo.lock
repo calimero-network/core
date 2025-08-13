@@ -1879,6 +1879,7 @@ dependencies = [
  "borsh",
  "calimero-network-primitives",
  "calimero-primitives",
+ "calimero-store",
  "calimero-utils-actix",
  "eyre",
  "futures-util",
