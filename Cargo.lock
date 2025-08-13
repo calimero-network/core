@@ -2090,13 +2090,9 @@ dependencies = [
 name = "calimero-sdk-macros"
 version = "0.1.0"
 dependencies = [
- "calimero-wasm-abi-v1",
- "lazy_static",
  "prettyplease 0.2.25",
  "proc-macro2",
  "quote",
- "serde",
- "serde_json",
  "syn 2.0.100",
  "thiserror 1.0.69",
 ]

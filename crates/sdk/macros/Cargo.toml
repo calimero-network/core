@@ -15,10 +15,6 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn = { workspace = true, features = ["extra-traits"] }
 thiserror.workspace = true
-serde_json.workspace = true
-serde = { workspace = true, features = ["derive"] }
-lazy_static = "1.4"
-calimero-wasm-abi-v1.path = "../../wasm-abi-v1"
 
 [features]
 nightly = []

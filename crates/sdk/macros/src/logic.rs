@@ -2,7 +2,6 @@ use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
 
-use crate::abi;
 use crate::errors::{Errors, ParseError};
 use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
 use crate::logic::utils::typed_path;
@@ -26,16 +25,10 @@ impl ToTokens for LogicImpl<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let LogicImpl { orig, methods, .. } = self;
 
-        // Generate ABI embed code
-        let abi_code = abi::generate_abi(methods, &[]);
-
         quote! {
             #orig
 
             #(#methods)*
-
-            // Embed ABI manifest
-            #abi_code
         }
         .to_tokens(tokens);
     }

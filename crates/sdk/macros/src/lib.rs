@@ -14,7 +14,6 @@ use crate::items::{Empty, StructOrEnumItem};
 use crate::logic::{LogicImpl, LogicImplInput};
 use crate::state::{StateArgs, StateImpl, StateImplInput};
 
-mod abi;
 mod errors;
 mod event;
 mod items;
@@ -35,22 +34,6 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let tokens = match LogicImpl::try_from(LogicImplInput { item: &block }) {
         Ok(data) => data.to_token_stream(),
-        Err(err) => err.to_compile_error(),
-    };
-
-    tokens.into()
-}
-
-#[proc_macro_attribute]
-pub fn abi_type(args: TokenStream, input: TokenStream) -> TokenStream {
-    reserved::init();
-    let _args = parse_macro_input!({ input } => args as Empty);
-
-    // Parse the input to determine if it's a struct or enum
-    let item = parse_macro_input!(input as syn::Item);
-
-    let tokens = match abi::register_abi_type(&item) {
-        Ok(data) => data,
         Err(err) => err.to_compile_error(),
     };
 
