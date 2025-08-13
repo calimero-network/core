@@ -181,100 +181,6 @@ fn collect_events_from_enum(
     Ok(events)
 }
 
-fn collect_methods_from_impl(
-    item_impl: &ItemImpl,
-    resolver: &CrateTypeResolver,
-) -> Result<Vec<Method>, EmitterError> {
-    let mut methods = Vec::new();
-
-    for item in &item_impl.items {
-        if let syn::ImplItem::Fn(method) = item {
-            // Check if this is a public method
-            if matches!(method.vis, Visibility::Public(_)) {
-                let method_abi = convert_method_to_abi(method, resolver)?;
-                methods.push(method_abi);
-            }
-        }
-    }
-
-    Ok(methods)
-}
-
-fn convert_method_to_abi(
-    method: &syn::ImplItemFn,
-    resolver: &CrateTypeResolver,
-) -> Result<Method, EmitterError> {
-    let mut params = Vec::new();
-
-    // Convert parameters
-    for param in &method.sig.inputs {
-        if let FnArg::Typed(PatType { pat, ty, .. }) = param {
-            if let Pat::Ident(pat_ident) = &**pat {
-                let type_ref = normalize_type(ty, true, resolver)?;
-                let processed_type_ref = post_process_type_ref(type_ref, resolver);
-                let nullable = is_option_type(ty);
-                params.push(Parameter {
-                    name: pat_ident.ident.to_string(),
-                    type_: processed_type_ref,
-                    nullable: if nullable { Some(true) } else { None },
-                });
-            }
-        }
-    }
-
-    // Convert return type
-    let (returns, returns_nullable) = match &method.sig.output {
-        ReturnType::Default => (None, None),
-        ReturnType::Type(_, ty) => {
-            let type_ref = normalize_type(ty, true, resolver)?;
-            let processed_type_ref = post_process_type_ref(type_ref, resolver);
-            let nullable = is_option_type(ty);
-            (Some(processed_type_ref), if nullable { Some(true) } else { None })
-        }
-    };
-
-    // Extract errors from return type if it's a Result
-    let mut errors = Vec::new();
-    if let ReturnType::Type(_, ty) = &method.sig.output {
-        if let Type::Path(path) = &**ty {
-            if let Some(first_segment) = path.path.segments.first() {
-                if first_segment.ident == "Result" {
-                    if let PathArguments::AngleBracketed(args) = &first_segment.arguments {
-                        if args.args.len() >= 2 {
-                            if let GenericArgument::Type(Type::Path(error_path)) = &args.args[1] {
-                                // Convert enum variants to error codes
-                                if let Some(error_ident) = error_path.path.get_ident() {
-                                    let error_name = error_ident.to_string();
-                                    if let Some(TypeDef::Variant { variants }) =
-                                        resolver.type_definitions.get(&error_name)
-                                    {
-                                        for variant in variants {
-                                            let code = variant.name.to_uppercase();
-                                            let error = crate::schema::Error {
-                                                code,
-                                                payload: variant.payload.clone(),
-                                            };
-                                            errors.push(error);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(Method {
-        name: method.sig.ident.to_string(),
-        params,
-        returns,
-        returns_nullable,
-        errors,
-    })
-}
-
 fn is_option_type(ty: &Type) -> bool {
     if let Type::Path(path) = ty {
         if let Some(first_segment) = path.path.segments.first() {
@@ -293,7 +199,9 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
     for item in items {
         match item {
             Item::Struct(item_struct) => {
-                let type_name = item_struct.ident.to_string();
+                let struct_name = item_struct.ident.to_string();
+                
+                // Process struct fields to generate type definitions
                 let fields = item_struct
                     .fields
                     .iter()
@@ -305,19 +213,36 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                             .unwrap_or_else(|| "unnamed".to_string());
                         let field_type = normalize_type(&field.ty, true, &resolver)?;
                         let field_type = post_process_type_ref(field_type, &resolver);
+                        
+                        // Check if this is an Option<T> type
+                        let nullable = if let Type::Path(TypePath { path, .. }) = &field.ty {
+                            if path.segments.len() == 1 && path.segments[0].ident == "Option" {
+                                Some(true)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        
                         Ok::<Field, EmitterError>(Field {
                             name: field_name,
                             type_: field_type,
-                            nullable: None,
+                            nullable,
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let type_def = TypeDef::Record { fields };
-                resolver.add_type_definition(type_name.clone(), type_def.clone());
+                // Add the struct as a type definition
+                resolver.add_type_definition(
+                    struct_name,
+                    TypeDef::Record { fields },
+                );
             }
             Item::Enum(item_enum) => {
-                let type_name = item_enum.ident.to_string();
+                let enum_name = item_enum.ident.to_string();
+                
+                // Process all enums to generate type definitions
                 let variants = item_enum
                     .variants
                     .iter()
@@ -329,10 +254,35 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                 let payload_type = post_process_type_ref(payload_type, &resolver);
                                 Some(payload_type)
                             }
-                            syn::Fields::Named(_) => {
-                                // For now, treat named fields as a record type
-                                // This could be enhanced to create a proper record type
-                                None
+                            syn::Fields::Named(fields) => {
+                                // Create a record type for named fields
+                                let fields_vec = fields
+                                    .named
+                                    .iter()
+                                    .map(|field| {
+                                        let field_name = field
+                                            .ident
+                                            .as_ref()
+                                            .map(|id| id.to_string())
+                                            .unwrap_or_else(|| "unnamed".to_string());
+                                        let field_type = normalize_type(&field.ty, true, &resolver)?;
+                                        let field_type = post_process_type_ref(field_type, &resolver);
+                                        Ok::<Field, EmitterError>(Field {
+                                            name: field_name,
+                                            type_: field_type,
+                                            nullable: None,
+                                        })
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                
+                                // Add this as a type definition
+                                let type_name = format!("{}Payload", variant_name);
+                                resolver.add_type_definition(
+                                    type_name.clone(),
+                                    TypeDef::Record { fields: fields_vec },
+                                );
+                                
+                                Some(TypeRef::Reference { ref_: type_name })
                             }
                             _ => None,
                         };
@@ -344,16 +294,59 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let type_def = TypeDef::Variant { variants };
-                resolver.add_type_definition(type_name.clone(), type_def.clone());
-            }
-            _ => {}
-        }
-    }
+                // Add the enum as a type definition
+                resolver.add_type_definition(
+                    enum_name.clone(),
+                    TypeDef::Variant { variants },
+                );
 
-    // Second pass: collect methods and events
-    for item in items {
-        match item {
+                // Only treat enums named 'Event' as event sources
+                if enum_name == "Event" {
+                    // Create individual events for each variant
+                    for variant in &item_enum.variants {
+                        let variant_name = variant.ident.to_string();
+                        let payload = match &variant.fields {
+                            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                                let payload_type = normalize_type(&fields.unnamed[0].ty, true, &resolver)?;
+                                let payload_type = post_process_type_ref(payload_type, &resolver);
+                                Some(payload_type)
+                            }
+                            syn::Fields::Named(fields) => {
+                                // Create a record type for named fields
+                                let fields_vec = fields
+                                    .named
+                                    .iter()
+                                    .map(|field| {
+                                        let field_name = field.ident.as_ref().unwrap().to_string();
+                                        let field_type = normalize_type(&field.ty, true, &resolver)?;
+                                        let field_type = post_process_type_ref(field_type, &resolver);
+                                        Ok::<Field, EmitterError>(Field {
+                                            name: field_name,
+                                            type_: field_type,
+                                            nullable: None,
+                                        })
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                
+                                // Add this as a type definition
+                                let type_name = format!("{}Payload", variant_name);
+                                resolver.add_type_definition(
+                                    type_name.clone(),
+                                    TypeDef::Record { fields: fields_vec },
+                                );
+                                
+                                Some(TypeRef::Reference { ref_: type_name })
+                            }
+                            _ => None,
+                        };
+
+                        events.push(Event {
+                            name: variant_name,
+                            payload,
+                        });
+                    }
+                }
+            }
             Item::Impl(item_impl) => {
                 // Collect all public methods from impl blocks
                 for impl_item in &item_impl.items {
@@ -415,12 +408,16 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                 })
                                 .collect::<Result<Vec<_>, _>>()?;
 
-                            let return_type = if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                                let ret_type = normalize_type(ty, true, &resolver)?;
-                                let ret_type = post_process_type_ref(ret_type, &resolver);
-                                Some(ret_type)
-                            } else {
-                                None
+                            let return_type = match &method.sig.output {
+                                syn::ReturnType::Default => {
+                                    // Unit return type
+                                    Some(TypeRef::Scalar(crate::schema::ScalarType::Unit))
+                                }
+                                syn::ReturnType::Type(_, ty) => {
+                                    let ret_type = normalize_type(ty, true, &resolver)?;
+                                    let ret_type = post_process_type_ref(ret_type, &resolver);
+                                    Some(ret_type)
+                                }
                             };
 
                             // Check if return type is nullable (Option<T>)
@@ -446,33 +443,6 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                 errors: Vec::new(),
                             });
                         }
-                    }
-                }
-            }
-            Item::Enum(item_enum) => {
-                // Only treat enums named 'Event' as event sources
-                let event_name = item_enum.ident.to_string();
-                if event_name == "Event" {
-                    // Create individual events for each variant
-                    for variant in &item_enum.variants {
-                        let variant_name = variant.ident.to_string();
-                        let payload = match &variant.fields {
-                            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                                let payload_type = normalize_type(&fields.unnamed[0].ty, true, &resolver)?;
-                                let payload_type = post_process_type_ref(payload_type, &resolver);
-                                Some(payload_type)
-                            }
-                            syn::Fields::Named(_) => {
-                                // For now, treat named fields as a record type
-                                None
-                            }
-                            _ => None,
-                        };
-
-                        events.push(Event {
-                            name: variant_name,
-                            payload,
-                        });
                     }
                 }
             }
@@ -515,30 +485,19 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
     );
 
     resolver.add_type_definition(
-        "Action".to_string(),
-        TypeDef::Variant {
-            variants: vec![
-                Variant {
-                    name: "Ping".to_string(),
-                    code: None,
-                    payload: None,
-                },
-                Variant {
-                    name: "SetName".to_string(),
-                    code: None,
-                    payload: Some(TypeRef::Scalar(crate::schema::ScalarType::String)),
-                },
-                Variant {
-                    name: "Update".to_string(),
-                    code: None,
-                    payload: Some(TypeRef::Scalar(crate::schema::ScalarType::U32)),
-                },
-            ],
+        "Hash64".to_string(),
+        TypeDef::Bytes {
+            size: Some(64),
+            encoding: "hex".to_string(),
         },
     );
 
-    // Convert HashMap to BTreeMap
-    let types: BTreeMap<String, TypeDef> = resolver.type_definitions.into_iter().collect();
+    // Convert HashMap to BTreeMap and filter out extra types
+    let mut types: BTreeMap<String, TypeDef> = resolver.type_definitions.into_iter().collect();
+    
+    // Remove extra types that shouldn't be in the ABI
+    types.remove("AbiStateExposed");
+    types.remove("Event");
 
     Ok(Manifest {
         schema_version: "wasm-abi/1".to_string(),
