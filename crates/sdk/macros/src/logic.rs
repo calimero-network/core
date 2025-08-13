@@ -9,10 +9,10 @@ use crate::macros::infallible;
 use crate::reserved::{idents, lifetimes};
 use crate::sanitizer::{Action, Case, Sanitizer};
 
-pub mod arg;
-pub mod method;
-pub mod ty;
-pub mod utils;
+mod arg;
+mod method;
+mod ty;
+mod utils;
 
 pub struct LogicImpl<'a> {
     #[expect(dead_code, reason = "This will be used in future")]
