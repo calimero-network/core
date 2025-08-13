@@ -377,12 +377,18 @@
         {
           "name": "ps",
           "type": {
-            "kind": "string"
+            "kind": "list",
+            "items": {
+              "$ref": "Person"
+            }
           }
         }
       ],
       "returns": {
-        "kind": "string"
+        "kind": "list",
+        "items": {
+          "$ref": "Person"
+        }
       }
     },
     {
@@ -391,12 +397,18 @@
         {
           "name": "xs",
           "type": {
-            "kind": "string"
+            "kind": "list",
+            "items": {
+              "$ref": "UserId32"
+            }
           }
         }
       ],
       "returns": {
-        "kind": "string"
+        "kind": "list",
+        "items": {
+          "$ref": "UserId32"
+        }
       }
     },
     {
@@ -463,12 +475,24 @@
         {
           "name": "m",
           "type": {
-            "kind": "string"
+            "kind": "map",
+            "key": {
+              "kind": "string"
+            },
+            "value": {
+              "$ref": "Person"
+            }
           }
         }
       ],
       "returns": {
-        "kind": "string"
+        "kind": "map",
+        "key": {
+          "kind": "string"
+        },
+        "value": {
+          "$ref": "Person"
+        }
       }
     },
     {
@@ -612,13 +636,13 @@
     {
       "name": "PersonUpdated",
       "payload": {
-        "kind": "string"
+        "$ref": "Person"
       }
     },
     {
       "name": "ActionTaken",
       "payload": {
-        "kind": "string"
+        "$ref": "Action"
       }
     }
   ]
