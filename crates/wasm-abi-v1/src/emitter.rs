@@ -4,7 +4,7 @@ use crate::normalize::{normalize_type, TypeResolver, ResolvedLocal};
 use crate::schema::{Event, Field, Manifest, Method, Parameter, TypeDef, TypeRef, Variant};
 use syn::{
     FnArg, GenericArgument, Item, ItemEnum, ItemImpl, Pat, PatType, PathArguments, ReturnType, Type,
-    Visibility,
+    TypePath, Visibility,
 };
 use thiserror::Error;
 
@@ -370,28 +370,47 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                 .sig
                                 .inputs
                                 .iter()
-                                .skip(1) // Skip self parameter
-                                .map(|param| {
+                                .enumerate()
+                                .filter_map(|(index, param)| {
+                                    // Skip self parameter for instance methods
+                                    if index == 0 {
+                                        if let syn::FnArg::Receiver(_) = param {
+                                            return None; // Skip self
+                                        }
+                                    }
+                                    
                                     if let syn::FnArg::Typed(pat_type) = param {
                                         let param_name = match &*pat_type.pat {
                                             syn::Pat::Ident(pat_ident) => pat_ident.ident.to_string(),
                                             _ => "param".to_string(),
                                         };
-                                        let param_type = normalize_type(&pat_type.ty, true, &resolver)?;
-                                        let param_type = post_process_type_ref(param_type, &resolver);
-                                        Ok::<Parameter, EmitterError>(Parameter {
+                                        let param_type = match normalize_type(&pat_type.ty, true, &resolver) {
+                                            Ok(ty) => post_process_type_ref(ty, &resolver),
+                                            Err(_) => return Some(Err(EmitterError::NormalizeError(
+                                                crate::normalize::NormalizeError::TypePathError(
+                                                    "failed to normalize parameter type".to_string(),
+                                                )
+                                            ))),
+                                        };
+                                        
+                                        // Check if this is an Option<T> type
+                                        let nullable = if let Type::Path(TypePath { path, .. }) = &*pat_type.ty {
+                                            if path.segments.len() == 1 && path.segments[0].ident == "Option" {
+                                                Some(true)
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                        
+                                        Some(Ok::<Parameter, EmitterError>(Parameter {
                                             name: param_name,
                                             type_: param_type,
-                                            nullable: None, // TODO: detect Option<T>
-                                        })
+                                            nullable,
+                                        }))
                                     } else {
-                                        Ok::<Parameter, EmitterError>(Parameter {
-                                            name: "self".to_string(),
-                                            type_: TypeRef::Reference {
-                                                ref_: "Self".to_string(),
-                                            },
-                                            nullable: None,
-                                        })
+                                        None
                                     }
                                 })
                                 .collect::<Result<Vec<_>, _>>()?;
@@ -404,11 +423,26 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                                 None
                             };
 
+                            // Check if return type is nullable (Option<T>)
+                            let returns_nullable = if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                                if let Type::Path(TypePath { path, .. }) = &**ty {
+                                    if path.segments.len() == 1 && path.segments[0].ident == "Option" {
+                                        Some(true)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
                             methods.push(Method {
                                 name: method_name,
                                 params,
                                 returns: return_type,
-                                returns_nullable: None, // TODO: detect Option<T>
+                                returns_nullable,
                                 errors: Vec::new(),
                             });
                         }
@@ -416,12 +450,11 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                 }
             }
             Item::Enum(item_enum) => {
-                // Treat all enums as potential events
+                // Only treat enums named 'Event' as event sources
                 let event_name = item_enum.ident.to_string();
-                let variants = item_enum
-                    .variants
-                    .iter()
-                    .map(|variant| {
+                if event_name == "Event" {
+                    // Create individual events for each variant
+                    for variant in &item_enum.variants {
                         let variant_name = variant.ident.to_string();
                         let payload = match &variant.fields {
                             syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
@@ -435,18 +468,13 @@ pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
                             }
                             _ => None,
                         };
-                        Ok::<Variant, EmitterError>(Variant {
-                            name: variant_name,
-                            code: None,
-                            payload,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
 
-                events.push(Event {
-                    name: event_name,
-                    payload: None, // TODO: determine if this event has a payload
-                });
+                        events.push(Event {
+                            name: variant_name,
+                            payload,
+                        });
+                    }
+                }
             }
             _ => {}
         }
