@@ -34,6 +34,7 @@ libp2p-stream.workspace = true
 multiaddr.workspace = true
 owo-colors.workspace = true
 reqwest.workspace = true
+rocksdb.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros"] }
@@ -43,7 +44,7 @@ tracing.workspace = true
 calimero-network-primitives.workspace = true
 calimero-primitives.workspace = true
 calimero-utils-actix.workspace = true
-
+calimero-store.workspace = true
 
 [lints]
 workspace = true
