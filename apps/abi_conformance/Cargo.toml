@@ -14,12 +14,15 @@ crate-type = ["cdylib"]
 calimero-sdk.workspace = true
 calimero-storage.workspace = true
 calimero-wasm-abi-v1.workspace = true
-thiserror = "1.0.56"
-bs58 = "0.5.1"
+thiserror.workspace = true
+bs58.workspace = true
 
 [build-dependencies]
 calimero-wasm-abi-v1.workspace = true
-syn = { version = "2.0", features = ["full"] }
+syn.workspace = true
+
+[lints]
+workspace = true
 
 [profile.app-release]
 inherits = "release"

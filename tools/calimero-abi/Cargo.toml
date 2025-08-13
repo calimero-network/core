@@ -12,7 +12,10 @@ name = "calimero-abi"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.4", features = ["derive"] }
+clap = { workspace = true, features = ["derive"] }
 wasmparser = "0.118"
-serde_json = "1.0"
-anyhow = "1.0" 
+serde_json.workspace = true
+eyre.workspace = true
+
+[lints]
+workspace = true 

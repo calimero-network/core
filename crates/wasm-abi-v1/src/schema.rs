@@ -14,7 +14,7 @@ pub struct Manifest {
 impl Default for Manifest {
     fn default() -> Self {
         Self {
-            schema_version: "wasm-abi/1".to_string(),
+            schema_version: "wasm-abi/1".to_owned(),
             types: BTreeMap::new(),
             methods: Vec::new(),
             events: Vec::new(),
@@ -212,11 +212,22 @@ where
     deserializer.deserialize_any(MapKeyVisitor)
 }
 
+impl Manifest {
+    pub fn new() -> Self {
+        Self {
+            schema_version: "wasm-abi/1".to_owned(),
+            types: BTreeMap::new(),
+            methods: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+}
+
 impl TypeRef {
     /// Create a reference to a named type
     pub fn reference(name: &str) -> Self {
         TypeRef::Reference {
-            ref_: name.to_string(),
+            ref_: name.to_owned(),
         }
     }
 
@@ -264,7 +275,7 @@ impl TypeRef {
     pub fn bytes() -> Self {
         TypeRef::Scalar(ScalarType::Bytes {
             size: None,
-            encoding: "hex".to_string(),
+            encoding: "hex".to_owned(),
         })
     }
 
@@ -272,7 +283,7 @@ impl TypeRef {
     pub fn bytes_with_size(size: usize, encoding: &str) -> Self {
         TypeRef::Scalar(ScalarType::Bytes {
             size: Some(size),
-            encoding: encoding.to_string(),
+            encoding: encoding.to_owned(),
         })
     }
 
@@ -325,5 +336,27 @@ mod tests {
         assert_eq!(manifest.schema_version, deserialized.schema_version);
         assert_eq!(manifest.methods.len(), deserialized.methods.len());
         assert_eq!(manifest.methods[0].name, deserialized.methods[0].name);
+    }
+
+    #[test]
+    fn test_manifest_creation() {
+        let mut manifest = Manifest::new();
+        
+        // Add a test method
+        manifest.methods.push(Method {
+            name: "test_method".to_owned(),
+            params: vec![Parameter {
+                name: "param1".to_owned(),
+                type_: TypeRef::string(),
+                nullable: None,
+            }],
+            returns: Some(TypeRef::string()),
+            returns_nullable: None,
+            errors: Vec::new(),
+        });
+
+        assert_eq!(manifest.schema_version, "wasm-abi/1");
+        assert_eq!(manifest.methods.len(), 1);
+        assert_eq!(manifest.methods[0].name, "test_method");
     }
 }

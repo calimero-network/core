@@ -1801,8 +1801,8 @@ dependencies = [
 name = "calimero-abi"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
+ "eyre",
  "serde_json",
  "wasmparser 0.118.2",
 ]

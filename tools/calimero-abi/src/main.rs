@@ -30,7 +30,7 @@ enum Commands {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> eyre::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> anyhow::Result<()> {
+fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> eyre::Result<()> {
     // Read the WASM file
     let wasm_bytes = fs::read(wasm_file)?;
 
@@ -88,13 +88,13 @@ fn extract_abi(wasm_file: &PathBuf, output: Option<&Path>, verify: bool) -> anyh
             json_str
         }
         None => {
-            anyhow::bail!("No 'calimero_abi_v1' custom section found in WASM file");
+            eyre::bail!("No 'calimero_abi_v1' custom section found in WASM file");
         }
     };
 
     // Verify if requested
     if verify && !has_get_abi_exports {
-        anyhow::bail!("Verification failed: get_abi* exports not found in WASM file");
+        eyre::bail!("Verification failed: get_abi* exports not found in WASM file");
     }
 
     // Determine output path
