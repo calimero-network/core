@@ -1,5 +1,6 @@
 use crate::schema::{
-    CollectionType, Event, Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef, Variant,
+    CollectionType, Event, Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef,
+    Variant,
 };
 use std::collections::BTreeMap;
 
@@ -120,7 +121,10 @@ fn validate_type_def(type_def: &TypeDef, path: &str) -> Result<(), ValidationErr
 fn validate_type_ref(type_ref: &TypeRef, path: &str) -> Result<(), ValidationError> {
     match type_ref {
         TypeRef::Scalar(scalar) => {
-            if let ScalarType::Bytes { size: Some(size), .. } = scalar {
+            if let ScalarType::Bytes {
+                size: Some(size), ..
+            } = scalar
+            {
                 if *size == 0 {
                     return Err(ValidationError::InvalidBytesSize {
                         size: *size,
@@ -155,7 +159,10 @@ fn validate_type_ref(type_ref: &TypeRef, path: &str) -> Result<(), ValidationErr
     Ok(())
 }
 
-fn validate_method(method: &Method, types: &BTreeMap<String, TypeDef>) -> Result<(), ValidationError> {
+fn validate_method(
+    method: &Method,
+    types: &BTreeMap<String, TypeDef>,
+) -> Result<(), ValidationError> {
     for param in &method.params {
         validate_parameter(param, types)?;
     }
@@ -167,13 +174,20 @@ fn validate_method(method: &Method, types: &BTreeMap<String, TypeDef>) -> Result
     Ok(())
 }
 
-fn validate_parameter(param: &Parameter, _types: &BTreeMap<String, TypeDef>) -> Result<(), ValidationError> {
+fn validate_parameter(
+    param: &Parameter,
+    _types: &BTreeMap<String, TypeDef>,
+) -> Result<(), ValidationError> {
     validate_type_ref(&param.type_, &format!("parameter {}", param.name))
 }
 
 fn validate_event(event: &Event, _types: &BTreeMap<String, TypeDef>) {
     if let Some(payload) = &event.payload {
-        collect_refs_from_type_ref(payload, &format!("event {}.payload", event.name), &mut Vec::new());
+        collect_refs_from_type_ref(
+            payload,
+            &format!("event {}.payload", event.name),
+            &mut Vec::new(),
+        );
     }
 }
 
@@ -184,7 +198,11 @@ fn collect_refs_from_manifest(manifest: &Manifest, refs: &mut Vec<(String, Strin
 
     for method in &manifest.methods {
         for param in &method.params {
-            collect_refs_from_type_ref(&param.type_, &format!("method {}.param {}", method.name, param.name), refs);
+            collect_refs_from_type_ref(
+                &param.type_,
+                &format!("method {}.param {}", method.name, param.name),
+                refs,
+            );
         }
 
         if let Some(returns) = &method.returns {

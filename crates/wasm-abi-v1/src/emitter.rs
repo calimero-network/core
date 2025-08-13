@@ -1,5 +1,7 @@
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
-use crate::schema::{Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef, Variant};
+use crate::schema::{
+    Event, Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef, Variant,
+};
 use std::collections::HashMap;
 use std::error;
 use syn::{visit::Visit, Item, ItemEnum, ItemImpl, ItemStruct, Type};
@@ -9,6 +11,8 @@ use syn::{visit::Visit, Item, ItemEnum, ItemImpl, ItemStruct, Type};
 pub struct AbiEmitter {
     type_definitions: HashMap<String, TypeDef>,
     local_types: HashMap<String, ResolvedLocal>,
+    methods: Vec<Method>,
+    events: Vec<Event>,
 }
 
 impl AbiEmitter {
@@ -17,6 +21,8 @@ impl AbiEmitter {
         Self {
             type_definitions: HashMap::new(),
             local_types: HashMap::new(),
+            methods: Vec::new(),
+            events: Vec::new(),
         }
     }
 
@@ -27,7 +33,9 @@ impl AbiEmitter {
     fn add_local_type(&mut self, name: String, resolved: ResolvedLocal) {
         match resolved {
             ResolvedLocal::NewtypeBytes { size } => {
-                let _ = self.local_types.insert(name, ResolvedLocal::NewtypeBytes { size });
+                let _ = self
+                    .local_types
+                    .insert(name, ResolvedLocal::NewtypeBytes { size });
             }
             ResolvedLocal::Record => {
                 let _ = self.local_types.insert(name, ResolvedLocal::Record);
@@ -35,6 +43,34 @@ impl AbiEmitter {
             ResolvedLocal::Variant => {
                 let _ = self.local_types.insert(name, ResolvedLocal::Variant);
             }
+        }
+    }
+
+    fn process_events(&mut self, item_enum: &ItemEnum) {
+        for variant in &item_enum.variants {
+            let event_name = variant.ident.to_string();
+            let payload = if variant.fields.is_empty() {
+                None
+            } else {
+                // Handle event payloads
+                if variant.fields.len() == 1 {
+                    // Single field variant
+                    if let syn::Fields::Unnamed(fields) = &variant.fields {
+                        let field_type = normalize_type(&fields.unnamed[0].ty, true, self).unwrap();
+                        let field_type = post_process_type_ref(field_type, self);
+                        Some(field_type)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            self.events.push(Event {
+                name: event_name,
+                payload,
+            });
         }
     }
 }
@@ -78,8 +114,7 @@ impl<'ast> Visit<'ast> for AbiEmitter {
         // Check if this is a newtype pattern
         if is_newtype_pattern(item_struct) {
             if let Some(target_type) = extract_newtype_target(item_struct) {
-                let target_type_ref =
-                    normalize_type(target_type, true, self).unwrap();
+                let target_type_ref = normalize_type(target_type, true, self).unwrap();
                 let target_type_ref = post_process_type_ref(target_type_ref, self);
 
                 // Add as an alias type definition
@@ -89,6 +124,9 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                         target: target_type_ref,
                     },
                 );
+
+                // Add to local types for resolution
+                self.add_local_type(struct_name.clone(), ResolvedLocal::Record);
             }
         } else {
             // Process struct fields to generate type definitions
@@ -100,13 +138,26 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     .as_ref()
                     .map_or_else(|| "unnamed".to_owned(), ToString::to_string);
 
-                let field_type = normalize_type(&field.ty, true, self).unwrap();
+                let field_type = normalize_type(&field.ty, true, self).unwrap_or_else(|e| {
+                    eprintln!("Failed to normalize type for field: {field_name}");
+                    eprintln!("Error: {e:?}");
+                    panic!("Type normalization failed");
+                });
                 let field_type = post_process_type_ref(field_type, self);
+
+                // Check if it's Option<T> to set nullable
+                let nullable = if let Type::Path(type_path) = &field.ty {
+                    (type_path.path.segments.len() == 1
+                        && type_path.path.segments[0].ident == "Option")
+                        .then_some(true)
+                } else {
+                    None
+                };
 
                 fields.push(Field {
                     name: field_name,
                     type_: field_type,
-                    nullable: None, // Will be set based on Option<T>
+                    nullable,
                 });
             }
 
@@ -124,9 +175,60 @@ impl<'ast> Visit<'ast> for AbiEmitter {
             let payload = if variant.fields.is_empty() {
                 None
             } else {
-                // For now, we'll use a simple approach for enum payloads
-                // This could be enhanced to handle more complex cases
-                Some(TypeRef::unit())
+                // Handle enum payloads properly
+                if variant.fields.len() == 1 {
+                    // Single field variant
+                    if let syn::Fields::Unnamed(fields) = &variant.fields {
+                        let field_type = normalize_type(&fields.unnamed[0].ty, true, self).unwrap();
+                        let field_type = post_process_type_ref(field_type, self);
+                        Some(field_type)
+                    } else if let syn::Fields::Named(fields) = &variant.fields {
+                        // Named fields - create a record type
+                        let mut record_fields = Vec::new();
+                        for field in &fields.named {
+                            let field_name = field.ident.as_ref().unwrap().to_string();
+                            let field_type = normalize_type(&field.ty, true, self).unwrap();
+                            let field_type = post_process_type_ref(field_type, self);
+                            record_fields.push(Field {
+                                name: field_name,
+                                type_: field_type,
+                                nullable: None,
+                            });
+                        }
+                        // Create a temporary record type for the variant payload
+                        let record_type = TypeDef::Record {
+                            fields: record_fields,
+                        };
+                        let record_name = format!("{enum_name}_{variant_name}");
+                        self.add_type_definition(&record_name, record_type);
+                        Some(TypeRef::reference(&record_name))
+                    } else {
+                        Some(TypeRef::unit())
+                    }
+                } else {
+                    // Multiple fields - create a record type
+                    let mut record_fields = Vec::new();
+                    for (i, field) in variant.fields.iter().enumerate() {
+                        let field_name = field
+                            .ident
+                            .as_ref()
+                            .map_or_else(|| format!("field_{i}"), ToString::to_string);
+                        let field_type = normalize_type(&field.ty, true, self).unwrap();
+                        let field_type = post_process_type_ref(field_type, self);
+                        record_fields.push(Field {
+                            name: field_name,
+                            type_: field_type,
+                            nullable: None,
+                        });
+                    }
+                    // Create a temporary record type for the variant payload
+                    let record_type = TypeDef::Record {
+                        fields: record_fields,
+                    };
+                    let record_name = format!("{enum_name}_{variant_name}");
+                    self.add_type_definition(&record_name, record_type);
+                    Some(TypeRef::reference(&record_name))
+                }
             };
 
             variants.push(Variant {
@@ -175,35 +277,35 @@ impl<'ast> Visit<'ast> for AbiEmitter {
                     }
 
                     // Process return type
-                    let returns = if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                        let return_type = normalize_type(ty, true, self).unwrap();
-                        let return_type = post_process_type_ref(return_type, self);
+                    let (returns, returns_nullable) =
+                        if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                            let return_type = normalize_type(ty, true, self).unwrap();
+                            let return_type = post_process_type_ref(return_type, self);
 
-                        // Check if it's Option<T> to set nullable
-                        let _returns_nullable = if let Type::Path(type_path) = &**ty {
-                            (type_path.path.segments.len() == 1
-                                && type_path.path.segments[0].ident == "Option")
-                                .then_some(true)
+                            // Check if it's Option<T> to set nullable
+                            let returns_nullable = if let Type::Path(type_path) = &**ty {
+                                (type_path.path.segments.len() == 1
+                                    && type_path.path.segments[0].ident == "Option")
+                                    .then_some(true)
+                            } else {
+                                None
+                            };
+
+                            (Some(return_type), returns_nullable)
                         } else {
-                            None
+                            (Some(TypeRef::Scalar(ScalarType::Unit)), None)
                         };
 
-                        Some(return_type)
-                    } else {
-                        Some(TypeRef::Scalar(ScalarType::Unit))
-                    };
-
-                    // For now, we'll create a simple method
-                    let _method = Method {
+                    // Create and store the method
+                    let method = Method {
                         name: method_name,
                         params,
                         returns,
-                        returns_nullable: None, // Will be set based on Option<T>
+                        returns_nullable,
                         errors: Vec::new(),
                     };
 
-                    // Store the method (you might want to collect these differently)
-                    // For now, we'll just process them
+                    self.methods.push(method);
                 }
             }
         }
@@ -215,13 +317,41 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     let file = syn::parse_file(source)?;
     let mut emitter = AbiEmitter::new();
 
-    // Visit all items in the file
+    // First pass: process all newtypes to establish type definitions
+    for item in &file.items {
+        if let Item::Struct(item_struct) = item {
+            if is_newtype_pattern(item_struct) {
+                emitter.visit_item_struct(item_struct);
+            }
+        }
+    }
+
+    // Second pass: process all other structs and enums
     for item in &file.items {
         match item {
-            Item::Struct(item_struct) => emitter.visit_item_struct(item_struct),
+            Item::Struct(item_struct) => {
+                if !is_newtype_pattern(item_struct) {
+                    emitter.visit_item_struct(item_struct);
+                }
+            }
             Item::Enum(item_enum) => emitter.visit_item_enum(item_enum),
-            Item::Impl(item_impl) => emitter.visit_item_impl(item_impl),
             _ => {}
+        }
+    }
+
+    // Third pass: process impls (methods)
+    for item in &file.items {
+        if let Item::Impl(item_impl) = item {
+            emitter.visit_item_impl(item_impl);
+        }
+    }
+
+    // Fourth pass: process events
+    for item in &file.items {
+        if let Item::Enum(item_enum) = item {
+            if item_enum.ident == "Event" {
+                emitter.process_events(item_enum);
+            }
         }
     }
 
@@ -229,13 +359,13 @@ pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
     let mut manifest = Manifest {
         schema_version: "wasm-abi/1".to_owned(),
         types: emitter.type_definitions.into_iter().collect(),
-        methods: Vec::new(), // You'll need to collect methods differently
-        events: Vec::new(),
+        methods: emitter.methods,
+        events: emitter.events,
     };
 
     // Remove any internal types that shouldn't be exposed
-    drop(manifest.types.remove("AbiStateExposed"));
-    drop(manifest.types.remove("Event"));
+    manifest.types.remove("AbiStateExposed");
+    manifest.types.remove("Event");
 
     Ok(manifest)
 }

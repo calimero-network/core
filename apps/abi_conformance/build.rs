@@ -14,11 +14,8 @@ fn main() {
     let src_path = Path::new("src/lib.rs");
     let src_content = fs::read_to_string(src_path).expect("Failed to read src/lib.rs");
 
-    // Parse the Rust source code
-    let file = parse_file(&src_content).expect("Failed to parse Rust source code");
-
     // Generate ABI manifest using the emitter
-    let manifest = emit_manifest(&file.items).expect("Failed to emit ABI manifest");
+    let manifest = emit_manifest(&src_content).expect("Failed to emit ABI manifest");
 
     // Generate the embed code
     let embed_code = generate_embed_code(&manifest);

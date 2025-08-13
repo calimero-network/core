@@ -46,7 +46,7 @@ pub fn embed(manifest: &Manifest) -> proc_macro2::TokenStream {
     let json_len = bytes.len();
 
     format!(
-        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_arch = \"wasm32\", link_section = \".custom_section.calimero_abi_v1\")]\nstatic ABI_SECTION: [u8; {json_len}] = [{bytes_list}];\n"
+        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_os = \"macos\", link_section = \"__DATA,calimero_abi_v1\")]\n#[cfg_attr(not(target_os = \"macos\"), link_section = \"calimero_abi_v1\")]\nstatic ABI: [u8; {json_len}] = [{bytes_list}];\n\n// Export functions to access the ABI at runtime\n#[no_mangle]\npub extern \"C\" fn get_abi_ptr() -> u32 {{\n    ABI.as_ptr() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi_len() -> u32 {{\n    ABI.len() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi() -> u32 {{\n    get_abi_ptr()\n}}\n"
     )
     .parse()
     .expect("Failed to parse generated code")
@@ -65,6 +65,6 @@ pub fn generate_embed_code(manifest: &Manifest) -> String {
     let json_len = bytes.len();
 
     format!(
-        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_arch = \"wasm32\", link_section = \".custom_section.calimero_abi_v1\")]\nstatic ABI_SECTION: [u8; {json_len}] = [{bytes_list}];\n"
+        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_os = \"macos\", link_section = \"__DATA,calimero_abi_v1\")]\n#[cfg_attr(not(target_os = \"macos\"), link_section = \"calimero_abi_v1\")]\nstatic ABI: [u8; {json_len}] = [{bytes_list}];\n\n// Export functions to access the ABI at runtime\n#[no_mangle]\npub extern \"C\" fn get_abi_ptr() -> u32 {{\n    ABI.as_ptr() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi_len() -> u32 {{\n    ABI.len() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi() -> u32 {{\n    get_abi_ptr()\n}}\n"
     )
 }

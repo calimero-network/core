@@ -1,4 +1,4 @@
-use crate::schema::TypeRef;
+use crate::schema::{ScalarType, TypeRef};
 use syn::{GenericArgument, Type, TypePath};
 
 /// Error types for type normalization
@@ -52,8 +52,11 @@ pub fn normalize_type(
 
             // Check if it's [u8; N]
             if let Type::Path(TypePath { path, .. }) = elem_type {
+                eprintln!("Checking if array element is u8");
                 if is_u8_type(path) {
+                    eprintln!("Array element is u8, extracting length");
                     let size = extract_array_len(len)?;
+                    eprintln!("Array size: {size}");
                     return Ok(TypeRef::bytes_with_size(size, None));
                 }
             }
@@ -67,7 +70,9 @@ pub fn normalize_type(
             if type_tuple.elems.is_empty() {
                 Ok(TypeRef::unit())
             } else {
-                Err(NormalizeError::TypePathError("unsupported tuple".to_owned()))
+                Err(NormalizeError::TypePathError(
+                    "unsupported tuple".to_owned(),
+                ))
             }
         }
         _ => Err(NormalizeError::TypePathError("unsupported type".to_owned())),
@@ -82,20 +87,35 @@ fn normalize_path_type(
 ) -> Result<TypeRef, NormalizeError> {
     let path = &type_path.path;
 
+    eprintln!("Path segments: {}", path.segments.len());
+    for (i, seg) in path.segments.iter().enumerate() {
+        eprintln!("  Segment {}: {}", i, seg.ident);
+    }
+
     if path.segments.len() == 1 {
         let segment = &path.segments[0];
         let ident = &segment.ident;
 
+        eprintln!(
+            "Processing path type: {} with {} segments",
+            ident,
+            path.segments.len()
+        );
+
         // Handle generic types
         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+            eprintln!("Found angle-bracketed arguments");
             return normalize_generic_type(ident, args, wasm32, resolver);
         }
 
         // Handle scalar types
+        eprintln!("No angle-bracketed arguments, treating as scalar");
         return normalize_scalar_type(path, wasm32, resolver);
     }
 
-    Err(NormalizeError::TypePathError("invalid type path".to_owned()))
+    Err(NormalizeError::TypePathError(
+        "invalid type path".to_owned(),
+    ))
 }
 
 /// Normalize generic types like Option<T>, Vec<T>, etc.
@@ -105,27 +125,52 @@ fn normalize_generic_type(
     wasm32: bool,
     resolver: &dyn TypeResolver,
 ) -> Result<TypeRef, NormalizeError> {
-    if args.args.len() != 1 {
-        return Err(NormalizeError::TypePathError(
-            "invalid generic type".to_owned(),
-        ));
-    }
-
-    let arg = &args.args[0];
-    let GenericArgument::Type(ty) = arg else {
-        return Err(NormalizeError::TypePathError(
-            "invalid generic argument".to_owned(),
-        ));
-    };
-
-    match ident.to_string().as_str() {
+    let ident_str = ident.to_string();
+    eprintln!(
+        "Processing generic type: '{}' (len: {}) with {} args",
+        ident_str,
+        ident_str.len(),
+        args.args.len()
+    );
+    match ident_str.as_str() {
         "Option" => {
             // Option<T> -> T (nullable handled at field level)
+            if args.args.len() != 1 {
+                return Err(NormalizeError::TypePathError(
+                    "invalid Option type".to_owned(),
+                ));
+            }
+            let arg = &args.args[0];
+            let GenericArgument::Type(ty) = arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid Option argument".to_owned(),
+                ));
+            };
             normalize_type(ty, wasm32, resolver)
         }
         "Vec" => {
-            // Vec<T> -> list<T>
-            let item_type = normalize_type(ty, wasm32, resolver)?;
+            // Vec<T> -> list<T> or bytes for Vec<u8>
+            if args.args.len() != 1 {
+                return Err(NormalizeError::TypePathError("invalid Vec type".to_owned()));
+            }
+            let item_arg = &args.args[0];
+            let GenericArgument::Type(item_ty) = item_arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid Vec item type".to_owned(),
+                ));
+            };
+
+            // Check if it's Vec<u8> -> bytes
+            if let Type::Path(TypePath { path, .. }) = item_ty {
+                if is_u8_type(path) {
+                    return Ok(TypeRef::Scalar(ScalarType::Bytes {
+                        size: None,
+                        encoding: None,
+                    }));
+                }
+            }
+
+            let item_type = normalize_type(item_ty, wasm32, resolver)?;
             Ok(TypeRef::list(item_type))
         }
         "BTreeMap" => {
@@ -169,6 +214,17 @@ fn normalize_generic_type(
         }
         "Result" => {
             // Result<T, E> -> T (error handling separate)
+            if args.args.len() != 2 {
+                return Err(NormalizeError::TypePathError(
+                    "invalid Result type".to_owned(),
+                ));
+            }
+            let arg = &args.args[0];
+            let GenericArgument::Type(ty) = arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid Result argument".to_owned(),
+                ));
+            };
             normalize_type(ty, wasm32, resolver)
         }
         _ => Err(NormalizeError::TypePathError(format!(
