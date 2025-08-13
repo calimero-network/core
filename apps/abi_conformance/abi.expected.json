@@ -62,9 +62,16 @@
       ]
     },
     "Hash64": {
-      "kind": "bytes",
-      "size": 64,
-      "encoding": "hex"
+      "kind": "record",
+      "fields": [
+        {
+          "name": "unnamed",
+          "type": {
+            "kind": "bytes",
+            "encoding": "hex"
+          }
+        }
+      ]
     },
     "Person": {
       "kind": "record",
@@ -118,10 +125,29 @@
         }
       ]
     },
+    "UpdatePayload": {
+      "kind": "record",
+      "fields": [
+        {
+          "name": "age",
+          "type": {
+            "kind": "u32"
+          }
+        }
+      ]
+    },
     "UserId32": {
-      "kind": "bytes",
-      "size": 32,
-      "encoding": "hex"
+      "kind": "record",
+      "fields": [
+        {
+          "name": "unnamed",
+          "type": {
+            "kind": "bytes",
+            "size": 32,
+            "encoding": "hex"
+          }
+        }
+      ]
     }
   },
   "methods": [
@@ -157,7 +183,7 @@
       "name": "echo_i32",
       "params": [
         {
-          "name": "v",
+          "name": "x",
           "type": {
             "kind": "i32"
           }
@@ -171,7 +197,7 @@
       "name": "echo_i64",
       "params": [
         {
-          "name": "v",
+          "name": "x",
           "type": {
             "kind": "i64"
           }
@@ -185,7 +211,7 @@
       "name": "echo_u32",
       "params": [
         {
-          "name": "v",
+          "name": "x",
           "type": {
             "kind": "u32"
           }
@@ -199,7 +225,7 @@
       "name": "echo_u64",
       "params": [
         {
-          "name": "v",
+          "name": "x",
           "type": {
             "kind": "u64"
           }
@@ -213,7 +239,7 @@
       "name": "echo_f32",
       "params": [
         {
-          "name": "v",
+          "name": "x",
           "type": {
             "kind": "f32"
           }
@@ -227,7 +253,7 @@
       "name": "echo_f64",
       "params": [
         {
-          "name": "v",
+          "name": "x",
           "type": {
             "kind": "f64"
           }
@@ -577,18 +603,7 @@
       ],
       "returns": {
         "kind": "u32"
-      },
-      "errors": [
-        {
-          "code": "BAD_INPUT"
-        },
-        {
-          "code": "NOT_FOUND",
-          "payload": {
-            "kind": "string"
-          }
-        }
-      ]
+      }
     },
     {
       "name": "find_person",
@@ -602,18 +617,7 @@
       ],
       "returns": {
         "$ref": "Person"
-      },
-      "errors": [
-        {
-          "code": "BAD_INPUT"
-        },
-        {
-          "code": "NOT_FOUND",
-          "payload": {
-            "kind": "string"
-          }
-        }
-      ]
+      }
     }
   ],
   "events": [
