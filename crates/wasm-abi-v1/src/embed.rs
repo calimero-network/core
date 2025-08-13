@@ -33,34 +33,38 @@ macro_rules! embed_abi {
     };
 }
 
-/// Embed a Manifest struct into the WASM binary
+/// Embed ABI manifest into WASM binary
+#[must_use]
 pub fn embed(manifest: &Manifest) -> proc_macro2::TokenStream {
-    let json =
-        serde_json::to_string_pretty(manifest).expect("Failed to serialize manifest to JSON");
-
-    let json_literal = proc_macro2::Literal::string(&json);
-
-    quote::quote! {
-        embed_abi!(#json_literal);
-    }
-}
-
-/// Generate the embed code for a given manifest
-pub fn generate_embed_code(manifest: &Manifest) -> String {
-    let json =
-        serde_json::to_string_pretty(manifest).expect("Failed to serialize manifest to JSON");
-    let json_bytes = json.as_bytes();
-    let json_len = json_bytes.len();
-
-    // Create the byte array as a comma-separated list
-    let bytes_list = json_bytes
+    let json = serde_json::to_string(manifest).expect("Failed to serialize manifest");
+    let bytes = json.as_bytes();
+    let bytes_list = bytes
         .iter()
-        .map(|b| b.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    let json_len = bytes.len();
 
     format!(
-        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_os = \"macos\", link_section = \"__DATA,calimero_abi_v1\")]\n#[cfg_attr(not(target_os = \"macos\"), link_section = \"calimero_abi_v1\")]\nstatic ABI: [u8; {}] = [{}];\n\n// Export functions to access the ABI at runtime\n#[no_mangle]\npub extern \"C\" fn get_abi_ptr() -> u32 {{\n    ABI.as_ptr() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi_len() -> u32 {{\n    ABI.len() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi() -> u32 {{\n    get_abi_ptr()\n}}",
-        json_len, bytes_list
+        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_arch = \"wasm32\", link_section = \".custom_section.calimero_abi_v1\")]\nstatic ABI_SECTION: [u8; {json_len}] = [{bytes_list}];\n"
+    )
+    .parse()
+    .expect("Failed to parse generated code")
+}
+
+/// Generate embed code for build script
+#[must_use]
+pub fn generate_embed_code(manifest: &Manifest) -> String {
+    let json = serde_json::to_string(manifest).expect("Failed to serialize manifest");
+    let bytes = json.as_bytes();
+    let bytes_list = bytes
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let json_len = bytes.len();
+
+    format!(
+        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_arch = \"wasm32\", link_section = \".custom_section.calimero_abi_v1\")]\nstatic ABI_SECTION: [u8; {json_len}] = [{bytes_list}];\n"
     )
 }

@@ -1,21 +1,19 @@
-use syn::{Type, TypeArray, TypePath, TypeReference, TypeTuple};
-use thiserror::Error;
-
 use crate::schema::TypeRef;
+use syn::{GenericArgument, Type, TypePath};
 
-/// Error type for normalization failures
-#[derive(Debug, Error)]
+/// Error types for type normalization
+#[derive(Debug, thiserror::Error)]
 pub enum NormalizeError {
-    #[error("unsupported map key type: {0} (only map<string, V> supported in v1)")]
-    UnsupportedMapKey(String),
-    #[error("unsupported array element type: {0} (only [u8; N] supported in v1)")]
-    UnsupportedArrayElement(String),
-    #[error("failed to parse type path: {0}")]
+    #[error("type path error: {0}")]
     TypePathError(String),
+    #[error("unsupported map key type: {0}")]
+    UnsupportedMapKey(String),
+    #[error("unsupported array element type: {0}")]
+    UnsupportedArrayElement(String),
 }
 
 /// Resolved local type information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ResolvedLocal {
     /// Newtype bytes wrapper (e.g., struct UserId([u8;32]))
     NewtypeBytes { size: usize },
@@ -25,205 +23,168 @@ pub enum ResolvedLocal {
     Variant,
 }
 
-/// Trait for resolving local type definitions
+/// Trait for resolving local type names
 pub trait TypeResolver {
-    /// Resolve a local type path to its definition
-    fn resolve_local(&self, path: &str) -> Option<ResolvedLocal>;
+    fn resolve_local(&self, name: &str) -> Option<ResolvedLocal>;
 }
 
 /// Normalize a Rust type to an ABI TypeRef
 pub fn normalize_type(
-    ty: &syn::Type,
+    ty: &Type,
     wasm32: bool,
     resolver: &dyn TypeResolver,
 ) -> Result<TypeRef, NormalizeError> {
     match ty {
-        // Handle references and lifetimes
-        Type::Reference(TypeReference { elem, .. }) => normalize_type(elem, wasm32, resolver),
-
-        // Handle Option<T>
-        Type::Path(TypePath { path, .. }) if is_option(path) => {
-            let inner_type = extract_option_inner(ty)?;
-            let mut inner_ref = normalize_type(inner_type, wasm32, resolver)?;
-            inner_ref.set_nullable(true);
-            Ok(inner_ref)
+        Type::Path(type_path) => normalize_path_type(type_path, wasm32, resolver),
+        Type::Reference(type_ref) => {
+            // Strip references and lifetimes
+            normalize_type(&type_ref.elem, wasm32, resolver)
         }
-
-        // Handle Result<T, E> - extract the success type T
-        Type::Path(TypePath { path, .. }) if is_result(path) => {
-            let success_type = extract_result_success(ty)?;
-            normalize_type(success_type, wasm32, resolver)
+        Type::Slice(type_slice) => {
+            // [T] -> list<T>
+            let item_type = normalize_type(&type_slice.elem, wasm32, resolver)?;
+            Ok(TypeRef::list(item_type))
         }
-
-        // Handle Vec<u8> (bytes without size) - must come before generic Vec<T>
-        Type::Path(TypePath { path, .. }) if is_vec_u8(path) => Ok(TypeRef::bytes()),
-
-        // Handle Vec<T>
-        Type::Path(TypePath { path, .. }) if is_vec(path) => {
-            let inner_type = extract_vec_inner(ty)?;
-            let inner_ref = normalize_type(inner_type, wasm32, resolver)?;
-            Ok(TypeRef::list(inner_ref))
-        }
-
-        // Handle BTreeMap<String, V>
-        Type::Path(TypePath { path, .. }) if is_btree_map(path) => {
-            let (key_type, value_type) = extract_map_inner(ty)?;
-
-            // Check that key type is String (after normalization)
-            let normalized_key = normalize_type(key_type, wasm32, resolver)?;
-            if !is_string_type(&normalized_key) {
-                return Err(NormalizeError::UnsupportedMapKey(
-                    "non-string key type".to_string(),
-                ));
-            }
-
-            let normalized_value = normalize_type(value_type, wasm32, resolver)?;
-            Ok(TypeRef::map(normalized_value))
-        }
-
-        // Handle arrays [T; N]
-        Type::Array(TypeArray { elem, len, .. }) => {
-            let elem_type = &**elem;
+        Type::Array(type_array) => {
+            // [T; N] -> list<T> or bytes{size:N} for [u8; N]
+            let elem_type = &*type_array.elem;
+            let len = &type_array.len;
 
             // Check if it's [u8; N]
             if let Type::Path(TypePath { path, .. }) = elem_type {
                 if is_u8_type(path) {
                     let size = extract_array_len(len)?;
-                    return Ok(TypeRef::bytes_with_size(size, "hex"));
+                    return Ok(TypeRef::bytes_with_size(size, None));
                 }
             }
 
-            Err(NormalizeError::UnsupportedArrayElement(
-                "non-u8 element type".to_string(),
-            ))
+            // Otherwise, treat as list
+            let item_type = normalize_type(elem_type, wasm32, resolver)?;
+            Ok(TypeRef::list(item_type))
+        }
+        Type::Tuple(type_tuple) => {
+            // () -> unit
+            if type_tuple.elems.is_empty() {
+                Ok(TypeRef::unit())
+            } else {
+                Err(NormalizeError::TypePathError("unsupported tuple".to_owned()))
+            }
+        }
+        _ => Err(NormalizeError::TypePathError("unsupported type".to_owned())),
+    }
+}
+
+/// Normalize a path type (e.g., Option<T>, Vec<T>, etc.)
+fn normalize_path_type(
+    type_path: &TypePath,
+    wasm32: bool,
+    resolver: &dyn TypeResolver,
+) -> Result<TypeRef, NormalizeError> {
+    let path = &type_path.path;
+
+    if path.segments.len() == 1 {
+        let segment = &path.segments[0];
+        let ident = &segment.ident;
+
+        // Handle generic types
+        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+            return normalize_generic_type(ident, args, wasm32, resolver);
         }
 
         // Handle scalar types
-        Type::Path(TypePath { path, .. }) => normalize_scalar_type(path, wasm32, resolver),
-
-        // Handle unit type ()
-        Type::Tuple(TypeTuple { elems, .. }) if elems.is_empty() => Ok(TypeRef::unit()),
-
-        // Handle other types as references
-        _ => Err(NormalizeError::TypePathError(
-            "unsupported type".to_string(),
-        )),
+        return normalize_scalar_type(path, wasm32, resolver);
     }
+
+    Err(NormalizeError::TypePathError("invalid type path".to_owned()))
 }
 
-/// Check if a path represents Option<T>
-fn is_option(path: &syn::Path) -> bool {
-    path.segments.len() == 1 && path.segments[0].ident == "Option"
-}
+/// Normalize generic types like Option<T>, Vec<T>, etc.
+fn normalize_generic_type(
+    ident: &syn::Ident,
+    args: &syn::AngleBracketedGenericArguments,
+    wasm32: bool,
+    resolver: &dyn TypeResolver,
+) -> Result<TypeRef, NormalizeError> {
+    if args.args.len() != 1 {
+        return Err(NormalizeError::TypePathError(
+            "invalid generic type".to_owned(),
+        ));
+    }
 
-/// Extract the inner type from Option<T>
-fn extract_option_inner(ty: &Type) -> Result<&Type, NormalizeError> {
-    if let Type::Path(TypePath { path, .. }) = ty {
-        if let Some(segment) = path.segments.first() {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
-                    return Ok(inner_type);
+    let arg = &args.args[0];
+    let GenericArgument::Type(ty) = arg else {
+        return Err(NormalizeError::TypePathError(
+            "invalid generic argument".to_owned(),
+        ));
+    };
+
+    match ident.to_string().as_str() {
+        "Option" => {
+            // Option<T> -> T (nullable handled at field level)
+            normalize_type(ty, wasm32, resolver)
+        }
+        "Vec" => {
+            // Vec<T> -> list<T>
+            let item_type = normalize_type(ty, wasm32, resolver)?;
+            Ok(TypeRef::list(item_type))
+        }
+        "BTreeMap" => {
+            // BTreeMap<K, V> -> map<string, V> (K must be String)
+            if args.args.len() != 2 {
+                return Err(NormalizeError::TypePathError(
+                    "invalid BTreeMap type".to_owned(),
+                ));
+            }
+
+            let key_arg = &args.args[0];
+            let value_arg = &args.args[1];
+
+            let GenericArgument::Type(key_ty) = key_arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid BTreeMap key".to_owned(),
+                ));
+            };
+
+            let GenericArgument::Type(value_ty) = value_arg else {
+                return Err(NormalizeError::TypePathError(
+                    "invalid BTreeMap value".to_owned(),
+                ));
+            };
+
+            // Check that key is String
+            if let Type::Path(TypePath { path, .. }) = key_ty {
+                if !is_string_type(path) {
+                    return Err(NormalizeError::UnsupportedMapKey(
+                        "non-string key type".to_owned(),
+                    ));
                 }
+            } else {
+                return Err(NormalizeError::UnsupportedMapKey(
+                    "non-string key type".to_owned(),
+                ));
             }
+
+            let value_type = normalize_type(value_ty, wasm32, resolver)?;
+            Ok(TypeRef::map(value_type))
         }
-    }
-    Err(NormalizeError::TypePathError(
-        "invalid Option type".to_string(),
-    ))
-}
-
-/// Check if a path represents Vec<T>
-fn is_vec(path: &syn::Path) -> bool {
-    path.segments.len() == 1 && path.segments[0].ident == "Vec"
-}
-
-/// Extract the inner type from Vec<T>
-fn extract_vec_inner(ty: &Type) -> Result<&Type, NormalizeError> {
-    if let Type::Path(TypePath { path, .. }) = ty {
-        if let Some(segment) = path.segments.first() {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
-                    return Ok(inner_type);
-                }
-            }
+        "Result" => {
+            // Result<T, E> -> T (error handling separate)
+            normalize_type(ty, wasm32, resolver)
         }
+        _ => Err(NormalizeError::TypePathError(format!(
+            "unknown generic type: {ident}"
+        ))),
     }
-    Err(NormalizeError::TypePathError(
-        "invalid Vec type".to_string(),
-    ))
 }
 
-/// Check if a path represents Vec<u8>
-fn is_vec_u8(path: &syn::Path) -> bool {
-    if !is_vec(path) {
-        return false;
-    }
-    if let Some(segment) = path.segments.first() {
-        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-            if let Some(syn::GenericArgument::Type(Type::Path(TypePath {
-                path: inner_path, ..
-            }))) = args.args.first()
-            {
-                return is_u8_type(inner_path);
-            }
-        }
-    }
-    false
-}
-
-/// Check if a path represents BTreeMap<K, V>
-fn is_btree_map(path: &syn::Path) -> bool {
-    path.segments.len() == 1 && path.segments[0].ident == "BTreeMap"
-}
-
-/// Extract key and value types from BTreeMap<K, V>
-fn extract_map_inner(ty: &Type) -> Result<(&Type, &Type), NormalizeError> {
-    if let Type::Path(TypePath { path, .. }) = ty {
-        if let Some(segment) = path.segments.first() {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if args.args.len() >= 2 {
-                    if let (
-                        syn::GenericArgument::Type(key_type),
-                        syn::GenericArgument::Type(value_type),
-                    ) = (&args.args[0], &args.args[1])
-                    {
-                        return Ok((key_type, value_type));
-                    }
-                }
-            }
-        }
-    }
-    Err(NormalizeError::TypePathError(
-        "invalid BTreeMap type".to_string(),
-    ))
-}
-
-/// Check if a path represents u8
+/// Check if a path represents a u8 type
 fn is_u8_type(path: &syn::Path) -> bool {
     path.segments.len() == 1 && path.segments[0].ident == "u8"
 }
 
-/// Check if a path represents Result<T, E>
-fn is_result(path: &syn::Path) -> bool {
-    path.segments.len() == 1 && path.segments[0].ident == "Result"
-}
-
-/// Extract the success type from Result<T, E>
-fn extract_result_success(ty: &Type) -> Result<&Type, NormalizeError> {
-    if let Type::Path(TypePath { path, .. }) = ty {
-        if let Some(segment) = path.segments.first() {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if args.args.len() >= 2 {
-                    if let syn::GenericArgument::Type(success_type) = &args.args[0] {
-                        return Ok(success_type);
-                    }
-                }
-            }
-        }
-    }
-    Err(NormalizeError::TypePathError(
-        "invalid Result type".to_string(),
-    ))
+/// Check if a path represents a string type
+fn is_string_type(path: &syn::Path) -> bool {
+    path.segments.len() == 1 && path.segments[0].ident == "String"
 }
 
 /// Extract array length from [T; N]
@@ -234,46 +195,36 @@ fn extract_array_len(len: &syn::Expr) -> Result<usize, NormalizeError> {
     }) = len
     {
         lit.base10_parse()
-            .map_err(|_| NormalizeError::TypePathError("failed to parse array length".to_string()))
+            .map_err(|_| NormalizeError::TypePathError("failed to parse array length".to_owned()))
     } else {
         Err(NormalizeError::TypePathError(
-            "array length must be a literal integer".to_string(),
+            "array length must be a literal integer".to_owned(),
         ))
     }
-}
-
-/// Check if a TypeRef represents a string type
-fn is_string_type(type_ref: &TypeRef) -> bool {
-    matches!(type_ref, TypeRef::Scalar(crate::schema::ScalarType::String))
 }
 
 /// Normalize a scalar type
 fn normalize_scalar_type(
     path: &syn::Path,
     wasm32: bool,
-    _resolver: &dyn TypeResolver,
+    resolver: &dyn TypeResolver,
 ) -> Result<TypeRef, NormalizeError> {
     if path.segments.len() != 1 {
         return Err(NormalizeError::TypePathError(
-            "invalid scalar type path".to_string(),
+            "invalid scalar type path".to_owned(),
         ));
     }
 
     let ident = &path.segments[0].ident;
     match ident.to_string().as_str() {
         "bool" => Ok(TypeRef::bool()),
-        "i8" => Ok(TypeRef::i32()),
-        "i16" => Ok(TypeRef::i32()),
-        "i32" => Ok(TypeRef::i32()),
+        "i8" | "i16" | "i32" => Ok(TypeRef::i32()),
         "i64" => Ok(TypeRef::i64()),
-        "u8" => Ok(TypeRef::u32()),
-        "u16" => Ok(TypeRef::u32()),
-        "u32" => Ok(TypeRef::u32()),
+        "u8" | "u16" | "u32" => Ok(TypeRef::u32()),
         "u64" => Ok(TypeRef::u64()),
         "f32" => Ok(TypeRef::f32()),
         "f64" => Ok(TypeRef::f64()),
-        "String" => Ok(TypeRef::string()),
-        "str" => Ok(TypeRef::string()),
+        "String" | "str" => Ok(TypeRef::string()),
         "usize" => {
             if wasm32 {
                 Ok(TypeRef::u32())
@@ -290,20 +241,21 @@ fn normalize_scalar_type(
         }
         _ => {
             // Check if it's a local type
-            if let Some(resolved) = _resolver.resolve_local(&ident.to_string()) {
-                match resolved {
+            resolver.resolve_local(&ident.to_string()).map_or_else(
+                || {
+                    Err(NormalizeError::TypePathError(format!(
+                        "unknown type: {ident}"
+                    )))
+                },
+                |resolved| match resolved {
                     ResolvedLocal::NewtypeBytes { size } => {
-                        Ok(TypeRef::bytes_with_size(size, "hex"))
+                        Ok(TypeRef::bytes_with_size(size, None))
                     }
-                    ResolvedLocal::Record => Ok(TypeRef::reference(&ident.to_string())),
-                    ResolvedLocal::Variant => Ok(TypeRef::reference(&ident.to_string())),
-                }
-            } else {
-                Err(NormalizeError::TypePathError(format!(
-                    "unknown type: {}",
-                    ident
-                )))
-            }
+                    ResolvedLocal::Record | ResolvedLocal::Variant => {
+                        Ok(TypeRef::reference(&ident.to_string()))
+                    }
+                },
+            )
         }
     }
 }

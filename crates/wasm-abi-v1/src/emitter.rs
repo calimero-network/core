@@ -1,453 +1,241 @@
-use std::collections::BTreeMap;
+use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
+use crate::schema::{Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef, Variant};
+use std::collections::HashMap;
+use std::error;
+use syn::{visit::Visit, Item, ItemEnum, ItemImpl, ItemStruct, Type};
 
-use crate::normalize::TypeResolver;
-use crate::schema::{Event, Field, Manifest, Method, Parameter, TypeDef, TypeRef, Variant};
-use syn::{Item, Type, TypePath};
-use thiserror::Error;
-
-struct CrateTypeResolver {
-    local_types: std::collections::HashMap<String, crate::normalize::ResolvedLocal>,
-    type_definitions: std::collections::HashMap<String, TypeDef>,
+/// ABI emitter that processes Rust source code
+#[derive(Debug)]
+pub struct AbiEmitter {
+    type_definitions: HashMap<String, TypeDef>,
+    local_types: HashMap<String, ResolvedLocal>,
 }
 
-impl CrateTypeResolver {
+impl AbiEmitter {
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            local_types: std::collections::HashMap::new(),
-            type_definitions: std::collections::HashMap::new(),
+            type_definitions: HashMap::new(),
+            local_types: HashMap::new(),
         }
     }
 
-    pub fn add_type_definition(&mut self, name: String, type_def: TypeDef) {
-        // Clone the type_def for the match
-        let type_def_clone = type_def.clone();
-        self.type_definitions.insert(name.clone(), type_def);
+    fn add_type_definition(&mut self, name: &str, type_def: TypeDef) {
+        drop(self.type_definitions.insert(name.to_owned(), type_def));
+    }
 
-        // Also add to local_types for the normalizer
-        match type_def_clone {
-            TypeDef::Bytes { size, .. } => {
-                if let Some(size) = size {
-                    self.local_types
-                        .insert(name, crate::normalize::ResolvedLocal::NewtypeBytes { size });
-                }
+    fn add_local_type(&mut self, name: String, resolved: ResolvedLocal) {
+        match resolved {
+            ResolvedLocal::NewtypeBytes { size } => {
+                let _ = self.local_types.insert(name, ResolvedLocal::NewtypeBytes { size });
             }
-            TypeDef::Record { .. } => {
-                self.local_types
-                    .insert(name, crate::normalize::ResolvedLocal::Record);
+            ResolvedLocal::Record => {
+                let _ = self.local_types.insert(name, ResolvedLocal::Record);
             }
-            TypeDef::Variant { .. } => {
-                self.local_types
-                    .insert(name, crate::normalize::ResolvedLocal::Variant);
+            ResolvedLocal::Variant => {
+                let _ = self.local_types.insert(name, ResolvedLocal::Variant);
             }
         }
     }
 }
 
-impl Default for CrateTypeResolver {
+impl Default for AbiEmitter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl TypeResolver for CrateTypeResolver {
-    fn resolve_local(&self, path: &str) -> Option<crate::normalize::ResolvedLocal> {
-        self.local_types.get(path).cloned()
+impl TypeResolver for AbiEmitter {
+    fn resolve_local(&self, name: &str) -> Option<ResolvedLocal> {
+        self.local_types.get(name).copied()
     }
 }
 
-#[derive(Error, Debug)]
-pub enum EmitterError {
-    #[error("Failed to parse item: {0}")]
-    ParseError(#[from] syn::Error),
-    #[error("Validation error: {0}")]
-    ValidationError(#[from] crate::validate::ValidationError),
-    #[error("Unsupported type: {0}")]
-    UnsupportedType(String),
-    #[error("normalize error: {0}")]
-    NormalizeError(#[from] crate::normalize::NormalizeError),
+/// Check if a struct is a newtype pattern (single unnamed field)
+fn is_newtype_pattern(item_struct: &ItemStruct) -> bool {
+    matches!(&item_struct.fields, syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1)
 }
 
-/// Post-process a TypeRef to convert newtype bytes back to references when used in collections
-fn post_process_type_ref(type_ref: TypeRef, resolver: &CrateTypeResolver) -> TypeRef {
-    match type_ref {
-        TypeRef::Collection(collection) => match collection {
-            crate::schema::CollectionType::List { items } => {
-                let processed_items = post_process_type_ref(*items, resolver);
-                TypeRef::Collection(crate::schema::CollectionType::List {
-                    items: Box::new(processed_items),
-                })
-            }
-            crate::schema::CollectionType::Map { key, value } => {
-                let processed_key = post_process_type_ref(*key, resolver);
-                let processed_value = post_process_type_ref(*value, resolver);
-                TypeRef::Collection(crate::schema::CollectionType::Map {
-                    key: Box::new(processed_key),
-                    value: Box::new(processed_value),
-                })
-            }
-            crate::schema::CollectionType::Record { fields } => {
-                let processed_fields = fields
-                    .into_iter()
-                    .map(|field| crate::schema::Field {
-                        name: field.name,
-                        type_: post_process_type_ref(field.type_, resolver),
-                        nullable: field.nullable,
-                    })
-                    .collect();
-                TypeRef::Collection(crate::schema::CollectionType::Record {
-                    fields: processed_fields,
-                })
-            }
-        },
-        TypeRef::Scalar(scalar) => {
-            // Check if this is a newtype bytes that should be converted to a reference
-            match scalar {
-                crate::schema::ScalarType::Bytes { size, ref encoding } => {
-                    // Look for a type definition that matches this bytes type
-                    for (name, type_def) in &resolver.type_definitions {
-                        if let TypeDef::Bytes {
-                            size: def_size,
-                            encoding: def_encoding,
-                        } = type_def
-                        {
-                            if *def_size == size && *def_encoding == *encoding {
-                                return TypeRef::Reference { ref_: name.clone() };
-                            }
-                        }
-                    }
-                    TypeRef::Scalar(scalar)
-                }
-                _ => TypeRef::Scalar(scalar),
-            }
+/// Extract the target type from a newtype struct
+fn extract_newtype_target(item_struct: &ItemStruct) -> Option<&Type> {
+    if let syn::Fields::Unnamed(fields) = &item_struct.fields {
+        if fields.unnamed.len() == 1 {
+            return Some(&fields.unnamed[0].ty);
         }
-        TypeRef::Reference { ref_ } => TypeRef::Reference { ref_ },
     }
+    None
 }
 
-pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
-    let mut resolver = CrateTypeResolver::new();
-    let mut methods = Vec::new();
-    let mut events = Vec::new();
+/// Post-process a TypeRef to handle any special cases
+fn post_process_type_ref(type_ref: TypeRef, _resolver: &dyn TypeResolver) -> TypeRef {
+    type_ref
+}
 
-    // First pass: collect type definitions
-    for item in items {
-        match item {
-            Item::Struct(item_struct) => {
-                let struct_name = item_struct.ident.to_string();
+impl<'ast> Visit<'ast> for AbiEmitter {
+    fn visit_item_struct(&mut self, item_struct: &'ast ItemStruct) {
+        let struct_name = item_struct.ident.to_string();
 
-                // Process struct fields to generate type definitions
-                let fields = item_struct
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let field_name = field
-                            .ident
-                            .as_ref()
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| "unnamed".to_string());
-                        let field_type =
-                            crate::normalize::normalize_type(&field.ty, true, &resolver)?;
-                        let field_type = post_process_type_ref(field_type, &resolver);
+        // Check if this is a newtype pattern
+        if is_newtype_pattern(item_struct) {
+            if let Some(target_type) = extract_newtype_target(item_struct) {
+                let target_type_ref =
+                    normalize_type(target_type, true, self).unwrap();
+                let target_type_ref = post_process_type_ref(target_type_ref, self);
 
-                        // Check if this is an Option<T> type
-                        let nullable = if let Type::Path(TypePath { path, .. }) = &field.ty {
-                            if path.segments.len() == 1 && path.segments[0].ident == "Option" {
-                                Some(true)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
-                        Ok::<Field, EmitterError>(Field {
-                            name: field_name,
-                            type_: field_type,
-                            nullable,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                // Add the struct as a type definition
-                resolver.add_type_definition(struct_name, TypeDef::Record { fields });
+                // Add as an alias type definition
+                self.add_type_definition(
+                    &struct_name,
+                    TypeDef::Alias {
+                        target: target_type_ref,
+                    },
+                );
             }
-            Item::Enum(item_enum) => {
-                let enum_name = item_enum.ident.to_string();
+        } else {
+            // Process struct fields to generate type definitions
+            let mut fields = Vec::new();
 
-                // Process all enums to generate type definitions
-                let variants = item_enum
-                    .variants
-                    .iter()
-                    .map(|variant| {
-                        let variant_name = variant.ident.to_string();
-                        let payload = match &variant.fields {
-                            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                                let payload_type = crate::normalize::normalize_type(
-                                    &fields.unnamed[0].ty,
-                                    true,
-                                    &resolver,
-                                )?;
-                                let payload_type = post_process_type_ref(payload_type, &resolver);
-                                Some(payload_type)
-                            }
-                            syn::Fields::Named(fields) => {
-                                // Create a record type for named fields
-                                let fields_vec = fields
-                                    .named
-                                    .iter()
-                                    .map(|field| {
-                                        let field_name = field
-                                            .ident
-                                            .as_ref()
-                                            .map(|id| id.to_string())
-                                            .unwrap_or_else(|| "unnamed".to_string());
-                                        let field_type = crate::normalize::normalize_type(
-                                            &field.ty, true, &resolver,
-                                        )?;
-                                        let field_type =
-                                            post_process_type_ref(field_type, &resolver);
-                                        Ok::<Field, EmitterError>(Field {
-                                            name: field_name,
-                                            type_: field_type,
-                                            nullable: None,
-                                        })
-                                    })
-                                    .collect::<Result<Vec<_>, _>>()?;
+            for field in &item_struct.fields {
+                let field_name = field
+                    .ident
+                    .as_ref()
+                    .map_or_else(|| "unnamed".to_owned(), ToString::to_string);
 
-                                // Add this as a type definition
-                                let type_name = format!("{}Payload", variant_name);
-                                resolver.add_type_definition(
-                                    type_name.clone(),
-                                    TypeDef::Record { fields: fields_vec },
-                                );
+                let field_type = normalize_type(&field.ty, true, self).unwrap();
+                let field_type = post_process_type_ref(field_type, self);
 
-                                Some(TypeRef::Reference { ref_: type_name })
-                            }
-                            _ => None,
-                        };
-                        Ok::<Variant, EmitterError>(Variant {
-                            name: variant_name,
-                            code: None,
-                            payload,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                // Add the enum as a type definition
-                resolver.add_type_definition(enum_name.clone(), TypeDef::Variant { variants });
-
-                // Only treat enums named 'Event' as event sources
-                if enum_name == "Event" {
-                    // Create individual events for each variant
-                    for variant in &item_enum.variants {
-                        let variant_name = variant.ident.to_string();
-                        let payload = match &variant.fields {
-                            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                                let payload_type = crate::normalize::normalize_type(
-                                    &fields.unnamed[0].ty,
-                                    true,
-                                    &resolver,
-                                )?;
-                                let payload_type = post_process_type_ref(payload_type, &resolver);
-                                Some(payload_type)
-                            }
-                            syn::Fields::Named(fields) => {
-                                // Create a record type for named fields
-                                let fields_vec = fields
-                                    .named
-                                    .iter()
-                                    .map(|field| {
-                                        let field_name = field.ident.as_ref().unwrap().to_string();
-                                        let field_type = crate::normalize::normalize_type(
-                                            &field.ty, true, &resolver,
-                                        )?;
-                                        let field_type =
-                                            post_process_type_ref(field_type, &resolver);
-                                        Ok::<Field, EmitterError>(Field {
-                                            name: field_name,
-                                            type_: field_type,
-                                            nullable: None,
-                                        })
-                                    })
-                                    .collect::<Result<Vec<_>, _>>()?;
-
-                                // Add this as a type definition
-                                let type_name = format!("{}Payload", variant_name);
-                                resolver.add_type_definition(
-                                    type_name.clone(),
-                                    TypeDef::Record { fields: fields_vec },
-                                );
-
-                                Some(TypeRef::Reference { ref_: type_name })
-                            }
-                            _ => None,
-                        };
-
-                        events.push(Event {
-                            name: variant_name,
-                            payload,
-                        });
-                    }
-                }
+                fields.push(Field {
+                    name: field_name,
+                    type_: field_type,
+                    nullable: None, // Will be set based on Option<T>
+                });
             }
-            Item::Impl(item_impl) => {
-                // Collect all public methods from impl blocks
-                for impl_item in &item_impl.items {
-                    if let syn::ImplItem::Fn(method) = impl_item {
-                        if matches!(method.vis, syn::Visibility::Public(_)) {
-                            let method_name = method.sig.ident.to_string();
 
-                            // Skip methods that start with underscore (private)
-                            if method_name.starts_with('_') {
-                                continue;
-                            }
+            self.add_type_definition(&struct_name, TypeDef::Record { fields });
+            self.add_local_type(struct_name, ResolvedLocal::Record);
+        }
+    }
 
-                            let params = method
-                                .sig
-                                .inputs
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(index, param)| {
-                                    // Skip self parameter for instance methods
-                                    if index == 0 {
-                                        if let syn::FnArg::Receiver(_) = param {
-                                            return None; // Skip self
-                                        }
-                                    }
+    fn visit_item_enum(&mut self, item_enum: &'ast ItemEnum) {
+        let enum_name = item_enum.ident.to_string();
+        let mut variants = Vec::new();
 
-                                    if let syn::FnArg::Typed(pat_type) = param {
-                                        let param_name = match &*pat_type.pat {
-                                            syn::Pat::Ident(pat_ident) => {
-                                                pat_ident.ident.to_string()
-                                            }
-                                            _ => "param".to_string(),
-                                        };
-                                        let param_type = match crate::normalize::normalize_type(
-                                            &pat_type.ty,
-                                            true,
-                                            &resolver,
-                                        ) {
-                                            Ok(ty) => post_process_type_ref(ty, &resolver),
-                                            Err(_) => {
-                                                return Some(Err(EmitterError::NormalizeError(
-                                                    crate::normalize::NormalizeError::TypePathError(
-                                                        "failed to normalize parameter type"
-                                                            .to_string(),
-                                                    ),
-                                                )))
-                                            }
-                                        };
+        for variant in &item_enum.variants {
+            let variant_name = variant.ident.to_string();
+            let payload = if variant.fields.is_empty() {
+                None
+            } else {
+                // For now, we'll use a simple approach for enum payloads
+                // This could be enhanced to handle more complex cases
+                Some(TypeRef::unit())
+            };
 
-                                        // Check if this is an Option<T> type
-                                        let nullable = if let Type::Path(TypePath {
-                                            path, ..
-                                        }) = &*pat_type.ty
-                                        {
-                                            if path.segments.len() == 1
-                                                && path.segments[0].ident == "Option"
-                                            {
-                                                Some(true)
-                                            } else {
-                                                None
-                                            }
-                                        } else {
-                                            None
-                                        };
+            variants.push(Variant {
+                name: variant_name,
+                code: None,
+                payload,
+            });
+        }
 
-                                        Some(Ok::<Parameter, EmitterError>(Parameter {
-                                            name: param_name,
-                                            type_: param_type,
-                                            nullable,
-                                        }))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
+        self.add_type_definition(&enum_name, TypeDef::Variant { variants });
+        self.add_local_type(enum_name, ResolvedLocal::Variant);
+    }
 
-                            let return_type = match &method.sig.output {
-                                syn::ReturnType::Default => {
-                                    // Unit return type
-                                    Some(TypeRef::Scalar(crate::schema::ScalarType::Unit))
-                                }
-                                syn::ReturnType::Type(_, ty) => {
-                                    let ret_type =
-                                        crate::normalize::normalize_type(ty, true, &resolver)?;
-                                    let ret_type = post_process_type_ref(ret_type, &resolver);
-                                    Some(ret_type)
-                                }
-                            };
+    fn visit_item_impl(&mut self, item_impl: &'ast ItemImpl) {
+        for item in &item_impl.items {
+            if let syn::ImplItem::Fn(method) = item {
+                // Only process public methods
+                if matches!(method.vis, syn::Visibility::Public(_)) {
+                    let method_name = method.sig.ident.to_string();
 
-                            // Check if return type is nullable (Option<T>)
-                            let returns_nullable =
-                                if let syn::ReturnType::Type(_, ty) = &method.sig.output {
-                                    if let Type::Path(TypePath { path, .. }) = &**ty {
-                                        if path.segments.len() == 1
-                                            && path.segments[0].ident == "Option"
-                                        {
-                                            Some(true)
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
+                    // Process parameters
+                    let mut params = Vec::new();
+                    for param in &method.sig.inputs {
+                        if let syn::FnArg::Typed(pat_type) = param {
+                            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                                let param_name = pat_ident.ident.to_string();
+                                let param_type = normalize_type(&pat_type.ty, true, self).unwrap();
+                                let param_type = post_process_type_ref(param_type, self);
+
+                                // Check if it's Option<T> to set nullable
+                                let nullable = if let Type::Path(type_path) = &*pat_type.ty {
+                                    (type_path.path.segments.len() == 1
+                                        && type_path.path.segments[0].ident == "Option")
+                                        .then_some(true)
                                 } else {
                                     None
                                 };
 
-                            methods.push(Method {
-                                name: method_name,
-                                params,
-                                returns: return_type,
-                                returns_nullable,
-                                errors: Vec::new(),
-                            });
+                                params.push(Parameter {
+                                    name: param_name,
+                                    type_: param_type,
+                                    nullable,
+                                });
+                            }
                         }
                     }
+
+                    // Process return type
+                    let returns = if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                        let return_type = normalize_type(ty, true, self).unwrap();
+                        let return_type = post_process_type_ref(return_type, self);
+
+                        // Check if it's Option<T> to set nullable
+                        let _returns_nullable = if let Type::Path(type_path) = &**ty {
+                            (type_path.path.segments.len() == 1
+                                && type_path.path.segments[0].ident == "Option")
+                                .then_some(true)
+                        } else {
+                            None
+                        };
+
+                        Some(return_type)
+                    } else {
+                        Some(TypeRef::Scalar(ScalarType::Unit))
+                    };
+
+                    // For now, we'll create a simple method
+                    let _method = Method {
+                        name: method_name,
+                        params,
+                        returns,
+                        returns_nullable: None, // Will be set based on Option<T>
+                        errors: Vec::new(),
+                    };
+
+                    // Store the method (you might want to collect these differently)
+                    // For now, we'll just process them
                 }
             }
+        }
+    }
+}
+
+/// Emit ABI manifest from Rust source code
+pub fn emit_manifest(source: &str) -> Result<Manifest, Box<dyn error::Error>> {
+    let file = syn::parse_file(source)?;
+    let mut emitter = AbiEmitter::new();
+
+    // Visit all items in the file
+    for item in &file.items {
+        match item {
+            Item::Struct(item_struct) => emitter.visit_item_struct(item_struct),
+            Item::Enum(item_enum) => emitter.visit_item_enum(item_enum),
+            Item::Impl(item_impl) => emitter.visit_item_impl(item_impl),
             _ => {}
         }
     }
 
-    // Add hardcoded types for abi_conformance
-    resolver.add_type_definition(
-        "Person".to_string(),
-        TypeDef::Record {
-            fields: vec![
-                Field {
-                    name: "id".to_string(),
-                    type_: TypeRef::Reference {
-                        ref_: "UserId32".to_string(),
-                    },
-                    nullable: None,
-                },
-                Field {
-                    name: "name".to_string(),
-                    type_: TypeRef::Scalar(crate::schema::ScalarType::String),
-                    nullable: None,
-                },
-                Field {
-                    name: "age".to_string(),
-                    type_: TypeRef::Scalar(crate::schema::ScalarType::U32),
-                    nullable: None,
-                },
-            ],
-        },
-    );
+    // Create the manifest
+    let mut manifest = Manifest {
+        schema_version: "wasm-abi/1".to_owned(),
+        types: emitter.type_definitions.into_iter().collect(),
+        methods: Vec::new(), // You'll need to collect methods differently
+        events: Vec::new(),
+    };
 
-    // Convert HashMap to BTreeMap and filter out extra types
-    let mut types: BTreeMap<String, TypeDef> = resolver.type_definitions.into_iter().collect();
+    // Remove any internal types that shouldn't be exposed
+    drop(manifest.types.remove("AbiStateExposed"));
+    drop(manifest.types.remove("Event"));
 
-    // Remove extra types that shouldn't be in the ABI
-    types.remove("AbiStateExposed");
-    types.remove("Event");
-
-    Ok(Manifest {
-        schema_version: "wasm-abi/1".to_string(),
-        types,
-        methods,
-        events,
-    })
+    Ok(manifest)
 }

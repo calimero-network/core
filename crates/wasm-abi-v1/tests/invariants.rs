@@ -83,7 +83,7 @@ fn test_invariant_variable_bytes_no_size() {
         returns: Some(TypeRef::Scalar(
             calimero_wasm_abi_v1::schema::ScalarType::Bytes {
                 size: None,
-                encoding: "hex".to_string(),
+                encoding: None,
             },
         )),
         returns_nullable: None,
@@ -173,14 +173,14 @@ fn test_invariant_detects_dangling_refs() {
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
     match result.unwrap_err() {
-        calimero_wasm_abi_v1::validate::ValidationError::DanglingRef {
-            ref_path,
-            context_path,
+        calimero_wasm_abi_v1::validate::ValidationError::InvalidTypeReference {
+            ref_name,
+            path,
         } => {
-            assert_eq!(ref_path, "NonExistentType");
-            assert_eq!(context_path, ".methods[0].returns");
+            assert_eq!(ref_name, "NonExistentType");
+            assert_eq!(path, "method test_method.returns");
         }
-        _ => panic!("Expected DanglingRef error"),
+        _ => panic!("Expected InvalidTypeReference error"),
     }
 }
 
@@ -212,8 +212,9 @@ fn test_invariant_deterministic_ordering() {
     let result = validate_manifest(&manifest);
     assert!(result.is_err());
     match result.unwrap_err() {
-        calimero_wasm_abi_v1::validate::ValidationError::MethodsNotSorted => {
-            // Expected error
+        calimero_wasm_abi_v1::validate::ValidationError::MethodsNotSorted { first, second } => {
+            assert_eq!(first, "z_method");
+            assert_eq!(second, "a_method");
         }
         _ => panic!("Expected MethodsNotSorted error"),
     }

@@ -62,16 +62,10 @@
       ]
     },
     "Hash64": {
-      "kind": "record",
-      "fields": [
-        {
-          "name": "unnamed",
-          "type": {
-            "kind": "bytes",
-            "encoding": "hex"
-          }
-        }
-      ]
+      "kind": "alias",
+      "target": {
+        "kind": "bytes"
+      }
     },
     "Person": {
       "kind": "record",
@@ -109,8 +103,7 @@
         {
           "name": "avatar",
           "type": {
-            "kind": "bytes",
-            "encoding": "hex"
+            "kind": "bytes"
           },
           "nullable": true
         },
@@ -137,17 +130,11 @@
       ]
     },
     "UserId32": {
-      "kind": "record",
-      "fields": [
-        {
-          "name": "unnamed",
-          "type": {
-            "kind": "bytes",
-            "size": 32,
-            "encoding": "hex"
-          }
-        }
-      ]
+      "kind": "alias",
+      "target": {
+        "kind": "bytes",
+        "size": 32
+      }
     }
   },
   "methods": [
@@ -283,14 +270,12 @@
         {
           "name": "b",
           "type": {
-            "kind": "bytes",
-            "encoding": "hex"
+            "kind": "bytes"
           }
         }
       ],
       "returns": {
-        "kind": "bytes",
-        "encoding": "hex"
+        "kind": "bytes"
       }
     },
     {
@@ -633,8 +618,7 @@
     {
       "name": "Data",
       "payload": {
-        "kind": "bytes",
-        "encoding": "hex"
+        "kind": "bytes"
       }
     },
     {

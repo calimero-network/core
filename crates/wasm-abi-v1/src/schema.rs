@@ -34,8 +34,11 @@ pub enum TypeDef {
     Bytes {
         #[serde(skip_serializing_if = "Option::is_none")]
         size: Option<usize>,
-        encoding: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encoding: Option<String>,
     },
+    #[serde(rename = "alias")]
+    Alias { target: TypeRef },
 }
 
 /// Field in a record type
@@ -137,7 +140,8 @@ pub enum ScalarType {
     Bytes {
         #[serde(skip_serializing_if = "Option::is_none")]
         size: Option<usize>,
-        encoding: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encoding: Option<String>,
     },
     #[serde(rename = "unit")]
     Unit,
@@ -184,7 +188,7 @@ where
     impl<'de> Visitor<'de> for MapKeyVisitor {
         type Value = Box<TypeRef>;
 
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter.write_str("a string or a TypeRef object")
         }
 
@@ -213,6 +217,8 @@ where
 }
 
 impl Manifest {
+    /// Create a new manifest with default schema version
+    #[must_use]
     pub fn new() -> Self {
         Self {
             schema_version: "wasm-abi/1".to_owned(),
@@ -225,84 +231,98 @@ impl Manifest {
 
 impl TypeRef {
     /// Create a reference to a named type
+    #[must_use]
     pub fn reference(name: &str) -> Self {
-        TypeRef::Reference {
+        Self::Reference {
             ref_: name.to_owned(),
         }
     }
 
     /// Create a boolean type
-    pub fn bool() -> Self {
-        TypeRef::Scalar(ScalarType::Bool)
+    #[must_use]
+    pub const fn bool() -> Self {
+        Self::Scalar(ScalarType::Bool)
     }
 
     /// Create an i32 type
-    pub fn i32() -> Self {
-        TypeRef::Scalar(ScalarType::I32)
+    #[must_use]
+    pub const fn i32() -> Self {
+        Self::Scalar(ScalarType::I32)
     }
 
     /// Create an i64 type
-    pub fn i64() -> Self {
-        TypeRef::Scalar(ScalarType::I64)
+    #[must_use]
+    pub const fn i64() -> Self {
+        Self::Scalar(ScalarType::I64)
     }
 
     /// Create a u32 type
-    pub fn u32() -> Self {
-        TypeRef::Scalar(ScalarType::U32)
+    #[must_use]
+    pub const fn u32() -> Self {
+        Self::Scalar(ScalarType::U32)
     }
 
     /// Create a u64 type
-    pub fn u64() -> Self {
-        TypeRef::Scalar(ScalarType::U64)
+    #[must_use]
+    pub const fn u64() -> Self {
+        Self::Scalar(ScalarType::U64)
     }
 
     /// Create an f32 type
-    pub fn f32() -> Self {
-        TypeRef::Scalar(ScalarType::F32)
+    #[must_use]
+    pub const fn f32() -> Self {
+        Self::Scalar(ScalarType::F32)
     }
 
     /// Create an f64 type
-    pub fn f64() -> Self {
-        TypeRef::Scalar(ScalarType::F64)
+    #[must_use]
+    pub const fn f64() -> Self {
+        Self::Scalar(ScalarType::F64)
     }
 
     /// Create a string type
-    pub fn string() -> Self {
-        TypeRef::Scalar(ScalarType::String)
+    #[must_use]
+    pub const fn string() -> Self {
+        Self::Scalar(ScalarType::String)
     }
 
     /// Create a bytes type (variable length)
-    pub fn bytes() -> Self {
-        TypeRef::Scalar(ScalarType::Bytes {
+    #[must_use]
+    pub const fn bytes() -> Self {
+        Self::Scalar(ScalarType::Bytes {
             size: None,
-            encoding: "hex".to_owned(),
+            encoding: None,
         })
     }
 
     /// Create a bytes type with size and encoding
-    pub fn bytes_with_size(size: usize, encoding: &str) -> Self {
-        TypeRef::Scalar(ScalarType::Bytes {
+    #[must_use]
+    pub fn bytes_with_size(size: usize, encoding: Option<&str>) -> Self {
+        Self::Scalar(ScalarType::Bytes {
             size: Some(size),
-            encoding: encoding.to_owned(),
+            encoding: encoding.map(ToOwned::to_owned),
         })
     }
 
     /// Create a unit type
-    pub fn unit() -> Self {
-        TypeRef::Scalar(ScalarType::Unit)
+    #[must_use]
+    pub const fn unit() -> Self {
+        Self::Scalar(ScalarType::Unit)
     }
 
     /// Create a list type
-    pub fn list(items: TypeRef) -> Self {
-        TypeRef::Collection(CollectionType::List {
+    #[must_use]
+    pub fn list(items: Self) -> Self {
+        Self::Collection(CollectionType::List {
             items: Box::new(items),
         })
     }
 
     /// Create a map type (key must be string)
-    pub fn map(value: TypeRef) -> Self {
-        TypeRef::Collection(CollectionType::Map {
-            key: Box::new(TypeRef::string()),
+    #[must_use]
+    pub fn map(value: Self) -> Self {
+        Self::Collection(CollectionType::Map {
+            key: Box::new(Self::string()),
             value: Box::new(value),
         })
     }
@@ -341,7 +361,7 @@ mod tests {
     #[test]
     fn test_manifest_creation() {
         let mut manifest = Manifest::new();
-        
+
         // Add a test method
         manifest.methods.push(Method {
             name: "test_method".to_owned(),

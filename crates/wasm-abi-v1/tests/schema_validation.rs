@@ -4,7 +4,7 @@ use serde_json::Value;
 #[test]
 fn test_schema_validation_basic() {
     // Load the schema
-    let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
+    let schema_json = include_str!("../wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
 
@@ -38,7 +38,7 @@ fn test_schema_validation_basic() {
 #[test]
 fn test_schema_validation_conformance() {
     // Load the schema
-    let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
+    let schema_json = include_str!("../wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
 
@@ -58,7 +58,7 @@ fn test_schema_validation_conformance() {
 #[test]
 fn test_schema_validation_bytes_types() {
     // Load the schema
-    let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
+    let schema_json = include_str!("../wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
 
@@ -68,8 +68,7 @@ fn test_schema_validation_bytes_types() {
         "types": {
             "FixedBytes": {
                 "kind": "bytes",
-                "size": 32,
-                "encoding": "hex"
+                "size": 32
             }
         },
         "methods": [],
@@ -87,8 +86,7 @@ fn test_schema_validation_bytes_types() {
         "schema_version": "wasm-abi/1",
         "types": {
             "VariableBytes": {
-                "kind": "bytes",
-                "encoding": "hex"
+                "kind": "bytes"
             }
         },
         "methods": [],
@@ -105,7 +103,7 @@ fn test_schema_validation_bytes_types() {
 #[test]
 fn test_schema_validation_map_keys() {
     // Load the schema
-    let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
+    let schema_json = include_str!("../wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
 
@@ -186,7 +184,7 @@ fn test_schema_validation_map_keys() {
 #[test]
 fn test_schema_validation_events() {
     // Load the schema
-    let schema_json = include_str!("../../../schema/wasm-abi-v1.schema.json");
+    let schema_json = include_str!("../wasm-abi-v1.schema.json");
     let schema_value: Value = serde_json::from_str(schema_json).unwrap();
     let schema = JSONSchema::compile(&schema_value).unwrap();
 

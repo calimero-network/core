@@ -105,7 +105,7 @@ The ABI uses the following canonical WASM types:
 - `Option<T>` → nullable `T`
 - `Result<T,E>` → `T` (error handling separate)
 - Custom types → `$ref` to type name
-- `[u8; N]` → `bytes` with `size: N` and `encoding: "hex"`
+- `[u8; N]` → `bytes` with `size: N` (encoding not specified)
 
 ## Complex Types
 
@@ -193,7 +193,7 @@ This application serves as a comprehensive test of the WASM-ABI v1 generator. Th
 5. **Map types** (BTreeMap<String, V> as map<string,V>)
 6. **Record types** (structs with fields)
 7. **Variant types** (enums with variants)
-8. **Bytes newtypes** (UserId32, Hash64 as bytes with hex encoding)
+8. **Bytes newtypes** (UserId32, Hash64 as bytes without encoding specification)
 9. **Method errors** (Result<T,E> with separate errors array)
 10. **Events** with various payload types
 
