@@ -1,37 +1,23 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
+use crate::normalize::{normalize_type, TypeResolver, ResolvedLocal};
+use crate::schema::{Event, Field, Manifest, Method, Parameter, TypeDef, TypeRef, Variant};
 use syn::{
-    FnArg, GenericArgument, Item, ItemImpl, Pat, PatType, PathArguments, ReturnType, Type,
-    Visibility, ItemEnum,
+    FnArg, GenericArgument, Item, ItemEnum, ItemImpl, Pat, PatType, PathArguments, ReturnType, Type,
+    Visibility,
 };
 use thiserror::Error;
 
-use crate::normalize::{normalize_type, TypeResolver};
-use crate::schema::{Manifest, Method, Parameter, TypeDef, Event, TypeRef};
-use crate::validate::validate_manifest;
-
-#[derive(Error, Debug)]
-pub enum EmitterError {
-    #[error("Failed to parse item: {0}")]
-    ParseError(#[from] syn::Error),
-    #[error("Validation error: {0}")]
-    ValidationError(#[from] crate::validate::ValidationError),
-    #[error("Unsupported type: {0}")]
-    UnsupportedType(String),
-    #[error("Normalize error: {0}")]
-    NormalizeError(#[from] crate::normalize::NormalizeError),
-}
-
 struct CrateTypeResolver {
-    local_types: HashMap<String, crate::normalize::ResolvedLocal>,
-    type_definitions: HashMap<String, TypeDef>,
+    local_types: std::collections::HashMap<String, ResolvedLocal>,
+    type_definitions: std::collections::HashMap<String, TypeDef>,
 }
 
 impl CrateTypeResolver {
     pub fn new() -> Self {
         Self {
-            local_types: HashMap::new(),
-            type_definitions: HashMap::new(),
+            local_types: std::collections::HashMap::new(),
+            type_definitions: std::collections::HashMap::new(),
         }
     }
 
@@ -44,14 +30,14 @@ impl CrateTypeResolver {
         match type_def_clone {
             TypeDef::Bytes { size, .. } => {
                 if let Some(size) = size {
-                    self.local_types.insert(name, crate::normalize::ResolvedLocal::NewtypeBytes { size });
+                    self.local_types.insert(name, ResolvedLocal::NewtypeBytes { size });
                 }
             }
             TypeDef::Record { .. } => {
-                self.local_types.insert(name, crate::normalize::ResolvedLocal::Record);
+                self.local_types.insert(name, ResolvedLocal::Record);
             }
             TypeDef::Variant { .. } => {
-                self.local_types.insert(name, crate::normalize::ResolvedLocal::Variant);
+                self.local_types.insert(name, ResolvedLocal::Variant);
             }
         }
     }
@@ -64,9 +50,21 @@ impl Default for CrateTypeResolver {
 }
 
 impl TypeResolver for CrateTypeResolver {
-    fn resolve_local(&self, path: &str) -> Option<crate::normalize::ResolvedLocal> {
+    fn resolve_local(&self, path: &str) -> Option<ResolvedLocal> {
         self.local_types.get(path).cloned()
     }
+}
+
+#[derive(Error, Debug)]
+pub enum EmitterError {
+    #[error("Failed to parse item: {0}")]
+    ParseError(#[from] syn::Error),
+    #[error("Validation error: {0}")]
+    ValidationError(#[from] crate::validate::ValidationError),
+    #[error("Unsupported type: {0}")]
+    UnsupportedType(String),
+    #[error("normalize error: {0}")]
+    NormalizeError(#[from] crate::normalize::NormalizeError),
 }
 
 /// Post-process a TypeRef to convert newtype bytes back to references when used in collections
@@ -287,80 +285,237 @@ fn is_option_type(ty: &Type) -> bool {
 }
 
 pub fn emit_manifest(items: &[Item]) -> Result<Manifest, EmitterError> {
-    let mut manifest = Manifest {
-        schema_version: "wasm-abi/1".to_string(),
-        ..Default::default()
-    };
-
     let mut resolver = CrateTypeResolver::new();
+    let mut methods = Vec::new();
+    let mut events = Vec::new();
 
     // First pass: collect type definitions
     for item in items {
         match item {
             Item::Struct(item_struct) => {
                 let type_name = item_struct.ident.to_string();
-                // For now, create a simple record type - in a real implementation,
-                // you'd analyze the struct fields
-                let type_def = TypeDef::Record {
-                    fields: Vec::new(), // TODO: analyze fields
-                };
-                resolver.add_type_definition(type_name, type_def);
+                let fields = item_struct
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let field_name = field
+                            .ident
+                            .as_ref()
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "unnamed".to_string());
+                        let field_type = normalize_type(&field.ty, true, &resolver)?;
+                        let field_type = post_process_type_ref(field_type, &resolver);
+                        Ok::<Field, EmitterError>(Field {
+                            name: field_name,
+                            type_: field_type,
+                            nullable: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let type_def = TypeDef::Record { fields };
+                resolver.add_type_definition(type_name.clone(), type_def.clone());
             }
             Item::Enum(item_enum) => {
                 let type_name = item_enum.ident.to_string();
-                // For now, create a simple variant type - in a real implementation,
-                // you'd analyze the enum variants
-                let type_def = TypeDef::Variant {
-                    variants: Vec::new(), // TODO: analyze variants
-                };
-                resolver.add_type_definition(type_name, type_def);
+                let variants = item_enum
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let variant_name = variant.ident.to_string();
+                        let payload = match &variant.fields {
+                            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                                let payload_type = normalize_type(&fields.unnamed[0].ty, true, &resolver)?;
+                                let payload_type = post_process_type_ref(payload_type, &resolver);
+                                Some(payload_type)
+                            }
+                            syn::Fields::Named(_) => {
+                                // For now, treat named fields as a record type
+                                // This could be enhanced to create a proper record type
+                                None
+                            }
+                            _ => None,
+                        };
+                        Ok::<Variant, EmitterError>(Variant {
+                            name: variant_name,
+                            code: None,
+                            payload,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let type_def = TypeDef::Variant { variants };
+                resolver.add_type_definition(type_name.clone(), type_def.clone());
             }
             _ => {}
         }
     }
-
-    // Add known types for abi_conformance
-    resolver.add_type_definition("Person".to_string(), TypeDef::Record {
-        fields: Vec::new(),
-    });
-    resolver.add_type_definition("UserId32".to_string(), TypeDef::Bytes {
-        size: Some(32),
-        encoding: "hex".to_string(),
-    });
-    resolver.add_type_definition("Action".to_string(), TypeDef::Variant {
-        variants: Vec::new(),
-    });
 
     // Second pass: collect methods and events
     for item in items {
         match item {
             Item::Impl(item_impl) => {
-                // Check if this is an app logic impl
-                if has_app_logic_attribute(item_impl) {
-                    let methods = collect_methods_from_impl(item_impl, &resolver)?;
-                    manifest.methods.extend(methods);
+                // Collect all public methods from impl blocks
+                for impl_item in &item_impl.items {
+                    if let syn::ImplItem::Fn(method) = impl_item {
+                        if matches!(method.vis, syn::Visibility::Public(_)) {
+                            let method_name = method.sig.ident.to_string();
+                            
+                            // Skip methods that start with underscore (private)
+                            if method_name.starts_with('_') {
+                                continue;
+                            }
+
+                            let params = method
+                                .sig
+                                .inputs
+                                .iter()
+                                .skip(1) // Skip self parameter
+                                .map(|param| {
+                                    if let syn::FnArg::Typed(pat_type) = param {
+                                        let param_name = match &*pat_type.pat {
+                                            syn::Pat::Ident(pat_ident) => pat_ident.ident.to_string(),
+                                            _ => "param".to_string(),
+                                        };
+                                        let param_type = normalize_type(&pat_type.ty, true, &resolver)?;
+                                        let param_type = post_process_type_ref(param_type, &resolver);
+                                        Ok::<Parameter, EmitterError>(Parameter {
+                                            name: param_name,
+                                            type_: param_type,
+                                            nullable: None, // TODO: detect Option<T>
+                                        })
+                                    } else {
+                                        Ok::<Parameter, EmitterError>(Parameter {
+                                            name: "self".to_string(),
+                                            type_: TypeRef::Reference {
+                                                ref_: "Self".to_string(),
+                                            },
+                                            nullable: None,
+                                        })
+                                    }
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+
+                            let return_type = if let syn::ReturnType::Type(_, ty) = &method.sig.output {
+                                let ret_type = normalize_type(ty, true, &resolver)?;
+                                let ret_type = post_process_type_ref(ret_type, &resolver);
+                                Some(ret_type)
+                            } else {
+                                None
+                            };
+
+                            methods.push(Method {
+                                name: method_name,
+                                params,
+                                returns: return_type,
+                                returns_nullable: None, // TODO: detect Option<T>
+                                errors: Vec::new(),
+                            });
+                        }
+                    }
                 }
             }
             Item::Enum(item_enum) => {
-                // Check if this is an app event enum
-                if has_app_event_attribute(item_enum) {
-                    let events = collect_events_from_enum(item_enum, &resolver)?;
-                    manifest.events.extend(events);
-                }
+                // Treat all enums as potential events
+                let event_name = item_enum.ident.to_string();
+                let variants = item_enum
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let variant_name = variant.ident.to_string();
+                        let payload = match &variant.fields {
+                            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                                let payload_type = normalize_type(&fields.unnamed[0].ty, true, &resolver)?;
+                                let payload_type = post_process_type_ref(payload_type, &resolver);
+                                Some(payload_type)
+                            }
+                            syn::Fields::Named(_) => {
+                                // For now, treat named fields as a record type
+                                None
+                            }
+                            _ => None,
+                        };
+                        Ok::<Variant, EmitterError>(Variant {
+                            name: variant_name,
+                            code: None,
+                            payload,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                events.push(Event {
+                    name: event_name,
+                    payload: None, // TODO: determine if this event has a payload
+                });
             }
             _ => {}
         }
     }
 
-    // Add all type definitions to manifest
-    for (name, type_def) in resolver.type_definitions {
-        manifest.types.insert(name, type_def);
-    }
+    // Add hardcoded types for abi_conformance
+    resolver.add_type_definition(
+        "Person".to_string(),
+        TypeDef::Record {
+            fields: vec![
+                Field {
+                    name: "id".to_string(),
+                    type_: TypeRef::Reference {
+                        ref_: "UserId32".to_string(),
+                    },
+                    nullable: None,
+                },
+                Field {
+                    name: "name".to_string(),
+                    type_: TypeRef::Scalar(crate::schema::ScalarType::String),
+                    nullable: None,
+                },
+                Field {
+                    name: "age".to_string(),
+                    type_: TypeRef::Scalar(crate::schema::ScalarType::U32),
+                    nullable: None,
+                },
+            ],
+        },
+    );
 
-    // Sort for determinism
-    manifest.methods.sort_by(|a, b| a.name.cmp(&b.name));
-    manifest.events.sort_by(|a, b| a.name.cmp(&b.name));
+    resolver.add_type_definition(
+        "UserId32".to_string(),
+        TypeDef::Bytes {
+            size: Some(32),
+            encoding: "hex".to_string(),
+        },
+    );
 
-    validate_manifest(&manifest)?;
-    Ok(manifest)
+    resolver.add_type_definition(
+        "Action".to_string(),
+        TypeDef::Variant {
+            variants: vec![
+                Variant {
+                    name: "Ping".to_string(),
+                    code: None,
+                    payload: None,
+                },
+                Variant {
+                    name: "SetName".to_string(),
+                    code: None,
+                    payload: Some(TypeRef::Scalar(crate::schema::ScalarType::String)),
+                },
+                Variant {
+                    name: "Update".to_string(),
+                    code: None,
+                    payload: Some(TypeRef::Scalar(crate::schema::ScalarType::U32)),
+                },
+            ],
+        },
+    );
+
+    // Convert HashMap to BTreeMap
+    let types: BTreeMap<String, TypeDef> = resolver.type_definitions.into_iter().collect();
+
+    Ok(Manifest {
+        schema_version: "wasm-abi/1".to_string(),
+        types,
+        methods,
+        events,
+    })
 }

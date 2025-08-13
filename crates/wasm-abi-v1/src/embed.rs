@@ -49,6 +49,18 @@ pub fn embed(manifest: &Manifest) -> proc_macro2::TokenStream {
 pub fn generate_embed_code(manifest: &Manifest) -> String {
     let json =
         serde_json::to_string_pretty(manifest).expect("Failed to serialize manifest to JSON");
+    let json_bytes = json.as_bytes();
+    let json_len = json_bytes.len();
 
-    format!("embed_abi!(r#\"{}\"#);", json)
+    // Create the byte array as a comma-separated list
+    let bytes_list = json_bytes
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "// Generated ABI embed code\n// Create the custom section with the ABI JSON\n#[cfg_attr(target_os = \"macos\", link_section = \"__DATA,calimero_abi_v1\")]\n#[cfg_attr(not(target_os = \"macos\"), link_section = \"calimero_abi_v1\")]\nstatic ABI: [u8; {}] = [{}];\n\n// Export functions to access the ABI at runtime\n#[no_mangle]\npub extern \"C\" fn get_abi_ptr() -> u32 {{\n    ABI.as_ptr() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi_len() -> u32 {{\n    ABI.len() as u32\n}}\n\n#[no_mangle]\npub extern \"C\" fn get_abi() -> u32 {{\n    get_abi_ptr()\n}}",
+        json_len, bytes_list
+    )
 }

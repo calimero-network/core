@@ -49,6 +49,12 @@ pub fn normalize_type(
             Ok(inner_ref)
         }
 
+        // Handle Result<T, E> - extract the success type T
+        Type::Path(TypePath { path, .. }) if is_result(path) => {
+            let success_type = extract_result_success(ty)?;
+            normalize_type(success_type, wasm32, resolver)
+        }
+
         // Handle Vec<u8> (bytes without size) - must come before generic Vec<T>
         Type::Path(TypePath { path, .. }) if is_vec_u8(path) => Ok(TypeRef::bytes()),
 
@@ -131,6 +137,22 @@ fn is_vec(path: &syn::Path) -> bool {
     path.segments.len() == 1 && path.segments[0].ident == "Vec"
 }
 
+/// Extract the inner type from Vec<T>
+fn extract_vec_inner(ty: &Type) -> Result<&Type, NormalizeError> {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        if let Some(segment) = path.segments.first() {
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
+                    return Ok(inner_type);
+                }
+            }
+        }
+    }
+    Err(NormalizeError::TypePathError(
+        "invalid Vec type".to_string(),
+    ))
+}
+
 /// Check if a path represents Vec<u8>
 fn is_vec_u8(path: &syn::Path) -> bool {
     if !is_vec(path) {
@@ -147,22 +169,6 @@ fn is_vec_u8(path: &syn::Path) -> bool {
         }
     }
     false
-}
-
-/// Extract the inner type from Vec<T>
-fn extract_vec_inner(ty: &Type) -> Result<&Type, NormalizeError> {
-    if let Type::Path(TypePath { path, .. }) = ty {
-        if let Some(segment) = path.segments.first() {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
-                    return Ok(inner_type);
-                }
-            }
-        }
-    }
-    Err(NormalizeError::TypePathError(
-        "invalid Vec type".to_string(),
-    ))
 }
 
 /// Check if a path represents BTreeMap<K, V>
@@ -195,6 +201,29 @@ fn extract_map_inner(ty: &Type) -> Result<(&Type, &Type), NormalizeError> {
 /// Check if a path represents u8
 fn is_u8_type(path: &syn::Path) -> bool {
     path.segments.len() == 1 && path.segments[0].ident == "u8"
+}
+
+/// Check if a path represents Result<T, E>
+fn is_result(path: &syn::Path) -> bool {
+    path.segments.len() == 1 && path.segments[0].ident == "Result"
+}
+
+/// Extract the success type from Result<T, E>
+fn extract_result_success(ty: &Type) -> Result<&Type, NormalizeError> {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        if let Some(segment) = path.segments.first() {
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                if args.args.len() >= 2 {
+                    if let syn::GenericArgument::Type(success_type) = &args.args[0] {
+                        return Ok(success_type);
+                    }
+                }
+            }
+        }
+    }
+    Err(NormalizeError::TypePathError(
+        "invalid Result type".to_string(),
+    ))
 }
 
 /// Extract array length from [T; N]

@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
-use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+// Include the generated ABI code
+include!(env!("GENERATED_ABI_PATH"));
 
 // Newtype bytes
 #[derive(
@@ -60,8 +62,7 @@ pub enum ConformanceError {
     NotFound(String),
 }
 
-// Events
-#[app::event]
+// Events - now just a regular enum, no macro
 pub enum Event {
     Ping,
     Named(String),
@@ -70,8 +71,7 @@ pub enum Event {
     ActionTaken(Action),
 }
 
-// State (record used by init)
-#[app::state(emits = Event)]
+// State - now just a regular struct, no macro
 #[derive(Debug, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct AbiState {
@@ -87,9 +87,8 @@ pub struct AbiStateExposed {
     users: Vec<UserId32>,            // list<UserId32>
 }
 
-#[app::logic]
+// Implementation - now just a regular impl, no macro
 impl AbiState {
-    #[app::init]
     pub fn init() -> AbiState {
         AbiState {
             counters: BTreeMap::new(),
@@ -98,37 +97,35 @@ impl AbiState {
     }
 
     // Unit return
-    pub fn noop() -> () {
-        ()
-    }
+    pub fn noop() {}
 
-    // Scalars in/out
+    // Scalar types
     pub fn echo_bool(b: bool) -> bool {
         b
     }
 
-    pub fn echo_i32(v: i32) -> i32 {
-        v
+    pub fn echo_i32(x: i32) -> i32 {
+        x
     }
 
-    pub fn echo_i64(v: i64) -> i64 {
-        v
+    pub fn echo_i64(x: i64) -> i64 {
+        x
     }
 
-    pub fn echo_u32(v: u32) -> u32 {
-        v
+    pub fn echo_u32(x: u32) -> u32 {
+        x
     }
 
-    pub fn echo_u64(v: u64) -> u64 {
-        v
+    pub fn echo_u64(x: u64) -> u64 {
+        x
     }
 
-    pub fn echo_f32(v: f32) -> f32 {
-        v
+    pub fn echo_f32(x: f32) -> f32 {
+        x
     }
 
-    pub fn echo_f64(v: f64) -> f64 {
-        v
+    pub fn echo_f64(x: f64) -> f64 {
+        x
     }
 
     pub fn echo_string(s: String) -> String {
@@ -214,7 +211,7 @@ impl AbiState {
     }
 
     // Errors
-    pub fn may_fail(flag: bool) -> app::Result<u32, ConformanceError> {
+    pub fn may_fail(flag: bool) -> Result<u32, ConformanceError> {
         if flag {
             Ok(42)
         } else {
@@ -222,7 +219,7 @@ impl AbiState {
         }
     }
 
-    pub fn find_person(name: String) -> app::Result<Person, ConformanceError> {
+    pub fn find_person(name: String) -> Result<Person, ConformanceError> {
         if name.is_empty() {
             Err(ConformanceError::NotFound("empty name".to_string()))
         } else {
