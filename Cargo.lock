@@ -1937,15 +1937,20 @@ name = "calimero-network"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "borsh",
  "calimero-network-primitives",
+ "calimero-primitives",
  "calimero-utils-actix",
  "eyre",
  "futures-util",
+ "hex",
  "libp2p",
  "libp2p-stream",
  "multiaddr",
  "owo-colors",
  "reqwest 0.12.9",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -1998,6 +2003,7 @@ dependencies = [
  "libp2p",
  "owo-colors",
  "rand 0.8.5",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -2234,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-version"
-version = "0.8.0-rc.4"
+version = "0.8.0-rc.5"
 dependencies = [
  "eyre",
  "rustc_version 0.4.1",
