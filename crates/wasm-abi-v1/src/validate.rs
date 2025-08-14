@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
+
 use crate::schema::{
     CollectionType, Event, Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef,
     Variant,
 };
-use std::collections::BTreeMap;
 
 /// Validation error types
 #[derive(Debug, thiserror::Error)]

@@ -1,6 +1,5 @@
-use std::env;
-use std::fs;
 use std::path::Path;
+use std::{env, fs};
 
 use calimero_wasm_abi_v1::embed::generate_embed_code;
 use calimero_wasm_abi_v1::emitter::emit_manifest;

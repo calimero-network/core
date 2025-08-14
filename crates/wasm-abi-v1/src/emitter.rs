@@ -1,10 +1,13 @@
+use std::collections::HashMap;
+use std::error;
+
+use syn::visit::Visit;
+use syn::{Item, ItemEnum, ItemImpl, ItemStruct, Type};
+
 use crate::normalize::{normalize_type, ResolvedLocal, TypeResolver};
 use crate::schema::{
     Event, Field, Manifest, Method, Parameter, ScalarType, TypeDef, TypeRef, Variant,
 };
-use std::collections::HashMap;
-use std::error;
-use syn::{visit::Visit, Item, ItemEnum, ItemImpl, ItemStruct, Type};
 
 /// ABI emitter that processes Rust source code
 #[derive(Debug)]

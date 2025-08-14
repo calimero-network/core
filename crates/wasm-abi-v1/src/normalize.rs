@@ -1,5 +1,6 @@
-use crate::schema::{ScalarType, TypeRef};
 use syn::{GenericArgument, Type, TypePath};
+
+use crate::schema::{ScalarType, TypeRef};
 
 /// Error types for type normalization
 #[derive(Debug, thiserror::Error)]
