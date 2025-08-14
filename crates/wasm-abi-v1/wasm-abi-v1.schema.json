@@ -1,0 +1,291 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WASM ABI v1 Schema",
+  "description": "Schema for Calimero WASM ABI v1 format",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "types", "methods", "events"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "wasm-abi/1"
+    },
+    "types": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/TypeDef"
+      }
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Method"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Event"
+      }
+    }
+  },
+  "definitions": {
+    "TypeRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["$ref"],
+          "properties": {
+            "$ref": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "$ref": "#/definitions/ScalarType"
+        },
+        {
+          "$ref": "#/definitions/BytesType"
+        },
+        {
+          "$ref": "#/definitions/CollectionType"
+        }
+      ]
+    },
+    "ScalarType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["bool", "i32", "i64", "u32", "u64", "f32", "f64", "string", "unit"]
+        }
+      }
+    },
+    "BytesType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "const": "bytes"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "encoding": {
+          "type": "string"
+        }
+      }
+    },
+    "CollectionType": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "items"],
+          "properties": {
+            "kind": {
+              "const": "list"
+            },
+            "items": {
+              "$ref": "#/definitions/TypeRef"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "key", "value"],
+          "properties": {
+            "kind": {
+              "const": "map"
+            },
+            "key": {
+              "$ref": "#/definitions/TypeRef"
+            },
+            "value": {
+              "$ref": "#/definitions/TypeRef"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "fields"],
+          "properties": {
+            "kind": {
+              "const": "record"
+            },
+            "fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Field"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/TypeRef"
+        },
+        "nullable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/definitions/TypeRef"
+        }
+      }
+    },
+    "TypeDef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "fields"],
+          "properties": {
+            "kind": {
+              "const": "record"
+            },
+            "fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Field"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "variants"],
+          "properties": {
+            "kind": {
+              "const": "variant"
+            },
+            "variants": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Variant"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "target"],
+          "properties": {
+            "kind": {
+              "const": "alias"
+            },
+            "target": {
+              "$ref": "#/definitions/TypeRef"
+            }
+          }
+        },
+        {
+          "$ref": "#/definitions/BytesType"
+        },
+        {
+          "$ref": "#/definitions/VariableBytesType"
+        }
+      ]
+    },
+    "Parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/TypeRef"
+        },
+        "nullable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/definitions/TypeRef"
+        }
+      }
+    },
+    "Method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "params"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Parameter"
+          }
+        },
+        "returns": {
+          "$ref": "#/definitions/TypeRef"
+        },
+        "returns_nullable": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Error"
+          }
+        }
+      }
+    },
+    "Event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/definitions/TypeRef"
+        }
+      }
+    }
+  }
+} 

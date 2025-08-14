@@ -1,0 +1,63 @@
+name: ABI Guard
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - feat/abi_v1
+      - main
+  push:
+    branches:
+      - feat/abi_v1
+      - main
+
+jobs:
+  abi-validation:
+    name: ABI Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          override: true
+          
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+            
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          
+      - name: Build abi_conformance
+        run: |
+          cargo build -p abi_conformance --target wasm32-unknown-unknown
+          
+      - name: Build calimero-abi extractor
+        run: |
+          cargo build --manifest-path tools/calimero-abi/Cargo.toml
+          
+      - name: Run ABI verification
+        run: |
+          chmod +x scripts/verify-abi.sh
+          ./scripts/verify-abi.sh
+          
+      - name: Run unit tests
+        run: |
+          cargo test -p calimero-wasm-abi-v1 --test invariants 
