@@ -42,6 +42,14 @@ pub struct Profile {
     nicknames: Vec<String>,
 }
 
+// Update payload type
+#[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[serde(crate = "calimero_sdk::serde")]
+#[borsh(crate = "calimero_sdk::borsh")]
+pub struct UpdatePayload {
+    age: u32,
+}
+
 // Variants
 #[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(crate = "calimero_sdk::serde")]
@@ -49,7 +57,7 @@ pub struct Profile {
 pub enum Action {
     Ping,
     SetName(String),
-    Update { age: u32 },
+    Update(UpdatePayload),
 }
 
 #[derive(Debug, Error, Serialize)]
@@ -197,7 +205,7 @@ impl AbiState {
         match a {
             Action::Ping => 1,
             Action::SetName(_) => 2,
-            Action::Update { age } => age,
+            Action::Update(payload) => payload.age,
         }
     }
 

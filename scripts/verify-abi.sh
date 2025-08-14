@@ -20,9 +20,14 @@ OUT="/tmp/abi_conformance.json"
 echo "Extracting ABI..."
 "$EXTRACTOR" extract target/wasm32-unknown-unknown/debug/abi_conformance.wasm -o "$OUT"
 
+# Format both files for comparison
+echo "Formatting files for comparison..."
+jq . "$OUT" > "/tmp/abi_conformance.formatted.json"
+jq . apps/abi_conformance/abi.expected.json > "/tmp/abi_expected.formatted.json"
+
 # Compare with golden file
 echo "Comparing with golden file..."
-if ! diff -u apps/abi_conformance/abi.expected.json "$OUT"; then
+if ! diff -u "/tmp/abi_expected.formatted.json" "/tmp/abi_conformance.formatted.json"; then
     echo "ERROR: ABI output differs from golden file"
     exit 1
 fi
