@@ -229,7 +229,7 @@ impl AbiState {
 
     pub fn find_person(name: String) -> Result<Person, ConformanceError> {
         if name.is_empty() {
-            Err(ConformanceError::NotFound("empty name".to_string()))
+            Err(ConformanceError::NotFound("empty name".to_owned()))
         } else {
             Ok(Person {
                 id: UserId32([0; 32]),
