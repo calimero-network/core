@@ -6,10 +6,20 @@ use crate::errors::{Errors, ParseError};
 use crate::macros::infallible;
 use crate::reserved::{idents, lifetimes};
 use crate::sanitizer::{Action, Case, Sanitizer};
+use serde_json::{json, Value};
 
 pub struct LogicTy {
     pub ty: Type,
     pub ref_: bool,
+}
+
+impl LogicTy {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "type": self.ty.to_token_stream().to_string(),
+            "ref": self.ref_,
+        })
+    }
 }
 
 impl ToTokens for LogicTy {

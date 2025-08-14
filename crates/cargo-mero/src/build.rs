@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use cargo_metadata::Message;
@@ -34,9 +34,6 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     if !args.no_release {
         let _ = build_cmd.arg("--profile");
         let _ = build_cmd.arg("app-release");
-    }
-    if args.verbose {
-        let _ = build_cmd.arg("--verbose");
     }
     if args.quiet {
         let _ = build_cmd.arg("--quiet");
@@ -74,8 +71,7 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     }
 
     let artifact = artifact.as_ref().unwrap();
-    let manifest_dir_path = artifact.manifest_path.parent().unwrap();
-    let wasm_path = &artifact.filenames[0];
+    let wasm_path = PathBuf::from(&artifact.filenames[0]);
     let wasm_file = wasm_path.file_name().unwrap();
 
     let output = child.wait().wrap_err("cargo build failed")?;
@@ -85,16 +81,15 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
     }
 
     // Copy wasm to res folder
+    let manifest_dir_path = artifact.manifest_path.parent().unwrap();
     let res_path = Path::new(manifest_dir_path).join("res");
     if !res_path.exists() {
         fs::create_dir(&res_path)?;
     }
-    let _ = fs::copy(wasm_path, res_path.join(&wasm_file))?;
+    let _ = fs::copy(&wasm_path, res_path.join(&wasm_file))?;
 
     // Optimize wasm if wasm-opt is present
     if wasm_opt_installed().await {
-        println!("⚙️ \x1b[1;32mOptimizing\x1b[0m...");
-
         let output = Command::new("wasm-opt")
             .arg("-Oz")
             .arg(res_path.join(&wasm_file))
@@ -110,7 +105,6 @@ pub async fn run(args: BuildOpts) -> eyre::Result<()> {
                 output.stdout
             );
         }
-        println!("✅ \x1b[1;32mOptimization complete\x1b[0m");
     } else {
         println!("wasm-opt not found, skipping optimization");
     }

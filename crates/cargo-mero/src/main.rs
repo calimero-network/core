@@ -1,8 +1,8 @@
-use clap::Parser;
-
 mod build;
 mod cli;
 mod new;
+
+use clap::Parser;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
