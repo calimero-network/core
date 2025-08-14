@@ -40,6 +40,9 @@ pub struct Claims {
     pub jti: String,
     /// Permissions
     pub permissions: Vec<String>,
+    /// Node URL this token is valid for (optional, for backward compatibility)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_url: Option<String>,
 }
 
 /// Challenge Claims structure
@@ -98,6 +101,7 @@ impl TokenManager {
         key_id: String,
         permissions: Vec<String>,
         expiry: Duration,
+        node_url: Option<String>,
     ) -> Result<String, AuthError> {
         let now = Utc::now();
         let exp = now + expiry;
@@ -110,6 +114,7 @@ impl TokenManager {
             iat: now.timestamp() as u64,
             jti: uuid::Uuid::new_v4().to_string(),
             permissions,
+            node_url,
         };
 
         let secret = self
@@ -127,11 +132,22 @@ impl TokenManager {
         .map_err(|e| AuthError::TokenGenerationFailed(e.to_string()))
     }
 
-    /// Generate a token pair
+    /// Generate a pair of access and refresh tokens
+    ///
+    /// # Arguments
+    ///
+    /// * `key_id` - The key ID
+    /// * `permissions` - The permissions to include in the token
+    /// * `node_url` - The node URL this token is valid for (optional)
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(String, String), AuthError>` - The access and refresh tokens
     pub async fn generate_token_pair(
         &self,
         key_id: String,
         permissions: Vec<String>,
+        node_url: Option<String>,
     ) -> Result<(String, String), AuthError> {
         // Verify the key exists and is valid
         let key = self
@@ -153,6 +169,7 @@ impl TokenManager {
                         key_id.clone(),
                         permissions.clone(),
                         Duration::seconds(self.config.access_token_expiry as i64),
+                        node_url.clone(),
                     )
                     .await?;
 
@@ -161,6 +178,7 @@ impl TokenManager {
                         key_id,
                         permissions,
                         Duration::seconds(self.config.refresh_token_expiry as i64),
+                        node_url,
                     )
                     .await?;
 
@@ -173,6 +191,7 @@ impl TokenManager {
                         key_id.clone(),
                         permissions.clone(),
                         Duration::seconds(self.config.access_token_expiry as i64),
+                        node_url.clone(),
                     )
                     .await?;
 
@@ -181,6 +200,7 @@ impl TokenManager {
                         key_id,
                         permissions,
                         Duration::seconds(self.config.refresh_token_expiry as i64),
+                        node_url,
                     )
                     .await?;
 
@@ -247,6 +267,21 @@ impl TokenManager {
         }
 
         let claims = self.verify_token(token).await?;
+
+        // Check node URL if token has node information
+        if let Some(token_node_url) = &claims.node_url {
+            // Get referrer URL from headers
+            if let Some(referrer) = headers.get("referer") {
+                if let Ok(referrer_str) = referrer.to_str() {
+                    // Compare if referrer starts with the token's node URL
+                    if !referrer_str.starts_with(token_node_url) {
+                        return Err(AuthError::InvalidToken(
+                            "Token is not valid for this node".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
 
         // Verify the key exists and is valid
         let key = self
@@ -337,7 +372,10 @@ impl TokenManager {
 
         match key.key_type {
             // For root tokens, simply generate new tokens with the same ID
-            KeyType::Root => self.generate_token_pair(claims.sub, key.permissions).await,
+            KeyType::Root => {
+                self.generate_token_pair(claims.sub, key.permissions, claims.node_url.clone())
+                    .await
+            }
             // For client tokens, rotate the key ID
             KeyType::Client => {
                 // Generate new client ID
@@ -369,7 +407,11 @@ impl TokenManager {
 
                 // Generate new tokens with the new ID first (before deleting old key)
                 let token_result = self
-                    .generate_token_pair(new_client_id.clone(), key.permissions)
+                    .generate_token_pair(
+                        new_client_id.clone(),
+                        key.permissions,
+                        claims.node_url.clone(),
+                    )
                     .await;
 
                 // Only delete the old key if token generation was successful
@@ -473,5 +515,10 @@ impl TokenManager {
         .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
 
         Ok(token_data.claims)
+    }
+
+    /// Get the key manager
+    pub fn get_key_manager(&self) -> &KeyManager {
+        &self.key_manager
     }
 }

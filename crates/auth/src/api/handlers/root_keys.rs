@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Extension, Path};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use crate::auth::validation::{sanitize_identifier, sanitize_string};
 use crate::server::AppState;
 use crate::storage::models::KeyType;
 
-/// Key creation request
+/// Create key request
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateKeyRequest {
     /// Public key
@@ -27,6 +27,9 @@ pub struct CreateKeyRequest {
 
     /// Provider-specific data
     pub provider_data: Value,
+
+    /// Target node URL for which to create the root key
+    pub target_node_url: Option<String>,
 }
 
 /// Key list handler
@@ -102,6 +105,10 @@ pub async fn create_key_handler(
             None,
         );
     }
+
+    // Extract node URL from request for node-specific key creation
+    let node_url = request.target_node_url.clone();
+
     let provider = match state.0.auth_service.get_provider(&request.auth_method) {
         Some(provider) => provider,
         None => {
@@ -119,6 +126,7 @@ pub async fn create_key_handler(
             &request.public_key,
             &request.auth_method,
             request.provider_data,
+            node_url.as_deref(),
         )
         .await
     {

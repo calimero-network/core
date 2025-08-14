@@ -40,7 +40,7 @@ use crate::config::ServerConfig;
 use crate::middleware::host::HostLayer;
 use crate::AdminState;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
@@ -66,7 +66,7 @@ struct NodeUiStaticFiles;
 pub(crate) fn setup(
     config: &ServerConfig,
     shared_state: Arc<AdminState>,
-) -> Option<(&'static str, Router)> {
+) -> Option<(String, Router)> {
     let _ = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
@@ -75,7 +75,14 @@ pub(crate) fn setup(
         }
     };
 
-    let admin_path = "/admin-api";
+    let base_path = "/admin-api";
+
+    // Get the node prefix from env var
+    let admin_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
+        format!("{}{}", prefix, base_path)
+    } else {
+        base_path.to_owned()
+    };
 
     for listen in &config.listen {
         info!(
@@ -217,11 +224,11 @@ pub(crate) fn setup(
 /// - `config`: A reference to the server configuration that contains the admin site settings.
 ///
 /// # Returns
-/// - `Option<(&'static str, Router)>`: If the admin site is enabled, it returns a tuple containing
-///   the base path ("/admin-dashboard") and the router for that path. If the admin site is disabled,
-///   it returns `None`.
-pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
-    let _config = match &config.admin {
+/// - `Option<(String, Router)>`: If the admin site is enabled, it returns a tuple containing
+///   the base path (e.g., "/admin-dashboard" or with prefix from NODE_PATH_PREFIX env var)
+///   and the router for that path. If the admin site is disabled, it returns `None`.
+pub(crate) fn site(config: &ServerConfig) -> Option<(String, Router)> {
+    let _admin_config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin site is disabled");
@@ -229,7 +236,16 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
         }
     };
 
-    let path = "/admin-dashboard";
+    let base_path = "/admin-dashboard";
+
+    // First check the environment variable, fall back to config if not present
+    let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
+        info!("Using path prefix from environment: {}", prefix);
+        format!("{}{}", prefix, base_path)
+    } else {
+        info!("No path prefix configured");
+        base_path.to_owned()
+    };
 
     for listen in &config.listen {
         info!(
@@ -240,8 +256,8 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
 
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()
-        .route("/", get(serve_embedded_file)) // Match /admin-dashboard
-        .route("/*path", get(serve_embedded_file)); // Match /admin-dashboard/* for all sub-paths
+        .route("/", get(serve_embedded_file)) // Match base path
+        .route("/*path", get(serve_embedded_file)); // Match all sub-paths
 
     Some((path, router))
 }
@@ -260,10 +276,17 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
 ///   succeeds, it returns an `Ok` with the response. If no file can be served, it returns an `Err` with
 ///   a 404 NOT_FOUND status code.
 async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
-    // Extract the path from the URI, removing the "/admin-dashboard/" prefix and any leading slashes
+    // Get the full path prefix (node prefix + admin dashboard)
+    let full_prefix = if let Ok(node_prefix) = std::env::var("NODE_PATH_PREFIX") {
+        format!("{}/admin-dashboard/", node_prefix)
+    } else {
+        "/admin-dashboard/".to_owned()
+    };
+
+    // Extract the path from the URI, removing the full prefix and any leading slashes
     let path = uri
         .path()
-        .trim_start_matches("/admin-dashboard/")
+        .trim_start_matches(&full_prefix)
         .trim_start_matches('/');
 
     // Use "index.html" for empty paths (root requests)
@@ -298,10 +321,47 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 ///   with the response. If there is an error building the response, it returns an `Err` with a
 ///   500 INTERNAL_SERVER_ERROR status code.
 fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
+    let content = if let Ok(content) = String::from_utf8(file.data.to_vec()) {
+        // Process HTML, JavaScript, and CSS files
+        if file.metadata.mimetype().starts_with("text/html")
+            || file
+                .metadata
+                .mimetype()
+                .starts_with("application/javascript")
+            || file.metadata.mimetype() == "text/css"
+        {
+            // Get the node prefix from env var
+            let base_path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
+                format!("{}/admin-dashboard", prefix)
+            } else {
+                "/admin-dashboard".to_owned()
+            };
+
+            // Replace all instances of /admin-dashboard with the correct base path
+            let modified_content = content
+                .replace("\"/admin-dashboard", &format!("\"{}", base_path))
+                .replace("'/admin-dashboard", &format!("'{}", base_path))
+                .replace("(/admin-dashboard", &format!("({}", base_path))
+                .replace(" /admin-dashboard", &format!(" {}", base_path))
+                .replace(
+                    "href=\"/admin-dashboard",
+                    &format!("href=\"{}/admin-dashboard", base_path),
+                )
+                .replace(
+                    "src=\"/admin-dashboard",
+                    &format!("src=\"{}/admin-dashboard", base_path),
+                );
+            modified_content.into_bytes()
+        } else {
+            file.data.into_owned()
+        }
+    } else {
+        file.data.into_owned()
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", file.metadata.mimetype())
-        .body(Body::from(file.data.into_owned()))
+        .body(Body::from(content))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 

@@ -35,8 +35,15 @@ pub(crate) struct ServiceState {
 pub(crate) fn service(
     config: &ServerConfig,
     ctx_client: ContextClient,
-) -> Option<(&'static str, Router)> {
-    let path = "/jsonrpc"; // todo! source from config
+) -> Option<(String, Router)> {
+    let base_path = "/jsonrpc";
+
+    // Get the node prefix from env var
+    let path = if let Ok(prefix) = std::env::var("NODE_PATH_PREFIX") {
+        format!("{}{}", prefix, base_path)
+    } else {
+        base_path.to_owned()
+    };
 
     for listen in &config.listen {
         info!("JSON RPC server listening on {}/http{{{}}}", listen, path);

@@ -145,6 +145,9 @@ pub async fn token_handler(
 ) -> impl IntoResponse {
     info!("token_handler");
 
+    // Extract node URL from client_name for node-specific token generation
+    let node_url = Some(token_request.client_name.clone());
+
     // Sanitize string inputs to prevent injection attacks
     token_request.auth_method = sanitize_identifier(&token_request.auth_method);
     token_request.public_key = sanitize_string(&token_request.public_key);
@@ -175,11 +178,11 @@ pub async fn token_handler(
         );
     }
 
-    // Authenticate directly using the token request
+    // Authenticate directly using the token request with node context
     let auth_response = match state
         .0
         .auth_service
-        .authenticate_token_request(&token_request)
+        .authenticate_token_request(&token_request, node_url.as_deref())
         .await
     {
         Ok(response) => response,
@@ -204,11 +207,11 @@ pub async fn token_handler(
 
     let key_id = auth_response.key_id;
 
-    // Generate tokens using the validated permissions from auth_response
+    // Generate tokens using the validated permissions from auth_response and node_id
     match state
         .0
         .token_generator
-        .generate_token_pair(key_id.clone(), auth_response.permissions)
+        .generate_token_pair(key_id.clone(), auth_response.permissions, node_url)
         .await
     {
         Ok((access_token, refresh_token)) => {
@@ -252,12 +255,14 @@ pub struct RefreshTokenRequest {
 /// * `impl IntoResponse` - The response
 pub async fn refresh_token_handler(
     state: Extension<Arc<AppState>>,
-    ValidatedJson(request): ValidatedJson<RefreshTokenRequest>,
+    headers: HeaderMap,
+    ValidatedJson(refresh_request): ValidatedJson<RefreshTokenRequest>,
 ) -> impl IntoResponse {
+    // First check if access token is still valid
     match state
         .0
         .token_generator
-        .verify_token(&request.access_token)
+        .verify_token(&refresh_request.access_token)
         .await
     {
         Ok(_) => {
@@ -274,10 +279,48 @@ pub async fn refresh_token_handler(
         }
     };
 
+    // Verify the refresh token and extract claims
+    let refresh_claims = match state
+        .0
+        .token_generator
+        .verify_token(&refresh_request.refresh_token)
+        .await
+    {
+        Ok(claims) => claims,
+        Err(err) => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                format!("Invalid refresh token: {}", err),
+                None,
+            );
+        }
+    };
+
+    // Check node URL if token has node information
+    if let Some(token_node_url) = &refresh_claims.node_url {
+        // Get referrer URL from headers
+        if let Some(referrer) = headers.get("referer") {
+            if let Ok(referrer_str) = referrer.to_str() {
+                // Compare if referrer starts with the token's node URL
+                if !referrer_str.starts_with(token_node_url) {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        "Token is not valid for this node",
+                        Some(error_headers),
+                    );
+                }
+            }
+        }
+    }
+
+    // Use the refresh token to generate new tokens
+    // Note: refresh_token_pair automatically preserves node_url from the refresh token
     match state
         .0
         .token_generator
-        .refresh_token_pair(&request.refresh_token)
+        .refresh_token_pair(&refresh_request.refresh_token)
         .await
     {
         Ok((access_token, refresh_token)) => {
@@ -332,6 +375,25 @@ pub async fn validate_handler(
     // Validate the token
     match state.0.token_generator.verify_token(&token).await {
         Ok(claims) => {
+            // Check node URL if token has node information
+            if let Some(token_node_url) = &claims.node_url {
+                // Get referrer URL from headers
+                if let Some(referrer) = headers.get("referer") {
+                    if let Ok(referrer_str) = referrer.to_str() {
+                        // Compare if referrer starts with the token's node URL
+                        if !referrer_str.starts_with(token_node_url) {
+                            let mut error_headers = HeaderMap::new();
+                            error_headers.insert("X-Auth-Error", "invalid_node".parse().unwrap());
+                            return error_response(
+                                StatusCode::FORBIDDEN,
+                                "Token is not valid for this node",
+                                Some(error_headers),
+                            );
+                        }
+                    }
+                }
+            }
+
             // Verify the key exists and is valid
             let _key = match state.0.key_manager.get_key(&claims.sub).await {
                 Ok(Some(key)) if key.is_valid() => key,
