@@ -65,7 +65,7 @@ pub struct ClientLocalSigner {
 
 #[non_exhaustive]
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(untagged)]
+#[serde(tag = "type", content = "data")]
 pub enum Credentials {
     Near(NearCredentials),
     Starknet(StarknetCredentials),
@@ -80,4 +80,29 @@ pub struct RawCredentials {
     pub account_id: Option<String>,
     pub public_key: String,
     pub secret_key: String,
+}
+
+
+impl ClientConfig {
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        for (name, param) in &self.params {
+            if let ClientSelectedSigner::Local = param.signer {
+                let protocol = &param.network;
+                if !self.signer.local.protocols.contains_key(protocol) {
+                    errors.push(format!(
+                        "Missing local credentials for network `{}` in param `{}`",
+                        protocol, name
+                    ));
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
