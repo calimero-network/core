@@ -1,4 +1,5 @@
 use std::io;
+use std::str::FromStr; // Add this import for from_str
 use std::sync::Arc;
 
 use calimero_primitives::application::{
@@ -9,7 +10,7 @@ use calimero_primitives::hash::Hash;
 use calimero_store::{key, types};
 use camino::Utf8PathBuf;
 use eyre::bail;
-use futures_util::TryStreamExt;
+use futures_util::{AsyncRead, TryStreamExt};
 use reqwest::Url;
 use tokio::fs::File;
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -17,6 +18,23 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 use super::NodeClient;
 
 impl NodeClient {
+    pub async fn install_application_from_stream<R>(
+        &self,
+        stream: R,
+        expected_size: Option<u64>,
+        expected_hash: Option<&Hash>,
+        metadata: Vec<u8>,
+    ) -> eyre::Result<ApplicationId>
+    where
+        R: AsyncRead,
+    {
+        let (blob_id, size) = self.add_blob(stream, expected_size, expected_hash).await?;
+
+        let source = ApplicationSource::from_str("stream://uploaded")?;
+
+        self.install_application(&blob_id, size, &source, metadata)
+    }
+
     pub fn get_application(
         &self,
         application_id: &ApplicationId,

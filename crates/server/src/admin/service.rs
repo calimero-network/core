@@ -26,8 +26,8 @@ use super::handlers::proposals::{
 use super::handlers::{alias, blob};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::applications::{
-    get_application, install_application, install_dev_application, list_applications,
-    uninstall_application,
+    get_application, install_application, install_application_stream, install_dev_application,
+    install_from_blob, list_applications, uninstall_application,
 };
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_identities, get_context_storage,
@@ -90,6 +90,10 @@ pub(crate) fn setup(
     let router = Router::new()
         // Application management
         .route("/install-application", post(install_application::handler))
+        .route(
+            "/install-application-from-blob",
+            post(install_from_blob::handler),
+        )
         .route(
             "/install-dev-application",
             post(install_dev_application::handler),
@@ -171,6 +175,39 @@ pub(crate) fn setup(
         .route(
             "/contexts/:context_id/proxy-contract",
             get(get_proxy_contract_handler),
+        );
+
+    let dev_router = Router::new()
+        .route(
+            "/dev/install-dev-application",
+            post(install_dev_application::handler),
+        )
+        .route(
+            "/dev/install-application",
+            post(install_application::handler),
+        )
+        .route(
+            "/dev/install-application-stream",
+            post(install_application_stream::handler),
+        )
+        .route(
+            "/dev/install-application-json",
+            post(install_application_stream::json_handler),
+        )
+        .route("/dev/applications", get(list_applications::handler))
+        .route(
+            "/dev/applications/:application_id",
+            get(get_application::handler),
+        )
+        .route(
+            "/dev/contexts",
+            get(get_contexts::handler).post(create_context::handler),
+        )
+        .route("/dev/contexts/invite", post(invite_to_context::handler))
+        .route("/dev/contexts/join", post(join_context::handler))
+        .route(
+            "/dev/contexts/:context_id/application",
+            post(update_context_application::handler),
         )
         .nest(
             "/contexts/sync",
@@ -198,6 +235,7 @@ pub(crate) fn setup(
 
     let admin_router = Router::new()
         .merge(router)
+        .merge(dev_router)
         .layer(Extension(shared_state))
         .layer(session_layer);
 
