@@ -6,6 +6,7 @@ mod application;
 mod blobs;
 mod context;
 mod generic;
+mod kad_record;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;

@@ -1,7 +1,9 @@
+use std::borrow::Cow;
+
 use eyre::bail;
 use libp2p::{
     kad::{
-        store::{RecordStore, Result},
+        store::{Error as KadError, RecordStore, Result},
         KBucketKey, ProviderRecord, Record, RecordKey, K_VALUE,
     },
     PeerId,
@@ -9,21 +11,25 @@ use libp2p::{
 use rocksdb::ColumnFamily;
 use rocksdb::DB;
 
-use calimero_store::db::Column;
+use calimero_store::{
+    iter::DBIter,
+    key::{self, AsKeyParts},
+    Store,
+};
 
 /// DB implementation of a `RecordStore`.
-pub struct RocksDB {
+pub struct KadStore {
     /// The identity of the peer owning the store.
     local_key: KBucketKey<PeerId>,
     // Rocks DB store.
-    db: DB,
+    db: Store,
     /// The configuration of the store.
-    config: RocksDBConfig,
+    config: KadStoreConfig,
 }
 
 /// Configuration for a `RocksDB` store.
 #[derive(Debug, Clone)]
-pub struct RocksDBConfig {
+pub struct KadStoreConfig {
     /// The maximum number of records.
     pub max_records: usize,
     /// The maximum size of record values, in bytes.
@@ -37,7 +43,7 @@ pub struct RocksDBConfig {
     pub max_provided_keys: usize,
 }
 
-impl Default for RocksDBConfig {
+impl Default for KadStoreConfig {
     fn default() -> Self {
         Self {
             max_records: 1024,
@@ -48,44 +54,20 @@ impl Default for RocksDBConfig {
     }
 }
 
-macro_rules! create_handle {
-    ($column:expr,$self:expr) => {
-        if let Some(cf_handle) = $self.get_handle($column) {
-            Ok(cf_handle)
-        } else {
-            bail!("unknown column family: {:?}", $column);
-        }
-    };
-}
-
-impl RocksDB {
-    pub fn new() -> RocksDB {
-        // TODO: How do I initialize the DB
+impl KadStore {
+    pub fn new() -> KadStore {
+        // TODO: Query store for all records, and then store the len
+        // and increment, this will ensure we don't recurrently query store
+        // when gate-keeping.
         todo!()
     }
 
-    pub fn with_config(config: RocksDBConfig) -> RocksDB {
+    pub fn with_config(config: KadStoreConfig) -> KadStore {
         todo!()
-    }
-
-    fn get_handle(&self, column: Column) -> Option<&ColumnFamily> {
-        self.db.cf_handle(column.as_ref())
-    }
-
-    fn get_provider_handle(&self) -> eyre::Result<&ColumnFamily> {
-        create_handle!(Column::KadProviders, self)
-    }
-
-    fn get_provided_handle(&self) -> eyre::Result<&ColumnFamily> {
-        create_handle!(Column::KadProvided, self)
-    }
-
-    fn get_records_handle(&self) -> eyre::Result<&ColumnFamily> {
-        create_handle!(Column::KadRecords, self)
     }
 }
 
-impl RecordStore for RocksDB {
+impl RecordStore for KadStore {
     // type ProvidedIter<'a> =
     //     where
     //         Self: 'a;
@@ -93,11 +75,35 @@ impl RecordStore for RocksDB {
     //         type RecordsIter<'a> =
     //             where
     //                 Self: 'a;
-    fn get(&self, key: &RecordKey) -> Option<std::borrow::Cow<'_, Record>> {
-        let cf_handle = self.get_records_handle().ok()?;
+    fn get(&self, key: &RecordKey) -> Option<Cow<'_, Record>> {
+        let record = self.db.handle().get(&key::RecordMeta::new(key));
 
-        let result = self.db.get_pinned_cf(cf_handle, key).ok()??;
-        let record = serde_json::from_slice::<Record>(&result);
+        match record {
+            Ok(e) => e
+                .map(|a| match a.record() {
+                    Ok(e) => Some(e),
+                    Err(e) => None,
+                })
+                .flatten()
+                .map(|a| Cow::Owned(a)),
+
+            Err(e) => None,
+        }
+    }
+
+    fn put(&mut self, r: Record) -> Result<()> {
+        if r.value.len() >= self.config.max_value_bytes {
+            return Err(KadError::ValueTooLarge);
+        }
+
+        // TODO: How can I query column???
+        for a in self.db.handle().iter().unwrap() {}
+
+        todo!()
+    }
+
+    fn remove(&mut self, k: &RecordKey) {
+        todo!()
     }
 
     fn add_provider(&mut self, record: ProviderRecord) -> Result<()> {
@@ -112,15 +118,7 @@ impl RecordStore for RocksDB {
         todo!()
     }
 
-    fn put(&mut self, r: Record) -> Result<()> {
-        todo!()
-    }
-
     fn records(&self) -> Self::RecordsIter<'_> {
-        todo!()
-    }
-
-    fn remove(&mut self, k: &RecordKey) {
         todo!()
     }
 

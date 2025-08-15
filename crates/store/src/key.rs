@@ -18,6 +18,7 @@ mod blobs;
 mod component;
 mod context;
 mod generic;
+mod kad_record;
 
 pub use alias::{Alias, Aliasable, StoreScopeCompat};
 pub use application::ApplicationMeta;
@@ -25,6 +26,7 @@ pub use blobs::BlobMeta;
 use component::KeyComponents;
 pub use context::{ContextConfig, ContextDelta, ContextIdentity, ContextMeta, ContextState};
 pub use generic::Generic;
+pub use kad_record::{ProviderRecordMeta, RecordMeta};
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
