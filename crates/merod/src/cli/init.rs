@@ -78,7 +78,10 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
         default_contract: "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c",
         signer_type: ClientSelectedSigner::Relayer,
         networks: &[
-            ("mainnet", "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"),
+            (
+                "mainnet",
+                "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7",
+            ),
             ("sepolia", "https://free-rpc.nethermind.io/sepolia-juno/"),
         ],
         protocol: ConfigProtocol::Starknet,
@@ -110,9 +113,7 @@ const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
         default_network: "sepolia",
         default_contract: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB",
         signer_type: ClientSelectedSigner::Relayer,
-        networks: &[
-            ("sepolia", "https://sepolia.drpc.org"),
-        ],
+        networks: &[("sepolia", "https://sepolia.drpc.org")],
         protocol: ConfigProtocol::Ethereum,
     },
 ];
