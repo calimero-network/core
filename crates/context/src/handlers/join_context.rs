@@ -111,7 +111,7 @@ async fn join_context(
 
     node_client.subscribe(&context_id).await?;
 
-    node_client.sync(Some(&context_id)).await?;
+    node_client.sync(Some(&context_id), None).await?;
 
     Ok((context_id, invitee_id))
 }

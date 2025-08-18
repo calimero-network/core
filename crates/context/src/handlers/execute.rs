@@ -307,7 +307,7 @@ impl ContextManager {
             let node_client = act.node_client.clone();
 
             async move {
-                if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled).await? {
+                if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled, None).await? {
                     let module =
                         unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
 
@@ -330,7 +330,7 @@ impl ContextManager {
                     "no usable precompiled module found, compiling.."
                 );
 
-                let Some(bytecode) = node_client.get_blob_bytes(&blob.bytecode).await? else {
+                let Some(bytecode) = node_client.get_blob_bytes(&blob.bytecode, None).await? else {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 
