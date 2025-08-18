@@ -304,12 +304,12 @@ impl ContextManager {
         });
 
         let module_task = blob_task.and_then(move |mut blob, act, _ctx| {
-            let engine = act.runtime_engine.clone();
             let node_client = act.node_client.clone();
 
             async move {
                 if let Some(compiled) = node_client.get_blob_bytes(&blob.compiled).await? {
-                    let module = unsafe { engine.from_precompiled(&compiled) };
+                    let module =
+                        unsafe { calimero_runtime::Engine::headless().from_precompiled(&compiled) };
 
                     match module {
                         Ok(module) => return Ok((module, None)),
@@ -334,7 +334,7 @@ impl ContextManager {
                     bail!(ExecuteError::ApplicationNotInstalled { application_id });
                 };
 
-                let module = engine.compile(&bytecode)?;
+                let module = calimero_runtime::Engine::default().compile(&bytecode)?;
 
                 let compiled = Cursor::new(module.to_bytes()?);
 
