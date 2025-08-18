@@ -30,7 +30,6 @@ impl Report for UninstallApplicationResponse {
 impl UninstallCommand {
     pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
-        
         // Call the uninstall API endpoint using DELETE method
         let response: UninstallApplicationResponse = connection
             .delete(&format!("admin-api/applications/{}", self.app_id))
