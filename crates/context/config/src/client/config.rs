@@ -54,6 +54,8 @@ pub struct ClientLocalConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientRelayerSigner {
     pub url: Url,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

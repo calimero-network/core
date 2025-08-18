@@ -94,6 +94,10 @@ pub struct InitCommand {
     #[clap(long, value_name = "URL")]
     pub relayer_url: Option<Url>,
 
+    /// API key for the relayer (if required for authentication)
+    #[clap(long, value_name = "API_KEY")]
+    pub relayer_api_key: Option<String>,
+
     /// Name of protocol
     #[clap(long, value_name = "PROTOCOL", default_value = "near")]
     #[clap(value_enum)]
@@ -392,7 +396,10 @@ impl InitCommand {
 
         let client_config = ClientConfig {
             signer: ClientSigner {
-                relayer: ClientRelayerSigner { url: relayer },
+                relayer: ClientRelayerSigner {
+                    url: relayer,
+                    api_key: self.relayer_api_key,
+                },
                 local: local_signers,
             },
             params: client_params,

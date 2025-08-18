@@ -15,12 +15,14 @@ use super::transport::{
 #[non_exhaustive]
 pub struct RelayerConfig {
     pub url: Url,
+    pub api_key: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct RelayerTransport {
     client: reqwest::Client,
     url: Url,
+    api_key: Option<String>,
 }
 
 impl RelayerTransport {
@@ -31,6 +33,7 @@ impl RelayerTransport {
         Self {
             client,
             url: config.url.clone(),
+            api_key: config.api_key.clone(),
         }
     }
 }
@@ -78,12 +81,14 @@ impl RelayerTransport {
             payload: args.payload,
         };
 
-        let response = self
-            .client
-            .post(self.url.clone())
-            .json(&request)
-            .send()
-            .await?;
+        let mut req_builder = self.client.post(self.url.clone()).json(&request);
+
+        // Add authorization header if API key is provided
+        if let Some(api_key) = &self.api_key {
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = req_builder.send().await?;
 
         match response.status() {
             status if status.is_success() => {

@@ -60,6 +60,7 @@ impl Client<AnyTransport> {
     pub fn from_config(config: &ClientConfig) -> Self {
         let relayer = relayer::RelayerTransport::new(&relayer::RelayerConfig {
             url: config.signer.relayer.url.clone(),
+            api_key: config.signer.relayer.api_key.clone(),
         });
 
         let local = Self::from_local_config(&config).expect("validation error");
