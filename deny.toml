@@ -45,13 +45,11 @@ license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
 
-[[licenses.clarify]]
+# Add exception for nacl crate to handle the deprecated LGPL-3.0+ format
+[[licenses.exceptions]]
 name = "nacl"
 version = "*"
-expression = "LGPL-3.0-or-later"
-license-files = [
-    { path = "LICENSE", hash = 0x0 }
-]
+allow = ["LGPL-3.0"]
 
 [sources]
 unknown-registry = "deny"

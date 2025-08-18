@@ -5,6 +5,7 @@ on:
     branches: ["master"]
   pull_request:
     paths:
+      - deny.toml
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
@@ -61,3 +62,4 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses sources
+          log-level: debug
