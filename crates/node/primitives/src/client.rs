@@ -14,8 +14,9 @@ use calimero_utils_actix::LazyRecipient;
 use eyre::{OptionExt, WrapErr};
 use futures_util::Stream;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
+use libp2p::PeerId;
 use rand::Rng;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info};
 
 use crate::messages::NodeMessage;
@@ -32,6 +33,7 @@ pub struct NodeClient {
     network_client: NetworkClient,
     node_manager: LazyRecipient<NodeMessage>,
     event_sender: broadcast::Sender<NodeEvent>,
+    ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
 }
 
 impl NodeClient {
@@ -41,6 +43,7 @@ impl NodeClient {
         network_client: NetworkClient,
         node_manager: LazyRecipient<NodeMessage>,
         event_sender: broadcast::Sender<NodeEvent>,
+        ctx_sync_tx: mpsc::Sender<(Option<ContextId>, Option<PeerId>)>,
     ) -> Self {
         Self {
             datastore,
@@ -48,6 +51,7 @@ impl NodeClient {
             network_client,
             node_manager,
             event_sender,
+            ctx_sync_tx,
         }
     }
 
@@ -71,12 +75,12 @@ impl NodeClient {
         Ok(())
     }
 
-    pub async fn get_peers_count(&self, context: Option<ContextId>) -> usize {
+    pub async fn get_peers_count(&self, context: Option<&ContextId>) -> usize {
         let Some(context) = context else {
             return self.network_client.peer_count().await;
         };
 
-        let topic = TopicHash::from_raw(context);
+        let topic = TopicHash::from_raw(*context);
 
         self.network_client.mesh_peer_count(topic).await
     }
@@ -96,7 +100,7 @@ impl NodeClient {
             "Sending state delta"
         );
 
-        if self.get_peers_count(Some(context.id)).await == 0 {
+        if self.get_peers_count(Some(&context.id)).await == 0 {
             return Ok(());
         }
 
@@ -152,5 +156,17 @@ impl NodeClient {
                 }
             }
         }
+    }
+
+    pub async fn sync(
+        &self,
+        context_id: Option<&ContextId>,
+        peer_id: Option<&PeerId>,
+    ) -> eyre::Result<()> {
+        self.ctx_sync_tx
+            .send((context_id.copied(), peer_id.copied()))
+            .await?;
+
+        Ok(())
     }
 }

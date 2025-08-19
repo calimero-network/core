@@ -8,8 +8,16 @@ use eyre::{bail, Context, OptionExt};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct Asset {
+    name: String,
+    url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
 struct Release {
-    zipball_url: String,
+    assets: Vec<Asset>,
 }
 
 const USER_AGENT: &str = "calimero-server-build";
@@ -33,7 +41,20 @@ fn try_main() -> eyre::Result<()> {
 
     let src = match option_env!("CALIMERO_WEBUI_SRC") {
         Some(src) => {
-            is_local_dir = fs::metadata(src)?.is_dir();
+            match reqwest::Url::parse(src) {
+                Ok(url) if !matches!(url.scheme(), "http" | "https") => {
+                    bail!(
+                        "CALIMERO_WEBUI_SRC must be an absolute path or a valid URL, got: {}",
+                        src
+                    );
+                }
+                Err(_) if !Path::new(src).is_absolute() => bail!(
+                    "CALIMERO_WEBUI_SRC must be an absolute path or a valid URL, got: {}",
+                    src
+                ),
+                Err(_) => is_local_dir = fs::metadata(src)?.is_dir(),
+                _ => {}
+            }
 
             Cow::from(src)
         }
@@ -59,35 +80,53 @@ fn try_main() -> eyre::Result<()> {
 
             let res = req.send()?;
 
-            let Release { mut zipball_url } = match Response::try_from(res)? {
+            let Release { mut assets } = match Response::try_from(res)? {
                 Response::Json(value) => serde_json::from_value(value)?,
                 other => bail!("expected json response, got: {:?}", other),
             };
 
-            // atm, cached-path infers the archive type from the URL
-            // https://github.com/epwalsh/rust-cached-path/issues/68
-            // this is a temporary workaround for extraction support
-            zipball_url.push_str("?.zip");
+            let asset = match assets.pop() {
+                None => bail!("no assets found in release"),
+                Some(asset) if assets.is_empty() => asset,
+                Some(asset) => {
+                    let file = option_env!("CALIMERO_WEBUI_ASSET");
+                    let file = file.ok_or_eyre(
+                        "multiple assets found, but no `CALIMERO_WEBUI_ASSET` environment variable set"
+                    )?;
 
-            zipball_url.into()
+                    let found = [asset]
+                        .into_iter()
+                        .chain(assets)
+                        .find(|asset| asset.name == file);
+
+                    found.ok_or_eyre(format!(
+                        "no asset found with name `{}` in release (env: CALIMERO_WEBUI_ASSET)",
+                        file
+                    ))?
+                }
+            };
+
+            asset.url.into()
         }
     };
-
-    let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
-
-    if let Some(token) = token {
-        let headers = [(
-            reqwest_compat::header::AUTHORIZATION,
-            format!("Bearer {token}").try_into()?,
-        )]
-        .into_iter();
-
-        builder = builder.default_headers(headers.collect());
-    }
 
     let webui_dir = if is_local_dir {
         Cow::from(Path::new(&*src))
     } else {
+        let mut builder = reqwest_compat::blocking::Client::builder().user_agent(USER_AGENT);
+
+        let base_headers = [(
+            reqwest_compat::header::ACCEPT,
+            reqwest_compat::header::HeaderValue::from_static("application/octet-stream"),
+        )];
+
+        let auth_header = token
+            .map(|token| format!("Bearer {token}").try_into())
+            .transpose()?
+            .map(|token| (reqwest_compat::header::AUTHORIZATION, token));
+
+        builder = builder.default_headers(base_headers.into_iter().chain(auth_header).collect());
+
         let cache = Cache::builder()
             .client_builder(builder)
             .freshness_lifetime(FRESHNESS_LIFETIME)
@@ -105,12 +144,7 @@ fn try_main() -> eyre::Result<()> {
 
         let workdir = cache.cached_path_with_options(&*src, &options)?;
 
-        let repo = fs::read_dir(workdir)?
-            .filter_map(Result::ok)
-            .find(|entry| entry.path().is_dir())
-            .ok_or_eyre("no extracted directory found")?;
-
-        repo.path().join("build").into()
+        workdir.into()
     };
 
     println!("cargo:rerun-if-changed={}", webui_dir.display());
@@ -136,7 +170,8 @@ fn target_dir() -> eyre::Result<PathBuf> {
     eyre::bail!("failed to resolve target dir");
 }
 
-fn replace<'a>(str: Cow<'_, str>, replace: impl Fn(&str) -> Option<&'a str>) -> Cow<'_, str> {
+#[expect(single_use_lifetimes, reason = "necessary to return itself when empty")]
+fn replace<'a: 'b, 'b>(str: Cow<'a, str>, replace: impl Fn(&str) -> Option<&str>) -> Cow<'b, str> {
     let mut idx = 0;
     let mut buf = str.as_ref();
     let mut out = String::new();

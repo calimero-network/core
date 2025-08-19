@@ -313,45 +313,68 @@ pub async fn validate_handler(
     state: Extension<Arc<AppState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // Check if Authorization header exists and starts with "Bearer "
-    if !headers
-        .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-        .map(|h| h.starts_with("Bearer "))
-        .unwrap_or(false)
-    {
-        let mut error_headers = HeaderMap::new();
-        error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
-        return error_response(
-            StatusCode::UNAUTHORIZED,
-            "No Bearer token provided",
-            Some(error_headers),
-        );
-    }
+    let token =
+        extract_token_from_headers(&headers).or_else(|| extract_token_from_forwarded_uri(&headers));
 
-    // Validate the request using the headers
-    match state
-        .0
-        .auth_service
-        .verify_token_from_headers(&headers)
-        .await
-    {
-        Ok(auth_response) => {
-            if !auth_response.is_valid {
-                return error_response(StatusCode::UNAUTHORIZED, "Unauthorized", None);
-            }
+    let token = match token {
+        Some(token) => token.to_string(),
+        None => {
+            let mut error_headers = HeaderMap::new();
+            error_headers.insert("X-Auth-Error", "missing_token".parse().unwrap());
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "No token provided",
+                Some(error_headers),
+            );
+        }
+    };
+
+    // Validate the token
+    match state.0.token_generator.verify_token(&token).await {
+        Ok(claims) => {
+            // Verify the key exists and is valid
+            let _key = match state.0.key_manager.get_key(&claims.sub).await {
+                Ok(Some(key)) if key.is_valid() => key,
+                Ok(Some(_)) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "token_revoked".parse().unwrap());
+                    return error_response(
+                        StatusCode::FORBIDDEN,
+                        "Key has been revoked",
+                        Some(error_headers),
+                    );
+                }
+                Ok(None) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Key not found",
+                        Some(error_headers),
+                    );
+                }
+                Err(_) => {
+                    let mut error_headers = HeaderMap::new();
+                    error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
+                    return error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "Failed to verify key",
+                        Some(error_headers),
+                    );
+                }
+            };
 
             // Create response headers
             let mut response_headers = HeaderMap::new();
 
             // Add user ID header
-            response_headers.insert("X-Auth-User", auth_response.key_id.parse().unwrap());
+            response_headers.insert("X-Auth-User", claims.sub.parse().unwrap());
 
             // Add permissions as a comma-separated list
-            if !auth_response.permissions.is_empty() {
+            if !claims.permissions.is_empty() {
                 response_headers.insert(
                     "X-Auth-Permissions",
-                    auth_response.permissions.join(",").parse().unwrap(),
+                    claims.permissions.join(",").parse().unwrap(),
                 );
             }
 
@@ -367,7 +390,6 @@ pub async fn validate_handler(
             } else {
                 error_headers.insert("X-Auth-Error", "invalid_token".parse().unwrap());
             }
-
             error_response(
                 StatusCode::UNAUTHORIZED,
                 format!("Invalid token: {}", err),
@@ -375,6 +397,30 @@ pub async fn validate_handler(
             )
         }
     }
+}
+
+/// Extracts the token from the Authorization header.
+fn extract_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|s| s.trim())
+}
+
+/// Extracts the token from the X-Forwarded-Uri header.
+fn extract_token_from_forwarded_uri<'a>(headers: &'a HeaderMap) -> Option<&'a str> {
+    headers
+        .get("X-Forwarded-Uri")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|uri_str| {
+            uri_str.split('?').nth(1).and_then(|query| {
+                query
+                    .split('&')
+                    .find(|param| param.starts_with("token="))
+                    .map(|param| &param[6..])
+            })
+        })
 }
 
 /// OAuth callback handler

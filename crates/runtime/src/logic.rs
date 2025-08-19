@@ -801,6 +801,59 @@ impl VMHostFunctions<'_> {
         Ok(1)
     }
 
+    /// Announce a blob to a specific context for network discovery
+    pub fn blob_announce_to_context(
+        &mut self,
+        blob_id_ptr: u64,
+        blob_id_len: u64,
+        context_id_ptr: u64,
+        context_id_len: u64,
+    ) -> VMLogicResult<u32> {
+        // Check if blob functionality is available
+        let node_client = match &self.borrow_logic().node_client {
+            Some(client) => client.clone(),
+            None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
+        };
+
+        // Validate input lengths
+        if blob_id_len != 32 || context_id_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        // Read blob_id and context_id from memory
+        let blob_id_bytes = self.read_guest_memory_sized::<32>(blob_id_ptr, blob_id_len)?;
+        let context_id_bytes =
+            self.read_guest_memory_sized::<32>(context_id_ptr, context_id_len)?;
+
+        let blob_id = BlobId::from(blob_id_bytes);
+        let context_id = calimero_primitives::context::ContextId::from(context_id_bytes);
+
+        // Get blob metadata to get size
+        let blob_info = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                node_client
+                    .get_blob_info(blob_id)
+                    .await
+                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
+            })
+        })?;
+
+        let blob_info =
+            blob_info.ok_or_else(|| VMLogicError::HostError(HostError::BlobsNotSupported))?;
+
+        // Announce blob to network
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                node_client
+                    .announce_blob_to_network(&blob_id, &context_id, blob_info.size)
+                    .await
+                    .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
+            })
+        })?;
+
+        Ok(1)
+    }
+
     /// Open a blob for reading
     /// Returns: file descriptor (u64) for reading operations  
     pub fn blob_open(&mut self, blob_id_ptr: u64, blob_id_len: u64) -> VMLogicResult<u64> {
@@ -909,7 +962,8 @@ impl VMHostFunctions<'_> {
                 let blob_stream = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
                         node_client
-                            .get_blob(&read_handle.blob_id)
+                            .get_blob(&read_handle.blob_id, None)
+                            .await
                             .map_err(|_| VMLogicError::HostError(HostError::BlobsNotSupported))
                     })
                 })?;

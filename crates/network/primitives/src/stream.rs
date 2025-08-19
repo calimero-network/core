@@ -15,6 +15,7 @@ pub use codec::{CodecError, Message};
 pub const MAX_MESSAGE_SIZE: usize = 8 * 1_024 * 1_024;
 
 pub const CALIMERO_STREAM_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimero/stream/0.0.1");
+pub const CALIMERO_BLOB_PROTOCOL: StreamProtocol = StreamProtocol::new("/calimero/blob/0.0.1");
 
 #[derive(Debug)]
 pub struct Stream {
