@@ -1,7 +1,11 @@
-use std::io::{self, BufRead, BufReader};
 use std::pin::{pin, Pin};
+#[cfg(feature = "interactive-cli")]
 use std::sync::Arc;
-use std::thread;
+#[cfg(feature = "interactive-cli")]
+use std::{
+    io::{self, BufRead, BufReader},
+    thread,
+};
 
 use actix::{Actor, Arbiter, System};
 use calimero_blobstore::config::BlobStoreConfig;
@@ -24,8 +28,11 @@ use eyre::{OptionExt, WrapErr};
 use futures_util::{stream, StreamExt};
 use libp2p::identity::Keypair;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, event_enabled, info, Level};
+use tracing::info;
+#[cfg(feature = "interactive-cli")]
+use tracing::{error, event_enabled, Level};
 
+#[cfg(feature = "interactive-cli")]
 use crate::interactive_cli::handle_line;
 use crate::sync::{SyncConfig, SyncManager};
 use crate::NodeManager;
@@ -58,7 +65,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (tx, mut rx) = mpsc::channel(1);
 
-    let mut system = tokio::task::spawn_blocking(move || {
+    let system = tokio::task::spawn_blocking(move || {
         let system = System::new();
 
         let _ignored = system.runtime().spawn({
@@ -169,13 +176,49 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         datastore.clone(),
     );
 
-    let config = Arc::new(config);
+    let sync = pin!(sync_manager.start());
+    let server = tokio::spawn(server);
 
-    let mut sync = pin!(sync_manager.start());
-    let mut server = tokio::spawn(server);
+    #[cfg(feature = "interactive-cli")]
+    {
+        let config = Arc::new(config);
+        run_with_interactive_cli(
+            sync,
+            server,
+            system,
+            context_client,
+            node_client,
+            datastore,
+            config,
+        )
+        .await?;
+    }
 
+    #[cfg(not(feature = "interactive-cli"))]
+    {
+        run_without_interactive_cli(sync, server, system).await?;
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "interactive-cli")]
+async fn run_with_interactive_cli<F>(
+    mut sync: Pin<&mut F>,
+    mut server: tokio::task::JoinHandle<eyre::Result<()>>,
+    mut system: tokio::task::JoinHandle<eyre::Result<()>>,
+    context_client: ContextClient,
+    node_client: NodeClient,
+    datastore: Store,
+    config: Arc<NodeConfig>,
+) -> eyre::Result<()>
+where
+    F: std::future::Future<Output = ()>,
+{
+    // Create the mpsc channel for stdin lines
     let (lines_tx, mut lines) = mpsc::channel(1);
 
+    // Spawn thread to read from stdin
     let _ignored = thread::spawn(move || {
         let stdin = BufReader::new(io::stdin());
 
@@ -190,7 +233,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         tokio::select! {
             _ = &mut sync => {},
             res = &mut server => res??,
-            res = &mut system => break res?,
+            res = &mut system => return res?,
             line = lines.recv() => {
                 let Some(line) = line else {
                     continue;
@@ -214,6 +257,24 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                     }
                 });
             }
+        }
+    }
+}
+
+#[cfg(not(feature = "interactive-cli"))]
+async fn run_without_interactive_cli<F>(
+    mut sync: Pin<&mut F>,
+    mut server: tokio::task::JoinHandle<eyre::Result<()>>,
+    mut system: tokio::task::JoinHandle<eyre::Result<()>>,
+) -> eyre::Result<()>
+where
+    F: std::future::Future<Output = ()>,
+{
+    loop {
+        tokio::select! {
+            _ = &mut sync => {},
+            res = &mut server => res??,
+            res = &mut system => return res?,
         }
     }
 }

@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use tracing::error;
 
 pub mod handlers;
+#[cfg(feature = "interactive-cli")]
 pub mod interactive_cli;
 mod run;
 pub mod sync;
