@@ -48,6 +48,76 @@ const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_SYNC_FREQUENCY: Duration = Duration::from_secs(60);
 
+/// Helper struct to define protocol configuration
+#[derive(Debug)]
+struct ProtocolConfig<'a> {
+    name: &'a str,
+    default_network: &'a str,
+    default_contract: &'a str,
+    signer_type: ClientSelectedSigner,
+    networks: &'a [(&'a str, &'a str)],
+    protocol: ConfigProtocol,
+}
+
+/// Protocol configurations for all supported protocols
+const PROTOCOL_CONFIGS: &[ProtocolConfig<'static>] = &[
+    ProtocolConfig {
+        name: "near",
+        default_network: "testnet",
+        default_contract: "calimero-context-config.testnet",
+        signer_type: ClientSelectedSigner::Relayer,
+        networks: &[
+            ("mainnet", "https://rpc.mainnet.near.org"),
+            ("testnet", "https://rpc.testnet.near.org"),
+        ],
+        protocol: ConfigProtocol::Near,
+    },
+    ProtocolConfig {
+        name: "starknet",
+        default_network: "sepolia",
+        default_contract: "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c",
+        signer_type: ClientSelectedSigner::Relayer,
+        networks: &[
+            (
+                "mainnet",
+                "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7",
+            ),
+            ("sepolia", "https://free-rpc.nethermind.io/sepolia-juno/"),
+        ],
+        protocol: ConfigProtocol::Starknet,
+    },
+    ProtocolConfig {
+        name: "icp",
+        default_network: "local",
+        default_contract: "bkyz2-fmaaa-aaaaa-qaaaq-cai",
+        signer_type: ClientSelectedSigner::Local,
+        networks: &[
+            ("ic", "https://ic0.app"),
+            ("local", "http://127.0.0.1:4943"),
+        ],
+        protocol: ConfigProtocol::Icp,
+    },
+    ProtocolConfig {
+        name: "stellar",
+        default_network: "testnet",
+        default_contract: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY",
+        signer_type: ClientSelectedSigner::Relayer,
+        networks: &[
+            ("mainnet", "https://soroban.stellar.org"),
+            ("testnet", "https://soroban-testnet.stellar.org"),
+        ],
+        protocol: ConfigProtocol::Stellar,
+    },
+    ProtocolConfig {
+        name: "ethereum",
+        default_network: "sepolia",
+        default_contract: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB",
+        signer_type: ClientSelectedSigner::Relayer,
+        networks: &[("sepolia", "https://sepolia.drpc.org")],
+        protocol: ConfigProtocol::Ethereum,
+    },
+];
+
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum ConfigProtocol {
     Near,
@@ -222,168 +292,33 @@ impl InitCommand {
 
         let mut client_params = BTreeMap::default();
 
-        {
+        // Generate configurations for all protocols
+        for config in PROTOCOL_CONFIGS {
+            // Insert client params
             let _ignored = client_params.insert(
-                "near".to_owned(),
+                config.name.to_owned(),
                 ClientConfigParams {
-                    network: "testnet".into(),
-                    contract_id: "calimero-context-config.testnet".parse()?,
-                    signer: ClientSelectedSigner::Relayer,
+                    network: config.default_network.into(),
+                    contract_id: config.default_contract.parse()?,
+                    signer: config.signer_type,
                 },
             );
 
+            // Create local config with signers
             let mut local_config = ClientLocalConfig {
                 signers: Default::default(),
             };
 
-            let _ignored = local_config.signers.insert(
-                "mainnet".to_owned(),
-                generate_local_signer(
-                    "https://rpc.mainnet.near.org".parse()?,
-                    ConfigProtocol::Near,
-                )?,
-            );
-
-            let _ignored = local_config.signers.insert(
-                "testnet".to_owned(),
-                generate_local_signer(
-                    "https://rpc.testnet.near.org".parse()?,
-                    ConfigProtocol::Near,
-                )?,
-            );
+            for (network_name, rpc_url) in config.networks {
+                let _ignored = local_config.signers.insert(
+                    network_name.to_string(),
+                    generate_local_signer(rpc_url.parse()?, config.protocol)?,
+                );
+            }
 
             let _ignored = local_signers
                 .protocols
-                .insert("near".to_owned(), local_config);
-        }
-
-        {
-            let _ignored = client_params.insert(
-                "starknet".to_owned(),
-                ClientConfigParams {
-                    network: "sepolia".into(),
-                    contract_id:
-                        "0x1b991ee006e2d1e372ab96d0a957401fa200358f317b681df2948f30e17c29c"
-                            .parse()?,
-                    signer: ClientSelectedSigner::Relayer,
-                },
-            );
-
-            let mut local_config = ClientLocalConfig {
-                signers: Default::default(),
-            };
-
-            let _ignored = local_config.signers.insert(
-                "mainnet".to_owned(),
-                generate_local_signer(
-                    "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7".parse()?,
-                    ConfigProtocol::Starknet,
-                )?,
-            );
-
-            let _ignored = local_config.signers.insert(
-                "sepolia".to_owned(),
-                generate_local_signer(
-                    "https://free-rpc.nethermind.io/sepolia-juno/".parse()?,
-                    ConfigProtocol::Starknet,
-                )?,
-            );
-
-            let _ignored = local_signers
-                .protocols
-                .insert("starknet".to_owned(), local_config);
-        }
-
-        {
-            let _ignored = client_params.insert(
-                "icp".to_owned(),
-                ClientConfigParams {
-                    network: "local".into(),
-                    contract_id: "bkyz2-fmaaa-aaaaa-qaaaq-cai".parse()?,
-                    signer: ClientSelectedSigner::Local,
-                },
-            );
-
-            let mut local_config = ClientLocalConfig {
-                signers: Default::default(),
-            };
-
-            let _ignored = local_config.signers.insert(
-                "ic".to_owned(),
-                generate_local_signer("https://ic0.app".parse()?, ConfigProtocol::Icp)?,
-            );
-
-            let _ignored = local_config.signers.insert(
-                "local".to_owned(),
-                generate_local_signer("http://127.0.0.1:4943".parse()?, ConfigProtocol::Icp)?,
-            );
-
-            let _ignored = local_signers
-                .protocols
-                .insert("icp".to_owned(), local_config);
-        }
-
-        {
-            let _ignored = client_params.insert(
-                "stellar".to_owned(),
-                ClientConfigParams {
-                    network: "testnet".into(),
-                    contract_id: "CDZ25SJ65YRXTCWMJNLTNZXPFPBGHOOB7BUBYQE7W3PU7I357BTX6QZY"
-                        .parse()?,
-                    signer: ClientSelectedSigner::Relayer,
-                },
-            );
-
-            let mut local_config = ClientLocalConfig {
-                signers: Default::default(),
-            };
-
-            let _ignored = local_config.signers.insert(
-                "mainnet".to_owned(),
-                generate_local_signer(
-                    "https://soroban.stellar.org".parse()?,
-                    ConfigProtocol::Stellar,
-                )?,
-            );
-
-            let _ignored = local_config.signers.insert(
-                "testnet".to_owned(),
-                generate_local_signer(
-                    "https://soroban-testnet.stellar.org".parse()?,
-                    ConfigProtocol::Stellar,
-                )?,
-            );
-
-            let _ignored = local_signers
-                .protocols
-                .insert("stellar".to_owned(), local_config);
-        }
-
-        {
-            let _ignored = client_params.insert(
-                "ethereum".to_owned(),
-                ClientConfigParams {
-                    network: "sepolia".into(),
-                    contract_id: "0x83365DE41E1247511F4C5D10Fb1AFe59b96aD4dB".parse()?,
-                    signer: ClientSelectedSigner::Relayer,
-                },
-            );
-
-            let mut local_config = ClientLocalConfig {
-                signers: Default::default(),
-            };
-
-            let _ignored = local_config.signers.insert(
-                "sepolia".to_owned(),
-                generate_local_signer(
-                    "https://sepolia.drpc.org".parse()?,
-                    ConfigProtocol::Ethereum,
-                )?,
-            );
-
-            let _ignored = local_signers
-                .protocols
-                .insert("ethereum".to_owned(), local_config);
+                .insert(config.name.to_owned(), local_config);
         }
 
         let relayer = self
