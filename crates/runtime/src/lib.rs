@@ -40,6 +40,14 @@ impl Engine {
         Self { limits, engine }
     }
 
+    pub fn headless() -> Self {
+        let limits = VMLimits::default();
+
+        let engine = wasmer::Engine::headless();
+
+        Self::new(engine, limits)
+    }
+
     pub fn compile(&self, bytes: &[u8]) -> Result<Module, CompileError> {
         // todo! apply a prepare step
         // todo! - parse the wasm blob, validate and apply transformations
