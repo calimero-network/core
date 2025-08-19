@@ -31,8 +31,6 @@ pub struct ContextManager {
     node_client: NodeClient,
     context_client: ContextClient,
 
-    runtime_engine: calimero_runtime::Engine,
-
     external_config: ExternalClientConfig,
 
     // todo! potentially make this a dashmap::DashMap
@@ -60,7 +58,6 @@ impl ContextManager {
             datastore,
             node_client,
             context_client,
-            runtime_engine: Default::default(),
             external_config,
 
             contexts: BTreeMap::new(),
