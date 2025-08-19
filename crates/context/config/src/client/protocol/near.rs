@@ -10,7 +10,7 @@ use near_jsonrpc_client::errors::{
 use near_jsonrpc_client::methods::query::{RpcQueryRequest, RpcQueryResponse};
 use near_jsonrpc_client::methods::send_tx::RpcSendTransactionRequest;
 use near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest;
-use near_jsonrpc_client::JsonRpcClient;
+use near_jsonrpc_client::{auth, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_jsonrpc_primitives::types::transactions::{RpcTransactionError, TransactionInfo};
 use near_primitives::account::id::ParseAccountError;
@@ -150,6 +150,13 @@ impl<'a> NearTransport<'a> {
                 client = client
                     .header(("connection", "close"))
                     .expect("this is a valid header value");
+            }
+
+            // Apply NEAR API key authentication if available
+            if let Ok(api_key) = env::var("NEAR_API_KEY") {
+                client = client.header(auth::ApiKey::new(&api_key).expect("valid API key"));
+                client =
+                    client.header(auth::Authorization::bearer(&api_key).expect("valid API key"));
             }
 
             let _ignored = networks.insert(
