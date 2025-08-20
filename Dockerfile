@@ -18,6 +18,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY apps ./apps
+COPY tools ./tools
 COPY e2e-tests ./e2e-tests
 
 ARG CALIMERO_WEBUI_SRC # the url or absolute path to the webui (archive or directory)
