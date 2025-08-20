@@ -16,7 +16,6 @@ clap = { workspace = true, features = ["derive"] }
 wasmparser = "0.118"
 serde_json.workspace = true
 eyre.workspace = true
-calimero-version.workspace = true
 
 [lints]
 workspace = true 

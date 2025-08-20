@@ -1802,7 +1802,6 @@ dependencies = [
 name = "calimero-abi"
 version = "0.1.0"
 dependencies = [
- "calimero-version",
  "clap",
  "eyre",
  "serde_json",

@@ -1,13 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use calimero_version::CalimeroVersion;
 use clap::{Parser, Subcommand};
 use wasmparser::{Parser as WasmParser, Payload};
 
 #[derive(Parser)]
 #[command(name = "calimero-abi")]
-#[command(author, version = CalimeroVersion::current_str(), about = "Extract Calimero WASM ABI from compiled applications")]
+#[command(author, version = env!("CARGO_PKG_VERSION"), about = "Extract Calimero WASM ABI from compiled applications")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
