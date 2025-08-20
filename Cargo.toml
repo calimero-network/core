@@ -40,6 +40,7 @@ members = [
     "./apps/abi_conformance",
 
     "./e2e-tests",
+    "./typescript-wasm-demo",
     "./tools/calimero-abi",
 ]
 

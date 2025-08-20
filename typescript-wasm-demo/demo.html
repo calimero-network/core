@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TypeScript KV Store Demo - Calimero WASM Integration</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            background: #f8f9fa;
+        }
+        .container { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { color: #2c3e50; margin-bottom: 10px; }
+        .header p { color: #7f8c8d; font-size: 18px; }
+        .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .control-group { display: flex; flex-direction: column; }
+        .control-group label { margin-bottom: 5px; font-weight: 600; color: #34495e; }
+        .control-group input, .control-group button { padding: 10px; border: 1px solid #bdc3c7; border-radius: 4px; font-size: 14px; }
+        .control-group button { background: #3498db; color: white; border: none; cursor: pointer; transition: background 0.3s; }
+        .control-group button:hover { background: #2980b9; }
+        .control-group button:disabled { background: #95a5a6; cursor: not-allowed; }
+        .output { background: #ecf0f1; border: 1px solid #bdc3c7; border-radius: 4px; padding: 15px; margin: 10px 0; font-family: monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+        .status { display: flex; gap: 20px; margin-bottom: 20px; }
+        .status-item { background: #e8f5e8; border: 1px solid #27ae60; border-radius: 4px; padding: 10px; text-align: center; flex: 1; }
+        .status-item.error { background: #fdeaea; border-color: #e74c3c; }
+        .status-item.warning { background: #fef9e7; border-color: #f39c12; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .demo-section { background: #f8f9fa; border-radius: 4px; padding: 15px; }
+        .demo-section h3 { margin-top: 0; color: #2c3e50; }
+        .key-value-display { background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin: 10px 0; }
+        .key-value-display .key { font-weight: bold; color: #e74c3c; }
+        .key-value-display .value { color: #27ae60; }
+        .events-log { max-height: 200px; overflow-y: auto; }
+        .event-item { background: white; border-left: 3px solid #3498db; padding: 8px; margin: 5px 0; border-radius: 0 4px 4px 0; }
+        .event-item .timestamp { color: #7f8c8d; font-size: 12px; }
+        .event-item .kind { font-weight: bold; color: #e74c3c; }
+        .event-item .data { color: #2c3e50; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 TypeScript KV Store Demo</h1>
+        <p>Calimero WASM Integration with Rust Bindings</p>
+    </div>
+
+    <div class="container">
+        <h2>📊 Integration Status</h2>
+        <div class="status" id="status">
+            <div class="status-item" id="wasm-status">WASM: Loading...</div>
+            <div class="status-item" id="kv-status">KV Store: Not Ready</div>
+            <div class="status-item" id="integration-status">Integration: Not Ready</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="container">
+            <h2>🔧 KV Store Operations</h2>
+            
+            <div class="controls">
+                <div class="control-group">
+                    <label for="key-input">Key:</label>
+                    <input type="text" id="key-input" placeholder="Enter key" value="demo_key">
+                </div>
+                <div class="control-group">
+                    <label for="value-input">Value:</label>
+                    <input type="text" id="value-input" placeholder="Enter value" value="demo_value">
+                </div>
+            </div>
+            
+            <div class="controls">
+                <button onclick="initStore()" id="init-btn">🚀 Initialize Store</button>
+                <button onclick="setValue()" id="set-btn" disabled>✏️ Set Value</button>
+                <button onclick="getValue()" id="get-btn" disabled>🔍 Get Value</button>
+                <button onclick="removeValue()" id="remove-btn" disabled>🗑️ Remove Value</button>
+                <button onclick="clearStore()" id="clear-btn" disabled>🧹 Clear Store</button>
+            </div>
+            
+            <div class="demo-section">
+                <h3>📝 Current Store State</h3>
+                <div id="store-state">Store not initialized</div>
+            </div>
+        </div>
+
+        <div class="container">
+            <h2>🎬 Demo & Testing</h2>
+            
+            <div class="controls">
+                <button onclick="runDemo()" id="demo-btn" disabled>🎬 Run Demo Sequence</button>
+                <button onclick="getStats()" id="stats-btn" disabled>📊 Get Statistics</button>
+                <button onclick="testAllOperations()" id="test-btn" disabled>🧪 Test All Operations</button>
+            </div>
+            
+            <div class="demo-section">
+                <h3>📡 Events Log</h3>
+                <div id="events-log" class="events-log">No events yet</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>📋 Console Output</h2>
+        <div id="console-output" class="output">Initializing TypeScript KV Store Demo...</div>
+        <button onclick="clearConsole()" style="margin-top: 10px;">🧹 Clear Console</button>
+    </div>
+
+    <script type="module">
+        import { CalimeroWasmIntegration } from './dist/integration.js';
+        import { KvStore } from './dist/kv-store.js';
+
+        // Global variables
+        let integration = null;
+        let kvStore = null;
+        let isInitialized = false;
+
+        // Console logging
+        function log(message, type = 'info') {
+            const output = document.getElementById('console-output');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}\n`;
+            output.textContent += logEntry;
+            output.scrollTop = output.scrollHeight;
+            console.log(message);
+        }
+
+        // Update status display
+        function updateStatus() {
+            if (!integration) {
+                document.getElementById('wasm-status').textContent = 'WASM: Not Loaded';
+                document.getElementById('wasm-status').className = 'status-item error';
+                return;
+            }
+
+            const status = integration.getStatus();
+            
+            // WASM Status
+            const wasmStatus = document.getElementById('wasm-status');
+            if (status.wasmLoaded) {
+                wasmStatus.textContent = 'WASM: Loaded ✅';
+                wasmStatus.className = 'status-item';
+            } else {
+                wasmStatus.textContent = 'WASM: Not Loaded ❌';
+                wasmStatus.className = 'status-item error';
+            }
+
+            // KV Store Status
+            const kvStatus = document.getElementById('kv-status');
+            if (status.kvStoreReady) {
+                kvStatus.textContent = 'KV Store: Ready ✅';
+                kvStatus.className = 'status-item';
+            } else {
+                kvStatus.textContent = 'KV Store: Not Ready ❌';
+                kvStatus.className = 'status-item error';
+            }
+
+            // Integration Status
+            const integrationStatus = document.getElementById('integration-status');
+            if (status.initialized) {
+                integrationStatus.textContent = 'Integration: Ready ✅';
+                integrationStatus.className = 'status-item';
+            } else {
+                integrationStatus.textContent = 'Integration: Not Ready ❌';
+                integrationStatus.className = 'status-item error';
+            }
+        }
+
+        // Initialize the integration
+        async function initializeIntegration() {
+            try {
+                log('🔧 Initializing Calimero WASM Integration...');
+                
+                integration = new CalimeroWasmIntegration();
+                await integration.initialize('../target/wasm32-unknown-unknown/debug/typescript_wasm_demo.wasm');
+                
+                kvStore = integration.getKvStore();
+                isInitialized = true;
+                
+                log('✅ Integration initialized successfully!');
+                updateStatus();
+                
+                // Enable buttons
+                document.getElementById('init-btn').disabled = false;
+                
+            } catch (error) {
+                log(`❌ Failed to initialize integration: ${error.message}`, 'error');
+                updateStatus();
+            }
+        }
+
+        // Initialize the store
+        function initStore() {
+            try {
+                if (!kvStore) {
+                    log('❌ KV Store not available');
+                    return;
+                }
+                
+                kvStore.init();
+                log('✅ Store initialized successfully');
+                
+                // Enable operation buttons
+                document.getElementById('set-btn').disabled = false;
+                document.getElementById('get-btn').disabled = false;
+                document.getElementById('remove-btn').disabled = false;
+                document.getElementById('clear-btn').disabled = false;
+                document.getElementById('demo-btn').disabled = false;
+                document.getElementById('stats-btn').disabled = false;
+                document.getElementById('test-btn').disabled = false;
+                
+                updateStoreState();
+                
+            } catch (error) {
+                log(`❌ Failed to initialize store: ${error.message}`, 'error');
+            }
+        }
+
+        // Set a key-value pair
+        function setValue() {
+            try {
+                const key = document.getElementById('key-input').value;
+                const value = document.getElementById('value-input').value;
+                
+                if (!key || !value) {
+                    log('❌ Please enter both key and value');
+                    return;
+                }
+                
+                kvStore.set(key, value);
+                log(`✅ Set ${key} = ${value}`);
+                updateStoreState();
+                updateEventsLog();
+                
+            } catch (error) {
+                log(`❌ Failed to set value: ${error.message}`, 'error');
+            }
+        }
+
+        // Get a value by key
+        function getValue() {
+            try {
+                const key = document.getElementById('key-input').value;
+                
+                if (!key) {
+                    log('❌ Please enter a key');
+                    return;
+                }
+                
+                const value = kvStore.get(key);
+                if (value !== null) {
+                    log(`✅ Retrieved ${key} = ${value}`);
+                } else {
+                    log(`ℹ️ Key ${key} not found`);
+                }
+                
+                updateEventsLog();
+                
+            } catch (error) {
+                log(`❌ Failed to get value: ${error.message}`, 'error');
+            }
+        }
+
+        // Remove a key-value pair
+        function removeValue() {
+            try {
+                const key = document.getElementById('key-input').value;
+                
+                if (!key) {
+                    log('❌ Please enter a key');
+                    return;
+                }
+                
+                const success = kvStore.remove(key);
+                if (success) {
+                    log(`✅ Removed key: ${key}`);
+                } else {
+                    log(`ℹ️ Key ${key} not found for removal`);
+                }
+                
+                updateStoreState();
+                updateEventsLog();
+                
+            } catch (error) {
+                log(`❌ Failed to remove value: ${error.message}`, 'error');
+            }
+        }
+
+        // Clear the store
+        function clearStore() {
+            try {
+                kvStore.clear();
+                log('✅ Store cleared successfully');
+                updateStoreState();
+                updateEventsLog();
+                
+            } catch (error) {
+                log(`❌ Failed to clear store: ${error.message}`, 'error');
+            }
+        }
+
+        // Run demo sequence
+        function runDemo() {
+            try {
+                log('🎬 Running demo sequence...');
+                kvStore.runDemo();
+                log('✅ Demo completed successfully');
+                updateStoreState();
+                updateEventsLog();
+                
+            } catch (error) {
+                log(`❌ Demo failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Get statistics
+        function getStats() {
+            try {
+                const stats = kvStore.getStats();
+                log(`📊 Store Statistics: ${JSON.stringify(stats, null, 2)}`);
+                
+            } catch (error) {
+                log(`❌ Failed to get stats: ${error.message}`, 'error');
+            }
+        }
+
+        // Test all operations
+        function testAllOperations() {
+            try {
+                log('🧪 Testing all operations...');
+                
+                // Test set operations
+                kvStore.set('test_key_1', 'test_value_1');
+                kvStore.set('test_key_2', 'test_value_2');
+                kvStore.set('test_key_3', 'test_value_3');
+                
+                // Test get operations
+                log(`test_key_1 = ${kvStore.get('test_key_1')}`);
+                log(`test_key_2 = ${kvStore.get('test_key_2')}`);
+                log(`test_key_3 = ${kvStore.get('test_key_3')}`);
+                
+                // Test has operation
+                log(`Has test_key_1: ${kvStore.has('test_key_1')}`);
+                log(`Has nonexistent_key: ${kvStore.has('nonexistent_key')}`);
+                
+                // Test len operation
+                log(`Store length: ${kvStore.len()}`);
+                
+                // Test keys and values
+                log(`Keys: ${kvStore.keys().join(', ')}`);
+                log(`Values: ${kvStore.values().join(', ')}`);
+                
+                // Test remove operation
+                const removed = kvStore.remove('test_key_2');
+                log(`Removed test_key_2: ${removed}`);
+                log(`Store length after removal: ${kvStore.len()}`);
+                
+                log('✅ All operations tested successfully');
+                updateStoreState();
+                updateEventsLog();
+                
+            } catch (error) {
+                log(`❌ Testing failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Update store state display
+        function updateStoreState() {
+            try {
+                if (!kvStore || !kvStore.isInitialized()) {
+                    document.getElementById('store-state').innerHTML = 'Store not initialized';
+                    return;
+                }
+                
+                const entries = kvStore.entries();
+                if (entries.length === 0) {
+                    document.getElementById('store-state').innerHTML = 'Store is empty';
+                    return;
+                }
+                
+                const entriesHtml = entries.map(([key, value]) => 
+                    `<div class="key-value-display">
+                        <span class="key">${key}</span>: <span class="value">${value}</span>
+                    </div>`
+                ).join('');
+                
+                document.getElementById('store-state').innerHTML = entriesHtml;
+                
+            } catch (error) {
+                log(`❌ Failed to update store state: ${error.message}`, 'error');
+            }
+        }
+
+        // Update events log
+        function updateEventsLog() {
+            try {
+                if (!kvStore) {
+                    document.getElementById('events-log').innerHTML = 'No events yet';
+                    return;
+                }
+                
+                const events = kvStore.getAllEvents();
+                if (events.length === 0) {
+                    document.getElementById('events-log').innerHTML = 'No events yet';
+                    return;
+                }
+                
+                const eventsHtml = events.map(event => 
+                    `<div class="event-item">
+                        <div class="timestamp">${new Date(event.timestamp).toLocaleTimeString()}</div>
+                        <div class="kind">${event.kind}</div>
+                        <div class="data">${event.data}</div>
+                    </div>`
+                ).join('');
+                
+                document.getElementById('events-log').innerHTML = eventsHtml;
+                
+            } catch (error) {
+                log(`❌ Failed to update events log: ${error.message}`, 'error');
+            }
+        }
+
+        // Clear console
+        function clearConsole() {
+            document.getElementById('console-output').textContent = '';
+        }
+
+        // Make functions globally accessible
+        window.initStore = initStore;
+        window.setValue = setValue;
+        window.getValue = getValue;
+        window.removeValue = removeValue;
+        window.clearStore = clearStore;
+        window.runDemo = runDemo;
+        window.getStats = getStats;
+        window.testAllOperations = testAllOperations;
+        window.clearConsole = clearConsole;
+
+        // Initialize on page load
+        window.addEventListener('load', () => {
+            log('🚀 Page loaded, starting initialization...');
+            initializeIntegration();
+        });
+    </script>
+</body>
+</html>

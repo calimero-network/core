@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TypeScript KV Store - Real Calimero Integration</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            background: #f8f9fa;
+        }
+        .container { background: white; border-radius: 8px; padding: 20px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { color: #2c3e50; margin-bottom: 10px; }
+        .header p { color: #7f8c8d; font-size: 18px; }
+        .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .control-group { display: flex; flex-direction: column; }
+        .control-group label { margin-bottom: 5px; font-weight: 600; color: #34495e; }
+        .control-group input, .control-group button { padding: 10px; border: 1px solid #bdc3c7; border-radius: 4px; font-size: 14px; }
+        .control-group button { background: #3498db; color: white; border: none; cursor: pointer; transition: background 0.3s; }
+        .control-group button:hover { background: #2980b9; }
+        .control-group button:disabled { background: #95a5a6; cursor: not-allowed; }
+        .output { background: #ecf0f1; border: 1px solid #bdc3c7; border-radius: 4px; padding: 15px; margin: 10px 0; font-family: monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+        .status { display: flex; gap: 20px; margin-bottom: 20px; }
+        .status-item { background: #e8f5e8; border: 1px solid #27ae60; border-radius: 4px; padding: 10px; text-align: center; flex: 1; }
+        .status-item.error { background: #fdeaea; border-color: #e74c3c; }
+        .status-item.warning { background: #fef9e7; border-color: #f39c12; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .demo-section { background: #f8f9fa; border-radius: 4px; padding: 15px; }
+        .demo-section h3 { margin-top: 0; color: #2c3e50; }
+        .config-section { background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 15px; margin-bottom: 20px; }
+        .config-section h3 { margin-top: 0; color: #856404; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 TypeScript KV Store - Real Calimero Integration</h1>
+        <p>Testing TypeScript-compiled WASM on a Live Calimero Node</p>
+    </div>
+
+    <div class="container">
+        <div class="config-section">
+            <h3>⚙️ Calimero Node Configuration</h3>
+            <div class="controls">
+                <div class="control-group">
+                    <label for="node-url">Node URL:</label>
+                    <input type="text" id="node-url" value="http://localhost:2428" placeholder="http://localhost:2428">
+                </div>
+                <div class="control-group">
+                    <label for="context-id">Context ID:</label>
+                    <input type="text" id="context-id" value="demo-context" placeholder="demo-context">
+                </div>
+                <div class="control-group">
+                    <label for="app-id">Application ID:</label>
+                    <input type="text" id="app-id" value="" placeholder="Your WASM app ID">
+                </div>
+            </div>
+            <div class="controls">
+                <button onclick="connectToNode()" id="connect-btn">🔌 Connect to Node</button>
+                <button onclick="createContext()" id="create-context-btn" disabled>➕ Create Context</button>
+                <button onclick="listApplications()" id="list-apps-btn" disabled>📋 List Applications</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>📊 Connection Status</h2>
+        <div class="status" id="status">
+            <div class="status-item error" id="node-status">Node: Disconnected</div>
+            <div class="status-item error" id="context-status">Context: Not Found</div>
+            <div class="status-item error" id="app-status">App: Not Found</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="container">
+            <h2>🔧 KV Store Operations</h2>
+            
+            <div class="controls">
+                <div class="control-group">
+                    <label for="key-input">Key:</label>
+                    <input type="text" id="key-input" placeholder="Enter key" value="demo_key">
+                </div>
+                <div class="control-group">
+                    <label for="value-input">Value:</label>
+                    <input type="text" id="value-input" placeholder="Enter value" value="demo_value">
+                </div>
+            </div>
+            
+            <div class="controls">
+                <button onclick="callFunction('kv_store_init', [])" id="init-btn" disabled>🚀 Initialize Store</button>
+                <button onclick="callFunction('kv_store_set', [getKey(), getValue()])" id="set-btn" disabled>✏️ Set Value</button>
+                <button onclick="callFunction('kv_store_get', [getKey()])" id="get-btn" disabled>🔍 Get Value</button>
+                <button onclick="callFunction('kv_store_remove', [getKey()])" id="remove-btn" disabled>🗑️ Remove Value</button>
+                <button onclick="callFunction('kv_store_clear', [])" id="clear-btn" disabled>🧹 Clear Store</button>
+            </div>
+            
+            <div class="demo-section">
+                <h3>📝 Last Operation Result</h3>
+                <div id="operation-result">No operations performed yet</div>
+            </div>
+        </div>
+
+        <div class="container">
+            <h2>🎬 Demo & Testing</h2>
+            
+            <div class="controls">
+                <button onclick="callFunction('kv_store_run_demo', [])" id="demo-btn" disabled>🎬 Run Demo Sequence</button>
+                <button onclick="callFunction('kv_store_len', [])" id="len-btn" disabled>📊 Get Length</button>
+                <button onclick="testAllOperations()" id="test-btn" disabled>🧪 Test All Operations</button>
+            </div>
+            
+            <div class="demo-section">
+                <h3>📡 Function Call History</h3>
+                <div id="call-history" class="output">No function calls yet</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>📋 Console Output</h2>
+        <div id="console-output" class="output">Initializing Real Calimero Integration...</div>
+        <button onclick="clearConsole()" style="margin-top: 10px;">🧹 Clear Console</button>
+    </div>
+
+    <script>
+        // Real Calimero Client Class
+        class RealCalimeroClient {
+            constructor() {
+                this.baseUrl = 'http://localhost:2428';
+                this.contextId = 'demo-context';
+                this.appId = '';
+                this.isConnected = false;
+            }
+
+            async testConnection() {
+                try {
+                    const response = await fetch(`${this.baseUrl}/admin-api/peers`);
+                    return response.ok;
+                } catch (error) {
+                    return false;
+                }
+            }
+
+            async createContext(contextId, config = {}) {
+                try {
+                    const response = await fetch(`${this.baseUrl}/admin-api/contexts`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id: contextId,
+                            name: config.name || contextId,
+                            description: config.description || `Test context: ${contextId}`
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        return await response.json();
+                    } else {
+                        const error = await response.text();
+                        throw new Error(`HTTP ${response.status}: ${error}`);
+                    }
+                } catch (error) {
+                    throw new Error(`Failed to create context: ${error.message}`);
+                }
+            }
+
+            async listContexts() {
+                try {
+                    const response = await fetch(`${this.baseUrl}/admin-api/contexts`);
+                    if (response.ok) {
+                        return await response.json();
+                    } else {
+                        return [];
+                    }
+                } catch (error) {
+                    log(`Error listing contexts: ${error.message}`, 'error');
+                    return [];
+                }
+            }
+
+            async listApplications() {
+                try {
+                    const response = await fetch(`${this.baseUrl}/admin-api/applications`);
+                    if (response.ok) {
+                        return await response.json();
+                    } else {
+                        return [];
+                    }
+                } catch (error) {
+                    log(`Error listing applications: ${error.message}`, 'error');
+                    return [];
+                }
+            }
+
+            async callWasmFunction(appId, functionName, args = []) {
+                try {
+                    const payload = {
+                        application_id: appId,
+                        context_id: this.contextId,
+                        method: functionName,
+                        args: args
+                    };
+
+                    log(`Calling ${functionName}(${args.join(', ')}) on app ${appId}`);
+
+                    const response = await fetch(`${this.baseUrl}/admin-api/applications/execute`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        log(`✅ ${functionName} result: ${JSON.stringify(result)}`);
+                        return result;
+                    } else {
+                        const error = await response.text();
+                        throw new Error(`HTTP ${response.status}: ${error}`);
+                    }
+                } catch (error) {
+                    log(`❌ ${functionName} failed: ${error.message}`, 'error');
+                    throw error;
+                }
+            }
+        }
+
+        // Global state
+        let client = new RealCalimeroClient();
+        let callHistory = [];
+
+        // Utility functions
+        function log(message, type = 'info') {
+            const output = document.getElementById('console-output');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}\n`;
+            output.textContent += logEntry;
+            output.scrollTop = output.scrollHeight;
+            console.log(message);
+        }
+
+        function updateStatus(nodeConnected, contextFound, appFound) {
+            const nodeStatus = document.getElementById('node-status');
+            const contextStatus = document.getElementById('context-status');
+            const appStatus = document.getElementById('app-status');
+
+            nodeStatus.textContent = nodeConnected ? 'Node: Connected ✅' : 'Node: Disconnected ❌';
+            nodeStatus.className = nodeConnected ? 'status-item' : 'status-item error';
+
+            contextStatus.textContent = contextFound ? 'Context: Found ✅' : 'Context: Not Found ❌';
+            contextStatus.className = contextFound ? 'status-item' : 'status-item error';
+
+            appStatus.textContent = appFound ? 'App: Found ✅' : 'App: Not Found ❌';
+            appStatus.className = appFound ? 'status-item' : 'status-item error';
+
+            // Enable/disable buttons based on connection status
+            const buttonsToEnable = ['create-context-btn', 'list-apps-btn'];
+            const operationButtons = ['init-btn', 'set-btn', 'get-btn', 'remove-btn', 'clear-btn', 'demo-btn', 'len-btn', 'test-btn'];
+            
+            buttonsToEnable.forEach(id => {
+                document.getElementById(id).disabled = !nodeConnected;
+            });
+
+            operationButtons.forEach(id => {
+                document.getElementById(id).disabled = !(nodeConnected && appFound);
+            });
+        }
+
+        function updateCallHistory(functionName, args, result, error = null) {
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = {
+                timestamp,
+                functionName,
+                args,
+                result,
+                error
+            };
+            
+            callHistory.push(entry);
+            
+            const historyDiv = document.getElementById('call-history');
+            const entryHtml = `[${timestamp}] ${functionName}(${args.join(', ')})${error ? ` ❌ ${error}` : ` ✅ ${JSON.stringify(result)}`}\n`;
+            historyDiv.textContent += entryHtml;
+            historyDiv.scrollTop = historyDiv.scrollHeight;
+
+            // Update operation result
+            const resultDiv = document.getElementById('operation-result');
+            if (error) {
+                resultDiv.innerHTML = `<span style="color: #e74c3c;">❌ ${functionName}: ${error}</span>`;
+            } else {
+                resultDiv.innerHTML = `<span style="color: #27ae60;">✅ ${functionName}: ${JSON.stringify(result)}</span>`;
+            }
+        }
+
+        // Main functions
+        async function connectToNode() {
+            try {
+                client.baseUrl = document.getElementById('node-url').value;
+                client.contextId = document.getElementById('context-id').value;
+                
+                log(`🔌 Connecting to ${client.baseUrl}...`);
+                
+                const isConnected = await client.testConnection();
+                if (!isConnected) {
+                    throw new Error('Node health check failed');
+                }
+                
+                log('✅ Connected to Calimero node');
+                client.isConnected = true;
+
+                // Check if context exists
+                const contexts = await client.listContexts();
+                const contextExists = contexts.some(ctx => 
+                    ctx.id === client.contextId || ctx.name === client.contextId
+                );
+
+                // Check if app exists
+                let appExists = false;
+                const appId = document.getElementById('app-id').value;
+                if (appId) {
+                    const apps = await client.listApplications();
+                    appExists = apps.some(app => app.id === appId || app.name === appId);
+                    if (appExists) {
+                        client.appId = appId;
+                        log(`✅ Found application: ${appId}`);
+                    } else {
+                        log(`⚠️ Application ${appId} not found`);
+                    }
+                }
+
+                updateStatus(true, contextExists, appExists);
+                log(`Context '${client.contextId}' ${contextExists ? 'found' : 'not found'}`);
+                
+            } catch (error) {
+                log(`❌ Connection failed: ${error.message}`, 'error');
+                updateStatus(false, false, false);
+            }
+        }
+
+        async function createContext() {
+            try {
+                const contextId = client.contextId;
+                log(`🔧 Creating context '${contextId}'...`);
+                
+                const result = await client.createContext(contextId, {
+                    name: contextId,
+                    description: `Test context for TypeScript KV Store demo`
+                });
+                
+                log(`✅ Context created successfully: ${JSON.stringify(result)}`);
+                
+                // Refresh status
+                setTimeout(() => connectToNode(), 1000);
+                
+            } catch (error) {
+                log(`❌ Failed to create context: ${error.message}`, 'error');
+            }
+        }
+
+        async function listApplications() {
+            try {
+                log('📋 Fetching applications...');
+                const apps = await client.listApplications();
+                
+                if (apps.length === 0) {
+                    log('ℹ️ No applications found');
+                } else {
+                    log(`📋 Found ${apps.length} applications:`);
+                    apps.forEach(app => {
+                        log(`  • ${app.id || app.name} - ${app.description || 'No description'}`);
+                    });
+                }
+                
+            } catch (error) {
+                log(`❌ Failed to list applications: ${error.message}`, 'error');
+            }
+        }
+
+        async function callFunction(functionName, args = []) {
+            if (!client.appId) {
+                log('❌ No application ID specified', 'error');
+                return;
+            }
+
+            try {
+                const result = await client.callWasmFunction(client.appId, functionName, args);
+                updateCallHistory(functionName, args, result);
+                return result;
+            } catch (error) {
+                updateCallHistory(functionName, args, null, error.message);
+                throw error;
+            }
+        }
+
+        async function testAllOperations() {
+            try {
+                log('🧪 Running comprehensive test sequence...');
+                
+                // Test init
+                await callFunction('kv_store_init', []);
+                
+                // Test set operations
+                await callFunction('kv_store_set', ['test_key_1', 'test_value_1']);
+                await callFunction('kv_store_set', ['test_key_2', 'test_value_2']);
+                await callFunction('kv_store_set', ['hello', 'world']);
+                
+                // Test get operations
+                await callFunction('kv_store_get', ['test_key_1']);
+                await callFunction('kv_store_get', ['hello']);
+                await callFunction('kv_store_get', ['nonexistent']);
+                
+                // Test length
+                await callFunction('kv_store_len', []);
+                
+                // Test remove
+                await callFunction('kv_store_remove', ['test_key_2']);
+                
+                // Test length after removal
+                await callFunction('kv_store_len', []);
+                
+                log('✅ All operations tested successfully');
+                
+            } catch (error) {
+                log(`❌ Test sequence failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Utility functions for inputs
+        function getKey() {
+            return document.getElementById('key-input').value;
+        }
+
+        function getValue() {
+            return document.getElementById('value-input').value;
+        }
+
+        function clearConsole() {
+            document.getElementById('console-output').textContent = '';
+            document.getElementById('call-history').textContent = '';
+            callHistory = [];
+        }
+
+        // Initialize
+        window.addEventListener('load', () => {
+            log('🚀 Real Calimero Integration loaded');
+            log('💡 Enter your node URL, context ID, and application ID, then click "Connect to Node"');
+            updateStatus(false, false, false);
+        });
+    </script>
+</body>
+</html>

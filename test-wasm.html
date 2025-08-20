@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TypeScript WASM Demo Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .output {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            border-color: #f5c6cb;
+        }
+        .success {
+            color: #155724;
+            background: #d4edda;
+            border-color: #c3e6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 TypeScript WASM Demo Test</h1>
+        <p>This page tests our compiled WASM module with Calimero SDK integration.</p>
+        
+        <div>
+            <button onclick="testInit()">Test Init</button>
+            <button onclick="testSet()">Test Set</button>
+            <button onclick="testGet()">Test Get</button>
+            <button onclick="testLen()">Test Len</button>
+            <button onclick="testRunDemo()">Test Run Demo</button>
+            <button onclick="testIsInitialized()">Test Is Initialized</button>
+        </div>
+        
+        <div id="output" class="output">Click a button to test the WASM module...</div>
+    </div>
+
+    <script type="module">
+        let wasmModule = null;
+        let wasmInstance = null;
+
+        async function loadWasm() {
+            try {
+                log('🔄 Loading WASM module...');
+                
+                // Load the WASM file
+                const response = await fetch('../target/wasm32-unknown-unknown/debug/typescript_wasm_demo.wasm');
+                const wasmBuffer = await response.arrayBuffer();
+                
+                log('✅ WASM file loaded, size: ' + wasmBuffer.byteLength + ' bytes');
+                
+                // For now, we'll just test that the file loads
+                // In a real scenario, we'd need to handle the WASM imports properly
+                log('📝 Note: This is a basic test. The WASM module needs proper runtime bindings to work.');
+                log('🔧 The module was compiled successfully with Calimero SDK dependencies.');
+                
+                return true;
+            } catch (error) {
+                log('❌ Error loading WASM: ' + error.message, 'error');
+                return false;
+            }
+        }
+
+        function log(message, type = 'info') {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}\n`;
+            
+            if (type === 'error') {
+                output.classList.add('error');
+                output.classList.remove('success');
+            } else if (type === 'success') {
+                output.classList.add('success');
+                output.classList.remove('error');
+            } else {
+                output.classList.remove('error', 'success');
+            }
+            
+            output.textContent += logEntry;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        // Test functions
+        window.testInit = function() {
+            log('🧪 Testing init() function...');
+            log('📋 This would call the WASM init() function if properly bound');
+        };
+
+        window.testSet = function() {
+            log('🧪 Testing set() function...');
+            log('📋 This would call the WASM set() function if properly bound');
+        };
+
+        window.testGet = function() {
+            log('🧪 Testing get() function...');
+            log('📋 This would call the WASM get() function if properly bound');
+        };
+
+        window.testLen = function() {
+            log('🧪 Testing len() function...');
+            log('📋 This would call the WASM len() function if properly bound');
+        };
+
+        window.testRunDemo = function() {
+            log('🧪 Testing runDemo() function...');
+            log('📋 This would call the WASM runDemo() function if properly bound');
+        };
+
+        window.testIsInitialized = function() {
+            log('🧪 Testing isInitialized() function...');
+            log('📋 This would call the WASM isInitialized() function if properly bound');
+        };
+
+        // Load WASM when page loads
+        window.addEventListener('load', async () => {
+            log('🚀 Page loaded, testing WASM compilation...');
+            await loadWasm();
+        });
+    </script>
+</body>
+</html>

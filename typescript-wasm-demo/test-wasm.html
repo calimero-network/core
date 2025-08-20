@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TypeScript WASM Demo Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .output { background: #f8f9fa; border: 1px solid #dee2e6; padding: 15px; margin: 10px 0; }
+        .error { color: #dc3545; background: #f8d7da; border-color: #f5c6cb; }
+        .success { color: #155724; background: #d4edda; border-color: #c3e6cb; }
+    </style>
+</head>
+<body>
+    <h1>🚀 TypeScript WASM Demo Test</h1>
+    <p>Testing our compiled WASM module with Calimero SDK integration...</p>
+    
+    <div>
+        <button onclick="testWasmLoad()">Test WASM Load</button>
+        <button onclick="testWasmPath()">Test WASM Path</button>
+        <button onclick="clearOutput()">Clear Output</button>
+    </div>
+    
+    <div id="output" class="output">Click a button to test...</div>
+    
+    <script type="module">
+        function log(message, type = 'info') {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}\n`;
+            
+            if (type === 'error') {
+                output.classList.add('error');
+                output.classList.remove('success');
+            } else if (type === 'success') {
+                output.classList.add('success');
+                output.classList.remove('error');
+            } else {
+                output.classList.remove('error', 'success');
+            }
+            
+            output.textContent += logEntry;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        async function testWasmLoad() {
+            log('🧪 Testing WASM file loading...');
+            
+            try {
+                const wasmPath = '../target/wasm32-unknown-unknown/debug/typescript_wasm_demo.wasm';
+                log(`📁 Attempting to fetch: ${wasmPath}`);
+                
+                const response = await fetch(wasmPath);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const wasmBuffer = await response.arrayBuffer();
+                log(`✅ WASM loaded successfully! Size: ${wasmBuffer.byteLength} bytes`);
+                
+                // Try to parse the WASM
+                try {
+                    const wasmModule = await WebAssembly.compile(wasmBuffer);
+                    log('✅ WASM module compiled successfully');
+                    log('📋 Module exports: ' + JSON.stringify(WebAssembly.Module.exports(wasmModule).map(e => e.name)));
+                } catch (compileError) {
+                    log(`⚠️ WASM compilation warning: ${compileError.message}`, 'error');
+                }
+                
+            } catch (error) {
+                log(`❌ Failed to load WASM: ${error.message}`, 'error');
+                log('💡 This might be due to CORS restrictions when opening the file directly');
+                log('💡 Try opening via: http://localhost:8080/typescript-wasm-demo/test-wasm.html');
+            }
+        }
+
+        async function testWasmPath() {
+            log('🧪 Testing WASM file path...');
+            
+            try {
+                const wasmPath = '../target/wasm32-unknown-unknown/debug/typescript_wasm_demo.wasm';
+                log(`📁 Checking path: ${wasmPath}`);
+                
+                // Try a HEAD request to check if file exists
+                const response = await fetch(wasmPath, { method: 'HEAD' });
+                
+                if (response.ok) {
+                    log(`✅ File exists and is accessible`);
+                    log(`📊 File size: ${response.headers.get('content-length') || 'unknown'} bytes`);
+                    log(`🔗 Content-Type: ${response.headers.get('content-type') || 'unknown'}`);
+                } else {
+                    log(`❌ File not accessible: HTTP ${response.status}`, 'error');
+                }
+                
+            } catch (error) {
+                log(`❌ Path test failed: ${error.message}`, 'error');
+            }
+        }
+
+        function clearOutput() {
+            document.getElementById('output').textContent = '';
+        }
+
+        // Make functions globally accessible
+        window.testWasmLoad = testWasmLoad;
+        window.testWasmPath = testWasmPath;
+        window.clearOutput = clearOutput;
+
+        // Auto-test on load
+        window.addEventListener('load', () => {
+            log('🚀 Page loaded successfully');
+            log('💡 Click "Test WASM Path" to check if the file is accessible');
+            log('💡 Click "Test WASM Load" to attempt loading the WASM module');
+        });
+    </script>
+</body>
+</html>
+
