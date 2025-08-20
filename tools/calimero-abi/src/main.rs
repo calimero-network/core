@@ -6,7 +6,7 @@ use wasmparser::{Parser as WasmParser, Payload};
 
 #[derive(Parser)]
 #[command(name = "calimero-abi")]
-#[command(about = "Extract Calimero WASM ABI from compiled applications")]
+#[command(author, version = env!("CARGO_PKG_VERSION"), about = "Extract Calimero WASM ABI from compiled applications")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
