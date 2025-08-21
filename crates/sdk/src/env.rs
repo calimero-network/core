@@ -325,8 +325,8 @@ pub fn blob_announce_to_context(blob_id: &[u8; 32], target_context_id: &[u8; 32]
 
     unsafe {
         sys::blob_announce_to_context(
-            Buffer::from(&blob_id[..]),
-            Buffer::from(&target_context_id[..]),
+            Ref::new(&Buffer::from(&blob_id[..])),
+            Ref::new(&Buffer::from(&target_context_id[..])),
         )
         .try_into()
     }

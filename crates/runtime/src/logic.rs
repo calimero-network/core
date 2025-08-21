@@ -850,15 +850,19 @@ impl VMHostFunctions<'_> {
     pub fn blob_announce_to_context(
         &mut self,
         blob_id_ptr: u64,
-        blob_id_len: u64,
         context_id_ptr: u64,
-        context_id_len: u64,
     ) -> VMLogicResult<u32> {
         // Check if blob functionality is available
         let node_client = match &self.borrow_logic().node_client {
             Some(client) => client.clone(),
             None => return Err(VMLogicError::HostError(HostError::BlobsNotSupported)),
         };
+
+        let blob_id = unsafe { self.read_typed::<sys::Buffer<'_>>(blob_id_ptr)? };
+        let context_id = unsafe { self.read_typed::<sys::Buffer<'_>>(context_id_ptr)? };
+
+        let blob_id_len = blob_id.ptr().value().as_usize() as u64;
+        let context_id_len = context_id.ptr().value().as_usize() as u64;
 
         // Validate input lengths
         if blob_id_len != 32 || context_id_len != 32 {
