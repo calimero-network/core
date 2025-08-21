@@ -9,6 +9,7 @@ on:
       - Cargo.lock
       - "crates/**"
       - "e2e-tests/**"
+      - ".github/workflows/ci-checks.yml"
 
 env:
   CALIMERO_WEBUI_FETCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -56,8 +57,14 @@ jobs:
 
           cargo test -- --nocapture
 
-      - name: Cargo deny
+      - name: Install and run cargo deny
         if: ${{ !cancelled() }}
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check licenses sources
+        run: |
+          # Install cargo deny with fallback
+          if ! cargo install cargo-deny --locked; then
+            echo "Locked installation failed, trying specific version 0.18.3"
+            cargo install --version 0.18.3 cargo-deny
+          fi
+          
+          # Run the checks
+          cargo deny check licenses sources
