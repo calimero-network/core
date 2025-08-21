@@ -27,6 +27,7 @@ impl EventHandler<Event> for NetworkManager {
                     .do_send(NetworkEvent::Unsubscribed { peer_id, topic });
             }
             Event::GossipsubNotSupported { .. } => {}
+            Event::SlowPeer { .. } => {}
         }
     }
 }

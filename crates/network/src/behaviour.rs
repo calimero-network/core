@@ -79,8 +79,7 @@ impl Behaviour {
                         .transpose()?
                         .into(),
                     kad: {
-                        let mut kad_config = kad::Config::default();
-                        let _ = kad_config.set_protocol_names(vec![CALIMERO_KAD_PROTO_NAME]);
+                        let kad_config = kad::Config::new(CALIMERO_KAD_PROTO_NAME);
 
                         let mut kad = kad::Behaviour::with_config(
                             peer_id,
