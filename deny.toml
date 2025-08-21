@@ -45,14 +45,6 @@ license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
 
-[[licenses.clarify]]
-name = "nacl"
-version = "*"
-expression = "LGPL-3.0-or-later"
-license-files = [
-    { path = "LICENSE", hash = 0x0 }
-]
-
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
