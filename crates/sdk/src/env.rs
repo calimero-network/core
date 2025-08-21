@@ -14,7 +14,7 @@ const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 
 #[track_caller]
 #[inline]
 pub fn panic() -> ! {
-    unsafe { sys::panic(Location::caller()) }
+    unsafe { sys::panic(Ref::new(&Location::caller())) }
 }
 
 #[track_caller]

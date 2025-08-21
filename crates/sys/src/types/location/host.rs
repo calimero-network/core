@@ -1,6 +1,7 @@
 use core::panic;
 
 use super::Location;
+use crate::Slice;
 
 impl Location<'_> {
     #[inline]
@@ -22,10 +23,8 @@ impl Location<'_> {
     }
 
     #[inline]
-    pub fn file(&self) -> &str {
+    pub fn file(&self) -> Slice<'_, u8> {
         self.file
-            .try_into()
-            .expect("this should always be a valid utf8 string") // todo! test if this pulls in format code
     }
 }
 

@@ -6,7 +6,7 @@ pub use types::*;
 
 wasm_imports! {
     "env" => {
-        fn panic(loc: Location<'_>) -> !;
+        fn panic(loc: Ref<Location<'_>>) -> !;
         fn panic_utf8(msg: Ref<Buffer<'_>>, loc: Ref<Location<'_>>) -> !;
         // --
         fn register_len(register_id: RegisterId) -> PtrSizedInt;
