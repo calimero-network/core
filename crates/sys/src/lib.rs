@@ -46,6 +46,8 @@ wasm_imports! {
         fn blob_read(fd: PtrSizedInt, buf: Ref<BufferMut<'_>>) -> PtrSizedInt;
         fn blob_write(fd: PtrSizedInt, data: Ref<Buffer<'_>>) -> PtrSizedInt;
         fn blob_close(fd: PtrSizedInt, blob_id_buf: Ref<BufferMut<'_>>) -> Bool;
+        // Network blob functions
+        fn blob_announce_to_context(blob_id: Buffer<'_>, context_id: Buffer<'_>) -> Bool;
     }
 }
 

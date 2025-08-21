@@ -2089,7 +2089,6 @@ dependencies = [
  "calimero-sdk-macros",
  "calimero-sys",
  "calimero-wasm-abi-v1",
- "cfg-if",
  "serde",
  "serde_json",
  "trybuild",
