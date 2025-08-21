@@ -4,6 +4,7 @@ use calimero_utils_actix::adapters::ActorExt;
 
 use crate::NetworkManager;
 
+mod announce_blob;
 mod bootstrap;
 mod dial;
 mod listen;
@@ -12,6 +13,8 @@ mod mesh_peers;
 mod open_stream;
 mod peer_count;
 mod publish;
+mod query_blob;
+mod request_blob;
 mod subscribe;
 mod unsubscribe;
 
@@ -48,6 +51,15 @@ impl Handler<NetworkMessage> for NetworkManager {
                 self.forward_handler(ctx, request, outcome)
             }
             NetworkMessage::MeshPeerCount { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            NetworkMessage::AnnounceBlob { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            NetworkMessage::QueryBlob { request, outcome } => {
+                self.forward_handler(ctx, request, outcome)
+            }
+            NetworkMessage::RequestBlob { request, outcome } => {
                 self.forward_handler(ctx, request, outcome)
             }
         }

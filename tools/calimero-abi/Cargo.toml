@@ -1,0 +1,21 @@
+[package]
+name = "calimero-abi"
+description = "CLI tool for extracting Calimero WASM ABI"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "calimero-abi"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+wasmparser = "0.118"
+serde_json.workspace = true
+eyre.workspace = true
+
+[lints]
+workspace = true 
