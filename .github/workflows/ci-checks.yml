@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["master", "miraclx/thing"]
+    branches: ["master"]
   pull_request:
     paths:
       - Cargo.toml
