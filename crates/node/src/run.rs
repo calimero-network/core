@@ -191,11 +191,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             _ = &mut sync => {},
             res = &mut server => res??,
             res = &mut system => break res?,
-            line = lines.recv() => {
-                let Some(line) = line else {
-                    continue;
-                };
-
+            Some(line) = lines.recv() => {
                 let it = handle_line(
                     context_client.clone(),
                     node_client.clone(),
