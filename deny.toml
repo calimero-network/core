@@ -2,7 +2,7 @@
 targets = []
 
 [bans]
-multiple-versions = "warn"  # Warn about duplicate dependency versions
+multiple-versions = "warn" # Warn about duplicate dependency versions
 
 # Skip specific crates that might need multiple versions
 [[bans.skip]]
@@ -30,7 +30,7 @@ allow = [
     "MPL-2.0",
     "AGPL-3.0",
     "GPL-3.0",
-    "LGPL-3.0",
+    "LGPL-3.0-or-later",
     "0BSD",
     "Unlicense",
     "Apache-2.0 WITH LLVM-exception",
@@ -43,14 +43,6 @@ version = "*"
 expression = "ISC OR OpenSSL OR MIT"
 license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
-]
-
-[[licenses.clarify]]
-name = "nacl"
-version = "*"
-expression = "LGPL-3.0-or-later"
-license-files = [
-    { path = "LICENSE", hash = 0x0 }
 ]
 
 [sources]
