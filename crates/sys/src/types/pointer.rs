@@ -1,6 +1,12 @@
 use core::marker::PhantomData;
 use core::ptr;
 
+#[cfg(target_arch = "wasm32")]
+mod guest;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod host;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PtrSizedInt {
@@ -17,11 +23,6 @@ impl PtrSizedInt {
         }
     }
 
-    // TODO: This converts from u64 to usize, which may fail on 32-bit systems,
-    // TODO: but this function is meant to be infallible. That is a concern, as
-    // TODO: we want to eliminate all potential panics. This needs future
-    // TODO: assessment.
-    #[expect(clippy::cast_possible_truncation, reason = "TODO: See above")]
     #[inline]
     pub const fn as_usize(self) -> usize {
         self.value as usize
@@ -44,26 +45,8 @@ pub struct Pointer<T> {
 
 impl<T> Pointer<T> {
     #[inline]
-    pub fn new(ptr: *const T) -> Self {
-        Self {
-            value: PtrSizedInt::new(ptr as usize),
-            _phantom: PhantomData,
-        }
-    }
-
-    #[inline]
     pub fn null() -> Self {
         Self::new(ptr::null())
-    }
-
-    #[inline]
-    pub const fn as_ptr(&self) -> *const T {
-        self.value.as_usize() as *const T
-    }
-
-    #[inline]
-    pub const fn as_mut_ptr(&self) -> *mut T {
-        self.value.as_usize() as *mut T
     }
 }
 

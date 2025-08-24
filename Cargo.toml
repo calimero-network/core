@@ -32,6 +32,7 @@ members = [
     "./crates/store",
     "./crates/store/blobs",
     "./crates/store/impl/rocksdb",
+    "./crates/sys",
     "./crates/utils/actix",
     "./crates/version",
     "./crates/wasm-abi-v1",
@@ -165,6 +166,7 @@ calimero-storage.path = "./crates/storage"
 calimero-storage-macros.path = "./crates/storage/macros"
 calimero-store.path = "./crates/store"
 calimero-store-rocksdb.path = "./crates/store/impl/rocksdb"
+calimero-sys.path = "./crates/sys"
 calimero-utils-actix.path = "./crates/utils/actix"
 calimero-version.path = "./crates/version"
 calimero-wasm-abi-v1.path = "./crates/wasm-abi-v1"

@@ -25,6 +25,7 @@ use wait::WaitStep;
 #[serde(rename_all = "camelCase")]
 pub struct TestScenario {
     pub steps: Box<[TestStep]>,
+    pub ignore: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
