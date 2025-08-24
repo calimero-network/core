@@ -23,6 +23,7 @@ use near_primitives::views::{
     AccessKeyPermissionView, AccessKeyView, CallResult, FinalExecutionStatus, QueryRequest,
     TxExecutionStatus,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -31,6 +32,7 @@ use super::Protocol;
 use crate::client::transport::{
     AssociatedTransport, Operation, ProtocolTransport, TransportRequest,
 };
+use crate::schema::{AccountIdSchema, PublicKeySchema, SecretKeySchema};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Near {}
@@ -43,11 +45,14 @@ impl AssociatedTransport for NearTransport<'_> {
     type Protocol = Near;
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
+    #[schemars(with = "AccountIdSchema")]
     pub account_id: AccountId,
+    #[schemars(with = "PublicKeySchema")]
     pub public_key: PublicKey,
+    #[schemars(with = "SecretKeySchema")]
     pub secret_key: SecretKey,
 }
 

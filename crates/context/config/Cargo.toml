@@ -25,6 +25,7 @@ near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
 near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+schemars = { workspace = true, features = ["chrono04"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 soroban-client.workspace = true
@@ -34,7 +35,7 @@ starknet-crypto = { workspace = true, optional = true }
 starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
-url = { workspace = true, optional = true }
+url = { workspace = true, optional = true, features = ["serde"] }
 
 [lints]
 workspace = true
@@ -62,13 +63,7 @@ starknet_client = ["dep:hex", "dep:starknet", "dep:starknet-crypto", "dep:starkn
 
 stellar = ["dep:soroban-sdk"]
 
-ethereum = [
-  "alloy",
-  "alloy-sol-types",
-  "ethabi"
-]
+ethereum = ["alloy", "alloy-sol-types", "ethabi"]
 
-ethereum_client = [
-  "ethereum"
-]
+ethereum_client = ["ethereum"]
 stellar_client = ["stellar"]
