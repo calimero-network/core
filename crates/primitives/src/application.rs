@@ -120,18 +120,7 @@ pub struct Application {
     pub id: ApplicationId,
     pub blob: ApplicationBlob,
     pub size: u64,
-    pub source: ApplicationSource,
-    pub metadata: Vec<u8>,
-}
-
-impl Application {
-    #[must_use]
-    pub const fn new(
-        id: ApplicationId,
-        blob: ApplicationBlob,
-        size: u64,
-        source: ApplicationSource,
-        metadata: Vec<u8>,
+        pub source: Option<ApplicationSource>,        metadata: Vec<u8>,
     ) -> Self {
         Self {
             id,
