@@ -131,7 +131,7 @@ impl NodeClient {
             bail!("non-absolute path")
         };
 
-        self.install_application(&blob_id, size, &uri.as_str().parse()?, metadata)
+        self.install_application(&blob_id, size, &"local://dev".parse()?, metadata)
     }
 
     pub async fn install_application_from_url(
