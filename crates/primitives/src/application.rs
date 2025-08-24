@@ -121,6 +121,27 @@ pub struct Application {
     pub blob: ApplicationBlob,
     pub size: u64,
         pub source: Option<ApplicationSource>,        metadata: Vec<u8>,
+       pu b metadata: Vec<u8>,
+}
+
+impl Application {
+       # [must_use]
+      p  ub const fn new(
+                id: Applicat   ionId,
+                   blob: ApplicationBlob,
+                  si ze: u64,
+                   source: Option<ApplicationSource>,
+                  m etadata: Vec<u8>,
+               ) -> Self {
+                   Self {
+                                   id,
+                               b   l ob,
+                                   size,
+                                   source,
+                                   metadata,
+                   } 
+       }
+}
     ) -> Self {
         Self {
             id,
