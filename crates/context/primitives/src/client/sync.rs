@@ -100,8 +100,10 @@ impl ContextClient {
             application_id = Some(application.id);
 
             if !self.node_client.has_application(&application.id)? {
-                let source: Url = application.source.into();
-
+                let source: Url = match application.source {
+                    Some(source) => source.into(),
+                    None => return Err(eyre::eyre!("Application source is required but not provided")),
+                };
                 let metadata = application.metadata;
 
                 let derived_application_id = {
