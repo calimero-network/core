@@ -1,10 +1,5 @@
-use super::Buffer;
-
-#[repr(C)]
-pub struct Event<'a> {
-    kind: Buffer<'a>,
-    data: Buffer<'a>,
-}
+use super::Event;
+use crate::Buffer;
 
 impl<'a> Event<'a> {
     #[inline]

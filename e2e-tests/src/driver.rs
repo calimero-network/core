@@ -199,6 +199,12 @@ impl Driver {
                 let test_content = read(&test_file_path).await?;
                 let scenario: TestScenario = from_slice(&test_content)?;
 
+                if let Some(ignore) = scenario.ignore {
+                    if ignore {
+                        continue;
+                    }
+                }
+
                 self.environment
                     .output_writer
                     .write_header(&format!("Running protocol {}", sandbox.name()), 1);

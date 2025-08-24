@@ -10,7 +10,7 @@ impl RegisterId {
         Self(PtrSizedInt::new(value))
     }
 
-    pub const fn as_usize(self) -> usize {
+    pub fn as_usize(self) -> usize {
         self.0.as_usize()
     }
 }

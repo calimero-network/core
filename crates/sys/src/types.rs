@@ -3,6 +3,7 @@ mod buffer;
 mod event;
 mod location;
 mod pointer;
+mod r#ref;
 mod register;
 
 pub use bool::*;
@@ -10,6 +11,7 @@ pub use buffer::*;
 pub use event::*;
 pub use location::*;
 pub use pointer::*;
+pub use r#ref::*;
 pub use register::*;
 
 #[repr(C, u64)]
@@ -32,3 +34,8 @@ where
         }
     }
 }
+
+#[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
+compile_error!(
+    "calimero-sys assumes you're compiling for a 64-bit target or wasm32, which you are not. Please file an issue"
+);
