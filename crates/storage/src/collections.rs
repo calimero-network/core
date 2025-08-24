@@ -220,6 +220,7 @@ impl<T: BorshSerialize + BorshDeserialize, S: StorageAdaptor> Collection<T, S> {
     #[expect(
         clippy::unwrap_in_result,
         clippy::expect_used,
+        clippy::mut_from_ref,
         reason = "fatal error if it happens"
     )]
     fn children_cache(&self) -> StoreResult<&mut IndexSet<Id>> {

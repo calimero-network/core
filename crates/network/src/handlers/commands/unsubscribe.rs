@@ -11,7 +11,7 @@ impl Handler<Unsubscribe> for NetworkManager {
         Unsubscribe(topic): Unsubscribe,
         _ctx: &mut Context<Self>,
     ) -> Self::Result {
-        let _ignored = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic)?;
+        let _ignored = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic);
 
         Ok(topic)
     }
