@@ -1995,20 +1995,15 @@ dependencies = [
  "calimero-store-rocksdb",
  "calimero-utils-actix",
  "camino",
- "clap",
  "either",
  "eyre",
  "futures-util",
- "hex",
  "libp2p",
- "owo-colors",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "url",
- "webbrowser",
 ]
 
 [[package]]
