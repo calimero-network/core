@@ -2,7 +2,6 @@ use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-
 use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result, WrapErr};
 
@@ -161,7 +160,9 @@ async fn list_identities(
     };
 
     let mero_client = environment.mero_client()?;
-    let response = mero_client.get_context_identities(&context_id, owned).await?;
+    let response = mero_client
+        .get_context_identities(&context_id, owned)
+        .await?;
 
     environment.output.write(&response);
     Ok(())

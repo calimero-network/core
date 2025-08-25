@@ -93,7 +93,9 @@ impl UpdateCommand {
             } => {
                 let mero_client = environment.mero_client()?;
                 let request = UpdateContextApplicationRequest::new(application_id, executor_id);
-                let _response = mero_client.update_context_application(&context_id, request).await?;
+                let _response = mero_client
+                    .update_context_application(&context_id, request)
+                    .await?;
                 environment.output.write(&_response);
             }
             Self {
@@ -105,10 +107,19 @@ impl UpdateCommand {
                 let metadata = metadata.map(String::into_bytes);
 
                 let mero_client = environment.mero_client()?;
-                let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
+                let application_id = mero_client
+                    .install_dev_application(InstallDevApplicationRequest::new(
+                        path.clone(),
+                        metadata.clone().unwrap_or_default(),
+                    ))
+                    .await?
+                    .data
+                    .application_id;
 
                 let request = UpdateContextApplicationRequest::new(application_id, executor_id);
-                let _response = mero_client.update_context_application(&context_id, request).await?;
+                let _response = mero_client
+                    .update_context_application(&context_id, request)
+                    .await?;
                 environment.output.write(&_response);
 
                 if self.watch {
@@ -130,8 +141,6 @@ impl UpdateCommand {
         Ok(())
     }
 }
-
-
 
 async fn watch_app_and_update_context(
     environment: &mut Environment,
@@ -181,11 +190,20 @@ async fn watch_app_and_update_context(
         }
 
         let mero_client = environment.mero_client()?;
-        let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
+        let application_id = mero_client
+            .install_dev_application(InstallDevApplicationRequest::new(
+                path.clone(),
+                metadata.clone().unwrap_or_default(),
+            ))
+            .await?
+            .data
+            .application_id;
 
         let mero_client = environment.mero_client()?;
         let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
-        let response = mero_client.update_context_application(&context_id, request).await?;
+        let response = mero_client
+            .update_context_application(&context_id, request)
+            .await?;
         environment.output.write(&response);
     }
 

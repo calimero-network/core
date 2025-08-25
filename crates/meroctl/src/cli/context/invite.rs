@@ -103,7 +103,8 @@ impl InviteCommand {
 
         // Handle alias creation separately to avoid borrowing conflicts
         if let Some(name) = self.name {
-            let res = create_alias(&connection_clone, name, Some(context_id), self.invitee_id).await?;
+            let res =
+                create_alias(&connection_clone, name, Some(context_id), self.invitee_id).await?;
             environment.output.write(&res);
         }
 

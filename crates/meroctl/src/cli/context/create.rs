@@ -133,7 +133,14 @@ impl CreateCommand {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
                 let mero_client = environment.mero_client()?;
-                let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
+                let application_id = mero_client
+                    .install_dev_application(InstallDevApplicationRequest::new(
+                        path.clone(),
+                        metadata.clone().unwrap_or_default(),
+                    ))
+                    .await?
+                    .data
+                    .application_id;
 
                 let (context_id, member_public_key) = create_context(
                     environment,
@@ -264,7 +271,14 @@ async fn watch_app_and_update_context(
         }
 
         let mero_client = environment.mero_client()?;
-        let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
+        let application_id = mero_client
+            .install_dev_application(InstallDevApplicationRequest::new(
+                path.clone(),
+                metadata.clone().unwrap_or_default(),
+            ))
+            .await?
+            .data
+            .application_id;
 
         update_context_application(
             environment,

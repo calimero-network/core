@@ -7,8 +7,6 @@ use crate::cli::Environment;
 #[command(about = "List all blobs")]
 pub struct ListCommand;
 
-
-
 impl ListCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let mero_client = environment.mero_client()?;

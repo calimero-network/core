@@ -120,7 +120,9 @@ impl Environment {
             let mero_client = MeroClient::new(connection.api_url.to_string());
             self.mero_client = Some(mero_client);
         }
-        Ok(self.mero_client.as_ref().unwrap())
+        self.mero_client
+            .as_ref()
+            .ok_or_else(|| CliError::Other(eyre::eyre!("Failed to create mero client")))
     }
 }
 

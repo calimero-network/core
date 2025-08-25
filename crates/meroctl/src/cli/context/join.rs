@@ -55,7 +55,8 @@ impl JoinCommand {
 
         if let Some(ref payload) = response.data {
             if let Some(context) = self.context {
-                let res = create_alias(&connection_clone, context, None, payload.context_id).await?;
+                let res =
+                    create_alias(&connection_clone, context, None, payload.context_id).await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {

@@ -11,8 +11,6 @@ pub struct InfoCommand {
     pub blob_id: BlobId,
 }
 
-
-
 impl InfoCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let mero_client = environment.mero_client()?;

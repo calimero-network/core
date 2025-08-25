@@ -192,7 +192,9 @@ impl ProposalsCommand {
                 let mero_client = environment.mero_client()?;
                 let proposal_response = mero_client.get_proposal(&context_id, proposal_id).await?;
 
-                let approvers_response = mero_client.get_proposal_approvers(&context_id, proposal_id).await?;
+                let approvers_response = mero_client
+                    .get_proposal_approvers(&context_id, proposal_id)
+                    .await?;
 
                 let combined_response = ProposalDetailsResponse {
                     proposal: proposal_response,

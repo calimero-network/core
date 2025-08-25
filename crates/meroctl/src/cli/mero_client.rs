@@ -4,9 +4,10 @@ use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    DeleteContextResponse, GenerateContextIdentityResponse, GetApplicationResponse, GetContextClientKeysResponse,
-    GetContextIdentitiesResponse, GetContextResponse, GetContextStorageResponse, GetContextsResponse,
-    GetPeersCountResponse, GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
+    DeleteContextResponse, GenerateContextIdentityResponse, GetApplicationResponse,
+    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
+    GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
+    GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
     InstallDevApplicationRequest, InviteToContextRequest, InviteToContextResponse,
     JoinContextRequest, JoinContextResponse, ListApplicationsResponse, RevokePermissionResponse,
@@ -129,7 +130,6 @@ impl MeroClient {
 
         Ok(install_response)
     }
-
 
     pub async fn install_application(
         &self,
@@ -259,7 +259,10 @@ impl MeroClient {
         context_id: &ContextId,
         request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
     ) -> Result<GrantPermissionResponse> {
-        let url = format!("{}/admin-api/contexts/{}/capabilities/grant", self.base_url, context_id);
+        let url = format!(
+            "{}/admin-api/contexts/{}/capabilities/grant",
+            self.base_url, context_id
+        );
 
         let response = self.http_client.post(&url).json(&request).send().await?;
         let grant_response: GrantPermissionResponse = response.json().await?;
@@ -272,7 +275,10 @@ impl MeroClient {
         context_id: &ContextId,
         request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
     ) -> Result<RevokePermissionResponse> {
-        let url = format!("{}/admin-api/contexts/{}/capabilities/revoke", self.base_url, context_id);
+        let url = format!(
+            "{}/admin-api/contexts/{}/capabilities/revoke",
+            self.base_url, context_id
+        );
 
         let response = self.http_client.post(&url).json(&request).send().await?;
         let revoke_response: RevokePermissionResponse = response.json().await?;
@@ -297,7 +303,10 @@ impl MeroClient {
         context_id: &ContextId,
         request: UpdateContextApplicationRequest,
     ) -> Result<UpdateContextApplicationResponse> {
-        let url = format!("{}/admin-api/contexts/{}/application", self.base_url, context_id);
+        let url = format!(
+            "{}/admin-api/contexts/{}/application",
+            self.base_url, context_id
+        );
 
         let response = self.http_client.post(&url).json(&request).send().await?;
         let update_response: UpdateContextApplicationResponse = response.json().await?;
@@ -310,7 +319,10 @@ impl MeroClient {
         context_id: &ContextId,
         proposal_id: &Hash,
     ) -> Result<GetProposalResponse> {
-        let url = format!("{}/admin-api/contexts/{}/proposals/{}", self.base_url, context_id, proposal_id);
+        let url = format!(
+            "{}/admin-api/contexts/{}/proposals/{}",
+            self.base_url, context_id, proposal_id
+        );
 
         let response = self.http_client.get(&url).send().await?;
         let proposal_response: GetProposalResponse = response.json().await?;
@@ -339,7 +351,10 @@ impl MeroClient {
         context_id: &ContextId,
         args: serde_json::Value,
     ) -> Result<GetProposalsResponse> {
-        let url = format!("{}/admin-api/contexts/{}/proposals", self.base_url, context_id);
+        let url = format!(
+            "{}/admin-api/contexts/{}/proposals",
+            self.base_url, context_id
+        );
 
         let response = self.http_client.post(&url).json(&args).send().await?;
         let proposals_response: GetProposalsResponse = response.json().await?;
@@ -374,10 +389,7 @@ impl MeroClient {
         Ok(sync_response)
     }
 
-    pub async fn join_context(
-        &self,
-        request: JoinContextRequest,
-    ) -> Result<JoinContextResponse> {
+    pub async fn join_context(&self, request: JoinContextRequest) -> Result<JoinContextResponse> {
         let url = format!("{}/admin-api/contexts/join", self.base_url);
 
         let response = self.http_client.post(&url).json(&request).send().await?;
@@ -413,8 +425,14 @@ impl MeroClient {
         Ok(context_response)
     }
 
-    pub async fn get_context_client_keys(&self, context_id: &ContextId) -> Result<GetContextClientKeysResponse> {
-        let url = format!("{}/admin-api/contexts/{}/client-keys", self.base_url, context_id);
+    pub async fn get_context_client_keys(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<GetContextClientKeysResponse> {
+        let url = format!(
+            "{}/admin-api/contexts/{}/client-keys",
+            self.base_url, context_id
+        );
 
         let response = self.http_client.get(&url).send().await?;
         let client_keys_response: GetContextClientKeysResponse = response.json().await?;
@@ -422,8 +440,14 @@ impl MeroClient {
         Ok(client_keys_response)
     }
 
-    pub async fn get_context_storage(&self, context_id: &ContextId) -> Result<GetContextStorageResponse> {
-        let url = format!("{}/admin-api/contexts/{}/storage", self.base_url, context_id);
+    pub async fn get_context_storage(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<GetContextStorageResponse> {
+        let url = format!(
+            "{}/admin-api/contexts/{}/storage",
+            self.base_url, context_id
+        );
 
         let response = self.http_client.get(&url).send().await?;
         let storage_response: GetContextStorageResponse = response.json().await?;
