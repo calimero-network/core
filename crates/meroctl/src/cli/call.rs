@@ -90,7 +90,7 @@ impl Report for Response {
 }
 
 impl CallCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let resolve_response = resolve_alias(connection, self.context, None).await?;
@@ -119,7 +119,8 @@ impl CallCommand {
             payload,
         );
 
-        let response: Response = connection.post("jsonrpc", request).await?;
+        let mero_client = environment.mero_client()?;
+        let response = mero_client.execute_jsonrpc(request).await?;
         environment.output.write(&response);
 
         Ok(())

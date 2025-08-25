@@ -29,10 +29,10 @@ impl Report for GetPeersCountResponse {
 }
 
 impl PeersCommand {
-    pub async fn run(&self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(&self, environment: &mut Environment) -> Result<()> {
+        let mero_client = environment.mero_client()?;
 
-        let response: GetPeersCountResponse = connection.get("admin-api/peers").await?;
+        let response = mero_client.get_peers_count().await?;
 
         environment.output.write(&response);
 

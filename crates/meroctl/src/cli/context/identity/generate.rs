@@ -20,12 +20,10 @@ impl Report for GenerateContextIdentityResponse {
 }
 
 impl GenerateCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let mero_client = environment.mero_client()?;
 
-        let response: GenerateContextIdentityResponse = connection
-            .post("admin-api/identity/context", None::<()>)
-            .await?;
+        let response = mero_client.generate_context_identity().await?;
 
         environment.output.write(&response);
         Ok(())

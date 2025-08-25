@@ -29,10 +29,9 @@ impl Report for GetContextsResponse {
 }
 
 impl ListCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
-
-        let response: GetContextsResponse = connection.get("admin-api/contexts").await?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let mero_client = environment.mero_client()?;
+        let response = mero_client.list_contexts().await?;
 
         environment.output.write(&response);
 

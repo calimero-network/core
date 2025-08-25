@@ -5,9 +5,8 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateAliasRequest, CreateAliasResponse, CreateContextIdentityAlias, CreateContextRequest,
-    CreateContextResponse, GetApplicationResponse, InstallApplicationResponse,
-    InstallDevApplicationRequest, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    CreateContextResponse, GetApplicationResponse, InstallDevApplicationRequest,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
@@ -94,8 +93,9 @@ impl Report for UpdateContextApplicationResponse {
 }
 
 impl CreateCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let connection = environment.connection()?;
+        let connection_clone = connection.clone();
 
         match self {
             Self {
@@ -110,7 +110,7 @@ impl CreateCommand {
             } => {
                 let _ = create_context(
                     environment,
-                    connection,
+                    &connection_clone,
                     context_seed,
                     app_id,
                     params,
@@ -132,12 +132,12 @@ impl CreateCommand {
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
-                let application_id =
-                    install_app(environment, connection, path.clone(), metadata.clone()).await?;
+                let mero_client = environment.mero_client()?;
+                let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
 
                 let (context_id, member_public_key) = create_context(
                     environment,
-                    connection,
+                    &connection_clone,
                     context_seed,
                     application_id,
                     params,
@@ -149,7 +149,7 @@ impl CreateCommand {
 
                 watch_app_and_update_context(
                     environment,
-                    connection,
+                    &connection_clone,
                     context_id,
                     path,
                     metadata,
@@ -165,7 +165,7 @@ impl CreateCommand {
 }
 
 pub async fn create_context(
-    environment: &Environment,
+    environment: &mut Environment,
     connection: &ConnectionInfo,
     context_seed: Option<Hash>,
     application_id: ApplicationId,
@@ -217,7 +217,7 @@ pub async fn create_context(
 }
 
 async fn watch_app_and_update_context(
-    environment: &Environment,
+    environment: &mut Environment,
     connection: &ConnectionInfo,
     context_id: ContextId,
     path: Utf8PathBuf,
@@ -263,8 +263,8 @@ async fn watch_app_and_update_context(
             | EventKind::Other => continue,
         }
 
-        let application_id =
-            install_app(environment, connection, path.clone(), metadata.clone()).await?;
+        let mero_client = environment.mero_client()?;
+        let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
 
         update_context_application(
             environment,
@@ -309,21 +309,4 @@ async fn app_installed(
         .await?;
 
     Ok(response.data.application.is_some())
-}
-
-async fn install_app(
-    environment: &Environment,
-    connection: &ConnectionInfo,
-    path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
-) -> Result<ApplicationId> {
-    let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
-
-    let response: InstallApplicationResponse = connection
-        .post("admin-api/install-dev-application", request)
-        .await?;
-
-    environment.output.write(&response);
-
-    Ok(response.data.application_id)
 }
