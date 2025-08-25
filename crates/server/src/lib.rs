@@ -32,6 +32,9 @@ mod metrics;
 mod middleware;
 #[cfg(feature = "websocket")]
 pub mod ws;
+#[cfg(feature = "websocket")]
+pub mod sse;
+
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -124,6 +127,11 @@ pub async fn start(
             serviced = true;
         }
     }
+
+    #[cfg(feature = "sse")]
+    {
+    }
+
 
     #[cfg(feature = "admin")]
     {
