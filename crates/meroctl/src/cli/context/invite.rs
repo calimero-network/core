@@ -64,13 +64,14 @@ impl Report for InviteToContextResponse {
 }
 
 impl InviteCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let _ignored = self.invite(environment).await?;
         Ok(())
     }
 
-    pub async fn invite(&self, environment: &Environment) -> Result<ContextInvitationPayload> {
+    pub async fn invite(&self, environment: &mut Environment) -> Result<ContextInvitationPayload> {
         let connection = environment.connection()?;
+        let connection_clone = connection.clone();
 
         let context_id = resolve_alias(connection, self.context, None)
             .await?
@@ -84,16 +85,15 @@ impl InviteCommand {
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let response: InviteToContextResponse = connection
-            .post(
-                "admin-api/contexts/invite",
-                InviteToContextRequest {
-                    context_id,
-                    inviter_id,
-                    invitee_id: self.invitee_id,
-                },
-            )
-            .await?;
+        let request = InviteToContextRequest {
+            context_id,
+            inviter_id,
+            invitee_id: self.invitee_id,
+        };
+
+        // Get mero_client after using connection for alias resolution
+        let mero_client = environment.mero_client()?;
+        let response = mero_client.invite_to_context(request).await?;
 
         environment.output.write(&response);
 
@@ -101,9 +101,9 @@ impl InviteCommand {
             .data
             .ok_or_else(|| eyre::eyre!("No invitation payload found in the response"))?;
 
+        // Handle alias creation separately to avoid borrowing conflicts
         if let Some(name) = self.name {
-            let res = create_alias(connection, name, Some(context_id), self.invitee_id).await?;
-
+            let res = create_alias(&connection_clone, name, Some(context_id), self.invitee_id).await?;
             environment.output.write(&res);
         }
 

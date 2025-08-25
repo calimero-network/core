@@ -28,12 +28,10 @@ impl Report for UninstallApplicationResponse {
 }
 
 impl UninstallCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
-        // Call the uninstall API endpoint using DELETE method
-        let response: UninstallApplicationResponse = connection
-            .delete(&format!("admin-api/applications/{}", self.app_id))
-            .await?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let mero_client = environment.mero_client()?;
+
+        let response = mero_client.uninstall_application(&self.app_id).await?;
 
         environment.output.write(&response);
 

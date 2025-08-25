@@ -31,7 +31,7 @@ pub struct GrantPermissionCommand {
 }
 
 impl GrantPermissionCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
@@ -49,12 +49,8 @@ impl GrantPermissionCommand {
         let request: Vec<(PublicKey, ConfigCapability)> =
             vec![(grantee_id, self.capability.into())];
 
-        let response: GrantPermissionResponse = connection
-            .post(
-                &format!("admin-api/contexts/{}/capabilities/grant", context_id),
-                request,
-            )
-            .await?;
+        let mero_client = environment.mero_client()?;
+        let response = mero_client.grant_permissions(&context_id, request).await?;
 
         environment.output.write(&response);
         Ok(())

@@ -43,26 +43,24 @@ impl Report for JoinContextResponse {
 }
 
 impl JoinCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let connection = environment.connection()?;
+        let connection_clone = connection.clone();
+        let mero_client = environment.mero_client()?;
 
-        let response: JoinContextResponse = connection
-            .post(
-                "admin-api/contexts/join",
-                JoinContextRequest::new(self.invitation_payload),
-            )
-            .await?;
+        let request = JoinContextRequest::new(self.invitation_payload);
+        let response = mero_client.join_context(request).await?;
 
         environment.output.write(&response);
 
         if let Some(ref payload) = response.data {
             if let Some(context) = self.context {
-                let res = create_alias(connection, context, None, payload.context_id).await?;
+                let res = create_alias(&connection_clone, context, None, payload.context_id).await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {
                 let res = create_alias(
-                    connection,
+                    &connection_clone,
                     identity,
                     Some(payload.context_id),
                     payload.member_public_key,

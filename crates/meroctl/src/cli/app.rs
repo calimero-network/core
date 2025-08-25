@@ -64,7 +64,7 @@ impl Report for Application {
 }
 
 impl AppCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {
             AppSubCommands::Get(get) => get.run(environment).await,
             AppSubCommands::Install(install) => install.run(environment).await,
