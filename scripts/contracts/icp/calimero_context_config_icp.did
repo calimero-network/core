@@ -1,0 +1,24 @@
+type ICApplication = record {
+  id : blob;
+  source : text;
+  metadata : blob;
+  "blob" : blob;
+  size : nat64;
+};
+type ICCapability = variant { Proxy; ManageMembers; ManageApplication };
+type ICSigned = record { signature : blob; _phantom : null; payload : blob };
+type Result = variant { Ok; Err : text };
+service : (principal) -> {
+  application : (blob) -> (ICApplication) query;
+  application_revision : (blob) -> (nat64) query;
+  fetch_nonce : (blob, blob) -> (opt nat64) query;
+  has_member : (blob, blob) -> (bool) query;
+  members : (blob, nat64, nat64) -> (vec blob) query;
+  members_revision : (blob) -> (nat64) query;
+  mutate : (ICSigned) -> (Result);
+  privileges : (blob, vec blob) -> (
+      vec record { blob; vec ICCapability },
+    ) query;
+  proxy_contract : (blob) -> (principal) query;
+  set_proxy_code : (blob) -> (Result);
+}

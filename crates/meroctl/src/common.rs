@@ -42,7 +42,12 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> Result<Url> {
 
     let mut url = Url::parse(&format!("{scheme}://{ip}:{port}"))?;
 
-    url.set_path(api_path);
+    // Only set path if api_path is not empty, otherwise set to empty string to avoid trailing slash
+    if !api_path.is_empty() {
+        url.set_path(api_path);
+    } else {
+        url.set_path("");
+    }
 
     Ok(url)
 }

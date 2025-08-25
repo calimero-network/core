@@ -1,0 +1,42 @@
+type ICProposal = record {
+  id : blob;
+  actions : vec ICProposalAction;
+  author_id : blob;
+};
+type ICProposalAction = variant {
+  SetNumApprovals : record { num_approvals : nat32 };
+  SetContextValue : record { key : blob; value : blob };
+  Transfer : record { receiver_id : principal; amount : nat };
+  DeleteProposal : record { proposal_id : blob };
+  SetActiveProposalsLimit : record { active_proposals_limit : nat32 };
+  ExternalFunctionCall : record {
+    receiver_id : principal;
+    args : text;
+    deposit : nat;
+    method_name : text;
+  };
+};
+type ICProposalApprovalWithSigner = record {
+  signer_id : blob;
+  proposal_id : blob;
+};
+type ICProposalWithApprovals = record {
+  num_approvals : nat64;
+  proposal_id : blob;
+};
+type ICSigned = record { signature : blob; _phantom : null; payload : blob };
+type Result = variant { Ok : opt ICProposalWithApprovals; Err : text };
+service : (blob, principal) -> {
+  context_storage_entries : (nat64, nat64) -> (vec record { blob; blob }) query;
+  get_active_proposals_limit : () -> (nat32) query;
+  get_confirmations_count : (blob) -> (opt ICProposalWithApprovals) query;
+  get_context_value : (blob) -> (opt blob) query;
+  get_num_approvals : () -> (nat32) query;
+  get_proposal_approvals_with_signer : (blob) -> (
+      vec ICProposalApprovalWithSigner,
+    ) query;
+  mutate : (ICSigned) -> (Result);
+  proposal : (blob) -> (opt ICProposal) query;
+  proposal_approvers : (blob) -> (opt vec blob) query;
+  proposals : (nat64, nat64) -> (vec ICProposal) query;
+}

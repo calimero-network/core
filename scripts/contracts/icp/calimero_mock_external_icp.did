@@ -1,0 +1,6 @@
+service : (principal) -> {
+  clear_state : () -> ();
+  get_calls : () -> (vec blob) query;
+  test_method : (blob) -> (blob);
+  test_method_no_transfer : (blob) -> (blob);
+}

@@ -17,6 +17,7 @@ use calimero_server_primitives::admin::{
 use calimero_server_primitives::jsonrpc::{Request, Response};
 use eyre::Result;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::output::Report;
 
@@ -98,22 +99,25 @@ impl Report for BlobInfoResponse {
 
 #[derive(Clone, Debug)]
 pub struct MeroClient {
-    base_url: String,
+    base_url: Url,
     http_client: reqwest::Client,
 }
 
 impl MeroClient {
-    pub fn new(base_url: String) -> Self {
-        Self {
+    pub fn new(base_url: String) -> Result<Self> {
+        let base_url = Url::parse(&base_url)?;
+        Ok(Self {
             base_url,
             http_client: reqwest::Client::new(),
-        }
+        })
     }
 
     pub async fn get_application(&self, app_id: &ApplicationId) -> Result<GetApplicationResponse> {
-        let url = format!("{}/admin-api/applications/{}", self.base_url, app_id);
+        let url = self
+            .base_url
+            .join(&format!("admin-api/applications/{}", app_id))?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let application_response: GetApplicationResponse = response.json().await?;
 
         Ok(application_response)
@@ -123,9 +127,9 @@ impl MeroClient {
         &self,
         request: InstallDevApplicationRequest,
     ) -> Result<InstallApplicationResponse> {
-        let url = format!("{}/admin-api/install-dev-application", self.base_url);
+        let url = self.base_url.join("admin-api/install-dev-application")?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
         let install_response: InstallApplicationResponse = response.json().await?;
 
         Ok(install_response)
@@ -135,57 +139,63 @@ impl MeroClient {
         &self,
         request: InstallApplicationRequest,
     ) -> Result<InstallApplicationResponse> {
-        let url = format!("{}/admin-api/install-application", self.base_url);
+        let url = self.base_url.join("admin-api/install-application")?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
+
         let install_response: InstallApplicationResponse = response.json().await?;
-
         Ok(install_response)
     }
 
     pub async fn list_applications(&self) -> Result<ListApplicationsResponse> {
-        let url = format!("{}/admin-api/applications", self.base_url);
+        let url = self.base_url.join("admin-api/applications")?;
 
-        let response = self.http_client.get(&url).send().await?;
-        let applications_response: ListApplicationsResponse = response.json().await?;
+        let response = self.http_client.get(url).send().await?;
 
-        Ok(applications_response)
+        let list_response: ListApplicationsResponse = response.json().await?;
+        Ok(list_response)
     }
 
     pub async fn uninstall_application(
         &self,
         app_id: &ApplicationId,
     ) -> Result<UninstallApplicationResponse> {
-        let url = format!("{}/admin-api/applications/{}", self.base_url, app_id);
+        let url = self
+            .base_url
+            .join(&format!("admin-api/applications/{}", app_id))?;
 
-        let response = self.http_client.delete(&url).send().await?;
+        let response = self.http_client.delete(url).send().await?;
         let uninstall_response: UninstallApplicationResponse = response.json().await?;
 
         Ok(uninstall_response)
     }
 
     pub async fn delete_blob(&self, blob_id: &BlobId) -> Result<BlobDeleteResponse> {
-        let url = format!("{}/admin-api/blobs/{}", self.base_url, blob_id);
+        let url = self
+            .base_url
+            .join(&format!("admin-api/blobs/{}", blob_id))?;
 
-        let response = self.http_client.delete(&url).send().await?;
+        let response = self.http_client.delete(url).send().await?;
         let delete_response: BlobDeleteResponse = response.json().await?;
 
         Ok(delete_response)
     }
 
     pub async fn list_blobs(&self) -> Result<BlobListResponse> {
-        let url = format!("{}/admin-api/blobs", self.base_url);
+        let url = self.base_url.join("admin-api/blobs")?;
 
-        let response = self.http_client.get(&url).send().await?;
-        let blobs_response: BlobListResponse = response.json().await?;
+        let response = self.http_client.get(url).send().await?;
 
-        Ok(blobs_response)
+        let list_response: BlobListResponse = response.json().await?;
+        Ok(list_response)
     }
 
     pub async fn get_blob_info(&self, blob_id: &BlobId) -> Result<BlobInfoResponse> {
-        let url = format!("{}/admin-api/blobs/{}", self.base_url, blob_id);
+        let url = self
+            .base_url
+            .join(&format!("admin-api/blobs/{}", blob_id))?;
 
-        let response = self.http_client.head(&url).send().await?;
+        let response = self.http_client.head(url).send().await?;
         let headers = response.headers();
 
         let size = headers
@@ -225,18 +235,18 @@ impl MeroClient {
     }
 
     pub async fn generate_context_identity(&self) -> Result<GenerateContextIdentityResponse> {
-        let url = format!("{}/admin-api/identity/context", self.base_url);
+        let url = self.base_url.join("admin-api/identity/context")?;
 
-        let response = self.http_client.post(&url).send().await?;
+        let response = self.http_client.post(url).send().await?;
         let identity_response: GenerateContextIdentityResponse = response.json().await?;
 
         Ok(identity_response)
     }
 
     pub async fn get_peers_count(&self) -> Result<GetPeersCountResponse> {
-        let url = format!("{}/admin-api/peers", self.base_url);
+        let url = self.base_url.join("admin-api/peers")?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let peers_response: GetPeersCountResponse = response.json().await?;
 
         Ok(peers_response)
@@ -246,9 +256,9 @@ impl MeroClient {
     where
         P: Serialize,
     {
-        let url = format!("{}/jsonrpc", self.base_url);
+        let url = self.base_url.join("jsonrpc")?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
         let jsonrpc_response: Response = response.json().await?;
 
         Ok(jsonrpc_response)
@@ -259,12 +269,12 @@ impl MeroClient {
         context_id: &ContextId,
         request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
     ) -> Result<GrantPermissionResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/capabilities/grant",
-            self.base_url, context_id
-        );
+        let url = self.base_url.join(&format!(
+            "admin-api/contexts/{}/capabilities/grant",
+            context_id
+        ))?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
         let grant_response: GrantPermissionResponse = response.json().await?;
 
         Ok(grant_response)
@@ -275,12 +285,12 @@ impl MeroClient {
         context_id: &ContextId,
         request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
     ) -> Result<RevokePermissionResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/capabilities/revoke",
-            self.base_url, context_id
-        );
+        let url = self.base_url.join(&format!(
+            "admin-api/contexts/{}/capabilities/revoke",
+            context_id
+        ))?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
         let revoke_response: RevokePermissionResponse = response.json().await?;
 
         Ok(revoke_response)
@@ -290,9 +300,9 @@ impl MeroClient {
         &self,
         request: InviteToContextRequest,
     ) -> Result<InviteToContextResponse> {
-        let url = format!("{}/admin-api/contexts/invite", self.base_url);
+        let url = self.base_url.join("admin-api/contexts/invite")?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
         let invite_response: InviteToContextResponse = response.json().await?;
 
         Ok(invite_response)
@@ -303,12 +313,11 @@ impl MeroClient {
         context_id: &ContextId,
         request: UpdateContextApplicationRequest,
     ) -> Result<UpdateContextApplicationResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/application",
-            self.base_url, context_id
-        );
+        let url = self
+            .base_url
+            .join(&format!("admin-api/contexts/{}/application", context_id))?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
         let update_response: UpdateContextApplicationResponse = response.json().await?;
 
         Ok(update_response)
@@ -319,12 +328,12 @@ impl MeroClient {
         context_id: &ContextId,
         proposal_id: &Hash,
     ) -> Result<GetProposalResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/proposals/{}",
-            self.base_url, context_id, proposal_id
-        );
+        let url = self.base_url.join(&format!(
+            "admin-api/contexts/{}/proposals/{}",
+            context_id, proposal_id
+        ))?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let proposal_response: GetProposalResponse = response.json().await?;
 
         Ok(proposal_response)
@@ -335,12 +344,12 @@ impl MeroClient {
         context_id: &ContextId,
         proposal_id: &Hash,
     ) -> Result<GetProposalApproversResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/proposals/{}/approvals/users",
-            self.base_url, context_id, proposal_id
-        );
+        let url = self.base_url.join(&format!(
+            "admin-api/contexts/{}/proposals/{}/approvals/users",
+            context_id, proposal_id
+        ))?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let approvers_response: GetProposalApproversResponse = response.json().await?;
 
         Ok(approvers_response)
@@ -351,48 +360,49 @@ impl MeroClient {
         context_id: &ContextId,
         args: serde_json::Value,
     ) -> Result<GetProposalsResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/proposals",
-            self.base_url, context_id
-        );
+        let url = self
+            .base_url
+            .join(&format!("admin-api/contexts/{}/proposals", context_id))?;
 
-        let response = self.http_client.post(&url).json(&args).send().await?;
+        let response = self.http_client.post(url).json(&args).send().await?;
         let proposals_response: GetProposalsResponse = response.json().await?;
 
         Ok(proposals_response)
     }
 
     pub async fn list_contexts(&self) -> Result<GetContextsResponse> {
-        let url = format!("{}/admin-api/contexts", self.base_url);
+        let url = self.base_url.join("admin-api/contexts")?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let contexts_response: GetContextsResponse = response.json().await?;
 
         Ok(contexts_response)
     }
 
     pub async fn sync_context(&self, context_id: &ContextId) -> Result<SyncContextResponse> {
-        let url = format!("{}/admin-api/contexts/sync/{}", self.base_url, context_id);
+        let url = self
+            .base_url
+            .join(&format!("admin-api/contexts/sync/{}", context_id))?;
 
-        let response = self.http_client.post(&url).json(&()).send().await?;
+        let response = self.http_client.post(url).json(&()).send().await?;
         let sync_response: SyncContextResponse = response.json().await?;
 
         Ok(sync_response)
     }
 
     pub async fn sync_all_contexts(&self) -> Result<SyncContextResponse> {
-        let url = format!("{}/admin-api/contexts/sync", self.base_url);
+        let url = self.base_url.join("admin-api/contexts/sync")?;
 
-        let response = self.http_client.post(&url).json(&()).send().await?;
+        let response = self.http_client.post(url).json(&()).send().await?;
         let sync_response: SyncContextResponse = response.json().await?;
 
         Ok(sync_response)
     }
 
     pub async fn join_context(&self, request: JoinContextRequest) -> Result<JoinContextResponse> {
-        let url = format!("{}/admin-api/contexts/join", self.base_url);
+        let url = self.base_url.join("admin-api/contexts/join")?;
 
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = self.http_client.post(url).json(&request).send().await?;
         let join_response: JoinContextResponse = response.json().await?;
 
         Ok(join_response)
@@ -409,17 +419,19 @@ impl MeroClient {
             format!("admin-api/contexts/{}/identities", context_id)
         };
 
-        let url = format!("{}/{}", self.base_url, endpoint);
-        let response = self.http_client.get(&url).send().await?;
+        let url = self.base_url.join(&endpoint)?;
+        let response = self.http_client.get(url).send().await?;
         let identities_response: GetContextIdentitiesResponse = response.json().await?;
 
         Ok(identities_response)
     }
 
     pub async fn get_context(&self, context_id: &ContextId) -> Result<GetContextResponse> {
-        let url = format!("{}/admin-api/contexts/{}", self.base_url, context_id);
+        let url = self
+            .base_url
+            .join(&format!("admin-api/contexts/{}", context_id))?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let context_response: GetContextResponse = response.json().await?;
 
         Ok(context_response)
@@ -429,12 +441,11 @@ impl MeroClient {
         &self,
         context_id: &ContextId,
     ) -> Result<GetContextClientKeysResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/client-keys",
-            self.base_url, context_id
-        );
+        let url = self
+            .base_url
+            .join(&format!("admin-api/contexts/{}/client-keys", context_id))?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let client_keys_response: GetContextClientKeysResponse = response.json().await?;
 
         Ok(client_keys_response)
@@ -444,21 +455,22 @@ impl MeroClient {
         &self,
         context_id: &ContextId,
     ) -> Result<GetContextStorageResponse> {
-        let url = format!(
-            "{}/admin-api/contexts/{}/storage",
-            self.base_url, context_id
-        );
+        let url = self
+            .base_url
+            .join(&format!("admin-api/contexts/{}/storage", context_id))?;
 
-        let response = self.http_client.get(&url).send().await?;
+        let response = self.http_client.get(url).send().await?;
         let storage_response: GetContextStorageResponse = response.json().await?;
 
         Ok(storage_response)
     }
 
     pub async fn delete_context(&self, context_id: &ContextId) -> Result<DeleteContextResponse> {
-        let url = format!("{}/admin-api/contexts/{}", self.base_url, context_id);
+        let url = self
+            .base_url
+            .join(&format!("admin-api/contexts/{}", context_id))?;
 
-        let response = self.http_client.delete(&url).send().await?;
+        let response = self.http_client.delete(url).send().await?;
         let delete_response: DeleteContextResponse = response.json().await?;
 
         Ok(delete_response)
