@@ -129,6 +129,5 @@
         "expectedValue": "someValue"
       }
     }
-  ],
-  "ignore": true
+  ]
 }
