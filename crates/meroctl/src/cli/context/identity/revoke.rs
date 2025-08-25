@@ -35,7 +35,7 @@ pub struct RevokePermissionCommand {
 }
 
 impl RevokePermissionCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         let context_id = resolve_alias(connection, self.context, None)
@@ -53,8 +53,12 @@ impl RevokePermissionCommand {
         let request: Vec<(PublicKey, ConfigCapability)> =
             vec![(revokee_id, self.capability.into())];
 
-        let mero_client = environment.mero_client()?;
-        let response = mero_client.revoke_permissions(&context_id, request).await?;
+        let response: RevokePermissionResponse = connection
+            .post(
+                &format!("admin-api/contexts/{}/capabilities/revoke", context_id),
+                request,
+            )
+            .await?;
 
         environment.output.write(&response);
 

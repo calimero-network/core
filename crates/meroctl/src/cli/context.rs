@@ -87,7 +87,7 @@ impl Report for Context {
 }
 
 impl ContextCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         match self.subcommand {
             ContextSubCommands::Create(create) => create.run(environment).await,
             ContextSubCommands::Delete(delete) => delete.run(environment).await,

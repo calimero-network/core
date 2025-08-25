@@ -47,10 +47,10 @@ impl Report for ListApplicationsResponse {
 }
 
 impl ListCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+    pub async fn run(self, environment: &Environment) -> Result<()> {
+        let connection = environment.connection()?;
 
-        let response = mero_client.list_applications().await?;
+        let response: ListApplicationsResponse = connection.get("admin-api/applications").await?;
 
         environment.output.write(&response);
 

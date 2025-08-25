@@ -2,7 +2,7 @@ use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-
+use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result, WrapErr};
 
@@ -70,13 +70,12 @@ pub enum ContextIdentitySubcommand {
 }
 
 impl ContextIdentityCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
-        let connection_clone = connection.clone();
 
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {
-                list_identities(environment, &connection_clone, Some(context), owned).await
+                list_identities(environment, connection, Some(context), owned).await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
@@ -137,7 +136,7 @@ impl ContextIdentityCommand {
 }
 
 async fn list_identities(
-    environment: &mut Environment,
+    environment: &Environment,
     connection: &ConnectionInfo,
     context: Option<Alias<ContextId>>,
     owned: bool,
@@ -160,8 +159,13 @@ async fn list_identities(
         }
     };
 
-    let mero_client = environment.mero_client()?;
-    let response = mero_client.get_context_identities(&context_id, owned).await?;
+    let endpoint = if owned {
+        format!("admin-api/contexts/{}/identities-owned", context_id)
+    } else {
+        format!("admin-api/contexts/{}/identities", context_id)
+    };
+
+    let response: GetContextIdentitiesResponse = connection.get(&endpoint).await?;
 
     environment.output.write(&response);
     Ok(())

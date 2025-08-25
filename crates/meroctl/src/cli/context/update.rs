@@ -3,7 +3,8 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    InstallDevApplicationRequest, UpdateContextApplicationRequest,
+    InstallApplicationResponse, InstallDevApplicationRequest, UpdateContextApplicationRequest,
+    UpdateContextApplicationResponse,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
@@ -67,9 +68,8 @@ pub struct UpdateCommand {
 }
 
 impl UpdateCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
-        let connection_clone = connection.clone();
 
         let context_id = resolve_alias(connection, self.context, None)
             .await?
@@ -91,10 +91,14 @@ impl UpdateCommand {
                 watch: false,
                 ..
             } => {
-                let mero_client = environment.mero_client()?;
-                let request = UpdateContextApplicationRequest::new(application_id, executor_id);
-                let _response = mero_client.update_context_application(&context_id, request).await?;
-                environment.output.write(&_response);
+                update_context_application(
+                    environment,
+                    connection,
+                    context_id,
+                    application_id,
+                    executor_id,
+                )
+                .await?;
             }
             Self {
                 application_id: None,
@@ -104,17 +108,22 @@ impl UpdateCommand {
             } => {
                 let metadata = metadata.map(String::into_bytes);
 
-                let mero_client = environment.mero_client()?;
-                let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
+                let application_id =
+                    install_app(environment, connection, path.clone(), metadata.clone()).await?;
 
-                let request = UpdateContextApplicationRequest::new(application_id, executor_id);
-                let _response = mero_client.update_context_application(&context_id, request).await?;
-                environment.output.write(&_response);
+                update_context_application(
+                    environment,
+                    connection,
+                    context_id,
+                    application_id,
+                    executor_id,
+                )
+                .await?;
 
                 if self.watch {
                     watch_app_and_update_context(
                         environment,
-                        &connection_clone,
+                        connection,
                         context_id,
                         path,
                         metadata,
@@ -131,11 +140,47 @@ impl UpdateCommand {
     }
 }
 
+async fn install_app(
+    environment: &Environment,
+    connection: &ConnectionInfo,
+    path: Utf8PathBuf,
+    metadata: Option<Vec<u8>>,
+) -> Result<ApplicationId> {
+    let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
+    let response: InstallApplicationResponse = connection
+        .post("admin-api/install-dev-application", request)
+        .await?;
+
+    environment.output.write(&response);
+
+    Ok(response.data.application_id)
+}
+
+async fn update_context_application(
+    environment: &Environment,
+    connection: &ConnectionInfo,
+    context_id: ContextId,
+    application_id: ApplicationId,
+    member_public_key: PublicKey,
+) -> Result<()> {
+    let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
+
+    let response: UpdateContextApplicationResponse = connection
+        .post(
+            &format!("admin-api/contexts/{}/application", context_id),
+            request,
+        )
+        .await?;
+
+    environment.output.write(&response);
+
+    Ok(())
+}
 
 async fn watch_app_and_update_context(
-    environment: &mut Environment,
-    _connection: &ConnectionInfo,
+    environment: &Environment,
+    connection: &ConnectionInfo,
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
@@ -180,13 +225,17 @@ async fn watch_app_and_update_context(
             | EventKind::Other => continue,
         }
 
-        let mero_client = environment.mero_client()?;
-        let application_id = mero_client.install_dev_application(InstallDevApplicationRequest::new(path.clone(), metadata.clone().unwrap_or_default())).await?.data.application_id;
+        let application_id =
+            install_app(environment, connection, path.clone(), metadata.clone()).await?;
 
-        let mero_client = environment.mero_client()?;
-        let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
-        let response = mero_client.update_context_application(&context_id, request).await?;
-        environment.output.write(&response);
+        update_context_application(
+            environment,
+            connection,
+            context_id,
+            application_id,
+            member_public_key,
+        )
+        .await?;
     }
 
     Ok(())

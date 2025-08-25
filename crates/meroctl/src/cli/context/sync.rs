@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::SyncContextResponse;
@@ -27,22 +29,22 @@ impl Report for SyncContextResponse {
 }
 
 impl SyncCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
-        let connection_clone = connection.clone();
-        let mero_client = environment.mero_client()?;
 
-        let response = if self.all {
-            mero_client.sync_all_contexts().await?
+        let url = if self.all {
+            Cow::from("/admin-api/contexts/sync")
         } else {
-            let context_id = resolve_alias(&connection_clone, self.context, None)
+            let context_id = resolve_alias(connection, self.context, None)
                 .await?
                 .value()
                 .copied()
                 .ok_or_eyre("unable to resolve")?;
 
-            mero_client.sync_context(&context_id).await?
+            format!("/admin-api/contexts/sync/{context_id}").into()
         };
+
+        let response: SyncContextResponse = connection.post(&url, ()).await?;
 
         environment.output.write(&response);
 

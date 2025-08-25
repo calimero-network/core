@@ -28,10 +28,12 @@ impl Report for GetApplicationResponse {
 }
 
 impl GetCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+    pub async fn run(self, environment: &Environment) -> Result<()> {
+        let connection = environment.connection()?;
 
-        let response = mero_client.get_application(&self.app_id).await?;
+        let response: GetApplicationResponse = connection
+            .get(&format!("admin-api/applications/{}", self.app_id))
+            .await?;
 
         environment.output.write(&response);
         Ok(())

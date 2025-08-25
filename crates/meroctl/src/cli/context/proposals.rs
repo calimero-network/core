@@ -8,9 +8,11 @@ use clap::{Parser, Subcommand};
 use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::cli::Environment;
 use crate::common::resolve_alias;
+use crate::connection::ConnectionInfo;
 use crate::output::Report;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,7 +156,7 @@ impl Report for GetProposalsResponse {
 }
 
 impl ProposalsCommand {
-    pub async fn run(&self, environment: &mut Environment) -> Result<()> {
+    pub async fn run(&self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
         match &self.command {
@@ -174,10 +176,8 @@ impl ProposalsCommand {
                     "limit": limit
                 });
 
-                let mero_client = environment.mero_client()?;
-                let response = mero_client.list_proposals(&context_id, args).await?;
-                environment.output.write(&response);
-                Ok(())
+                self.list_proposals(environment, connection, context_id, args)
+                    .await
             }
             ProposalsSubcommand::View {
                 proposal_id,
@@ -189,10 +189,13 @@ impl ProposalsCommand {
                     .cloned()
                     .ok_or_eyre("unable to resolve context")?;
 
-                let mero_client = environment.mero_client()?;
-                let proposal_response = mero_client.get_proposal(&context_id, proposal_id).await?;
+                let proposal_response = self
+                    .get_proposal(connection, context_id, proposal_id)
+                    .await?;
 
-                let approvers_response = mero_client.get_proposal_approvers(&context_id, proposal_id).await?;
+                let approvers_response = self
+                    .get_proposal_approvers_data(connection, context_id, proposal_id)
+                    .await?;
 
                 let combined_response = ProposalDetailsResponse {
                     proposal: proposal_response,
@@ -203,5 +206,55 @@ impl ProposalsCommand {
                 Ok(())
             }
         }
+    }
+
+    async fn get_proposal_approvers_data(
+        &self,
+        connection: &ConnectionInfo,
+        context_id: ContextId,
+        proposal_id: &Hash,
+    ) -> Result<GetProposalApproversResponse> {
+        let response = connection
+            .get(&format!(
+                "admin-api/contexts/{}/proposals/{}/approvals/users",
+                context_id, proposal_id
+            ))
+            .await?;
+
+        Ok(response)
+    }
+
+    async fn list_proposals(
+        &self,
+        environment: &Environment,
+        connection: &ConnectionInfo,
+        context_id: ContextId,
+        args: Value,
+    ) -> Result<()> {
+        let response: GetProposalsResponse = connection
+            .post(
+                &format!("admin-api/contexts/{}/proposals", context_id),
+                args,
+            )
+            .await?;
+
+        environment.output.write(&response);
+        Ok(())
+    }
+
+    async fn get_proposal(
+        &self,
+        connection: &ConnectionInfo,
+        context_id: ContextId,
+        proposal_id: &Hash,
+    ) -> Result<GetProposalResponse> {
+        let response = connection
+            .get(&format!(
+                "admin-api/contexts/{}/proposals/{}",
+                context_id, proposal_id
+            ))
+            .await?;
+
+        Ok(response)
     }
 }

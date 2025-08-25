@@ -106,12 +106,10 @@ impl Report for GetContextIdentitiesResponse {
 }
 
 impl GetCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+    pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
-        let connection_clone = connection.clone();
-        let mero_client = environment.mero_client()?;
 
-        let resolve_response = resolve_alias(&connection_clone, self.context, None).await?;
+        let resolve_response = resolve_alias(connection, self.context, None).await?;
 
         let context_id = resolve_response
             .value()
@@ -120,15 +118,21 @@ impl GetCommand {
 
         match self.command {
             GetSubcommand::Info => {
-                let response = mero_client.get_context(&context_id).await?;
+                let response: GetContextResponse = connection
+                    .get(&format!("admin-api/contexts/{}", context_id))
+                    .await?;
                 environment.output.write(&response);
             }
             GetSubcommand::ClientKeys => {
-                let response = mero_client.get_context_client_keys(&context_id).await?;
+                let response: GetContextClientKeysResponse = connection
+                    .get(&format!("admin-api/contexts/{}/client-keys", context_id))
+                    .await?;
                 environment.output.write(&response);
             }
             GetSubcommand::Storage => {
-                let response = mero_client.get_context_storage(&context_id).await?;
+                let response: GetContextStorageResponse = connection
+                    .get(&format!("admin-api/contexts/{}/storage", context_id))
+                    .await?;
                 environment.output.write(&response);
             }
         }
