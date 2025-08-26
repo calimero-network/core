@@ -7,6 +7,7 @@ mod common;
 mod config;
 mod connection;
 mod defaults;
+mod mero_client;
 mod output;
 mod version;
 

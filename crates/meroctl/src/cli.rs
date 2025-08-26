@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
-use crate::cli::mero_client::MeroClient;
+use crate::mero_client::MeroClient;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
@@ -22,7 +22,6 @@ pub mod auth;
 mod blob;
 mod call;
 mod context;
-mod mero_client;
 mod node;
 mod peers;
 pub mod storage;
@@ -92,7 +91,7 @@ pub struct RootArgs {
     pub output_format: Format,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Environment {
     pub output: Output,
     connection: Option<ConnectionInfo>,
