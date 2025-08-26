@@ -18,6 +18,8 @@ use futures_util::StreamExt;
 use libp2p::kad::QueryId;
 use libp2p::swarm::Swarm;
 use libp2p::PeerId;
+use libp2p_metrics::Metrics;
+use prometheus_client::registry::Registry;
 use tokio::sync::oneshot;
 use tokio::time::interval;
 use tokio_stream::wrappers::IntervalStream;
@@ -45,12 +47,14 @@ pub struct NetworkManager {
     pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<()>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<()>>>,
     pending_blob_queries: HashMap<QueryId, oneshot::Sender<eyre::Result<Vec<PeerId>>>>,
+    metrics: Metrics,
 }
 
 impl NetworkManager {
     pub async fn new(
         config: &NetworkConfig,
         event_recipient: LazyRecipient<NetworkEvent>,
+        prom_registry: &mut Registry,
     ) -> eyre::Result<Self> {
         let swarm = Behaviour::build_swarm(config)?;
 
@@ -73,6 +77,7 @@ impl NetworkManager {
             pending_dial: HashMap::default(),
             pending_bootstrap: HashMap::default(),
             pending_blob_queries: HashMap::new(),
+            metrics: Metrics::new(prom_registry),
         };
 
         Ok(this)

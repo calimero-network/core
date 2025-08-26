@@ -27,7 +27,7 @@ eyre.workspace = true
 hex.workspace = true
 ic-agent = { workspace = true, optional = true }
 jsonwebtoken.workspace = true
-lazy_static = "1.4"
+lazy_static.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
 near-primitives.workspace = true

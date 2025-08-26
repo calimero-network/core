@@ -1,5 +1,6 @@
 use calimero_network_primitives::messages::NetworkEvent;
 use libp2p::gossipsub::Event;
+use libp2p_metrics::Recorder;
 use owo_colors::OwoColorize;
 use tracing::debug;
 
@@ -7,6 +8,7 @@ use super::{EventHandler, NetworkManager};
 
 impl EventHandler<Event> for NetworkManager {
     fn handle(&mut self, event: Event) {
+        self.metrics.record(&event);
         debug!("{}: {:?}", "gossipsub".yellow(), event);
 
         match event {
