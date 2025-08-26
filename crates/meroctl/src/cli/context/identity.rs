@@ -6,7 +6,6 @@ use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
-use crate::common::{create_alias, delete_alias, lookup_alias, resolve_alias};
 use crate::connection::ConnectionInfo;
 use crate::output::ErrorLine;
 
@@ -85,7 +84,8 @@ impl ContextIdentityCommand {
                 context,
                 force,
             } => {
-                let resolve_response = resolve_alias(connection, context, None).await?;
+                let client = environment.mero_client()?.clone();
+                let resolve_response = client.resolve_alias(context, None).await?;
 
                 let context_id = resolve_response
                     .value()
@@ -95,7 +95,7 @@ impl ContextIdentityCommand {
                     "default".parse().expect("'default' is a valid alias name");
 
                 let lookup_result =
-                    lookup_alias(connection, default_alias, Some(context_id)).await?;
+                    client.lookup_alias(default_alias, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -117,13 +117,13 @@ impl ContextIdentityCommand {
                         "Overwriting existing default alias from '{}' to '{}'",
                         existing_identity, identity
                     )));
-                    let _ = delete_alias(connection, default_alias, Some(context_id))
+                    let _ = client.delete_alias(default_alias, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing default alias")?;
                 }
 
                 let res =
-                    create_alias(connection, default_alias, Some(context_id), identity).await?;
+                    client.create_alias_generic(default_alias, Some(context_id), identity).await?;
 
                 environment.output.write(&res);
 
@@ -137,12 +137,12 @@ impl ContextIdentityCommand {
 
 async fn list_identities(
     environment: &mut Environment,
-    connection: &ConnectionInfo,
+    _connection: &ConnectionInfo,
     context: Option<Alias<ContextId>>,
     owned: bool,
 ) -> Result<()> {
-    let resolve_response = resolve_alias(
-        connection,
+    let client = environment.mero_client()?.clone();
+    let resolve_response = client.resolve_alias(
         context.unwrap_or_else(|| "default".parse().expect("valid alias")),
         None,
     )

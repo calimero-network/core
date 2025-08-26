@@ -64,6 +64,12 @@ impl From<&ContextId> for String {
     }
 }
 
+impl Default for ContextId {
+    fn default() -> Self {
+        Self(Hash::default())
+    }
+}
+
 #[derive(Clone, Copy, Debug, ThisError)]
 #[error(transparent)]
 pub struct InvalidContextId(HashError);

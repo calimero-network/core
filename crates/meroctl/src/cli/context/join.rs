@@ -7,7 +7,7 @@ use comfy_table::{Cell, Color, Table};
 use eyre::Result;
 
 use crate::cli::Environment;
-use crate::common::create_alias;
+
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -44,24 +44,22 @@ impl Report for JoinContextResponse {
 
 impl JoinCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
-        let connection_clone = connection.clone();
-        let mero_client = environment.mero_client()?;
+        let _connection = environment.connection()?;
+        let client = environment.mero_client()?.clone();
 
         let request = JoinContextRequest::new(self.invitation_payload);
-        let response = mero_client.join_context(request).await?;
+        let response = client.join_context(request).await?;
 
         environment.output.write(&response);
 
         if let Some(ref payload) = response.data {
             if let Some(context) = self.context {
                 let res =
-                    create_alias(&connection_clone, context, None, payload.context_id).await?;
+                    client.create_alias_generic(context, None, payload.context_id).await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {
-                let res = create_alias(
-                    &connection_clone,
+                let res = client.create_alias_generic(
                     identity,
                     Some(payload.context_id),
                     payload.member_public_key,

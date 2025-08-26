@@ -7,7 +7,7 @@ use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
-use crate::common::{create_alias, resolve_alias};
+
 use crate::output::Report;
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -70,16 +70,15 @@ impl InviteCommand {
     }
 
     pub async fn invite(&self, environment: &mut Environment) -> Result<ContextInvitationPayload> {
-        let connection = environment.connection()?;
-        let connection_clone = connection.clone();
+        let client = environment.mero_client()?.clone();
 
-        let context_id = resolve_alias(connection, self.context, None)
+        let context_id = client.resolve_alias(self.context, None)
             .await?
             .value()
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let inviter_id = resolve_alias(connection, self.inviter, Some(context_id))
+        let inviter_id = client.resolve_alias(self.inviter, Some(context_id))
             .await?
             .value()
             .cloned()
@@ -91,9 +90,7 @@ impl InviteCommand {
             invitee_id: self.invitee_id,
         };
 
-        // Get mero_client after using connection for alias resolution
-        let mero_client = environment.mero_client()?;
-        let response = mero_client.invite_to_context(request).await?;
+        let response = client.invite_to_context(request).await?;
 
         environment.output.write(&response);
 
@@ -104,7 +101,7 @@ impl InviteCommand {
         // Handle alias creation separately to avoid borrowing conflicts
         if let Some(name) = self.name {
             let res =
-                create_alias(&connection_clone, name, Some(context_id), self.invitee_id).await?;
+                client.create_alias_generic(name, Some(context_id), self.invitee_id).await?;
             environment.output.write(&res);
         }
 

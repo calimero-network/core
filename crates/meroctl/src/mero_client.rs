@@ -1,10 +1,12 @@
 use calimero_primitives::application::ApplicationId;
+use calimero_primitives::alias::{Alias, ScopedAlias};
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    DeleteContextResponse, GenerateContextIdentityResponse, GetApplicationResponse,
+    AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias, CreateContextIdAlias, CreateContextIdentityAlias, CreateContextRequest,
+    CreateContextResponse, DeleteAliasResponse, DeleteContextResponse, GenerateContextIdentityResponse, GetApplicationResponse,
     GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
     GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
@@ -12,14 +14,85 @@ use calimero_server_primitives::admin::{
     InstallDevApplicationRequest, InviteToContextRequest, InviteToContextResponse,
     JoinContextRequest, JoinContextResponse, ListApplicationsResponse, RevokePermissionResponse,
     SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    UpdateContextApplicationResponse, ListAliasesResponse, LookupAliasResponse,
 };
 use calimero_server_primitives::jsonrpc::{Request, Response};
 use eyre::Result;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use std::str::FromStr;
 use url::Url;
 
 use crate::output::Report;
+
+pub trait UrlFragment: ScopedAlias + AliasKind {
+    const KIND: &'static str;
+
+    fn create(self) -> Self::Value;
+
+    fn scoped(scope: Option<&Self::Scope>) -> Option<&str>;
+}
+
+impl UrlFragment for ContextId {
+    const KIND: &'static str = "context";
+
+    fn create(self) -> Self::Value {
+        CreateContextIdAlias { context_id: self }
+    }
+
+    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
+        None
+    }
+}
+
+impl UrlFragment for PublicKey {
+    const KIND: &'static str = "identity";
+
+    fn create(self) -> Self::Value {
+        CreateContextIdentityAlias { identity: self }
+    }
+
+    fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
+        let s = context.expect("PublicKey MUST have a scope");
+        Some(s.as_str())
+    }
+}
+
+impl UrlFragment for ApplicationId {
+    const KIND: &'static str = "application";
+
+    fn create(self) -> Self::Value {
+        CreateApplicationIdAlias {
+            application_id: self,
+        }
+    }
+
+    fn scoped(_: Option<&Self::Scope>) -> Option<&str> {
+        None
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResolveResponse<T> {
+    alias: Alias<T>,
+    value: Option<ResolveResponseValue<T>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", content = "data")]
+enum ResolveResponseValue<T> {
+    Lookup(LookupAliasResponse<T>),
+    Parsed(T),
+}
+
+impl<T> ResolveResponse<T> {
+    pub fn value(&self) -> Option<&T> {
+        match self.value.as_ref()? {
+            ResolveResponseValue::Lookup(value) => value.data.value.as_ref(),
+            ResolveResponseValue::Parsed(value) => Some(value),
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone)]
 pub struct BlobDeleteResponse {
@@ -474,5 +547,157 @@ impl MeroClient {
         let delete_response: DeleteContextResponse = response.json().await?;
 
         Ok(delete_response)
+    }
+
+    pub async fn create_context(&self, request: CreateContextRequest) -> Result<CreateContextResponse> {
+        let url = self.base_url.join("admin-api/contexts")?;
+
+        let response = self.http_client.post(url).json(&request).send().await?;
+        let create_context_response: CreateContextResponse = response.json().await?;
+
+        Ok(create_context_response)
+    }
+
+    pub async fn create_context_identity_alias(
+        &self,
+        context_id: &ContextId,
+        request: CreateAliasRequest<PublicKey>,
+    ) -> Result<CreateAliasResponse> {
+        let url = self
+            .base_url
+            .join(&format!("admin-api/alias/create/identity/{}", context_id))?;
+
+        let response = self.http_client.post(url).json(&request).send().await?;
+        let create_alias_response: CreateAliasResponse = response.json().await?;
+
+        Ok(create_alias_response)
+    }
+
+    pub async fn create_alias(
+        &self,
+        alias: Alias<ContextId>,
+        value: Option<ContextId>,
+    ) -> Result<CreateAliasResponse> {
+        let url = self.base_url.join("admin-api/alias/create/context")?;
+
+        let request = CreateAliasRequest {
+            alias,
+            value: CreateContextIdAlias {
+                context_id: value.unwrap_or_else(|| ContextId::default()),
+            },
+        };
+
+        let response = self.http_client.post(url).json(&request).send().await?;
+        let create_alias_response: CreateAliasResponse = response.json().await?;
+
+        Ok(create_alias_response)
+    }
+
+    pub async fn create_alias_generic<T>(
+        &self,
+        alias: Alias<T>,
+        scope: Option<T::Scope>,
+        value: T,
+    ) -> Result<CreateAliasResponse>
+    where
+        T: UrlFragment + Serialize,
+        T::Value: Serialize,
+    {
+        let prefix = "admin-api/alias/create";
+        let kind = T::KIND;
+        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+
+        let body = CreateAliasRequest {
+            alias,
+            value: value.create(),
+        };
+
+        let url = self.base_url.join(&format!("{prefix}/{kind}{scope}"))?;
+        let response = self.http_client.post(url).json(&body).send().await?;
+        let create_alias_response: CreateAliasResponse = response.json().await?;
+
+        Ok(create_alias_response)
+    }
+
+    pub async fn delete_alias<T>(
+        &self,
+        alias: Alias<T>,
+        scope: Option<T::Scope>,
+    ) -> Result<DeleteAliasResponse>
+    where
+        T: UrlFragment,
+    {
+        let prefix = "admin-api/alias/delete";
+        let kind = T::KIND;
+        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
+
+        let url = self.base_url.join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
+        let response = self.http_client.post(url).send().await?;
+        let delete_alias_response: DeleteAliasResponse = response.json().await?;
+
+        Ok(delete_alias_response)
+    }
+
+    pub async fn list_aliases<T>(
+        &self,
+        scope: Option<T::Scope>,
+    ) -> Result<ListAliasesResponse<T>>
+    where
+        T: Ord + UrlFragment + DeserializeOwned,
+    {
+        let prefix = "admin-api/alias/list";
+        let kind = T::KIND;
+        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+
+        let url = self.base_url.join(&format!("{prefix}/{kind}{scope}"))?;
+        let response = self.http_client.get(url).send().await?;
+        let list_aliases_response: ListAliasesResponse<T> = response.json().await?;
+
+        Ok(list_aliases_response)
+    }
+
+    pub async fn lookup_alias<T>(
+        &self,
+        alias: Alias<T>,
+        scope: Option<T::Scope>,
+    ) -> Result<LookupAliasResponse<T>>
+    where
+        T: UrlFragment + DeserializeOwned,
+    {
+        let prefix = "admin-api/alias/lookup";
+        let kind = T::KIND;
+        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
+
+        let url = self.base_url.join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
+        let response = self.http_client.post(url).send().await?;
+        let lookup_alias_response: LookupAliasResponse<T> = response.json().await?;
+
+        Ok(lookup_alias_response)
+    }
+
+    pub async fn resolve_alias<T>(
+        &self,
+        alias: Alias<T>,
+        scope: Option<T::Scope>,
+    ) -> Result<ResolveResponse<T>>
+    where
+        T: UrlFragment + FromStr + DeserializeOwned,
+    {
+        let value = self.lookup_alias(alias.clone(), scope).await?;
+
+        if value.data.value.is_some() {
+            return Ok(ResolveResponse {
+                alias,
+                value: Some(ResolveResponseValue::Lookup(value)),
+            });
+        }
+
+        let value = alias
+            .as_str()
+            .parse()
+            .ok()
+            .map(ResolveResponseValue::Parsed);
+
+        Ok(ResolveResponse { alias, value })
     }
 }

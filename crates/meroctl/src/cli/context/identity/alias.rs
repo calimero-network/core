@@ -5,7 +5,7 @@ use clap::Parser;
 use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
-use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
+
 use crate::output::ErrorLine;
 
 
@@ -68,10 +68,7 @@ pub enum ContextIdentityAliasSubcommand {
 
 impl ContextIdentityAliasCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        // Clone the environment to avoid borrowing conflicts
-        let mut env_clone = environment.clone();
-        let mero_client = env_clone.mero_client()?;
-        let connection = environment.connection()?;
+        let client = environment.mero_client()?.clone();
         
         // Extract context and resolve it to context_id
         let context_id = match &self.command {
@@ -79,7 +76,7 @@ impl ContextIdentityAliasCommand {
             ContextIdentityAliasSubcommand::Remove { context, .. } |
             ContextIdentityAliasSubcommand::Get { context, .. } |
             ContextIdentityAliasSubcommand::List { context } => {
-                resolve_alias(connection, *context, None).await?
+                client.resolve_alias(*context, None).await?
                     .value()
                     .cloned()
                     .ok_or_eyre("Failed to resolve context: no value found")?
@@ -94,7 +91,7 @@ impl ContextIdentityAliasCommand {
                 force,
             } => {
                 // Check if identity exists in context using MeroClient
-                let response = mero_client
+                let response = client
                     .get_context_identities(&context_id, false)
                     .await?;
                 let identity_exists = response.data.identities.contains(&identity);
@@ -107,8 +104,7 @@ impl ContextIdentityAliasCommand {
                     return Ok(());
                 }
 
-                let connection = environment.connection()?;
-                let lookup_result = lookup_alias(connection, name, Some(context_id)).await?;
+                let lookup_result = client.lookup_alias(name, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -131,31 +127,28 @@ impl ContextIdentityAliasCommand {
                         "Overwriting existing alias '{}' from '{}' to '{}'",
                         name, existing_identity, identity
                     )));
-                    let _ignored = delete_alias(connection, name, Some(context_id))
+                    let _ignored = client.delete_alias(name, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing alias")?;
                 }
 
-                let res = create_alias(connection, name, Some(context_id), identity).await?;
+                let res = client.create_alias_generic(name, Some(context_id), identity).await?;
 
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Remove { identity, context: _ } => {
-                let connection = environment.connection()?;
-                let res = delete_alias(connection, identity, Some(context_id)).await?;
+                let res = client.delete_alias(identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
             ContextIdentityAliasSubcommand::Get { identity, context: _ } => {
-                let connection = environment.connection()?;
-                let res = lookup_alias(connection, identity, Some(context_id)).await?;
+                let res = client.lookup_alias(identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
 
             ContextIdentityAliasSubcommand::List { context: _ } => {
-                let connection = environment.connection()?;
-                let res = list_aliases::<PublicKey>(connection, Some(context_id)).await?;
+                let res = client.list_aliases::<PublicKey>(Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
