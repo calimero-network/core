@@ -9,7 +9,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use borsh::BorshSerialize;
 use near_crypto::{KeyType as NearKeyType, PublicKey, Signature};
-use near_jsonrpc_client::{methods, JsonRpcClient};
+use near_jsonrpc_client::{auth, methods, JsonRpcClient};
 use near_primitives::types::{AccountId, BlockReference, Finality};
 use near_primitives::views::QueryRequest;
 use serde::{Deserialize, Serialize};
@@ -210,7 +210,14 @@ impl NearWalletProvider {
             attempt += 1;
 
             // Create a new client for each attempt
-            let client = JsonRpcClient::connect(&self.config.rpc_url);
+            let mut client = JsonRpcClient::connect(&self.config.rpc_url);
+
+            // Apply NEAR API key authentication if available
+            if let Ok(api_key) = std::env::var("NEAR_API_KEY") {
+                client = client.header(auth::ApiKey::new(&api_key).expect("valid API key"));
+                client =
+                    client.header(auth::Authorization::bearer(&api_key).expect("valid API key"));
+            }
 
             // Query the account's access keys
             let request = methods::query::RpcQueryRequest {

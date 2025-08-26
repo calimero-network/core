@@ -18,6 +18,7 @@ impl EventHandler<Event> for NetworkManager {
                     protocols,
                     ..
                 },
+            ..
         } = event
         {
             self.discovery

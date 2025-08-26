@@ -9,10 +9,11 @@ license.workspace = true
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
 bs58.workspace = true
-cfg-if.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 calimero-sdk-macros.workspace = true
+calimero-sys.workspace = true
+calimero-wasm-abi-v1.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true

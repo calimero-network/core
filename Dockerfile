@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG RUST_VERSION=1.85.0
+ARG RUST_VERSION=1.88.0
 # ^~~ keep this in sync with rust-toolchain.toml
 
 ################################################################################
@@ -18,6 +18,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY apps ./apps
+COPY tools ./tools
 COPY e2e-tests ./e2e-tests
 
 ARG CALIMERO_WEBUI_SRC # the url or absolute path to the webui (archive or directory)

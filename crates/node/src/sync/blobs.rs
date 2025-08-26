@@ -159,7 +159,7 @@ impl SyncManager {
             "Received blob share request",
         );
 
-        let Some(mut blob) = self.node_client.get_blob(&blob_id)? else {
+        let Some(mut blob) = self.node_client.get_blob(&blob_id, None).await? else {
             warn!(%blob_id, "blob not found");
 
             return Ok(());

@@ -18,7 +18,6 @@ use tokio::sync::Mutex;
 use tracing::error;
 
 pub mod handlers;
-pub mod interactive_cli;
 mod run;
 pub mod sync;
 mod utils;

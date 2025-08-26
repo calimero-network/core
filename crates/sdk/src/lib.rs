@@ -1,3 +1,5 @@
+// Re-export the embed_abi macro from wasm-abi-v1
+pub use calimero_wasm_abi_v1::embed_abi;
 pub use {borsh, serde, serde_json};
 
 pub mod env;
@@ -5,7 +7,6 @@ pub mod event;
 mod macros;
 mod returns;
 pub mod state;
-mod sys;
 pub mod types;
 
 pub mod app {

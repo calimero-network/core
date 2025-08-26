@@ -10,6 +10,7 @@ use crate::output::Report;
 pub mod get;
 pub mod install;
 pub mod list;
+pub mod uninstall;
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -17,6 +18,9 @@ pub const EXAMPLES: &str = r"
 
   # Get details of an application
   $ meroctl --node node1 application get <app_id>
+
+  # Uninstall an application
+  $ meroctl --node node1 application uninstall <app_id>
 ";
 
 #[derive(Debug, Parser)]
@@ -36,6 +40,7 @@ pub enum AppSubCommands {
     Install(install::InstallCommand),
     #[command(alias = "ls")]
     List(list::ListCommand),
+    Uninstall(uninstall::UninstallCommand),
 }
 
 impl Report for Application {
@@ -64,6 +69,7 @@ impl AppCommand {
             AppSubCommands::Get(get) => get.run(environment).await,
             AppSubCommands::Install(install) => install.run(environment).await,
             AppSubCommands::List(list) => list.run(environment).await,
+            AppSubCommands::Uninstall(uninstall) => uninstall.run(environment).await,
         }
     }
 }

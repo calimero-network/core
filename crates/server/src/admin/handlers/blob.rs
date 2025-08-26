@@ -6,7 +6,7 @@ use axum::http::response::Builder;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
-use calimero_primitives::blobs::{BlobId, BlobInfo};
+use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use futures_util::{AsyncRead, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -59,6 +59,9 @@ fn body_to_async_read(body: Body) -> impl AsyncRead {
 /// This endpoint accepts raw binary data in the request body and streams it
 /// directly to blob storage without loading it all into memory first.
 /// Perfect for large file uploads with minimal memory usage.
+///
+/// Query parameters:
+/// - `hash`: Expected hash of the blob for verification (optional)
 pub async fn upload_handler(
     Query(query): Query<BlobUploadQuery>,
     Extension(state): Extension<Arc<AdminState>>,
@@ -90,7 +93,7 @@ pub async fn upload_handler(
     {
         Ok((blob_id, size)) => {
             tracing::info!(
-                "Successfully uploaded streaming blob {} with size {} bytes ({:.1} MB)",
+                "Successfully uploaded streaming blob {} with size {} bytes ({:.1} MiB)",
                 blob_id,
                 size,
                 size as f64 / (1024.0 * 1024.0)
@@ -132,10 +135,7 @@ pub async fn list_handler(Extension(state): Extension<Arc<AdminState>>) -> impl 
 }
 
 /// Helper function to build response headers from blob metadata
-fn build_blob_response_headers(
-    blob_metadata: &calimero_primitives::blobs::BlobMetadata,
-    blob_id: BlobId,
-) -> Builder {
+fn build_blob_response_headers(blob_metadata: &BlobMetadata, blob_id: BlobId) -> Builder {
     let etag = format!("\"{}\"", hex::encode(blob_metadata.hash));
 
     Response::builder()
@@ -159,6 +159,7 @@ fn build_blob_response_headers(
 /// Headers are identical to HEAD request for the same blob.
 pub async fn download_handler(
     Path(blob_id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let blob_id: BlobId = match blob_id.parse() {
@@ -172,29 +173,62 @@ pub async fn download_handler(
         }
     };
 
-    // Get blob metadata first to include in headers
-    let blob_metadata = match state.node_client.get_blob_info(blob_id).await {
-        Ok(Some(metadata)) => metadata,
-        Ok(None) => {
-            return ApiError {
-                status_code: StatusCode::NOT_FOUND,
-                message: "Blob not found".to_owned(),
+    // Get blob with optional network discovery
+    let context_id = if let Some(context_id_str) = params.get("context_id") {
+        // Parse context_id
+        match context_id_str.parse() {
+            Ok(context_id) => {
+                tracing::debug!(
+                    blob_id = %blob_id,
+                    context_id = %context_id,
+                    "Attempting blob download with network discovery"
+                );
+                Some(context_id)
             }
-            .into_response();
-        }
-        Err(err) => {
-            tracing::error!("Failed to get blob metadata {}: {:?}", blob_id, err);
-            return ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to retrieve blob metadata: {}", err),
+            Err(_) => {
+                return ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid context ID format".to_owned(),
+                }
+                .into_response();
             }
-            .into_response();
         }
+    } else {
+        None
     };
 
-    // Get blob stream
-    match state.node_client.get_blob(&blob_id) {
+    let blob_result = state
+        .node_client
+        .get_blob(&blob_id, context_id.as_ref())
+        .await;
+
+    match blob_result {
         Ok(Some(blob)) => {
+            // Now get metadata for headers (blob should be local after discovery)
+            let blob_metadata = match state.node_client.get_blob_info(blob_id).await {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => {
+                    tracing::warn!("Blob found but metadata missing: {}", blob_id);
+                    // Create default metadata
+                    BlobMetadata {
+                        blob_id,
+                        size: 0,       // Will be updated by streaming response
+                        hash: [0; 32], // Default hash
+                        mime_type: "application/octet-stream".to_owned(),
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to get blob metadata {}: {:?}", blob_id, err);
+                    // Create default metadata
+                    BlobMetadata {
+                        blob_id,
+                        size: 0,
+                        hash: [0; 32], // Default hash
+                        mime_type: "application/octet-stream".to_owned(),
+                    }
+                }
+            };
+
             tracing::debug!(
                 "Serving blob {} via streaming with metadata headers",
                 blob_id
@@ -216,7 +250,7 @@ pub async fn download_handler(
         }
         Ok(None) => ApiError {
             status_code: StatusCode::NOT_FOUND,
-            message: "Blob not found".to_owned(),
+            message: "Blob not found locally or in network".to_owned(),
         }
         .into_response(),
         Err(err) => {
@@ -249,12 +283,35 @@ pub async fn delete_handler(
         }
     };
 
+    tracing::info!("Attempting to delete blob {}", blob_id);
+
     match state.node_client.delete_blob(blob_id).await {
-        Ok(deleted) => ApiResponse {
-            payload: BlobDeleteResponse { blob_id, deleted },
+        Ok(true) => {
+            tracing::info!("Successfully deleted blob {}", blob_id);
+            ApiResponse {
+                payload: BlobDeleteResponse {
+                    blob_id,
+                    deleted: true,
+                },
+            }
+            .into_response()
         }
-        .into_response(),
-        Err(err) => parse_api_error(err).into_response(),
+        Ok(false) => {
+            tracing::warn!("Blob {} not found or already deleted", blob_id);
+            ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Blob not found".to_owned(),
+            }
+            .into_response()
+        }
+        Err(err) => {
+            tracing::error!("Failed to delete blob {}: {:?}", blob_id, err);
+            ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Failed to delete blob: {}", err),
+            }
+            .into_response()
+        }
     }
 }
 

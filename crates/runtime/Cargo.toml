@@ -25,6 +25,7 @@ wasmer-types.workspace = true
 
 calimero-primitives.workspace = true
 calimero-node-primitives.workspace = true
+calimero-sys.workspace = true
 
 [[example]]
 name = "demo"

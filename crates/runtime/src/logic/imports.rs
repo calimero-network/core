@@ -20,63 +20,51 @@ impl<'a> VMLogic<'a> {
             store;
             logic: self;
 
-            fn panic(file_ptr: u64, file_len: u64, line: u32, column: u32);
-            fn panic_utf8(
-                msg_ptr: u64,
-                msg_len: u64,
-                file_ptr: u64,
-                file_len: u64,
-                line: u32,
-                column: u32
-            );
+            fn panic(location_ptr: u64);
+            fn panic_utf8(msg_ptr: u64, file_ptr: u64);
 
             // todo! custom memory injection
             fn register_len(register_id: u64) -> u64;
-            fn read_register(register_id: u64, ptr: u64, len: u64) -> u32;
+            fn read_register(register_id: u64, register_ptr: u64) -> u32;
 
             fn context_id(register_id: u64);
             fn executor_id(register_id: u64);
 
             fn input(register_id: u64);
-            fn value_return(tag: u64, value_ptr: u64, value_len: u64);
-            fn log_utf8(ptr: u64, len: u64);
-            fn emit(kind_ptr: u64, kind_len: u64, data_ptr: u64, data_len: u64);
+            fn value_return(value_ptr: u64);
+            fn log_utf8(log_ptr: u64);
+            fn emit(event_ptr: u64);
 
-            fn commit(root_hash_ptr: u64, root_hash_len: u64, artifact_ptr: u64, artifact_len: u64);
+            fn commit(root_hash_ptr: u64, artifact_ptr: u64);
 
             fn storage_write(
                 key_ptr: u64,
-                key_len: u64,
                 value_ptr: u64,
-                value_len: u64,
                 register_id: u64,
             ) -> u32;
-            fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
-            fn storage_remove(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
+            fn storage_read(key_ptr: u64, register_id: u64) -> u32;
+            fn storage_remove(key_ptr: u64, register_id: u64) -> u32;
 
             fn fetch(
                 url_ptr: u64,
-                url_len: u64,
                 method_ptr: u64,
-                method_len: u64,
                 headers_ptr: u64,
-                headers_len: u64,
                 body_ptr: u64,
-                body_len: u64,
                 register_id: u64,
             ) -> u32;
 
-            fn random_bytes(ptr: u64, len: u64);
-            fn time_now(ptr: u64, len: u64);
+            fn random_bytes(ptr: u64);
+            fn time_now(ptr: u64);
 
-            fn send_proposal(actions_ptr: u64, actions_len: u64, id_ptr: u64, id_len: u64);
-            fn approve_proposal(approval_ptr: u64, approval_len: u64);
+            fn send_proposal(actions_ptr: u64, id_ptr: u64);
+            fn approve_proposal(approval_ptr: u64);
 
             fn blob_create() -> u64;
-            fn blob_write(fd: u64, data_ptr: u64, data_len: u64) -> u64;
-            fn blob_close(fd: u64, blob_id_ptr: u64, blob_id_len: u64) -> u32;
-            fn blob_open(blob_id_ptr: u64, blob_id_len: u64) -> u64;
-            fn blob_read(fd: u64, data_ptr: u64, data_len: u64) -> u64;
+            fn blob_write(fd: u64, data_ptr: u64) -> u64;
+            fn blob_close(fd: u64, blob_id_ptr: u64) -> u32;
+            fn blob_open(blob_id_ptr: u64) -> u64;
+            fn blob_read(fd: u64, data_ptr: u64) -> u64;
+            fn blob_announce_to_context(blob_id_ptr: u64, context_id_ptr: u64) -> u32;
         }
     }
 }
