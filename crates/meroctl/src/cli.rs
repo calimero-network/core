@@ -10,11 +10,11 @@ use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
-use crate::mero_client::MeroClient;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
 use crate::defaults;
+use crate::mero_client::MeroClient;
 use crate::output::{Format, Output, Report};
 
 mod app;

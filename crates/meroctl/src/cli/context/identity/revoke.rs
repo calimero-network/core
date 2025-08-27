@@ -8,7 +8,6 @@ use eyre::{OptionExt, Result};
 
 use super::Capability;
 use crate::cli::Environment;
-use crate::common::resolve_alias;
 use crate::output::Report;
 
 impl Report for RevokePermissionResponse {
@@ -36,24 +35,25 @@ pub struct RevokePermissionCommand {
 
 impl RevokePermissionCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let mero_client = environment.mero_client()?;
 
-        let context_id = resolve_alias(connection, self.context, None)
+        let context_id = mero_client
+            .resolve_alias(self.context, None)
             .await?
             .value()
-            .cloned()
+            .copied()
             .ok_or_eyre("unable to resolve context")?;
 
-        let revokee_id = resolve_alias(connection, self.revokee, Some(context_id))
+        let revokee_id = mero_client
+            .resolve_alias(self.revokee, Some(context_id))
             .await?
             .value()
-            .cloned()
+            .copied()
             .ok_or_eyre("unable to resolve grantee identity")?;
 
         let request: Vec<(PublicKey, ConfigCapability)> =
             vec![(revokee_id, self.capability.into())];
 
-        let mero_client = environment.mero_client()?;
         let response = mero_client.revoke_permissions(&context_id, request).await?;
 
         environment.output.write(&response);

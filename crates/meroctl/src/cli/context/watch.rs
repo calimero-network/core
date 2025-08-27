@@ -17,7 +17,6 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
 use crate::output::{ErrorLine, InfoLine, Report};
 
 pub const EXAMPLES: &str = r#"
@@ -97,17 +96,20 @@ impl Report for ExecutionOutput<'_> {
 }
 
 impl WatchCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let (mero_client, api_url) = {
+            let api_url = environment.connection()?.api_url.clone();
+            let mero_client = environment.mero_client()?;
+            (mero_client, api_url)
+        };
 
-        let resolve_response = resolve_alias(connection, self.context, None).await?;
-
+        let resolve_response = mero_client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
-            .cloned()
-            .ok_or_eyre("Failed to resolve context: no value found")?;
+            .copied()
+            .ok_or_eyre("unable to resolve")?;
 
-        let mut url = connection.api_url.clone();
+        let mut url = api_url;
 
         let scheme = match url.scheme() {
             "https" => "wss",

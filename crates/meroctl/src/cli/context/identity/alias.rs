@@ -5,11 +5,7 @@ use clap::Parser;
 use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
-
 use crate::output::ErrorLine;
-
-
-
 
 #[derive(Copy, Clone, Debug, Parser)]
 pub struct ContextIdentityAliasCommand {
@@ -69,18 +65,18 @@ pub enum ContextIdentityAliasSubcommand {
 impl ContextIdentityAliasCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.mero_client()?.clone();
-        
+
         // Extract context and resolve it to context_id
         let context_id = match &self.command {
-            ContextIdentityAliasSubcommand::Add { context, .. } |
-            ContextIdentityAliasSubcommand::Remove { context, .. } |
-            ContextIdentityAliasSubcommand::Get { context, .. } |
-            ContextIdentityAliasSubcommand::List { context } => {
-                client.resolve_alias(*context, None).await?
-                    .value()
-                    .cloned()
-                    .ok_or_eyre("Failed to resolve context: no value found")?
-            }
+            ContextIdentityAliasSubcommand::Add { context, .. }
+            | ContextIdentityAliasSubcommand::Remove { context, .. }
+            | ContextIdentityAliasSubcommand::Get { context, .. }
+            | ContextIdentityAliasSubcommand::List { context } => client
+                .resolve_alias(*context, None)
+                .await?
+                .value()
+                .cloned()
+                .ok_or_eyre("Failed to resolve context: no value found")?,
         };
 
         match self.command {
@@ -91,11 +87,9 @@ impl ContextIdentityAliasCommand {
                 force,
             } => {
                 // Check if identity exists in context using MeroClient
-                let response = client
-                    .get_context_identities(&context_id, false)
-                    .await?;
+                let response = client.get_context_identities(&context_id, false).await?;
                 let identity_exists = response.data.identities.contains(&identity);
-                
+
                 if !identity_exists {
                     environment.output.write(&ErrorLine(&format!(
                         "Identity '{}' does not exist in context '{}'",
@@ -127,21 +121,30 @@ impl ContextIdentityAliasCommand {
                         "Overwriting existing alias '{}' from '{}' to '{}'",
                         name, existing_identity, identity
                     )));
-                    let _ignored = client.delete_alias(name, Some(context_id))
+                    let _ignored = client
+                        .delete_alias(name, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing alias")?;
                 }
 
-                let res = client.create_alias_generic(name, Some(context_id), identity).await?;
+                let res = client
+                    .create_alias_generic(name, Some(context_id), identity)
+                    .await?;
 
                 environment.output.write(&res);
             }
-            ContextIdentityAliasSubcommand::Remove { identity, context: _ } => {
+            ContextIdentityAliasSubcommand::Remove {
+                identity,
+                context: _,
+            } => {
                 let res = client.delete_alias(identity, Some(context_id)).await?;
 
                 environment.output.write(&res);
             }
-            ContextIdentityAliasSubcommand::Get { identity, context: _ } => {
+            ContextIdentityAliasSubcommand::Get {
+                identity,
+                context: _,
+            } => {
                 let res = client.lookup_alias(identity, Some(context_id)).await?;
 
                 environment.output.write(&res);

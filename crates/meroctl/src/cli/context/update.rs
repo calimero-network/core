@@ -14,8 +14,6 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
-use crate::connection::ConnectionInfo;
 use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
@@ -68,19 +66,20 @@ pub struct UpdateCommand {
 
 impl UpdateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
-        let connection_clone = connection.clone();
+        let mero_client = environment.mero_client()?;
 
-        let context_id = resolve_alias(connection, self.context, None)
+        let context_id = mero_client
+            .resolve_alias(self.context, None)
             .await?
             .value()
-            .cloned()
+            .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let executor_id = resolve_alias(connection, self.executor, Some(context_id))
+        let executor_id = mero_client
+            .resolve_alias(self.executor, Some(context_id))
             .await?
             .value()
-            .cloned()
+            .copied()
             .ok_or_eyre("unable to resolve")?;
 
         match self {
@@ -91,7 +90,6 @@ impl UpdateCommand {
                 watch: false,
                 ..
             } => {
-                let mero_client = environment.mero_client()?;
                 let request = UpdateContextApplicationRequest::new(application_id, executor_id);
                 let _response = mero_client
                     .update_context_application(&context_id, request)
@@ -106,7 +104,6 @@ impl UpdateCommand {
             } => {
                 let metadata = metadata.map(String::into_bytes);
 
-                let mero_client = environment.mero_client()?;
                 let application_id = mero_client
                     .install_dev_application(InstallDevApplicationRequest::new(
                         path.clone(),
@@ -125,7 +122,6 @@ impl UpdateCommand {
                 if self.watch {
                     watch_app_and_update_context(
                         environment,
-                        &connection_clone,
                         context_id,
                         path,
                         metadata,
@@ -144,7 +140,6 @@ impl UpdateCommand {
 
 async fn watch_app_and_update_context(
     environment: &mut Environment,
-    _connection: &ConnectionInfo,
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,

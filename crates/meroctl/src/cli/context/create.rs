@@ -180,10 +180,8 @@ pub async fn create_context(
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
 ) -> Result<(ContextId, PublicKey)> {
-    let response: GetApplicationResponse = client
-        .get_application(&application_id)
-        .await?;
-    
+    let response: GetApplicationResponse = client.get_application(&application_id).await?;
+
     if !response.data.application.is_some() {
         bail!("Application is not installed on node.")
     }
@@ -214,7 +212,9 @@ pub async fn create_context(
         environment.output.write(&alias_response);
     }
     if let Some(context_alias) = context {
-        let res = client.create_alias(context_alias, Some(response.data.context_id)).await?;
+        let res = client
+            .create_alias(context_alias, Some(response.data.context_id))
+            .await?;
         environment.output.write(&res);
     }
     Ok((response.data.context_id, response.data.member_public_key))
@@ -286,7 +286,3 @@ async fn watch_app_and_update_context(
 
     Ok(())
 }
-
-
-
-

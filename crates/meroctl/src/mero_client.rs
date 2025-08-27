@@ -1,26 +1,29 @@
-use calimero_primitives::application::ApplicationId;
+use std::str::FromStr;
+
 use calimero_primitives::alias::{Alias, ScopedAlias};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias, CreateContextIdAlias, CreateContextIdentityAlias, CreateContextRequest,
-    CreateContextResponse, DeleteAliasResponse, DeleteContextResponse, GenerateContextIdentityResponse, GetApplicationResponse,
-    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
-    GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
+    AliasKind, CreateAliasRequest, CreateAliasResponse, CreateApplicationIdAlias,
+    CreateContextIdAlias, CreateContextIdentityAlias, CreateContextRequest, CreateContextResponse,
+    DeleteAliasResponse, DeleteContextResponse, GenerateContextIdentityResponse,
+    GetApplicationResponse, GetContextClientKeysResponse, GetContextIdentitiesResponse,
+    GetContextResponse, GetContextStorageResponse, GetContextsResponse, GetPeersCountResponse,
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
     GrantPermissionResponse, InstallApplicationRequest, InstallApplicationResponse,
     InstallDevApplicationRequest, InviteToContextRequest, InviteToContextResponse,
-    JoinContextRequest, JoinContextResponse, ListApplicationsResponse, RevokePermissionResponse,
-    SyncContextResponse, UninstallApplicationResponse, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse, ListAliasesResponse, LookupAliasResponse,
+    JoinContextRequest, JoinContextResponse, ListAliasesResponse, ListApplicationsResponse,
+    LookupAliasResponse, RevokePermissionResponse, SyncContextResponse,
+    UninstallApplicationResponse, UpdateContextApplicationRequest,
+    UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::{Request, Response};
 use eyre::Result;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
-use std::str::FromStr;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::output::Report;
@@ -53,8 +56,7 @@ impl UrlFragment for PublicKey {
     }
 
     fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
-        let s = context.expect("PublicKey MUST have a scope");
-        Some(s.as_str())
+        context.map(|s| s.as_str())
     }
 }
 
@@ -549,7 +551,10 @@ impl MeroClient {
         Ok(delete_response)
     }
 
-    pub async fn create_context(&self, request: CreateContextRequest) -> Result<CreateContextResponse> {
+    pub async fn create_context(
+        &self,
+        request: CreateContextRequest,
+    ) -> Result<CreateContextResponse> {
         let url = self.base_url.join("admin-api/contexts")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
@@ -605,7 +610,8 @@ impl MeroClient {
     {
         let prefix = "admin-api/alias/create";
         let kind = T::KIND;
-        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+        let scope =
+            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
         let body = CreateAliasRequest {
             alias,
@@ -629,25 +635,26 @@ impl MeroClient {
     {
         let prefix = "admin-api/alias/delete";
         let kind = T::KIND;
-        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
+        let scope =
+            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
-        let url = self.base_url.join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
+        let url = self
+            .base_url
+            .join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
         let response = self.http_client.post(url).send().await?;
         let delete_alias_response: DeleteAliasResponse = response.json().await?;
 
         Ok(delete_alias_response)
     }
 
-    pub async fn list_aliases<T>(
-        &self,
-        scope: Option<T::Scope>,
-    ) -> Result<ListAliasesResponse<T>>
+    pub async fn list_aliases<T>(&self, scope: Option<T::Scope>) -> Result<ListAliasesResponse<T>>
     where
         T: Ord + UrlFragment + DeserializeOwned,
     {
         let prefix = "admin-api/alias/list";
         let kind = T::KIND;
-        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+        let scope =
+            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
         let url = self.base_url.join(&format!("{prefix}/{kind}{scope}"))?;
         let response = self.http_client.get(url).send().await?;
@@ -666,9 +673,12 @@ impl MeroClient {
     {
         let prefix = "admin-api/alias/lookup";
         let kind = T::KIND;
-        let scope = T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
+        let scope =
+            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
-        let url = self.base_url.join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
+        let url = self
+            .base_url
+            .join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
         let response = self.http_client.post(url).send().await?;
         let lookup_alias_response: LookupAliasResponse<T> = response.json().await?;
 
@@ -699,5 +709,92 @@ impl MeroClient {
             .map(ResolveResponseValue::Parsed);
 
         Ok(ResolveResponse { alias, value })
+    }
+}
+
+// Report implementations for alias responses
+impl Report for CreateAliasResponse {
+    fn report(&self) {
+        let mut table = comfy_table::Table::new();
+        let _ = table.set_header(vec![
+            comfy_table::Cell::new("Alias Created").fg(comfy_table::Color::Green)
+        ]);
+        let _ = table.add_row(vec!["Successfully created alias"]);
+        println!("{table}");
+    }
+}
+
+impl Report for DeleteAliasResponse {
+    fn report(&self) {
+        let mut table = comfy_table::Table::new();
+        let _ = table.set_header(vec![
+            comfy_table::Cell::new("Alias Deleted").fg(comfy_table::Color::Green)
+        ]);
+        let _ = table.add_row(vec!["Successfully deleted alias"]);
+        println!("{table}");
+    }
+}
+
+impl<T: std::fmt::Display> Report for ListAliasesResponse<T> {
+    fn report(&self) -> () {
+        let mut table = comfy_table::Table::new();
+        let _ = table.set_header(vec![
+            comfy_table::Cell::new("Value").fg(comfy_table::Color::Blue),
+            comfy_table::Cell::new("Alias").fg(comfy_table::Color::Blue),
+        ]);
+
+        for (alias, value) in &self.data {
+            let _ = table.add_row(vec![
+                comfy_table::Cell::new(&value.to_string()),
+                comfy_table::Cell::new(alias.as_str()),
+            ]);
+        }
+
+        println!("{table}");
+    }
+}
+
+impl<T: std::fmt::Display> Report for LookupAliasResponse<T> {
+    fn report(&self) {
+        let mut table = comfy_table::Table::new();
+        let _ = table.set_header(vec![
+            comfy_table::Cell::new("Alias Lookup").fg(comfy_table::Color::Blue)
+        ]);
+
+        match &self.data.value {
+            Some(value) => {
+                let _ = table.add_row(vec!["Status", "Found"]);
+                let _ = table.add_row(vec!["Value", &value.to_string()]);
+            }
+            None => {
+                let _ = table.add_row(vec!["Status", "Not Found"]);
+            }
+        };
+        println!("{table}");
+    }
+}
+
+impl<T: std::fmt::Display> Report for ResolveResponse<T> {
+    fn report(&self) {
+        let mut table = comfy_table::Table::new();
+        let _ = table.set_header(vec![
+            comfy_table::Cell::new("Alias Resolution").fg(comfy_table::Color::Blue)
+        ]);
+        let _ = table.add_row(vec!["Alias", self.alias.as_str()]);
+
+        match &self.value {
+            Some(ResolveResponseValue::Lookup(value)) => {
+                let _ = table.add_row(vec!["Type", "Lookup"]);
+                value.report();
+            }
+            Some(ResolveResponseValue::Parsed(value)) => {
+                let _ = table.add_row(vec!["Type", "Direct"]);
+                let _ = table.add_row(vec!["Value", &value.to_string()]);
+            }
+            None => {
+                let _ = table.add_row(vec!["Status", "Not Resolved"]);
+            }
+        };
+        println!("{table}");
     }
 }

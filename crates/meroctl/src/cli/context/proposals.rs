@@ -10,7 +10,6 @@ use eyre::{OptionExt, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
 use crate::output::Report;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,56 +153,56 @@ impl Report for GetProposalsResponse {
 }
 
 impl ProposalsCommand {
-    pub async fn run(&self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
-
-        match &self.command {
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        match self.command {
             ProposalsSubcommand::List {
                 context,
                 offset,
                 limit,
             } => {
-                let context_id = resolve_alias(connection, *context, None)
+                let mero_client = environment.mero_client()?;
+
+                let context_id = mero_client
+                    .resolve_alias(context, None)
                     .await?
                     .value()
-                    .cloned()
-                    .ok_or_eyre("unable to resolve context")?;
+                    .copied()
+                    .ok_or_eyre("unable to resolve")?;
 
                 let args = serde_json::json!({
                     "offset": offset,
                     "limit": limit
                 });
-
-                let mero_client = environment.mero_client()?;
                 let response = mero_client.list_proposals(&context_id, args).await?;
                 environment.output.write(&response);
-                Ok(())
             }
             ProposalsSubcommand::View {
                 proposal_id,
                 context,
             } => {
-                let context_id = resolve_alias(connection, *context, None)
+                let mero_client = environment.mero_client()?;
+
+                let context_id = mero_client
+                    .resolve_alias(context, None)
                     .await?
                     .value()
-                    .cloned()
-                    .ok_or_eyre("unable to resolve context")?;
+                    .copied()
+                    .ok_or_eyre("unable to resolve")?;
 
-                let mero_client = environment.mero_client()?;
-                let proposal_response = mero_client.get_proposal(&context_id, proposal_id).await?;
-
-                let approvers_response = mero_client
-                    .get_proposal_approvers(&context_id, proposal_id)
+                let proposal = mero_client.get_proposal(&context_id, &proposal_id).await?;
+                let approvers = mero_client
+                    .get_proposal_approvers(&context_id, &proposal_id)
                     .await?;
 
-                let combined_response = ProposalDetailsResponse {
-                    proposal: proposal_response,
-                    approvers: approvers_response,
+                let details = ProposalDetailsResponse {
+                    proposal,
+                    approvers,
                 };
 
-                environment.output.write(&combined_response);
-                Ok(())
+                environment.output.write(&details);
             }
         }
+
+        Ok(())
     }
 }

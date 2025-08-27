@@ -9,7 +9,6 @@ use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
 use crate::output::Report;
 
 #[derive(Copy, Clone, Parser, Debug)]
@@ -107,16 +106,13 @@ impl Report for GetContextIdentitiesResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
-        let connection_clone = connection.clone();
         let mero_client = environment.mero_client()?;
 
-        let resolve_response = resolve_alias(&connection_clone, self.context, None).await?;
-
+        let resolve_response = mero_client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
-            .cloned()
-            .ok_or_eyre("Failed to resolve context: no value found")?;
+            .copied()
+            .ok_or_eyre("unable to resolve")?;
 
         match self.command {
             GetSubcommand::Info => {

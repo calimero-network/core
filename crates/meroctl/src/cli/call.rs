@@ -12,7 +12,6 @@ use eyre::{OptionExt, Result};
 use serde_json::{json, Value};
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
 use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
@@ -91,15 +90,16 @@ impl Report for Response {
 
 impl CallCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let mero_client = environment.mero_client()?;
 
-        let resolve_response = resolve_alias(connection, self.context, None).await?;
+        let resolve_response = mero_client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let executor = resolve_alias(connection, self.executor, Some(context_id))
+        let executor = mero_client
+            .resolve_alias(self.executor, Some(context_id))
             .await?
             .value()
             .cloned()
@@ -119,7 +119,6 @@ impl CallCommand {
             payload,
         );
 
-        let mero_client = environment.mero_client()?;
         let response = mero_client.execute_jsonrpc(request).await?;
         environment.output.write(&response);
 

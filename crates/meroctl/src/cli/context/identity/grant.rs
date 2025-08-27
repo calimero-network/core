@@ -8,7 +8,6 @@ use eyre::{OptionExt, Result};
 
 use super::Capability;
 use crate::cli::Environment;
-use crate::common::resolve_alias;
 use crate::output::Report;
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -32,24 +31,25 @@ pub struct GrantPermissionCommand {
 
 impl GrantPermissionCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
+        let mero_client = environment.mero_client()?;
 
-        let context_id = resolve_alias(connection, self.context, None)
+        let context_id = mero_client
+            .resolve_alias(self.context, None)
             .await?
             .value()
             .copied()
             .ok_or_eyre("unable to resolve context")?;
 
-        let grantee_id = resolve_alias(connection, self.grantee, Some(context_id))
+        let grantee_id = mero_client
+            .resolve_alias(self.grantee, Some(context_id))
             .await?
             .value()
-            .cloned()
+            .copied()
             .ok_or_eyre("unable to resolve grantee identity")?;
 
         let request: Vec<(PublicKey, ConfigCapability)> =
             vec![(grantee_id, self.capability.into())];
 
-        let mero_client = environment.mero_client()?;
         let response = mero_client.grant_permissions(&context_id, request).await?;
 
         environment.output.write(&response);

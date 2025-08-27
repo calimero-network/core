@@ -7,7 +7,6 @@ use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
-
 use crate::output::Report;
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -72,13 +71,15 @@ impl InviteCommand {
     pub async fn invite(&self, environment: &mut Environment) -> Result<ContextInvitationPayload> {
         let client = environment.mero_client()?.clone();
 
-        let context_id = client.resolve_alias(self.context, None)
+        let context_id = client
+            .resolve_alias(self.context, None)
             .await?
             .value()
             .cloned()
             .ok_or_eyre("unable to resolve")?;
 
-        let inviter_id = client.resolve_alias(self.inviter, Some(context_id))
+        let inviter_id = client
+            .resolve_alias(self.inviter, Some(context_id))
             .await?
             .value()
             .cloned()
@@ -100,8 +101,9 @@ impl InviteCommand {
 
         // Handle alias creation separately to avoid borrowing conflicts
         if let Some(name) = self.name {
-            let res =
-                client.create_alias_generic(name, Some(context_id), self.invitee_id).await?;
+            let res = client
+                .create_alias_generic(name, Some(context_id), self.invitee_id)
+                .await?;
             environment.output.write(&res);
         }
 

@@ -94,8 +94,7 @@ impl ContextIdentityCommand {
                 let default_alias: Alias<PublicKey> =
                     "default".parse().expect("'default' is a valid alias name");
 
-                let lookup_result =
-                    client.lookup_alias(default_alias, Some(context_id)).await?;
+                let lookup_result = client.lookup_alias(default_alias, Some(context_id)).await?;
 
                 if let Some(existing_identity) = lookup_result.data.value {
                     if existing_identity == identity {
@@ -117,13 +116,15 @@ impl ContextIdentityCommand {
                         "Overwriting existing default alias from '{}' to '{}'",
                         existing_identity, identity
                     )));
-                    let _ = client.delete_alias(default_alias, Some(context_id))
+                    let _ = client
+                        .delete_alias(default_alias, Some(context_id))
                         .await
                         .wrap_err("Failed to delete existing default alias")?;
                 }
 
-                let res =
-                    client.create_alias_generic(default_alias, Some(context_id), identity).await?;
+                let res = client
+                    .create_alias_generic(default_alias, Some(context_id), identity)
+                    .await?;
 
                 environment.output.write(&res);
 
@@ -142,11 +143,12 @@ async fn list_identities(
     owned: bool,
 ) -> Result<()> {
     let client = environment.mero_client()?.clone();
-    let resolve_response = client.resolve_alias(
-        context.unwrap_or_else(|| "default".parse().expect("valid alias")),
-        None,
-    )
-    .await?;
+    let resolve_response = client
+        .resolve_alias(
+            context.unwrap_or_else(|| "default".parse().expect("valid alias")),
+            None,
+        )
+        .await?;
 
     let context_id = match resolve_response.value().cloned() {
         Some(id) => id,

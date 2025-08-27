@@ -5,7 +5,6 @@ use clap::Parser;
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
 use crate::output::Report;
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -28,14 +27,13 @@ impl Report for SyncContextResponse {
 
 impl SyncCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
-        let connection_clone = connection.clone();
         let mero_client = environment.mero_client()?;
 
         let response = if self.all {
             mero_client.sync_all_contexts().await?
         } else {
-            let context_id = resolve_alias(&connection_clone, self.context, None)
+            let context_id = mero_client
+                .resolve_alias(self.context, None)
                 .await?
                 .value()
                 .copied()

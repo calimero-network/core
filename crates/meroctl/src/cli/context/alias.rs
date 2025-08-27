@@ -81,13 +81,15 @@ impl ContextAliasCommand {
 
                     // Drop client reference to avoid double borrow
                     {
-                        let _ignored = client.delete_alias(alias, None)
+                        let _ignored = client
+                            .delete_alias(alias, None)
                             .await
                             .wrap_err("Failed to delete existing alias")?;
                     }
                 }
 
-                let res = client.create_alias_generic(alias, None, context_id)
+                let res = client
+                    .create_alias_generic(alias, None, context_id)
                     .await
                     .map_err(|e| eyre!("Failed to create alias: {}", e))?;
                 environment.output.write(&res);
@@ -136,7 +138,8 @@ impl UseCommand {
             .parse()
             .wrap_err("Failed to parse 'default' as a valid alias name")?;
 
-        let resolve_response = client.resolve_alias(self.context, None)
+        let resolve_response = client
+            .resolve_alias(self.context, None)
             .await
             .wrap_err("Failed to resolve context")?;
 
@@ -164,12 +167,14 @@ impl UseCommand {
             environment.output.write(&WarnLine(&format!(
                 "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
             )));
-            let _ignored = client.delete_alias(default_alias, None)
+            let _ignored = client
+                .delete_alias(default_alias, None)
                 .await
                 .wrap_err("Failed to delete existing default alias")?;
         }
 
-        let res = client.create_alias_generic(default_alias, None, context_id)
+        let res = client
+            .create_alias_generic(default_alias, None, context_id)
             .await
             .wrap_err("Failed to set default context")?;
 
@@ -179,10 +184,11 @@ impl UseCommand {
     }
 }
 
-async fn context_exists(client: &crate::mero_client::MeroClient, target_id: &ContextId) -> Result<bool> {
-    let result = client
-        .get_context(target_id)
-        .await;
+async fn context_exists(
+    client: &crate::mero_client::MeroClient,
+    target_id: &ContextId,
+) -> Result<bool> {
+    let result = client.get_context(target_id).await;
 
     match result {
         Ok(_) => Ok(true),

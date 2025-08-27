@@ -7,7 +7,6 @@ use comfy_table::{Cell, Color, Table};
 use eyre::Result;
 
 use crate::cli::Environment;
-
 use crate::output::Report;
 
 #[derive(Debug, Parser)]
@@ -54,17 +53,19 @@ impl JoinCommand {
 
         if let Some(ref payload) = response.data {
             if let Some(context) = self.context {
-                let res =
-                    client.create_alias_generic(context, None, payload.context_id).await?;
+                let res = client
+                    .create_alias_generic(context, None, payload.context_id)
+                    .await?;
                 environment.output.write(&res);
             }
             if let Some(identity) = self.identity {
-                let res = client.create_alias_generic(
-                    identity,
-                    Some(payload.context_id),
-                    payload.member_public_key,
-                )
-                .await?;
+                let res = client
+                    .create_alias_generic(
+                        identity,
+                        Some(payload.context_id),
+                        payload.member_public_key,
+                    )
+                    .await?;
                 environment.output.write(&res);
             }
         }
