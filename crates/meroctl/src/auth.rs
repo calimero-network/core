@@ -13,9 +13,9 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use url::Url;
 
-use crate::cli::storage::{get_session_cache, JwtToken};
 use crate::connection::ConnectionInfo;
 use crate::output::{InfoLine, Output, WarnLine};
+use crate::storage::{get_session_cache, JwtToken};
 
 #[derive(Debug, Deserialize)]
 struct AuthCallback {

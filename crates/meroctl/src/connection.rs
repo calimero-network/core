@@ -6,11 +6,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
-use crate::cli::auth::authenticate;
-use crate::cli::storage::{get_session_cache, JwtToken};
+use crate::auth::authenticate;
 use crate::common::RequestType;
 use crate::errors::ClientError;
 use crate::output::Output;
+use crate::storage::{get_session_cache, JwtToken};
 
 #[derive(Debug)]
 enum RefreshError {
