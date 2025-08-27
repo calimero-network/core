@@ -94,34 +94,27 @@ pub struct RootArgs {
 #[derive(Debug, Clone)]
 pub struct Environment {
     pub output: Output,
-    connection: Option<ConnectionInfo>,
     client: Option<Client>,
 }
 
 impl Environment {
-    pub const fn new(output: Output, connection: Option<ConnectionInfo>) -> Self {
-        Self {
+    pub fn new(output: Output, connection: Option<ConnectionInfo>) -> Result<Self, CliError> {
+        let client = if let Some(conn) = connection {
+            Some(Client::new(conn)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
             output,
-            connection,
-            client: None,
-        }
+            client,
+        })
     }
 
-    pub fn connection(&self) -> Result<&ConnectionInfo, CliError> {
-        self.connection.as_ref().ok_or(CliError::Other(eyre::eyre!(
-            "Unable to create a connection."
-        )))
-    }
-
-    pub fn client(&mut self) -> Result<&Client, CliError> {
-        if self.client.is_none() {
-            let connection = self.connection()?;
-            let client = Client::new(connection.api_url.to_string())?;
-            self.client = Some(client);
-        }
+    pub fn client(&self) -> Result<&Client, CliError> {
         self.client
             .as_ref()
-            .ok_or_else(|| CliError::Other(eyre::eyre!("Failed to create mero client")))
+            .ok_or_else(|| CliError::Other(eyre::eyre!("Unable to create a connection.")))
     }
 }
 
@@ -141,7 +134,7 @@ impl RootCommand {
             None
         };
 
-        let mut environment = Environment::new(output, connection);
+        let mut environment = Environment::new(output, connection)?;
 
         let result = match self.action {
             SubCommands::App(application) => application.run(&mut environment).await,

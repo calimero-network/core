@@ -89,11 +89,8 @@ impl Report for Response {
 
 impl WatchCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let (client, api_url) = {
-            let api_url = environment.connection()?.api_url.clone();
-            let client = environment.client()?;
-            (client, api_url)
-        };
+        let client = environment.client()?;
+        let api_url = client.api_url().clone();
 
         let resolve_response = client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response

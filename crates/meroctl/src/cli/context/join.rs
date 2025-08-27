@@ -25,7 +25,6 @@ pub struct JoinCommand {
 
 impl JoinCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let _connection = environment.connection()?;
         let client = environment.client()?.clone();
 
         let request = JoinContextRequest::new(self.invitation_payload);

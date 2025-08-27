@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
-use crate::connection::ConnectionInfo;
+
 use crate::output::ErrorLine;
 
 pub mod alias;
@@ -69,12 +69,9 @@ pub enum ContextIdentitySubcommand {
 
 impl ContextIdentityCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let connection = environment.connection()?;
-        let connection_clone = connection.clone();
-
         match self.command {
             ContextIdentitySubcommand::List { context, owned } => {
-                list_identities(environment, &connection_clone, Some(context), owned).await
+                list_identities(environment, Some(context), owned).await
             }
             ContextIdentitySubcommand::Alias(cmd) => cmd.run(environment).await,
             ContextIdentitySubcommand::Generate(cmd) => cmd.run(environment).await,
@@ -138,7 +135,6 @@ impl ContextIdentityCommand {
 
 async fn list_identities(
     environment: &mut Environment,
-    _connection: &ConnectionInfo,
     context: Option<Alias<ContextId>>,
     owned: bool,
 ) -> Result<()> {

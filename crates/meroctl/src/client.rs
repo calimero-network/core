@@ -26,6 +26,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::connection::ConnectionInfo;
+
 pub trait UrlFragment: ScopedAlias + AliasKind {
     const KIND: &'static str;
 
@@ -127,22 +129,28 @@ pub struct BlobInfoResponse {
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    base_url: Url,
+    connection: ConnectionInfo,
     http_client: reqwest::Client,
 }
 
 impl Client {
-    pub fn new(base_url: String) -> Result<Self> {
-        let base_url = Url::parse(&base_url)?;
+    pub fn new(connection: ConnectionInfo) -> Result<Self> {
         Ok(Self {
-            base_url,
+            connection,
             http_client: reqwest::Client::new(),
         })
     }
 
+    fn base_url(&self) -> Result<Url> {
+        Ok(self.connection.api_url.clone())
+    }
+
+    pub fn api_url(&self) -> &Url {
+        &self.connection.api_url
+    }
+
     pub async fn get_application(&self, app_id: &ApplicationId) -> Result<GetApplicationResponse> {
-        let url = self
-            .base_url
+        let url = self.base_url()?
             .join(&format!("admin-api/applications/{app_id}"))?;
 
         let response = self.http_client.get(url).send().await?;
@@ -155,7 +163,7 @@ impl Client {
         &self,
         request: InstallDevApplicationRequest,
     ) -> Result<InstallApplicationResponse> {
-        let url = self.base_url.join("admin-api/install-dev-application")?;
+        let url = self.base_url()?.join("admin-api/install-dev-application")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
         let install_response: InstallApplicationResponse = response.json().await?;
@@ -167,7 +175,7 @@ impl Client {
         &self,
         request: InstallApplicationRequest,
     ) -> Result<InstallApplicationResponse> {
-        let url = self.base_url.join("admin-api/install-application")?;
+        let url = self.base_url()?.join("admin-api/install-application")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
 
@@ -176,7 +184,7 @@ impl Client {
     }
 
     pub async fn list_applications(&self) -> Result<ListApplicationsResponse> {
-        let url = self.base_url.join("admin-api/applications")?;
+        let url = self.base_url()?.join("admin-api/applications")?;
 
         let response = self.http_client.get(url).send().await?;
 
@@ -189,7 +197,7 @@ impl Client {
         app_id: &ApplicationId,
     ) -> Result<UninstallApplicationResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/applications/{app_id}"))?;
 
         let response = self.http_client.delete(url).send().await?;
@@ -199,7 +207,7 @@ impl Client {
     }
 
     pub async fn delete_blob(&self, blob_id: &BlobId) -> Result<BlobDeleteResponse> {
-        let url = self.base_url.join(&format!("admin-api/blobs/{blob_id}"))?;
+        let url = self.base_url()?.join(&format!("admin-api/blobs/{blob_id}"))?;
 
         let response = self.http_client.delete(url).send().await?;
         let delete_response: BlobDeleteResponse = response.json().await?;
@@ -208,7 +216,7 @@ impl Client {
     }
 
     pub async fn list_blobs(&self) -> Result<BlobListResponse> {
-        let url = self.base_url.join("admin-api/blobs")?;
+        let url = self.base_url()?.join("admin-api/blobs")?;
 
         let response = self.http_client.get(url).send().await?;
 
@@ -217,7 +225,7 @@ impl Client {
     }
 
     pub async fn get_blob_info(&self, blob_id: &BlobId) -> Result<BlobInfoResponse> {
-        let url = self.base_url.join(&format!("admin-api/blobs/{blob_id}"))?;
+        let url = self.base_url()?.join(&format!("admin-api/blobs/{blob_id}"))?;
 
         let response = self.http_client.head(url).send().await?;
         let headers = response.headers();
@@ -259,7 +267,7 @@ impl Client {
     }
 
     pub async fn generate_context_identity(&self) -> Result<GenerateContextIdentityResponse> {
-        let url = self.base_url.join("admin-api/identity/context")?;
+        let url = self.base_url()?.join("admin-api/identity/context")?;
 
         let response = self.http_client.post(url).send().await?;
         let identity_response: GenerateContextIdentityResponse = response.json().await?;
@@ -268,7 +276,7 @@ impl Client {
     }
 
     pub async fn get_peers_count(&self) -> Result<GetPeersCountResponse> {
-        let url = self.base_url.join("admin-api/peers")?;
+        let url = self.base_url()?.join("admin-api/peers")?;
 
         let response = self.http_client.get(url).send().await?;
         let peers_response: GetPeersCountResponse = response.json().await?;
@@ -280,7 +288,7 @@ impl Client {
     where
         P: Serialize,
     {
-        let url = self.base_url.join("jsonrpc")?;
+        let url = self.base_url()?.join("jsonrpc")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
         let jsonrpc_response: Response = response.json().await?;
@@ -293,7 +301,7 @@ impl Client {
         context_id: &ContextId,
         request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
     ) -> Result<GrantPermissionResponse> {
-        let url = self.base_url.join(&format!(
+        let url = self.base_url()?.join(&format!(
             "admin-api/contexts/{}/capabilities/grant",
             context_id
         ))?;
@@ -309,7 +317,7 @@ impl Client {
         context_id: &ContextId,
         request: Vec<(PublicKey, calimero_context_config::types::Capability)>,
     ) -> Result<RevokePermissionResponse> {
-        let url = self.base_url.join(&format!(
+        let url = self.base_url()?.join(&format!(
             "admin-api/contexts/{}/capabilities/revoke",
             context_id
         ))?;
@@ -324,7 +332,7 @@ impl Client {
         &self,
         request: InviteToContextRequest,
     ) -> Result<InviteToContextResponse> {
-        let url = self.base_url.join("admin-api/contexts/invite")?;
+        let url = self.base_url()?.join("admin-api/contexts/invite")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
         let invite_response: InviteToContextResponse = response.json().await?;
@@ -338,7 +346,7 @@ impl Client {
         request: UpdateContextApplicationRequest,
     ) -> Result<UpdateContextApplicationResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/contexts/{context_id}/application"))?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
@@ -352,7 +360,7 @@ impl Client {
         context_id: &ContextId,
         proposal_id: &Hash,
     ) -> Result<GetProposalResponse> {
-        let url = self.base_url.join(&format!(
+        let url = self.base_url()?.join(&format!(
             "admin-api/contexts/{}/proposals/{}",
             context_id, proposal_id
         ))?;
@@ -368,7 +376,7 @@ impl Client {
         context_id: &ContextId,
         proposal_id: &Hash,
     ) -> Result<GetProposalApproversResponse> {
-        let url = self.base_url.join(&format!(
+        let url = self.base_url()?.join(&format!(
             "admin-api/contexts/{}/proposals/{}/approvals/users",
             context_id, proposal_id
         ))?;
@@ -385,7 +393,7 @@ impl Client {
         args: serde_json::Value,
     ) -> Result<GetProposalsResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/contexts/{context_id}/proposals"))?;
 
         let response = self.http_client.post(url).json(&args).send().await?;
@@ -395,7 +403,7 @@ impl Client {
     }
 
     pub async fn list_contexts(&self) -> Result<GetContextsResponse> {
-        let url = self.base_url.join("admin-api/contexts")?;
+        let url = self.base_url()?.join("admin-api/contexts")?;
 
         let response = self.http_client.get(url).send().await?;
         let contexts_response: GetContextsResponse = response.json().await?;
@@ -405,7 +413,7 @@ impl Client {
 
     pub async fn sync_context(&self, context_id: &ContextId) -> Result<SyncContextResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/contexts/sync/{context_id}"))?;
 
         let response = self.http_client.post(url).json(&()).send().await?;
@@ -415,7 +423,7 @@ impl Client {
     }
 
     pub async fn sync_all_contexts(&self) -> Result<SyncContextResponse> {
-        let url = self.base_url.join("admin-api/contexts/sync")?;
+        let url = self.base_url()?.join("admin-api/contexts/sync")?;
 
         let response = self.http_client.post(url).json(&()).send().await?;
         let sync_response: SyncContextResponse = response.json().await?;
@@ -424,7 +432,7 @@ impl Client {
     }
 
     pub async fn join_context(&self, request: JoinContextRequest) -> Result<JoinContextResponse> {
-        let url = self.base_url.join("admin-api/contexts/join")?;
+        let url = self.base_url()?.join("admin-api/contexts/join")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
         let join_response: JoinContextResponse = response.json().await?;
@@ -443,7 +451,7 @@ impl Client {
             format!("admin-api/contexts/{}/identities", context_id)
         };
 
-        let url = self.base_url.join(&endpoint)?;
+        let url = self.base_url()?.join(&endpoint)?;
         let response = self.http_client.get(url).send().await?;
         let identities_response: GetContextIdentitiesResponse = response.json().await?;
 
@@ -452,7 +460,7 @@ impl Client {
 
     pub async fn get_context(&self, context_id: &ContextId) -> Result<GetContextResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/contexts/{}", context_id))?;
 
         let response = self.http_client.get(url).send().await?;
@@ -466,7 +474,7 @@ impl Client {
         context_id: &ContextId,
     ) -> Result<GetContextClientKeysResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/contexts/{}/client-keys", context_id))?;
 
         let response = self.http_client.get(url).send().await?;
@@ -480,7 +488,7 @@ impl Client {
         context_id: &ContextId,
     ) -> Result<GetContextStorageResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/contexts/{}/storage", context_id))?;
 
         let response = self.http_client.get(url).send().await?;
@@ -491,7 +499,7 @@ impl Client {
 
     pub async fn delete_context(&self, context_id: &ContextId) -> Result<DeleteContextResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/contexts/{}", context_id))?;
 
         let response = self.http_client.delete(url).send().await?;
@@ -504,7 +512,7 @@ impl Client {
         &self,
         request: CreateContextRequest,
     ) -> Result<CreateContextResponse> {
-        let url = self.base_url.join("admin-api/contexts")?;
+        let url = self.base_url()?.join("admin-api/contexts")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
         let create_context_response: CreateContextResponse = response.json().await?;
@@ -518,7 +526,7 @@ impl Client {
         request: CreateAliasRequest<PublicKey>,
     ) -> Result<CreateAliasResponse> {
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("admin-api/alias/create/identity/{}", context_id))?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
@@ -532,7 +540,7 @@ impl Client {
         alias: Alias<ContextId>,
         value: Option<ContextId>,
     ) -> Result<CreateAliasResponse> {
-        let url = self.base_url.join("admin-api/alias/create/context")?;
+        let url = self.base_url()?.join("admin-api/alias/create/context")?;
 
         let request = CreateAliasRequest {
             alias,
@@ -567,7 +575,7 @@ impl Client {
             value: value.create(),
         };
 
-        let url = self.base_url.join(&format!("{prefix}/{kind}{scope}"))?;
+        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope}"))?;
         let response = self.http_client.post(url).json(&body).send().await?;
         let create_alias_response: CreateAliasResponse = response.json().await?;
 
@@ -588,7 +596,7 @@ impl Client {
             T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
         let response = self.http_client.post(url).send().await?;
         let delete_alias_response: DeleteAliasResponse = response.json().await?;
@@ -605,7 +613,7 @@ impl Client {
         let scope =
             T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
 
-        let url = self.base_url.join(&format!("{prefix}/{kind}{scope}"))?;
+        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope}"))?;
         let response = self.http_client.get(url).send().await?;
         let list_aliases_response: ListAliasesResponse<T> = response.json().await?;
 
@@ -626,7 +634,7 @@ impl Client {
             T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
 
         let url = self
-            .base_url
+            .base_url()?
             .join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
         let response = self.http_client.post(url).send().await?;
         let lookup_alias_response: LookupAliasResponse<T> = response.json().await?;
