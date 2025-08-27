@@ -33,7 +33,7 @@ cd "${CONTRACTS_DIR}"
 # Start Stellar Quickstart container
 docker run --rm -d -p 8000:8000 \
     --name stellar \
-    stellar/quickstart \
+    stellar/quickstart:v508-latest \
     --local --enable rpc --limits unlimited
 
 # Wait for the container to be ready
