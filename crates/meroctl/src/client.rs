@@ -548,7 +548,8 @@ impl Client {
         let request = CreateAliasRequest {
             alias,
             value: CreateContextIdAlias {
-                context_id: value.unwrap_or_else(|| ContextId::default()),
+                context_id: value
+                    .ok_or_else(|| eyre::eyre!("ContextId value is required for alias creation"))?,
             },
         };
 

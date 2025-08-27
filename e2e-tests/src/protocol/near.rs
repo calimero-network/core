@@ -121,9 +121,8 @@ impl NearSandboxEnvironment {
 
         let result = self
             .mock_external_contract
-            .call(method_name)
+            .view(method_name)
             .args(arguments)
-            .transact()
             .await?;
 
         let result_value: u32 = result
