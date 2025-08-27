@@ -8,8 +8,8 @@ use url::Url;
 
 use crate::cli::auth::authenticate;
 use crate::cli::storage::{get_session_cache, JwtToken};
-use crate::cli::ApiError;
 use crate::common::RequestType;
+use crate::errors::ClientError;
 use crate::output::Output;
 
 #[derive(Debug)]
@@ -179,7 +179,7 @@ impl ConnectionInfo {
             }
 
             if !response.status().is_success() {
-                bail!(ApiError {
+                bail!(ClientError {
                     status_code: response.status().as_u16(),
                     message: response
                         .text()
