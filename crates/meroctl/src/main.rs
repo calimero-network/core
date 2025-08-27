@@ -8,6 +8,7 @@ mod common;
 mod config;
 mod connection;
 mod defaults;
+mod errors;
 mod output;
 mod version;
 

@@ -15,6 +15,7 @@ use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
 use crate::defaults;
+use crate::errors::ClientError;
 use crate::output::{Format, Output, Report};
 
 mod app;
@@ -143,8 +144,8 @@ impl RootCommand {
         };
 
         if let Err(err) = result {
-            let err = match err.downcast::<ApiError>() {
-                Ok(err) => CliError::ApiError(err),
+            let err = match err.downcast::<ClientError>() {
+                Ok(err) => CliError::ClientError(err),
                 Err(err) => CliError::Other(err),
             };
 
@@ -208,7 +209,7 @@ impl RootCommand {
 #[derive(Debug, Serialize, ThisError)]
 pub enum CliError {
     #[error(transparent)]
-    ApiError(#[from] ApiError),
+    ClientError(#[from] ClientError),
 
     #[error(transparent)]
     Other(
@@ -221,7 +222,7 @@ pub enum CliError {
 impl From<CliError> for ExitCode {
     fn from(error: CliError) -> Self {
         match error {
-            CliError::ApiError(_) => Self::from(101),
+            CliError::ClientError(_) => Self::from(101),
             CliError::Other(_) => Self::FAILURE,
         }
     }
@@ -232,18 +233,11 @@ impl Report for CliError {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
         let _ = table.add_row(vec![match self {
-            CliError::ApiError(e) => format!("API Error ({}): {}", e.status_code, e.message),
+            CliError::ClientError(e) => format!("Client Error ({}): {}", e.status_code, e.message),
             CliError::Other(e) => format!("Error: {:?}", e),
         }]);
         println!("{table}");
     }
-}
-
-#[derive(Debug, Serialize, ThisError)]
-#[error("{status_code}: {message}")]
-pub struct ApiError {
-    pub status_code: u16,
-    pub message: String,
 }
 
 fn serialize_eyre_report<S>(report: &EyreReport, serializer: S) -> Result<S::Ok, S::Error>
