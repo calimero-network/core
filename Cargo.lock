@@ -178,6 +178,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "250f629c0161ad8107cf89319e990051fae62832fd343083bea452d93e2205fd"
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94fb8275041c72129eb51b7d0322c29b8387a0386127718b096429201a5d6ece"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1092,6 +1107,7 @@ version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59a194f9d963d8099596278594b3107448656ba73831c9d8c783e613ce86da64"
 dependencies = [
+ "brotli",
  "flate2",
  "futures-core",
  "memchr",
@@ -1597,6 +1613,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "brotli"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc97b8f16f944bba54f0433f07e30be199b6dc2bd25937444bbad560bcea29bd"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a334ef7c9e23abf0ce748e8cd309037da93e606ad52eb372e4ce327a0dcfbdfd"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+]
+
+[[package]]
 name = "bs58"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1784,6 +1821,27 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "calimero-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "calimero-context-config",
+ "calimero-primitives",
+ "calimero-server-primitives",
+ "chrono",
+ "eyre",
+ "hex",
+ "once_cell",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "url",
 ]
 
 [[package]]
@@ -6140,7 +6198,9 @@ dependencies = [
 name = "meroctl"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum 0.7.9",
+ "calimero-client",
  "calimero-config",
  "calimero-context-config",
  "calimero-primitives",
@@ -8199,6 +8259,7 @@ version = "0.11.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd67538700a17451e7cba03ac727fb961abb7607553461627b97de0b89cf4a62"
 dependencies = [
+ "async-compression",
  "base64 0.21.7",
  "bytes",
  "encoding_rs",
@@ -8228,6 +8289,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls 0.24.1",
+ "tokio-util",
  "tower-service",
  "url",
  "wasm-bindgen",

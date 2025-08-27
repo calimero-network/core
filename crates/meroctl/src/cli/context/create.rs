@@ -190,7 +190,7 @@ pub async fn create_context(
     }
     if let Some(context_alias) = context {
         let res = client
-            .create_alias(context_alias, Some(response.data.context_id))
+            .create_alias(context_alias, response.data.context_id, None)
             .await?;
         environment.output.write(&res);
     }

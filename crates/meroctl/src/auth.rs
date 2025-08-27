@@ -15,7 +15,8 @@ use url::Url;
 
 use crate::connection::ConnectionInfo;
 use crate::output::{InfoLine, Output, WarnLine};
-use crate::storage::{get_session_cache, JwtToken};
+use calimero_client::{storage::{get_session_cache, JwtToken}};
+use crate::storage::FileTokenStorage;
 
 #[derive(Debug, Deserialize)]
 struct AuthCallback {
@@ -24,7 +25,13 @@ struct AuthCallback {
 }
 
 pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
-    let temp_connection = ConnectionInfo::new(api_url.clone(), None, None, None);
+            let temp_connection = ConnectionInfo::new(
+            api_url.clone(), 
+            None, 
+            None, 
+            create_cli_authenticator(output),
+            FileTokenStorage::new()
+        );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode == "none" {
@@ -59,9 +66,10 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
                 .ok_or_eyre("No access token received")?;
             let refresh_token = callback.refresh_token;
 
-            Ok(JwtToken {
-                access_token,
-                refresh_token,
+            Ok(if let Some(refresh) = refresh_token {
+                JwtToken::with_refresh(access_token, refresh)
+            } else {
+                JwtToken::new(access_token)
             })
         }
         Err(e) => {
@@ -241,7 +249,13 @@ pub async fn check_authentication(
     node_name: &str,
     output: Output,
 ) -> Result<Option<JwtToken>> {
-    let temp_connection = ConnectionInfo::new(url.clone(), None, None, None);
+    let temp_connection = ConnectionInfo::new(
+        url.clone(), 
+        None, 
+        None, 
+        create_cli_authenticator(output),
+        FileTokenStorage::new()
+    );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
@@ -263,33 +277,41 @@ pub async fn authenticate_with_session_cache(
     node_name: &str,
     output: Output,
 ) -> Result<ConnectionInfo> {
-    let temp_connection = ConnectionInfo::new(url.clone(), None, None, None);
+    let temp_connection = ConnectionInfo::new(
+        url.clone(), 
+        None, 
+        None, 
+        create_cli_authenticator(output),
+        FileTokenStorage::new()
+    );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode != "none" {
         // Check if we have tokens in session cache for this URL
         let session_cache = get_session_cache();
 
-        if let Some(cached_tokens) = session_cache.get_tokens(url) {
+        if let Some(cached_tokens) = session_cache.get_tokens(url.as_str()).await {
             // We have existing tokens for this URL in session cache
             Ok(ConnectionInfo::new(
                 url.clone(),
                 Some(cached_tokens),
                 None,
-                Some(output),
+                create_cli_authenticator(output),
+                FileTokenStorage::new(),
             ))
         } else {
             // Need to authenticate and store in session cache
             match authenticate(url, output).await {
                 Ok(jwt_tokens) => {
                     // Store in session cache for future use during this session
-                    session_cache.store_tokens(url, &jwt_tokens);
+                    session_cache.store_tokens(url.as_str(), &jwt_tokens).await;
 
                     Ok(ConnectionInfo::new(
                         url.clone(),
                         Some(jwt_tokens),
                         None,
-                        Some(output),
+                        create_cli_authenticator(output),
+                        FileTokenStorage::new(),
                     ))
                 }
                 Err(e) => {
@@ -299,6 +321,188 @@ pub async fn authenticate_with_session_cache(
         }
     } else {
         // No authentication required
-        Ok(ConnectionInfo::new(url.clone(), None, None, Some(output)))
+        Ok(ConnectionInfo::new(url.clone(), None, None, create_cli_authenticator(output), FileTokenStorage::new()))
     }
+}
+
+/// Meroctl-specific implementation of ClientAuthenticator
+/// 
+/// This authenticator is designed to work with meroctl's Output type
+/// and provides browser-based authentication flows for the CLI.
+pub struct MeroctlAuthenticator {
+    /// Output handler for meroctl
+    output: Box<dyn calimero_client::auth::MeroctlOutputHandler + Send + Sync>,
+}
+
+impl std::fmt::Debug for MeroctlAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeroctlAuthenticator")
+            .field("output", &"<dyn MeroctlOutputHandler>")
+            .finish()
+    }
+}
+
+impl Clone for MeroctlAuthenticator {
+    fn clone(&self) -> Self {
+        // Since we can't clone the trait object, we'll create a new one
+        // This is a limitation, but it's acceptable for now
+        Self {
+            output: Box::new(NoOpOutputHandler),
+        }
+    }
+}
+
+impl MeroctlAuthenticator {
+    /// Create a new meroctl authenticator
+    pub fn new(output: Box<dyn calimero_client::auth::MeroctlOutputHandler + Send + Sync>) -> Self {
+        Self { output }
+    }
+}
+
+#[async_trait::async_trait]
+impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
+    async fn authenticate(&self, api_url: &url::Url) -> eyre::Result<calimero_client::storage::JwtToken> {
+        // For now, implement a simple authentication flow directly
+        self.output.display_message("Starting authentication...");
+        
+        // Try to open the authentication URL in the browser
+        if let Err(e) = self.output.open_browser(api_url) {
+            self.output.display_error(&format!("Failed to open browser: {}", e));
+            self.output.display_message(&format!("Please manually visit: {}", api_url));
+        }
+        
+        // Wait for user to complete authentication
+        self.output.display_message("Please complete authentication in your browser, then provide the access token.");
+        let access_token = self.output.wait_for_input("Enter access token: ")?;
+        
+        if access_token.is_empty() {
+            return Err(eyre::eyre!("Access token cannot be empty"));
+        }
+        
+        // Ask for refresh token if available
+        self.output.display_message("Do you have a refresh token? (y/n)");
+        let has_refresh = self.output.wait_for_input("y/n: ")?.to_lowercase() == "y";
+        
+        let token = if has_refresh {
+            let refresh_token = self.output.wait_for_input("Enter refresh token: ")?;
+            calimero_client::storage::JwtToken::with_refresh(access_token, refresh_token)
+        } else {
+            calimero_client::storage::JwtToken::new(access_token)
+        };
+        
+        self.output.display_success("Authentication successful!");
+        Ok(token)
+    }
+    
+    async fn refresh_tokens(&self, refresh_token: &str) -> eyre::Result<calimero_client::storage::JwtToken> {
+        // For now, we'll use a simple approach - ask user for new token
+        self.output.display_message("Refreshing authentication tokens...");
+        
+        self.output.display_message("Please provide new access token:");
+        let access_token = self.output.wait_for_input("Enter new access token: ")?;
+        
+        if access_token.is_empty() {
+            return Err(eyre::eyre!("Access token cannot be empty"));
+        }
+        
+        let token = calimero_client::storage::JwtToken::new(access_token);
+        self.output.display_success("Token refresh successful!");
+        Ok(token)
+    }
+    
+    async fn handle_auth_failure(&self, api_url: &url::Url) -> eyre::Result<calimero_client::storage::JwtToken> {
+        self.output.display_error("Authentication failed. Please try again.");
+        
+        // Try to open the authentication URL in the browser
+        if let Err(e) = self.output.open_browser(api_url) {
+            self.output.display_error(&format!("Failed to open browser: {}", e));
+            self.output.display_message(&format!("Please manually visit: {}", api_url));
+        }
+        
+        // Wait for user to complete authentication
+        self.output.display_message("Please complete authentication in your browser, then press Enter.");
+        self.output.wait_for_input("Press Enter when done: ")?;
+        
+        // Try to authenticate again
+        self.authenticate(api_url).await
+    }
+    
+    async fn check_auth_required(&self, _api_url: &url::Url) -> eyre::Result<bool> {
+        // For now, assume all APIs require authentication
+        // In a real implementation, this would check the API health endpoint
+        Ok(true)
+    }
+    
+    fn get_auth_method(&self) -> &'static str {
+        "Meroctl Browser-based OAuth"
+    }
+    
+    fn supports_refresh(&self) -> bool {
+        true
+    }
+}
+
+
+
+/// No-op output handler for cloning
+struct NoOpOutputHandler;
+
+impl calimero_client::auth::MeroctlOutputHandler for NoOpOutputHandler {
+    fn display_message(&self, _message: &str) {}
+    fn display_error(&self, _error: &str) {}
+    fn display_success(&self, _message: &str) {}
+    fn open_browser(&self, _url: &url::Url) -> eyre::Result<()> { Ok(()) }
+    fn wait_for_input(&self, _prompt: &str) -> eyre::Result<String> { Ok(String::new()) }
+}
+
+/// Concrete implementation of MeroctlOutputHandler for meroctl's Output type
+#[derive(Debug, Clone)]
+pub struct MeroctlOutputWrapper {
+    output: Output,
+}
+
+impl MeroctlOutputWrapper {
+    pub fn new(output: Output) -> Self {
+        Self { output }
+    }
+}
+
+impl calimero_client::auth::MeroctlOutputHandler for MeroctlOutputWrapper {
+    fn display_message(&self, message: &str) {
+        self.output.write(&InfoLine(message));
+    }
+    
+    fn display_error(&self, error: &str) {
+        self.output.write(&WarnLine(error));
+    }
+    
+    fn display_success(&self, message: &str) {
+        self.output.write(&InfoLine(message));
+    }
+    
+    fn open_browser(&self, url: &Url) -> Result<()> {
+        webbrowser::open(url.as_str())?;
+        Ok(())
+    }
+    
+    fn wait_for_input(&self, prompt: &str) -> Result<String> {
+        use std::io::{self, Write};
+        
+        print!("{}", prompt);
+        io::stdout().flush()?;
+        
+        let mut input = String::new();
+        drop(io::stdin().read_line(&mut input));
+        
+        Ok(input.trim().to_string())
+    }
+}
+
+/// Type alias for the authenticator from calimero-client
+pub type CliAuthenticator = MeroctlAuthenticator;
+
+/// Helper function to create a new CliAuthenticator
+pub fn create_cli_authenticator(output: Output) -> CliAuthenticator {
+    let wrapper = MeroctlOutputWrapper::new(output);
+    MeroctlAuthenticator::new(Box::new(wrapper))
 }
