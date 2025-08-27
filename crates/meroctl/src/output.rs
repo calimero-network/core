@@ -7,8 +7,8 @@ use color_eyre::owo_colors::OwoColorize;
 use comfy_table::{Cell, Color, Table};
 use serde::Serialize;
 
-// Import the response types from mero_client
-use crate::mero_client::{
+// Import the response types from client
+use crate::client::{
     BlobDeleteResponse, BlobInfoResponse, BlobListResponse, ResolveResponse, ResolveResponseValue,
 };
 

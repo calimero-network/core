@@ -3,11 +3,11 @@ use std::process::ExitCode;
 use clap::Parser;
 
 pub mod cli;
+mod client;
 mod common;
 mod config;
 mod connection;
 mod defaults;
-mod mero_client;
 mod output;
 mod version;
 

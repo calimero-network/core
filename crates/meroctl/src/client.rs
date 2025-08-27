@@ -54,7 +54,7 @@ impl UrlFragment for PublicKey {
     }
 
     fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
-        context.map(calimero_primitives::context::ContextId::as_str)
+        context.map(ContextId::as_str)
     }
 }
 
@@ -124,12 +124,12 @@ pub struct BlobInfoResponse {
 }
 
 #[derive(Clone, Debug)]
-pub struct MeroClient {
+pub struct Client {
     base_url: Url,
     http_client: reqwest::Client,
 }
 
-impl MeroClient {
+impl Client {
     pub fn new(base_url: String) -> Result<Self> {
         let base_url = Url::parse(&base_url)?;
         Ok(Self {

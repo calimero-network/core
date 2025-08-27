@@ -10,11 +10,11 @@ use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
+use crate::client::Client;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
 use crate::defaults;
-use crate::mero_client::MeroClient;
 use crate::output::{Format, Output, Report};
 
 mod app;
@@ -95,7 +95,7 @@ pub struct RootArgs {
 pub struct Environment {
     pub output: Output,
     connection: Option<ConnectionInfo>,
-    mero_client: Option<MeroClient>,
+    mero_client: Option<Client>,
 }
 
 impl Environment {
@@ -113,10 +113,10 @@ impl Environment {
         )))
     }
 
-    pub fn mero_client(&mut self) -> Result<&MeroClient, CliError> {
+    pub fn mero_client(&mut self) -> Result<&Client, CliError> {
         if self.mero_client.is_none() {
             let connection = self.connection()?;
-            let mero_client = MeroClient::new(connection.api_url.to_string())?;
+            let mero_client = Client::new(connection.api_url.to_string())?;
             self.mero_client = Some(mero_client);
         }
         self.mero_client

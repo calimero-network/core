@@ -86,7 +86,7 @@ impl ContextIdentityAliasCommand {
                 context,
                 force,
             } => {
-                // Check if identity exists in context using MeroClient
+                // Check if identity exists in context using Client
                 let response = client.get_context_identities(&context_id, false).await?;
                 let identity_exists = response.data.identities.contains(&identity);
 

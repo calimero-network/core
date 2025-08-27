@@ -18,7 +18,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::Environment;
-use crate::mero_client::MeroClient;
+use crate::client::Client;
 use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
@@ -172,7 +172,7 @@ impl CreateCommand {
 
 pub async fn create_context(
     environment: &mut Environment,
-    client: &MeroClient,
+    client: &Client,
     context_seed: Option<Hash>,
     application_id: ApplicationId,
     params: Option<String>,
@@ -222,7 +222,7 @@ pub async fn create_context(
 
 async fn watch_app_and_update_context(
     environment: &mut Environment,
-    client: &MeroClient,
+    client: &Client,
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,

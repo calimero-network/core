@@ -184,10 +184,7 @@ impl UseCommand {
     }
 }
 
-async fn context_exists(
-    client: &crate::mero_client::MeroClient,
-    target_id: &ContextId,
-) -> Result<bool> {
+async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -> Result<bool> {
     let result = client.get_context(target_id).await;
 
     match result {
