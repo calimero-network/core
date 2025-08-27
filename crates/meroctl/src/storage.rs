@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use client::storage::JwtToken as ClientJwtToken;
-use client::ClientStorage;
+use calimero_client::storage::JwtToken as ClientJwtToken;
+use calimero_client::ClientStorage;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ pub struct JwtToken {
 ///
 /// This implementation uses meroctl's Config functionality to provide
 /// file-based token storage that integrates with the existing configuration system.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FileTokenStorage;
 
 impl FileTokenStorage {

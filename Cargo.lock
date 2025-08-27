@@ -1824,6 +1824,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "calimero-context-config",
+ "calimero-primitives",
+ "calimero-server-primitives",
+ "chrono",
+ "eyre",
+ "hex",
+ "once_cell",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "url",
+ "webbrowser 0.8.15",
+]
+
+[[package]]
 name = "calimero-config"
 version = "0.1.0"
 dependencies = [
@@ -2518,28 +2540,6 @@ name = "clap_lex"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afb84c814227b90d6895e01398aee0d8033c00e7466aca416fb6a8e0eb19d8a7"
-
-[[package]]
-name = "client"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "calimero-context-config",
- "calimero-primitives",
- "calimero-server-primitives",
- "chrono",
- "eyre",
- "hex",
- "once_cell",
- "reqwest 0.11.27",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-test",
- "url",
- "webbrowser 0.8.15",
-]
 
 [[package]]
 name = "color-eyre"
@@ -6210,6 +6210,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
+ "calimero-client",
  "calimero-config",
  "calimero-context-config",
  "calimero-primitives",
@@ -6217,7 +6218,6 @@ dependencies = [
  "calimero-version",
  "camino",
  "clap",
- "client",
  "color-eyre",
  "comfy-table",
  "const_format",

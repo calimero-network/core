@@ -6,8 +6,7 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
-use client::connection::AuthMode;
-use client::storage::{get_session_cache, JwtToken};
+use calimero_client::{auth, get_session_cache, AuthMode, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -111,19 +110,21 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
         get({
             let tx = Arc::clone(&tx);
             move |Query(params): Query<HashMap<String, String>>| async move {
-                let callback = AuthCallback {
-                    access_token: params.get("access_token").cloned(),
-                    refresh_token: params.get("refresh_token").cloned(),
-                };
+                // Check if we have tokens as query parameters
+                if params.contains_key("access_token") {
+                    let callback = AuthCallback {
+                        access_token: params.get("access_token").cloned(),
+                        refresh_token: params.get("refresh_token").cloned(),
+                    };
 
-                if let Ok(mut guard) = tx.lock() {
-                    if let Some(sender) = guard.take() {
-                        drop(sender.send(Ok(callback)));
+                    if let Ok(mut guard) = tx.lock() {
+                        if let Some(sender) = guard.take() {
+                            drop(sender.send(Ok(callback)));
+                        }
                     }
-                }
 
-                Html(
-                    r#"
+                    return Html(
+                        r#"
                 <!DOCTYPE html>
                 <html lang="en">
                     <head>
@@ -202,8 +203,116 @@ async fn start_callback_server() -> Result<(u16, oneshot::Receiver<Result<AuthCa
                             <div class="emoji">🎉</div>
                             <h1>Authentication Complete!</h1>
                             <p>You can now close this browser window and return to the terminal.</p>
-                            <div class="message">You can now close this page</div>
+                            <div class="message">Authentication successful!</div>
                         </div>
+                    </body>
+                </html>
+                "#,
+                    );
+                }
+
+                // No query parameters - serve HTML page that extracts tokens from fragments
+                Html(
+                    r#"
+                <!DOCTYPE html>
+                <html lang="en">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>Processing Authentication</title>
+                        <style>
+                            * {
+                                margin: 0;
+                                padding: 0;
+                                box-sizing: border-box;
+                            }
+                            
+                            body {
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                min-height: 100vh;
+                                display: flex;
+                                align-items: center;
+                                justify-content: center;
+                                color: white;
+                            }
+                            
+                            .container {
+                                text-align: center;
+                                background: rgba(255, 255, 255, 0.1);
+                                backdrop-filter: blur(10px);
+                                border-radius: 20px;
+                                padding: 3rem 2rem;
+                                border: 1px solid rgba(255, 255, 255, 0.2);
+                                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                                max-width: 400px;
+                                width: 90%;
+                            }
+                            
+                            .spinner {
+                                border: 3px solid rgba(255, 255, 255, 0.3);
+                                border-radius: 50%;
+                                border-top: 3px solid white;
+                                width: 40px;
+                                height: 40px;
+                                animation: spin 1s linear infinite;
+                                margin: 0 auto 1rem;
+                            }
+                            
+                            @keyframes spin {
+                                0% { transform: rotate(0deg); }
+                                100% { transform: rotate(360deg); }
+                            }
+                            
+                            h1 {
+                                font-size: 2rem;
+                                margin-bottom: 1rem;
+                                font-weight: 600;
+                            }
+                            
+                            p {
+                                font-size: 1.1rem;
+                                opacity: 0.9;
+                                line-height: 1.5;
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <div class="spinner"></div>
+                            <h1>Processing Authentication</h1>
+                            <p>Extracting tokens from URL...</p>
+                        </div>
+                        
+                        <script>
+                            // Extract tokens from URL fragments
+                            function extractTokensFromFragment() {
+                                const hash = window.location.hash.substring(1); // Remove the # character
+                                const params = new URLSearchParams(hash);
+                                
+                                const accessToken = params.get('access_token');
+                                const refreshToken = params.get('refresh_token');
+                                
+                                if (accessToken) {
+                                    // Redirect to the same URL but with query parameters instead of fragments
+                                    const currentUrl = window.location.origin + window.location.pathname;
+                                    const queryParams = new URLSearchParams();
+                                    queryParams.set('access_token', accessToken);
+                                    if (refreshToken) {
+                                        queryParams.set('refresh_token', refreshToken);
+                                    }
+                                    
+                                    window.location.href = currentUrl + '?' + queryParams.toString();
+                                } else {
+                                    // No tokens found in fragments
+                                    document.querySelector('.container').innerHTML = 
+                                        '<h1>❌ No Authentication Tokens</h1><p>No tokens found in URL. Please try again.</p>';
+                                }
+                            }
+                            
+                            // Run when page loads
+                            extractTokensFromFragment();
+                        </script>
                     </body>
                 </html>
                 "#,
@@ -288,7 +397,7 @@ pub async fn authenticate_with_session_cache(
         // Check if we have tokens in session cache for this URL
         let session_cache = get_session_cache();
 
-        if let Some(cached_tokens) = session_cache.get_tokens(url.as_str()).await {
+        if let Some(_cached_tokens) = session_cache.get_tokens(url.as_str()).await {
             // We have existing tokens for this URL in session cache
             Ok(ConnectionInfo::new(
                 url.clone(),
@@ -332,7 +441,7 @@ pub async fn authenticate_with_session_cache(
 /// and provides browser-based authentication flows for the CLI.
 pub struct MeroctlAuthenticator {
     /// Output handler for meroctl
-    output: Box<dyn client::auth::MeroctlOutputHandler + Send + Sync>,
+    output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>,
 }
 
 impl std::fmt::Debug for MeroctlAuthenticator {
@@ -355,52 +464,63 @@ impl Clone for MeroctlAuthenticator {
 
 impl MeroctlAuthenticator {
     /// Create a new meroctl authenticator
-    pub fn new(output: Box<dyn client::auth::MeroctlOutputHandler + Send + Sync>) -> Self {
+    pub fn new(output: Box<dyn calimero_client::MeroctlOutputHandler + Send + Sync>) -> Self {
         Self { output }
     }
 }
 
 #[async_trait::async_trait]
-impl client::ClientAuthenticator for MeroctlAuthenticator {
-    async fn authenticate(&self, api_url: &url::Url) -> eyre::Result<client::storage::JwtToken> {
-        // For now, implement a simple authentication flow directly
-        self.output.display_message("Starting authentication...");
+impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
+    async fn authenticate(&self, api_url: &Url) -> Result<JwtToken> {
+        // Use the proper OAuth authentication flow
+        self.output
+            .display_message("Starting OAuth authentication...");
 
-        // Try to open the authentication URL in the browser
-        if let Err(e) = self.output.open_browser(api_url) {
+        // Set up callback server
+        let (callback_port, callback_rx) = start_callback_server().await?;
+
+        let auth_url = build_auth_url(api_url, callback_port)?;
+
+        // Open the OAuth URL in the browser
+        if let Err(e) = self.output.open_browser(&auth_url) {
             self.output
                 .display_error(&format!("Failed to open browser: {}", e));
             self.output
-                .display_message(&format!("Please manually visit: {}", api_url));
+                .display_message(&format!("Please manually visit: {}", auth_url));
         }
 
-        // Wait for user to complete authentication
-        self.output.display_message(
-            "Please complete authentication in your browser, then provide the access token.",
-        );
-        let access_token = self.output.wait_for_input("Enter access token: ")?;
+        // Wait for the OAuth callback
+        let auth_result = timeout(Duration::from_secs(300), callback_rx)
+            .await
+            .map_err(|_| eyre!("Authentication timed out after 300 seconds"))?
+            .map_err(|_| eyre!("Callback server error"))?;
 
-        if access_token.is_empty() {
-            return Err(eyre::eyre!("Access token cannot be empty"));
+        match auth_result {
+            Ok(callback) => {
+                let access_token = callback
+                    .access_token
+                    .ok_or_eyre("No access token received")?;
+                let refresh_token = callback.refresh_token;
+
+                let token = if let Some(refresh) = refresh_token {
+                    JwtToken::with_refresh(access_token, refresh)
+                } else {
+                    JwtToken::new(access_token)
+                };
+
+                self.output
+                    .display_success("OAuth authentication successful!");
+                Ok(token)
+            }
+            Err(e) => {
+                self.output
+                    .display_error(&format!("OAuth authentication failed: {}", e));
+                Err(eyre!("OAuth authentication failed: {}", e))
+            }
         }
-
-        // Ask for refresh token if available
-        self.output
-            .display_message("Do you have a refresh token? (y/n)");
-        let has_refresh = self.output.wait_for_input("y/n: ")?.to_lowercase() == "y";
-
-        let token = if has_refresh {
-            let refresh_token = self.output.wait_for_input("Enter refresh token: ")?;
-            client::storage::JwtToken::with_refresh(access_token, refresh_token)
-        } else {
-            client::storage::JwtToken::new(access_token)
-        };
-
-        self.output.display_success("Authentication successful!");
-        Ok(token)
     }
 
-    async fn refresh_tokens(&self, refresh_token: &str) -> eyre::Result<client::storage::JwtToken> {
+    async fn refresh_tokens(&self, _refresh_token: &str) -> Result<JwtToken> {
         // For now, we'll use a simple approach - ask user for new token
         self.output
             .display_message("Refreshing authentication tokens...");
@@ -413,15 +533,12 @@ impl client::ClientAuthenticator for MeroctlAuthenticator {
             return Err(eyre::eyre!("Access token cannot be empty"));
         }
 
-        let token = client::storage::JwtToken::new(access_token);
+        let token = JwtToken::new(access_token);
         self.output.display_success("Token refresh successful!");
         Ok(token)
     }
 
-    async fn handle_auth_failure(
-        &self,
-        api_url: &url::Url,
-    ) -> eyre::Result<client::storage::JwtToken> {
+    async fn handle_auth_failure(&self, api_url: &Url) -> Result<JwtToken> {
         self.output
             .display_error("Authentication failed. Please try again.");
 
@@ -436,13 +553,13 @@ impl client::ClientAuthenticator for MeroctlAuthenticator {
         // Wait for user to complete authentication
         self.output
             .display_message("Please complete authentication in your browser, then press Enter.");
-        self.output.wait_for_input("Press Enter when done: ")?;
+        let _unused = self.output.wait_for_input("Press Enter when done: ")?;
 
         // Try to authenticate again
         self.authenticate(api_url).await
     }
 
-    async fn check_auth_required(&self, _api_url: &url::Url) -> eyre::Result<bool> {
+    async fn check_auth_required(&self, _api_url: &Url) -> Result<bool> {
         // For now, assume all APIs require authentication
         // In a real implementation, this would check the API health endpoint
         Ok(true)
@@ -460,14 +577,14 @@ impl client::ClientAuthenticator for MeroctlAuthenticator {
 /// No-op output handler for cloning
 struct NoOpOutputHandler;
 
-impl client::auth::MeroctlOutputHandler for NoOpOutputHandler {
+impl auth::MeroctlOutputHandler for NoOpOutputHandler {
     fn display_message(&self, _message: &str) {}
     fn display_error(&self, _error: &str) {}
     fn display_success(&self, _message: &str) {}
-    fn open_browser(&self, _url: &url::Url) -> eyre::Result<()> {
+    fn open_browser(&self, _url: &Url) -> Result<()> {
         Ok(())
     }
-    fn wait_for_input(&self, _prompt: &str) -> eyre::Result<String> {
+    fn wait_for_input(&self, _prompt: &str) -> Result<String> {
         Ok(String::new())
     }
 }
@@ -484,7 +601,7 @@ impl MeroctlOutputWrapper {
     }
 }
 
-impl client::auth::MeroctlOutputHandler for MeroctlOutputWrapper {
+impl auth::MeroctlOutputHandler for MeroctlOutputWrapper {
     fn display_message(&self, message: &str) {
         self.output.write(&InfoLine(message));
     }

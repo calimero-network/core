@@ -55,9 +55,3 @@ pub fn fetch_multiaddr(config: &ConfigFile) -> Result<&Multiaddr> {
 
     Ok(multiaddr)
 }
-
-pub enum RequestType {
-    Get,
-    Post,
-    Delete,
-}

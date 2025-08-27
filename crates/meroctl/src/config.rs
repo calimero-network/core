@@ -84,7 +84,10 @@ impl Config {
         };
 
         let connection_info = match connection {
-            NodeConnection::Local { path, jwt_tokens } => {
+            NodeConnection::Local {
+                path,
+                jwt_tokens: _,
+            } => {
                 let config = load_config(path, node)
                     .await
                     .wrap_err_with(|| format!("Failed to load config for local node '{}'", node))?;

@@ -1,18 +1,15 @@
-//! API client for meroctl
-//!
-//! This module provides type aliases and re-exports for the generic
-//! Client from client, specialized for meroctl's needs.
+//! Client from calimero-client, specialized for meroctl's needs.
 
-use client::client::Client as GenericClient;
+use calimero_client::Client as GenericClient;
 
 use crate::auth::CliAuthenticator;
 use crate::storage::FileTokenStorage;
 
 /// Type alias for Client specialized for meroctl
 ///
-/// This uses the generic Client from client with
+/// This uses the generic Client from calimero-client with
 /// meroctl's concrete authenticator and storage implementations.
 pub type Client = GenericClient<CliAuthenticator, FileTokenStorage>;
 
 // Re-export response types and traits for convenience
-pub use client::client::{ResolveResponse, ResolveResponseValue};
+pub use calimero_client::{ResolveResponse, ResolveResponseValue};

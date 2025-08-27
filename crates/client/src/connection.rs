@@ -81,6 +81,10 @@ where
         self.request(RequestType::Post, path, Some(body)).await
     }
 
+    pub async fn post_no_body<O: DeserializeOwned>(&self, path: &str) -> Result<O> {
+        self.request(RequestType::Post, path, None::<()>).await
+    }
+
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.request(RequestType::Delete, path, None::<()>).await
     }
@@ -94,7 +98,19 @@ where
             if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
                 Some(format!("Bearer {}", tokens.access_token))
             } else {
-                None
+                // No tokens available, try to authenticate proactively
+                match self.authenticator.authenticate(&self.api_url).await {
+                    Ok(new_tokens) => {
+                        // Update stored tokens
+                        self.client_storage
+                            .update_tokens(node_name, &new_tokens)
+                            .await?;
+                        Some(format!("Bearer {}", new_tokens.access_token))
+                    }
+                    Err(auth_err) => {
+                        bail!("Authentication failed: {}", auth_err);
+                    }
+                }
             }
         } else {
             None
@@ -128,7 +144,19 @@ where
             if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
                 Some(format!("Bearer {}", tokens.access_token))
             } else {
-                None
+                // No tokens available, try to authenticate proactively
+                match self.authenticator.authenticate(&self.api_url).await {
+                    Ok(new_tokens) => {
+                        // Update stored tokens
+                        self.client_storage
+                            .update_tokens(node_name, &new_tokens)
+                            .await?;
+                        Some(format!("Bearer {}", new_tokens.access_token))
+                    }
+                    Err(auth_err) => {
+                        bail!("Authentication failed: {}", auth_err);
+                    }
+                }
             }
         } else {
             None
@@ -304,7 +332,13 @@ where
 
     /// Detect the authentication mode for this connection
     pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
-        // Check the admin API health endpoint to determine if authentication is required
+        // For remote nodes, always require authentication
+        // The admin-api/health endpoint might not be properly protected
+        if self.node_name.is_some() {
+            return Ok(AuthMode::Required);
+        }
+
+        // For external connections without a node name, check the admin API health endpoint
         let health_url = self.api_url.join("admin-api/health")?;
 
         match self.client.get(health_url).send().await {

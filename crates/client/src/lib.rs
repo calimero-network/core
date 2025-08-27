@@ -12,36 +12,6 @@
 //! - **Token Storage**: Abstract token management with multiple backends
 //! - **HTTP Client**: Robust HTTP client with retry and error handling
 //! - **Async Support**: Full async/await support throughout
-//!
-//! ## Quick Start
-//!
-//! ```rust
-//! use client::{
-//!     ClientAuthenticator, ClientStorage, ConnectionInfo, ClientError
-//! };
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Create your implementations of the traits
-//!     let authenticator = MyAuthenticator::new();
-//!     let storage = MyStorage::new();
-//!     
-//!     // Create a connection
-//!     let connection = ConnectionInfo::new(
-//!         "https://api.calimero.network".parse()?,
-//!         None,
-//!         Some("my-node".to_string()),
-//!         authenticator,
-//!         storage,
-//!     );
-//!     
-//!     // Use the connection
-//!     let response = connection.get("/health").await?;
-//!     println!("Health: {:?}", response);
-//!     
-//!     Ok(())
-//! }
-//! ```
 
 pub mod auth;
 pub mod client;
@@ -51,12 +21,12 @@ pub mod storage;
 pub mod traits;
 
 // Re-export main types for easy access
-pub use auth::CliAuthenticator;
-pub use client::Client;
-pub use connection::ConnectionInfo;
+pub use auth::{CliAuthenticator, MeroctlOutputHandler};
+pub use client::{Client, ResolveResponse, ResolveResponseValue};
+pub use connection::{AuthMode, ConnectionInfo};
 pub use errors::ClientError;
 pub use eyre::Result;
-pub use storage::JwtToken;
+pub use storage::{get_session_cache, JwtToken};
 pub use traits::{ClientAuthenticator, ClientConfig, ClientStorage};
 // Re-export common types
 pub use url::Url;
