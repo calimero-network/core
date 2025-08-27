@@ -30,11 +30,10 @@ pub mod jsonrpc;
 mod metrics;
 #[cfg(feature = "admin")]
 mod middleware;
+#[cfg(feature = "sse")]
+pub mod sse;
 #[cfg(feature = "websocket")]
 pub mod ws;
-#[cfg(feature = "websocket")]
-pub mod sse;
-
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -130,8 +129,12 @@ pub async fn start(
 
     #[cfg(feature = "sse")]
     {
-    }
+        if let Some((path, handler)) = sse::service(&config, node_client.clone()) {
+            app = app.route(path, handler);
 
+            serviced = true;
+        }
+    }
 
     #[cfg(feature = "admin")]
     {
