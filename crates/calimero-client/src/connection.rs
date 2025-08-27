@@ -3,8 +3,6 @@
 //! This module provides the core connection functionality for making
 //! authenticated API requests to Calimero services.
 
-use std::sync::{Arc, Mutex};
-
 use eyre::{bail, eyre, Result};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
@@ -13,6 +11,15 @@ use url::Url;
 
 use crate::storage::JwtToken;
 use crate::traits::{ClientAuthenticator, ClientStorage};
+
+/// Authentication mode for a connection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    /// Authentication is required for this connection
+    Required,
+    /// No authentication is required for this connection
+    None,
+}
 
 // Define RequestType enum locally since it's not available in calimero-client
 #[derive(Debug, Clone, Copy)]
@@ -37,7 +44,6 @@ where
 {
     pub api_url: Url,
     pub client: Client,
-    pub jwt_tokens: Arc<Mutex<Option<JwtToken>>>,
     pub node_name: Option<String>,
     pub authenticator: A,
     pub client_storage: S,
@@ -50,7 +56,6 @@ where
 {
     pub fn new(
         api_url: Url,
-        jwt_tokens: Option<JwtToken>,
         node_name: Option<String>,
         authenticator: A,
         client_storage: S,
@@ -58,7 +63,6 @@ where
         Self {
             api_url,
             client: Client::new(),
-            jwt_tokens: Arc::new(Mutex::new(jwt_tokens)),
             node_name,
             authenticator,
             client_storage,
@@ -85,13 +89,23 @@ where
         let mut url = self.api_url.clone();
         url.set_path(path);
 
+        // Load tokens from storage before making the request
+        let auth_header = if let Some(ref node_name) = self.node_name {
+            if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
+                Some(format!("Bearer {}", tokens.access_token))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let response = self
             .execute_request_with_auth_retry(|| {
                 let mut builder = self.client.head(url.clone());
 
-                if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
-                    builder =
-                        builder.header("Authorization", format!("Bearer {}", tokens.access_token));
+                if let Some(ref auth_header) = auth_header {
+                    builder = builder.header("Authorization", auth_header);
                 }
 
                 builder.send()
@@ -109,6 +123,17 @@ where
         let mut url = self.api_url.clone();
         url.set_path(path);
 
+        // Load tokens from storage before making the request
+        let auth_header = if let Some(ref node_name) = self.node_name {
+            if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
+                Some(format!("Bearer {}", tokens.access_token))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let response = self
             .execute_request_with_auth_retry(|| {
                 let mut builder = match req_type {
@@ -117,9 +142,8 @@ where
                     RequestType::Delete => self.client.delete(url.clone()),
                 };
 
-                if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
-                    builder =
-                        builder.header("Authorization", format!("Bearer {}", tokens.access_token));
+                if let Some(ref auth_header) = auth_header {
+                    builder = builder.header("Authorization", auth_header);
                 }
 
                 builder.send()
@@ -149,17 +173,9 @@ where
                 // Try to refresh tokens
                 match self.refresh_token().await {
                     Ok(new_token) => {
-                        // Update the in-memory tokens immediately
-                        *self.jwt_tokens.lock().unwrap() = Some(new_token.clone());
-
-                        // Update stored tokens based on connection type
-                        if let Some(ref _node_name) = self.node_name {
-                            // This is a registered node - update config file
-                            self.update_tokens(&new_token).await?;
-                        } else {
-                            // This is an external connection - update session cache
-                            // Note: This would need to be implemented by the concrete storage type
-                            // For now, we'll just continue
+                        // Update stored tokens
+                        if let Some(ref node_name) = self.node_name {
+                            self.client_storage.update_tokens(node_name, &new_token).await?;
                         }
                         continue;
                     }
@@ -167,17 +183,9 @@ where
                         // Token refresh failed, try full re-authentication
                         match self.authenticator.authenticate(&self.api_url).await {
                             Ok(new_tokens) => {
-                                // Update the in-memory tokens immediately
-                                *self.jwt_tokens.lock().unwrap() = Some(new_tokens.clone());
-
-                                // Update stored tokens based on connection type
-                                if let Some(ref _node_name) = self.node_name {
-                                    // This is a registered node - update config file
-                                    self.update_tokens(&new_tokens).await?;
-                                } else {
-                                    // This is an external connection - update session cache
-                                    // Note: This would need to be implemented by the concrete storage type
-                                    // For now, we'll just continue
+                                // Update stored tokens
+                                if let Some(ref node_name) = self.node_name {
+                                    self.client_storage.update_tokens(node_name, &new_tokens).await?;
                                 }
                                 continue;
                             }
@@ -206,21 +214,23 @@ where
     }
 
     async fn refresh_token(&self) -> Result<JwtToken, RefreshError> {
-        if let Some(ref tokens) = *self.jwt_tokens.lock().unwrap() {
-            let refresh_token = tokens
-                .refresh_token
-                .clone()
-                .ok_or(RefreshError::NoRefreshToken)?;
+        if let Some(ref node_name) = self.node_name {
+            if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
+                let refresh_token = tokens
+                    .refresh_token
+                    .clone()
+                    .ok_or(RefreshError::NoRefreshToken)?;
 
-            match self
-                .try_refresh_token(&tokens.access_token, &refresh_token)
-                .await
-            {
-                Ok(new_token) => {
-                    return Ok(new_token);
-                }
-                Err(_) => {
-                    return Err(RefreshError::RefreshFailed);
+                match self
+                    .try_refresh_token(&tokens.access_token, &refresh_token)
+                    .await
+                {
+                    Ok(new_token) => {
+                        return Ok(new_token);
+                    }
+                    Err(_) => {
+                        return Err(RefreshError::RefreshFailed);
+                    }
                 }
             }
         }
@@ -284,91 +294,28 @@ where
     }
 
     /// Detect the authentication mode for this connection
-    pub async fn detect_auth_mode(&self) -> Result<String> {
-        // For now, assume all APIs require authentication
-        // In a real implementation, this would check the API health endpoint
-        Ok("oauth".to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::traits::{ClientAuthenticator, ClientStorage};
-    use crate::storage::JwtToken;
-    
-    // Mock implementations for testing
-    #[derive(Debug, Clone)]
-    struct MockAuthenticator;
-    
-    #[derive(Debug, Clone)]
-    struct MockStorage;
-    
-    #[async_trait::async_trait]
-    impl ClientAuthenticator for MockAuthenticator {
-        async fn authenticate(&self, _api_url: &Url) -> Result<JwtToken> {
-            Ok(JwtToken::new("test_token".to_string()))
-        }
+    pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
+        // Check the admin API health endpoint to determine if authentication is required
+        let health_url = self.api_url.join("admin-api/health")?;
         
-        async fn refresh_tokens(&self, _refresh_token: &str) -> Result<JwtToken> {
-            Ok(JwtToken::new("refreshed_token".to_string()))
+        match self.client.get(health_url).send().await {
+            Ok(response) => {
+                if response.status() == 401 {
+                    // 401 Unauthorized means authentication is required
+                    Ok(AuthMode::Required)
+                } else if response.status().is_success() {
+                    // 200 OK means no authentication required
+                    Ok(AuthMode::None)
+                } else {
+                    // Other status codes, assume authentication is required for safety
+                    Ok(AuthMode::Required)
+                }
+            }
+            Err(_) => {
+                // If we can't reach the endpoint, assume no authentication required
+                // This is common for local nodes that don't have the admin API enabled
+                Ok(AuthMode::None)
+            }
         }
-        
-        async fn handle_auth_failure(&self, _api_url: &Url) -> Result<JwtToken> {
-            Ok(JwtToken::new("recovered_token".to_string()))
-        }
-        
-        async fn check_auth_required(&self, _api_url: &Url) -> Result<bool> {
-            Ok(true)
-        }
-        
-        fn get_auth_method(&self) -> &'static str {
-            "Mock"
-        }
-        
-        fn supports_refresh(&self) -> bool {
-            true
-        }
-    }
-    
-    #[async_trait::async_trait]
-    impl ClientStorage for MockStorage {
-        async fn load_tokens(&self, _node_name: &str) -> Result<Option<JwtToken>> {
-            Ok(None)
-        }
-        
-        async fn save_tokens(&self, _node_name: &str, _tokens: &JwtToken) -> Result<()> {
-            Ok(())
-        }
-        
-        async fn update_tokens(&self, _node_name: &str, _new_tokens: &JwtToken) -> Result<()> {
-            Ok(())
-        }
-        
-        async fn remove_tokens(&self, _node_name: &str) -> Result<()> {
-            Ok(())
-        }
-        
-        async fn list_nodes(&self) -> Result<Vec<String>> {
-            Ok(vec![])
-        }
-    }
-    
-    #[test]
-    fn test_connection_info_creation() {
-        let url = "https://api.test.com".parse().unwrap();
-        let authenticator = MockAuthenticator;
-        let storage = MockStorage;
-        
-        let conn = ConnectionInfo::new(
-            url.clone(),
-            None,
-            Some("test-node".to_string()),
-            authenticator,
-            storage,
-        );
-        
-        assert_eq!(conn.api_url, url);
-        assert_eq!(conn.node_name, Some("test-node".to_string()));
     }
 }

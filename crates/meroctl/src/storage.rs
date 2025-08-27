@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+
 
 use serde::{Deserialize, Serialize};
 use calimero_client::{ClientStorage, storage::JwtToken as ClientJwtToken};
@@ -107,51 +106,4 @@ impl ClientStorage for FileTokenStorage {
         let config = crate::config::Config::load().await?;
         Ok(config.nodes.keys().cloned().collect())
     }
-}
-
-/// Simple in-memory cache for external connection tokens
-/// These tokens are only kept for the duration of the session
-#[derive(Debug, Default)]
-pub struct SessionTokenCache {
-    tokens: Mutex<HashMap<String, ClientJwtToken>>,
-}
-
-impl SessionTokenCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Store tokens for an external connection (session only)
-    pub async fn store_tokens(&self, url: &str, tokens: &ClientJwtToken) {
-        let key = format!("external_{}", url);
-        if let Ok(mut cache) = self.tokens.lock() {
-            drop(cache.insert(key, tokens.clone()));
-        }
-    }
-
-    /// Get tokens for an external connection
-    pub async fn get_tokens(&self, url: &str) -> Option<ClientJwtToken> {
-        let key = format!("external_{}", url);
-        self.tokens.lock().ok()?.get(&key).cloned()
-    }
-
-    /// Update tokens for an external connection
-    pub async fn update_tokens(&self, url: &str, tokens: &ClientJwtToken) {
-        self.store_tokens(url, tokens).await;
-    }
-
-    /// Clear all cached tokens
-    pub async fn clear_all(&self) {
-        if let Ok(mut cache) = self.tokens.lock() {
-            cache.clear();
-        }
-    }
-}
-
-/// Global session cache instance
-static SESSION_CACHE: OnceLock<Arc<SessionTokenCache>> = OnceLock::new();
-
-/// Get the global session cache instance
-pub fn get_session_cache() -> &'static Arc<SessionTokenCache> {
-    SESSION_CACHE.get_or_init(|| Arc::new(SessionTokenCache::new()))
 }

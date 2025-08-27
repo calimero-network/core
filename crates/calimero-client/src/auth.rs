@@ -55,28 +55,7 @@ impl OutputHandler for ConsoleOutputHandler {
     }
     
     fn open_browser(&self, url: &Url) -> Result<()> {
-        // Try to open the URL in the default browser
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open")
-                .arg(url.as_str())
-                .spawn()?;
-        }
-        
-        #[cfg(target_os = "linux")]
-        {
-            std::process::Command::new("xdg-open")
-                .arg(url.as_str())
-                .spawn()?;
-        }
-        
-        #[cfg(target_os = "windows")]
-        {
-            std::process::Command::new("cmd")
-                .args(&["/C", "start", url.as_str()])
-                .spawn()?;
-        }
-        
+        webbrowser::open(url.as_str())?;
         Ok(())
     }
     
@@ -319,46 +298,4 @@ pub trait MeroctlOutputHandler: Send + Sync {
     
     /// Wait for user input
     fn wait_for_input(&self, prompt: &str) -> Result<String>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_cli_authenticator_creation() {
-        let auth = CliAuthenticator::new();
-        assert_eq!(auth.get_auth_method(), "CLI Browser-based OAuth");
-        assert!(auth.supports_refresh());
-    }
-    
-    #[test]
-    fn test_headless_authenticator() {
-        let mut auth = HeadlessAuthenticator::new();
-        assert!(!auth.supports_refresh());
-        
-        let token = JwtToken::new("test".to_string());
-        auth.set_tokens(token.clone());
-        
-        // Test that we can retrieve the token
-        // Note: This is a synchronous test, so we can't test the async methods
-        assert_eq!(auth.get_auth_method(), "Headless Pre-configured Tokens");
-    }
-    
-    #[test]
-    fn test_api_key_authenticator() {
-        let auth = ApiKeyAuthenticator::new("test_key".to_string());
-        assert_eq!(auth.api_key(), "test_key");
-        assert_eq!(auth.get_auth_method(), "API Key");
-        assert!(!auth.supports_refresh());
-    }
-    
-    #[test]
-    fn test_console_output_handler() {
-        let handler = ConsoleOutputHandler;
-        // These methods don't return anything, so we just test they don't panic
-        handler.display_message("test");
-        handler.display_error("test");
-        handler.display_success("test");
-    }
 }

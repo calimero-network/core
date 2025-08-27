@@ -228,6 +228,11 @@ async fn determine_auth_tokens(
         }));
     }
 
-    // Otherwise, use automatic authentication
+    // For local nodes, bypass authentication (same logic as main prepare_connection)
+    if node_description.contains("local node") {
+        return Ok(None); // No JWT tokens needed for local nodes
+    }
+
+    // Otherwise, use automatic authentication for remote nodes
     check_authentication(url, node_description, output).await
 }

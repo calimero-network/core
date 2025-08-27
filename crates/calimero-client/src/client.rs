@@ -308,8 +308,19 @@ where
     {
         let url = self.base_url()?.join("jsonrpc")?;
 
+        // Debug: Print the request being sent
+        eprintln!("🔍 JSON-RPC Request to {}: {}", url, serde_json::to_string_pretty(&request)?);
+
         let response = self.http_client.post(url).json(&request).send().await?;
+        
+        // Debug: Print the raw response status and headers
+        eprintln!("🔍 JSON-RPC Response Status: {}", response.status());
+        eprintln!("🔍 JSON-RPC Response Headers: {:?}", response.headers());
+        
         let jsonrpc_response: Response = response.json().await?;
+        
+        // Debug: Print the parsed response
+        eprintln!("🔍 JSON-RPC Parsed Response: {}", serde_json::to_string_pretty(&jsonrpc_response)?);
 
         Ok(jsonrpc_response)
     }
@@ -576,15 +587,16 @@ where
     {
         let prefix = "admin-api/alias/create";
         let kind = T::KIND;
-        let scope =
-            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
+        let scope_path = T::scoped(scope.as_ref())
+            .map(|scope| format!("/{}", scope))
+            .unwrap_or_default();
 
         let body = CreateAliasRequest {
             alias,
             value: value.create(),
         };
 
-        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope}"))?;
+        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope_path}"))?;
         let response = self.http_client.post(url).json(&body).send().await?;
         let create_alias_response: CreateAliasResponse = response.json().await?;
 
@@ -601,12 +613,13 @@ where
     {
         let prefix = "admin-api/alias/delete";
         let kind = T::KIND;
-        let scope =
-            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("{}/", scope));
+        let scope_path = T::scoped(scope.as_ref())
+            .map(|scope| format!("/{}", scope))
+            .unwrap_or_default();
 
         let url = self
             .base_url()?
-            .join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
+            .join(&format!("{prefix}/{kind}{scope_path}/{alias}"))?;
         let response = self.http_client.post(url).send().await?;
         let delete_alias_response: DeleteAliasResponse = response.json().await?;
 
@@ -619,10 +632,11 @@ where
     {
         let prefix = "admin-api/alias/list";
         let kind = T::KIND;
-        let scope =
-            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+        let scope_path = T::scoped(scope.as_ref())
+            .map(|scope| format!("/{}", scope))
+            .unwrap_or_default();
 
-        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope}"))?;
+        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope_path}"))?;
         let response = self.http_client.get(url).send().await?;
         let list_aliases_response: ListAliasesResponse<T> = response.json().await?;
 
@@ -639,13 +653,16 @@ where
     {
         let prefix = "admin-api/alias/lookup";
         let kind = T::KIND;
-        let scope =
-            T::scoped(scope.as_ref()).map_or_else(Default::default, |scope| format!("/{}", scope));
+        let scope_path = T::scoped(scope.as_ref())
+            .map(|scope| format!("/{}", scope))
+            .unwrap_or_default();
 
         let url = self
             .base_url()?
-            .join(&format!("{prefix}/{kind}/{scope}{alias}"))?;
+            .join(&format!("{prefix}/{kind}{scope_path}/{alias}"))?;
+        
         let response = self.http_client.post(url).send().await?;
+        
         let list_aliases_response: LookupAliasResponse<T> = response.json().await?;
 
         Ok(list_aliases_response)
