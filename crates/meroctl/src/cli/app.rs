@@ -40,8 +40,6 @@ pub enum AppSubCommands {
     Uninstall(uninstall::UninstallCommand),
 }
 
-
-
 impl AppCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {

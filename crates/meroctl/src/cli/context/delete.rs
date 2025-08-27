@@ -12,8 +12,6 @@ pub struct DeleteCommand {
     pub context: Alias<ContextId>,
 }
 
-
-
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

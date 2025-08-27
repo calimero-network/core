@@ -12,8 +12,6 @@ pub struct UninstallCommand {
     pub app_id: ApplicationId,
 }
 
-
-
 impl UninstallCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

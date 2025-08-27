@@ -7,12 +7,10 @@ pub mod contexts;
 pub mod proposals;
 
 // Re-export common types
+use clap::ValueEnum;
 pub use common::{ErrorLine, InfoLine, WarnLine};
-
 // Re-export types from other modules
 pub use proposals::ProposalDetailsResponse;
-
-use clap::ValueEnum;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]

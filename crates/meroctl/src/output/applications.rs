@@ -1,10 +1,11 @@
+use calimero_primitives::application::Application;
+use calimero_server_primitives::admin::{
+    GetApplicationResponse, InstallApplicationResponse, ListApplicationsResponse,
+    UninstallApplicationResponse,
+};
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;
-use calimero_primitives::application::Application;
-use calimero_server_primitives::admin::{
-    GetApplicationResponse, InstallApplicationResponse, ListApplicationsResponse, UninstallApplicationResponse,
-};
 
 impl Report for Application {
     fn report(&self) {
@@ -47,9 +48,10 @@ impl Report for InstallApplicationResponse {
         let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         let _ = table.set_header(vec![Cell::new("Application Installed").fg(Color::Green)]);
-        let _ = table.add_row(vec![
-            format!("Successfully installed application '{}'", self.data.application_id),
-        ]);
+        let _ = table.add_row(vec![format!(
+            "Successfully installed application '{}'",
+            self.data.application_id
+        )]);
 
         println!("{table}");
     }
@@ -92,9 +94,10 @@ impl Report for UninstallApplicationResponse {
         let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
         let _ = table.set_header(vec![Cell::new("Application Uninstalled").fg(Color::Green)]);
-        let _ = table.add_row(vec![
-            format!("Successfully uninstalled application '{}'", self.data.application_id),
-        ]);
+        let _ = table.add_row(vec![format!(
+            "Successfully uninstalled application '{}'",
+            self.data.application_id
+        )]);
 
         println!("{table}");
     }

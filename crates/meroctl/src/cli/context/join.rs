@@ -21,8 +21,6 @@ pub struct JoinCommand {
     pub identity: Option<Alias<PublicKey>>,
 }
 
-
-
 impl JoinCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?.clone();

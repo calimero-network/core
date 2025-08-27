@@ -8,8 +8,6 @@ use eyre::{OptionExt, Result};
 use super::Capability;
 use crate::cli::Environment;
 
-
-
 #[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Revoke permissions from a member in a context")]
 pub struct RevokePermissionCommand {

@@ -1,8 +1,6 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::hash::Hash;
-use calimero_server_primitives::admin::{
-    InstallApplicationRequest, InstallDevApplicationRequest,
-};
+use calimero_server_primitives::admin::{InstallApplicationRequest, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::{bail, Result};
@@ -33,8 +31,6 @@ pub struct InstallCommand {
     #[clap(long, short = 'w', requires = "path")]
     pub watch: bool,
 }
-
-
 
 impl InstallCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

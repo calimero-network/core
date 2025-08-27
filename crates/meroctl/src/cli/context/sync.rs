@@ -15,8 +15,6 @@ pub struct SyncCommand {
     all: bool,
 }
 
-
-
 impl SyncCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

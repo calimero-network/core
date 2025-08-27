@@ -16,8 +16,6 @@ pub enum GetValues {
     Details,
 }
 
-
-
 impl GetCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

@@ -80,8 +80,6 @@ pub struct ResolveResponse<T> {
     value: Option<ResolveResponseValue<T>>,
 }
 
-
-
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", content = "data")]
 pub enum ResolveResponseValue<T> {
@@ -150,7 +148,8 @@ impl Client {
     }
 
     pub async fn get_application(&self, app_id: &ApplicationId) -> Result<GetApplicationResponse> {
-        let url = self.base_url()?
+        let url = self
+            .base_url()?
             .join(&format!("admin-api/applications/{app_id}"))?;
 
         let response = self.http_client.get(url).send().await?;
@@ -207,7 +206,9 @@ impl Client {
     }
 
     pub async fn delete_blob(&self, blob_id: &BlobId) -> Result<BlobDeleteResponse> {
-        let url = self.base_url()?.join(&format!("admin-api/blobs/{blob_id}"))?;
+        let url = self
+            .base_url()?
+            .join(&format!("admin-api/blobs/{blob_id}"))?;
 
         let response = self.http_client.delete(url).send().await?;
         let delete_response: BlobDeleteResponse = response.json().await?;
@@ -225,7 +226,9 @@ impl Client {
     }
 
     pub async fn get_blob_info(&self, blob_id: &BlobId) -> Result<BlobInfoResponse> {
-        let url = self.base_url()?.join(&format!("admin-api/blobs/{blob_id}"))?;
+        let url = self
+            .base_url()?
+            .join(&format!("admin-api/blobs/{blob_id}"))?;
 
         let response = self.http_client.head(url).send().await?;
         let headers = response.headers();

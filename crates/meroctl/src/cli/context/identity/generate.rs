@@ -7,8 +7,6 @@ use crate::cli::Environment;
 #[command(about = "Generate public/private key pair used for context identity")]
 pub struct GenerateCommand;
 
-
-
 impl GenerateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

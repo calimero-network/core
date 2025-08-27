@@ -26,17 +26,9 @@ impl NearSandboxEnvironment {
     pub async fn init(config: NearProtocolConfig) -> EyreResult<Self> {
         let worker = near_workspaces::sandbox().await?;
 
-        eprintln!(
-            "[DEBUG] Reading context config contract from: {:?}",
-            config.context_config_contract
-        );
         let wasm = read(&config.context_config_contract).await?;
         let context_config_contract = worker.dev_deploy(&wasm).await?;
 
-        eprintln!(
-            "[DEBUG] Reading proxy lib contract from: {:?}",
-            config.proxy_lib_contract
-        );
         let proxy_lib_contract = read(&config.proxy_lib_contract).await?;
         drop(
             context_config_contract
@@ -129,8 +121,9 @@ impl NearSandboxEnvironment {
 
         let result = self
             .mock_external_contract
-            .view(method_name)
+            .call(method_name)
             .args(arguments)
+            .transact()
             .await?;
 
         let result_value: u32 = result

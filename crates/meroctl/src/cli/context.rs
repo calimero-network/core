@@ -65,8 +65,6 @@ pub enum ContextSubCommands {
     Sync(sync::SyncCommand),
 }
 
-
-
 impl ContextCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.subcommand {

@@ -105,10 +105,7 @@ impl Environment {
             None
         };
 
-        Ok(Self {
-            output,
-            client,
-        })
+        Ok(Self { output, client })
     }
 
     pub fn client(&self) -> Result<&Client, CliError> {

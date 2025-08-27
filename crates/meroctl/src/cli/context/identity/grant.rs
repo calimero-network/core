@@ -54,5 +54,3 @@ impl GrantPermissionCommand {
         Ok(())
     }
 }
-
-

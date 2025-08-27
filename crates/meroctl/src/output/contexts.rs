@@ -1,13 +1,13 @@
-
-
-use super::Report;
 use calimero_server_primitives::admin::{
-    CreateContextResponse, DeleteContextResponse, GetContextClientKeysResponse, GetContextIdentitiesResponse,
-    GetContextResponse, GetContextStorageResponse, GetContextUsersResponse, GetContextsResponse,
-    GrantPermissionResponse, InviteToContextResponse, JoinContextResponse, RevokePermissionResponse,
-    SyncContextResponse, UpdateContextApplicationResponse, GenerateContextIdentityResponse, GetPeersCountResponse,
+    CreateContextResponse, DeleteContextResponse, GenerateContextIdentityResponse,
+    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
+    GetContextStorageResponse, GetContextUsersResponse, GetContextsResponse, GetPeersCountResponse,
+    GrantPermissionResponse, InviteToContextResponse, JoinContextResponse,
+    RevokePermissionResponse, SyncContextResponse, UpdateContextApplicationResponse,
 };
 use calimero_server_primitives::jsonrpc::Response;
+
+use super::Report;
 
 // Placeholder implementations - will be filled with working code
 impl Report for CreateContextResponse {

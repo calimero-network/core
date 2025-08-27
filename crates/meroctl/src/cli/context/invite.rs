@@ -33,8 +33,6 @@ pub struct InviteCommand {
     pub name: Option<Alias<PublicKey>>,
 }
 
-
-
 impl InviteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let _ignored = self.invite(environment).await?;

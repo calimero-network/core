@@ -16,8 +16,6 @@ pub const EXAMPLES: &str = r"
 ))]
 pub struct PeersCommand;
 
-
-
 impl PeersCommand {
     pub async fn run(&self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

@@ -7,8 +7,6 @@ use crate::cli::Environment;
 #[command(about = "List installed applications")]
 pub struct ListCommand;
 
-
-
 impl ListCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

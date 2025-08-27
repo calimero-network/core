@@ -60,8 +60,6 @@ fn serde_value(s: &str) -> serde_json::Result<Value> {
     serde_json::from_str(s)
 }
 
-
-
 impl CallCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

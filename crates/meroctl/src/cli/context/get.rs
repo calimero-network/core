@@ -31,16 +31,6 @@ pub enum GetSubcommand {
     Storage,
 }
 
-
-
-
-
-
-
-
-
-
-
 impl GetCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

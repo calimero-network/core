@@ -7,10 +7,6 @@ use eyre::{OptionExt, Result};
 use crate::cli::Environment;
 use crate::output::ProposalDetailsResponse;
 
-
-
-
-
 #[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Manage proposals within a context")]
 pub struct ProposalsCommand {
@@ -53,12 +49,6 @@ pub enum ProposalsSubcommand {
         context: Alias<ContextId>,
     },
 }
-
-
-
-
-
-
 
 impl ProposalsCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

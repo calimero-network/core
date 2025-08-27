@@ -1,7 +1,9 @@
+use calimero_server_primitives::admin::{
+    CreateAliasResponse, DeleteAliasResponse, ListAliasesResponse, LookupAliasResponse,
+};
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;
-use calimero_server_primitives::admin::{CreateAliasResponse, DeleteAliasResponse, ListAliasesResponse, LookupAliasResponse};
 use crate::client::{ResolveResponse, ResolveResponseValue};
 
 impl Report for CreateAliasResponse {

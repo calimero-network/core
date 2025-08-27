@@ -6,7 +6,6 @@ use clap::{Parser, ValueEnum};
 use eyre::{OptionExt, Result, WrapErr};
 
 use crate::cli::Environment;
-
 use crate::output::ErrorLine;
 
 pub mod alias;

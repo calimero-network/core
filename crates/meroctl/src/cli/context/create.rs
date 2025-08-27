@@ -68,8 +68,6 @@ pub struct CreateCommand {
     pub context: Option<Alias<ContextId>>,
 }
 
-
-
 impl CreateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let client = environment.client()?;

@@ -53,8 +53,6 @@ pub struct WatchCommand {
     pub count: Option<usize>,
 }
 
-
-
 #[derive(Serialize, Deserialize, Debug)]
 struct ExecutionOutput<'a> {
     #[serde(borrow)]
@@ -84,8 +82,6 @@ impl Report for Response {
         println!("Received response: {:?}", self);
     }
 }
-
-
 
 impl WatchCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

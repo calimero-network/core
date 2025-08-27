@@ -1,10 +1,9 @@
-
-use serde::Serialize;
-
-use super::Report;
 use calimero_server_primitives::admin::{
     GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
 };
+use serde::Serialize;
+
+use super::Report;
 
 // Define ProposalDetailsResponse locally since it's not exported from the admin module
 #[derive(Debug, Serialize)]
