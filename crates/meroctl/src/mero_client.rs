@@ -26,8 +26,6 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::output::Report;
-
 pub trait UrlFragment: ScopedAlias + AliasKind {
     const KIND: &'static str;
 
@@ -56,7 +54,7 @@ impl UrlFragment for PublicKey {
     }
 
     fn scoped(context: Option<&Self::Scope>) -> Option<&str> {
-        context.map(|s| s.as_str())
+        context.map(calimero_primitives::context::ContextId::as_str)
     }
 }
 
@@ -82,7 +80,7 @@ pub struct ResolveResponse<T> {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", content = "data")]
-enum ResolveResponseValue<T> {
+pub enum ResolveResponseValue<T> {
     Lookup(LookupAliasResponse<T>),
     Parsed(T),
 }
@@ -94,25 +92,20 @@ impl<T> ResolveResponse<T> {
             ResolveResponseValue::Parsed(value) => Some(value),
         }
     }
+
+    pub fn alias(&self) -> &Alias<T> {
+        &self.alias
+    }
+
+    pub fn value_enum(&self) -> Option<&ResolveResponseValue<T>> {
+        self.value.as_ref()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone)]
 pub struct BlobDeleteResponse {
     pub blob_id: BlobId,
     pub deleted: bool,
-}
-
-impl Report for BlobDeleteResponse {
-    fn report(&self) {
-        if self.deleted {
-            println!("Successfully deleted blob '{}'", self.blob_id);
-        } else {
-            println!(
-                "Failed to delete blob '{}' (blob may not exist)",
-                self.blob_id
-            );
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -125,51 +118,9 @@ pub struct BlobListResponseData {
     pub blobs: Vec<BlobInfo>,
 }
 
-impl Report for BlobListResponse {
-    fn report(&self) {
-        if self.data.blobs.is_empty() {
-            println!("No blobs found");
-        } else {
-            let mut table = comfy_table::Table::new();
-            let _ = table.set_header(vec![
-                comfy_table::Cell::new("Blob ID").fg(comfy_table::Color::Blue),
-                comfy_table::Cell::new("Size").fg(comfy_table::Color::Blue),
-            ]);
-            for blob in &self.data.blobs {
-                let _ = table.add_row(vec![
-                    blob.blob_id.to_string(),
-                    format!("{} bytes", blob.size),
-                ]);
-            }
-            println!("{table}");
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobInfoResponse {
     pub data: BlobMetadata,
-}
-
-impl Report for BlobInfoResponse {
-    fn report(&self) {
-        let mut table = comfy_table::Table::new();
-        let _ = table.set_header(vec![
-            comfy_table::Cell::new("Blob ID").fg(comfy_table::Color::Blue),
-            comfy_table::Cell::new("Size (bytes)").fg(comfy_table::Color::Blue),
-            comfy_table::Cell::new("MIME Type").fg(comfy_table::Color::Blue),
-            comfy_table::Cell::new("Hash").fg(comfy_table::Color::Blue),
-        ]);
-
-        let _ = table.add_row(vec![
-            &self.data.blob_id.to_string(),
-            &self.data.size.to_string(),
-            &self.data.mime_type,
-            &hex::encode(self.data.hash),
-        ]);
-
-        println!("{table}");
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -190,7 +141,7 @@ impl MeroClient {
     pub async fn get_application(&self, app_id: &ApplicationId) -> Result<GetApplicationResponse> {
         let url = self
             .base_url
-            .join(&format!("admin-api/applications/{}", app_id))?;
+            .join(&format!("admin-api/applications/{app_id}"))?;
 
         let response = self.http_client.get(url).send().await?;
         let application_response: GetApplicationResponse = response.json().await?;
@@ -237,7 +188,7 @@ impl MeroClient {
     ) -> Result<UninstallApplicationResponse> {
         let url = self
             .base_url
-            .join(&format!("admin-api/applications/{}", app_id))?;
+            .join(&format!("admin-api/applications/{app_id}"))?;
 
         let response = self.http_client.delete(url).send().await?;
         let uninstall_response: UninstallApplicationResponse = response.json().await?;
@@ -246,9 +197,7 @@ impl MeroClient {
     }
 
     pub async fn delete_blob(&self, blob_id: &BlobId) -> Result<BlobDeleteResponse> {
-        let url = self
-            .base_url
-            .join(&format!("admin-api/blobs/{}", blob_id))?;
+        let url = self.base_url.join(&format!("admin-api/blobs/{blob_id}"))?;
 
         let response = self.http_client.delete(url).send().await?;
         let delete_response: BlobDeleteResponse = response.json().await?;
@@ -266,9 +215,7 @@ impl MeroClient {
     }
 
     pub async fn get_blob_info(&self, blob_id: &BlobId) -> Result<BlobInfoResponse> {
-        let url = self
-            .base_url
-            .join(&format!("admin-api/blobs/{}", blob_id))?;
+        let url = self.base_url.join(&format!("admin-api/blobs/{blob_id}"))?;
 
         let response = self.http_client.head(url).send().await?;
         let headers = response.headers();
@@ -390,7 +337,7 @@ impl MeroClient {
     ) -> Result<UpdateContextApplicationResponse> {
         let url = self
             .base_url
-            .join(&format!("admin-api/contexts/{}/application", context_id))?;
+            .join(&format!("admin-api/contexts/{context_id}/application"))?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
         let update_response: UpdateContextApplicationResponse = response.json().await?;
@@ -437,7 +384,7 @@ impl MeroClient {
     ) -> Result<GetProposalsResponse> {
         let url = self
             .base_url
-            .join(&format!("admin-api/contexts/{}/proposals", context_id))?;
+            .join(&format!("admin-api/contexts/{context_id}/proposals"))?;
 
         let response = self.http_client.post(url).json(&args).send().await?;
         let proposals_response: GetProposalsResponse = response.json().await?;
@@ -457,7 +404,7 @@ impl MeroClient {
     pub async fn sync_context(&self, context_id: &ContextId) -> Result<SyncContextResponse> {
         let url = self
             .base_url
-            .join(&format!("admin-api/contexts/sync/{}", context_id))?;
+            .join(&format!("admin-api/contexts/sync/{context_id}"))?;
 
         let response = self.http_client.post(url).json(&()).send().await?;
         let sync_response: SyncContextResponse = response.json().await?;
@@ -693,7 +640,7 @@ impl MeroClient {
     where
         T: UrlFragment + FromStr + DeserializeOwned,
     {
-        let value = self.lookup_alias(alias.clone(), scope).await?;
+        let value = self.lookup_alias(alias, scope).await?;
 
         if value.data.value.is_some() {
             return Ok(ResolveResponse {
@@ -709,92 +656,5 @@ impl MeroClient {
             .map(ResolveResponseValue::Parsed);
 
         Ok(ResolveResponse { alias, value })
-    }
-}
-
-// Report implementations for alias responses
-impl Report for CreateAliasResponse {
-    fn report(&self) {
-        let mut table = comfy_table::Table::new();
-        let _ = table.set_header(vec![
-            comfy_table::Cell::new("Alias Created").fg(comfy_table::Color::Green)
-        ]);
-        let _ = table.add_row(vec!["Successfully created alias"]);
-        println!("{table}");
-    }
-}
-
-impl Report for DeleteAliasResponse {
-    fn report(&self) {
-        let mut table = comfy_table::Table::new();
-        let _ = table.set_header(vec![
-            comfy_table::Cell::new("Alias Deleted").fg(comfy_table::Color::Green)
-        ]);
-        let _ = table.add_row(vec!["Successfully deleted alias"]);
-        println!("{table}");
-    }
-}
-
-impl<T: std::fmt::Display> Report for ListAliasesResponse<T> {
-    fn report(&self) -> () {
-        let mut table = comfy_table::Table::new();
-        let _ = table.set_header(vec![
-            comfy_table::Cell::new("Value").fg(comfy_table::Color::Blue),
-            comfy_table::Cell::new("Alias").fg(comfy_table::Color::Blue),
-        ]);
-
-        for (alias, value) in &self.data {
-            let _ = table.add_row(vec![
-                comfy_table::Cell::new(&value.to_string()),
-                comfy_table::Cell::new(alias.as_str()),
-            ]);
-        }
-
-        println!("{table}");
-    }
-}
-
-impl<T: std::fmt::Display> Report for LookupAliasResponse<T> {
-    fn report(&self) {
-        let mut table = comfy_table::Table::new();
-        let _ = table.set_header(vec![
-            comfy_table::Cell::new("Alias Lookup").fg(comfy_table::Color::Blue)
-        ]);
-
-        match &self.data.value {
-            Some(value) => {
-                let _ = table.add_row(vec!["Status", "Found"]);
-                let _ = table.add_row(vec!["Value", &value.to_string()]);
-            }
-            None => {
-                let _ = table.add_row(vec!["Status", "Not Found"]);
-            }
-        };
-        println!("{table}");
-    }
-}
-
-impl<T: std::fmt::Display> Report for ResolveResponse<T> {
-    fn report(&self) {
-        let mut table = comfy_table::Table::new();
-        let _ = table.set_header(vec![
-            comfy_table::Cell::new("Alias Resolution").fg(comfy_table::Color::Blue)
-        ]);
-        let _ = table.add_row(vec!["Alias", self.alias.as_str()]);
-
-        match &self.value {
-            Some(ResolveResponseValue::Lookup(value)) => {
-                let _ = table.add_row(vec!["Type", "Lookup"]);
-                value.report();
-            }
-            Some(ResolveResponseValue::Parsed(value)) => {
-                let _ = table.add_row(vec!["Type", "Direct"]);
-                let _ = table.add_row(vec!["Value", &value.to_string()]);
-            }
-            None => {
-                let _ = table.add_row(vec!["Status", "Not Resolved"]);
-            }
-        };
-        println!("{table}");
     }
 }
