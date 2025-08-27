@@ -9,25 +9,6 @@ services:
       /bin/sh -c "mkdir -p /calimero/data /calimero/logic /calimero/credentials/node1 /calimero/credentials/node2 /calimero/credentials/node3 &&
                   chmod -R 777 /calimero"
 
-  # WASM File Setup Service
-  setup_wasm:
-    image: debian:bookworm-slim
-    user: root
-    volumes:
-      - ${WASM_FILE_PATH}:/source.wasm
-      - calimero_auth_node:/calimero
-    command: >
-      /bin/sh -c "
-        echo 'Setting up WASM file...' &&
-        mkdir -p /calimero/logic &&
-        cp /source.wasm /calimero/logic/app.wasm &&
-        echo 'WASM file copied to /calimero/logic/app.wasm'
-      "
-    depends_on:
-      init_volume:
-        condition: service_completed_successfully
-
-
   # Context Coordinator Service (for setting up contexts and applications)
   coordinator:
     build:
@@ -40,15 +21,18 @@ services:
     entrypoint: /bin/sh
     volumes:
       - calimero_auth_node:/calimero
+      - ${WASM_FILE_PATH}:/source.wasm
     networks:
       - web
       - internal
     environment:
       - CONTEXT_RECREATE=${CONTEXT_RECREATE:-false}
-      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-node3}
+      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-complete}
       - NODE1_URL=${NODE1_URL:-http://node1:2528}
       - NODE2_URL=${NODE2_URL:-http://node2:2529} 
       - NODE3_URL=${NODE3_URL:-http://node3:2530}
+      - WASM_FILE_PATH=${WASM_FILE_PATH:-}
+      - FRONTEND_SOURCE_PATH=${FRONTEND_SOURCE_PATH:-}
     command: >
       -c '
         echo "=== Calimero Context Coordinator ===" &&
@@ -57,8 +41,22 @@ services:
         echo "Context recreate: $CONTEXT_RECREATE" &&
         echo "" &&
         
-        # Wait for nodes to be ready
-        echo "Waiting for nodes to be ready..." &&
+        # Validate required paths
+        if [ -z "$WASM_FILE_PATH" ]; then
+          echo "❌ ERROR: WASM_FILE_PATH environment variable is required" &&
+          echo "   Example: WASM_FILE_PATH=/path/to/your/app.wasm" &&
+          exit 1
+        fi &&
+        
+        if [ -z "$FRONTEND_SOURCE_PATH" ]; then
+          echo "❌ ERROR: FRONTEND_SOURCE_PATH environment variable is required" &&
+          echo "   Example: FRONTEND_SOURCE_PATH=/path/to/your/frontend" &&
+          exit 1
+        fi &&
+       
+        # Setup WASM file
+        echo "Setting up WASM file..." &&
+        cp /source.wasm /calimero/logic/app.wasm &&
         
         # Check if context info already exists and CONTEXT_RECREATE is not set to true
         if [ -f /calimero/context_info.json ] && [ "$CONTEXT_RECREATE" != "true" ]; then
@@ -208,8 +206,6 @@ services:
     depends_on:
       init_volume:
         condition: service_completed_successfully
-      setup_wasm:
-        condition: service_completed_successfully
 
 
   # Frontend Service for Node1
@@ -298,15 +294,15 @@ services:
 
 networks:
   web:
-    external: true
+    driver: bridge
     name: ${COMPOSE_PROJECT_NAME:-calimero}_web
   internal:
-    external: true
+    internal: true
     name: ${COMPOSE_PROJECT_NAME:-calimero}_internal
 
 volumes:
   calimero_auth_node:
-    external: true
+    driver: local
     name: ${COMPOSE_PROJECT_NAME:-calimero}_calimero_auth_node
   cargo-cache:
     driver: local
