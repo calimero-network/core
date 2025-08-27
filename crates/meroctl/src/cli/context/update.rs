@@ -66,16 +66,16 @@ pub struct UpdateCommand {
 
 impl UpdateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let context_id = mero_client
+        let context_id = client
             .resolve_alias(self.context, None)
             .await?
             .value()
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let executor_id = mero_client
+        let executor_id = client
             .resolve_alias(self.executor, Some(context_id))
             .await?
             .value()
@@ -91,7 +91,7 @@ impl UpdateCommand {
                 ..
             } => {
                 let request = UpdateContextApplicationRequest::new(application_id, executor_id);
-                let _response = mero_client
+                let _response = client
                     .update_context_application(&context_id, request)
                     .await?;
                 environment.output.write(&_response);
@@ -104,7 +104,7 @@ impl UpdateCommand {
             } => {
                 let metadata = metadata.map(String::into_bytes);
 
-                let application_id = mero_client
+                let application_id = client
                     .install_dev_application(InstallDevApplicationRequest::new(
                         path.clone(),
                         metadata.clone().unwrap_or_default(),
@@ -114,7 +114,7 @@ impl UpdateCommand {
                     .application_id;
 
                 let request = UpdateContextApplicationRequest::new(application_id, executor_id);
-                let _response = mero_client
+                let _response = client
                     .update_context_application(&context_id, request)
                     .await?;
                 environment.output.write(&_response);
@@ -184,8 +184,8 @@ async fn watch_app_and_update_context(
             | EventKind::Other => continue,
         }
 
-        let mero_client = environment.mero_client()?;
-        let application_id = mero_client
+        let client = environment.client()?;
+        let application_id = client
             .install_dev_application(InstallDevApplicationRequest::new(
                 path.clone(),
                 metadata.clone().unwrap_or_default(),
@@ -194,9 +194,9 @@ async fn watch_app_and_update_context(
             .data
             .application_id;
 
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
         let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
-        let response = mero_client
+        let response = client
             .update_context_application(&context_id, request)
             .await?;
         environment.output.write(&response);

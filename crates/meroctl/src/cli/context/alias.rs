@@ -51,7 +51,7 @@ impl ContextAliasCommand {
                 context_id,
                 force,
             } => {
-                let client = environment.mero_client()?.clone();
+                let client = environment.client()?.clone();
                 if !context_exists(&client, &context_id).await? {
                     environment.output.write(&ErrorLine(&format!(
                         "Context with ID '{}' does not exist",
@@ -96,19 +96,19 @@ impl ContextAliasCommand {
             }
 
             ContextAliasSubcommand::Remove { alias } => {
-                let client = environment.mero_client()?.clone();
+                let client = environment.client()?.clone();
                 let res = client.delete_alias(alias, None).await?;
 
                 environment.output.write(&res);
             }
             ContextAliasSubcommand::Get { alias } => {
-                let client = environment.mero_client()?.clone();
+                let client = environment.client()?.clone();
                 let res = client.lookup_alias(alias, None).await?;
 
                 environment.output.write(&res);
             }
             ContextAliasSubcommand::List => {
-                let client = environment.mero_client()?.clone();
+                let client = environment.client()?.clone();
                 let res = client.list_aliases::<ContextId>(None).await?;
 
                 environment.output.write(&res);
@@ -132,7 +132,7 @@ pub struct UseCommand {
 
 impl UseCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let client = environment.mero_client()?.clone();
+        let client = environment.client()?.clone();
 
         let default_alias: Alias<ContextId> = "default"
             .parse()

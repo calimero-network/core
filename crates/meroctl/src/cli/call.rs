@@ -90,15 +90,15 @@ impl Report for Response {
 
 impl CallCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let resolve_response = mero_client.resolve_alias(self.context, None).await?;
+        let resolve_response = client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let executor = mero_client
+        let executor = client
             .resolve_alias(self.executor, Some(context_id))
             .await?
             .value()
@@ -119,7 +119,7 @@ impl CallCommand {
             payload,
         );
 
-        let response = mero_client.execute_jsonrpc(request).await?;
+        let response = client.execute_jsonrpc(request).await?;
         environment.output.write(&response);
 
         Ok(())

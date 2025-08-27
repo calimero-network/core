@@ -97,13 +97,13 @@ impl Report for ExecutionOutput<'_> {
 
 impl WatchCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let (mero_client, api_url) = {
+        let (client, api_url) = {
             let api_url = environment.connection()?.api_url.clone();
-            let mero_client = environment.mero_client()?;
-            (mero_client, api_url)
+            let client = environment.client()?;
+            (client, api_url)
         };
 
-        let resolve_response = mero_client.resolve_alias(self.context, None).await?;
+        let resolve_response = client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
             .copied()

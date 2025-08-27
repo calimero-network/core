@@ -13,9 +13,9 @@ pub struct DeleteCommand {
 
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let response = mero_client.delete_blob(&self.blob_id).await?;
+        let response = client.delete_blob(&self.blob_id).await?;
 
         environment.output.write(&response);
 

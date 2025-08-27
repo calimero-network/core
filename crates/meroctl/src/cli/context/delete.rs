@@ -32,16 +32,16 @@ impl Report for DeleteContextResponse {
 
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let context_id = mero_client
+        let context_id = client
             .resolve_alias(self.context, None)
             .await?
             .value()
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let response = mero_client.delete_context(&context_id).await?;
+        let response = client.delete_context(&context_id).await?;
 
         environment.output.write(&response);
 

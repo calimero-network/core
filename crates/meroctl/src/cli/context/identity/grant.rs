@@ -31,16 +31,16 @@ pub struct GrantPermissionCommand {
 
 impl GrantPermissionCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let context_id = mero_client
+        let context_id = client
             .resolve_alias(self.context, None)
             .await?
             .value()
             .copied()
             .ok_or_eyre("unable to resolve context")?;
 
-        let grantee_id = mero_client
+        let grantee_id = client
             .resolve_alias(self.grantee, Some(context_id))
             .await?
             .value()
@@ -50,7 +50,7 @@ impl GrantPermissionCommand {
         let request: Vec<(PublicKey, ConfigCapability)> =
             vec![(grantee_id, self.capability.into())];
 
-        let response = mero_client.grant_permissions(&context_id, request).await?;
+        let response = client.grant_permissions(&context_id, request).await?;
 
         environment.output.write(&response);
         Ok(())

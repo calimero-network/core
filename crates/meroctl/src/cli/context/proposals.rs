@@ -160,9 +160,9 @@ impl ProposalsCommand {
                 offset,
                 limit,
             } => {
-                let mero_client = environment.mero_client()?;
+                let client = environment.client()?;
 
-                let context_id = mero_client
+                let context_id = client
                     .resolve_alias(context, None)
                     .await?
                     .value()
@@ -173,24 +173,24 @@ impl ProposalsCommand {
                     "offset": offset,
                     "limit": limit
                 });
-                let response = mero_client.list_proposals(&context_id, args).await?;
+                let response = client.list_proposals(&context_id, args).await?;
                 environment.output.write(&response);
             }
             ProposalsSubcommand::View {
                 proposal_id,
                 context,
             } => {
-                let mero_client = environment.mero_client()?;
+                let client = environment.client()?;
 
-                let context_id = mero_client
+                let context_id = client
                     .resolve_alias(context, None)
                     .await?
                     .value()
                     .copied()
                     .ok_or_eyre("unable to resolve")?;
 
-                let proposal = mero_client.get_proposal(&context_id, &proposal_id).await?;
-                let approvers = mero_client
+                let proposal = client.get_proposal(&context_id, &proposal_id).await?;
+                let approvers = client
                     .get_proposal_approvers(&context_id, &proposal_id)
                     .await?;
 

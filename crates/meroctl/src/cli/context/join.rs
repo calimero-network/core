@@ -44,7 +44,7 @@ impl Report for JoinContextResponse {
 impl JoinCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
         let _connection = environment.connection()?;
-        let client = environment.mero_client()?.clone();
+        let client = environment.client()?.clone();
 
         let request = JoinContextRequest::new(self.invitation_payload);
         let response = client.join_context(request).await?;

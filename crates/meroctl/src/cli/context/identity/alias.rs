@@ -64,7 +64,7 @@ pub enum ContextIdentityAliasSubcommand {
 
 impl ContextIdentityAliasCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let client = environment.mero_client()?.clone();
+        let client = environment.client()?.clone();
 
         // Extract context and resolve it to context_id
         let context_id = match &self.command {

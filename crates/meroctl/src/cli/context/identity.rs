@@ -84,7 +84,7 @@ impl ContextIdentityCommand {
                 context,
                 force,
             } => {
-                let client = environment.mero_client()?.clone();
+                let client = environment.client()?.clone();
                 let resolve_response = client.resolve_alias(context, None).await?;
 
                 let context_id = resolve_response
@@ -142,7 +142,7 @@ async fn list_identities(
     context: Option<Alias<ContextId>>,
     owned: bool,
 ) -> Result<()> {
-    let client = environment.mero_client()?.clone();
+    let client = environment.client()?.clone();
     let resolve_response = client
         .resolve_alias(
             context.unwrap_or_else(|| "default".parse().expect("valid alias")),
@@ -161,10 +161,8 @@ async fn list_identities(
         }
     };
 
-    let mero_client = environment.mero_client()?;
-    let response = mero_client
-        .get_context_identities(&context_id, owned)
-        .await?;
+    let client = environment.client()?;
+    let response = client.get_context_identities(&context_id, owned).await?;
 
     environment.output.write(&response);
     Ok(())

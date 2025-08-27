@@ -13,9 +13,9 @@ pub struct InfoCommand {
 
 impl InfoCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let blob_info = mero_client.get_blob_info(&self.blob_id).await?;
+        let blob_info = client.get_blob_info(&self.blob_id).await?;
 
         environment.output.write(&blob_info);
 

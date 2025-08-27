@@ -69,7 +69,7 @@ impl InviteCommand {
     }
 
     pub async fn invite(&self, environment: &mut Environment) -> Result<ContextInvitationPayload> {
-        let client = environment.mero_client()?.clone();
+        let client = environment.client()?.clone();
 
         let context_id = client
             .resolve_alias(self.context, None)

@@ -27,19 +27,19 @@ impl Report for SyncContextResponse {
 
 impl SyncCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
         let response = if self.all {
-            mero_client.sync_all_contexts().await?
+            client.sync_all_contexts().await?
         } else {
-            let context_id = mero_client
+            let context_id = client
                 .resolve_alias(self.context, None)
                 .await?
                 .value()
                 .copied()
                 .ok_or_eyre("unable to resolve")?;
 
-            mero_client.sync_context(&context_id).await?
+            client.sync_context(&context_id).await?
         };
 
         environment.output.write(&response);

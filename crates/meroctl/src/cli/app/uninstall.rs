@@ -29,9 +29,9 @@ impl Report for UninstallApplicationResponse {
 
 impl UninstallCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let response = mero_client.uninstall_application(&self.app_id).await?;
+        let response = client.uninstall_application(&self.app_id).await?;
 
         environment.output.write(&response);
 

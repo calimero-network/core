@@ -95,7 +95,7 @@ pub struct RootArgs {
 pub struct Environment {
     pub output: Output,
     connection: Option<ConnectionInfo>,
-    mero_client: Option<Client>,
+    client: Option<Client>,
 }
 
 impl Environment {
@@ -103,7 +103,7 @@ impl Environment {
         Self {
             output,
             connection,
-            mero_client: None,
+            client: None,
         }
     }
 
@@ -113,13 +113,13 @@ impl Environment {
         )))
     }
 
-    pub fn mero_client(&mut self) -> Result<&Client, CliError> {
-        if self.mero_client.is_none() {
+    pub fn client(&mut self) -> Result<&Client, CliError> {
+        if self.client.is_none() {
             let connection = self.connection()?;
-            let mero_client = Client::new(connection.api_url.to_string())?;
-            self.mero_client = Some(mero_client);
+            let client = Client::new(connection.api_url.to_string())?;
+            self.client = Some(client);
         }
-        self.mero_client
+        self.client
             .as_ref()
             .ok_or_else(|| CliError::Other(eyre::eyre!("Failed to create mero client")))
     }

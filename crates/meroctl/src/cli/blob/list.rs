@@ -9,9 +9,9 @@ pub struct ListCommand;
 
 impl ListCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let response = mero_client.list_blobs().await?;
+        let response = client.list_blobs().await?;
 
         environment.output.write(&response);
 

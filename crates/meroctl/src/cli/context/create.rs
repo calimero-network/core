@@ -93,7 +93,7 @@ impl Report for UpdateContextApplicationResponse {
 
 impl CreateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let client = environment.mero_client()?;
+        let client = environment.client()?;
         let client_clone = client.clone();
 
         match self {
@@ -131,8 +131,8 @@ impl CreateCommand {
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
-                let mero_client = environment.mero_client()?;
-                let application_id = mero_client
+                let client = environment.client()?;
+                let application_id = client
                     .install_dev_application(InstallDevApplicationRequest::new(
                         path.clone(),
                         metadata.clone().unwrap_or_default(),
@@ -267,8 +267,8 @@ async fn watch_app_and_update_context(
             | EventKind::Other => continue,
         }
 
-        let mero_client = environment.mero_client()?;
-        let application_id = mero_client
+        let client = environment.client()?;
+        let application_id = client
             .install_dev_application(InstallDevApplicationRequest::new(
                 path.clone(),
                 metadata.clone().unwrap_or_default(),

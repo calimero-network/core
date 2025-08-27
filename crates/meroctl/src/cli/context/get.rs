@@ -106,9 +106,9 @@ impl Report for GetContextIdentitiesResponse {
 
 impl GetCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let mero_client = environment.mero_client()?;
+        let client = environment.client()?;
 
-        let resolve_response = mero_client.resolve_alias(self.context, None).await?;
+        let resolve_response = client.resolve_alias(self.context, None).await?;
         let context_id = resolve_response
             .value()
             .copied()
@@ -116,15 +116,15 @@ impl GetCommand {
 
         match self.command {
             GetSubcommand::Info => {
-                let response = mero_client.get_context(&context_id).await?;
+                let response = client.get_context(&context_id).await?;
                 environment.output.write(&response);
             }
             GetSubcommand::ClientKeys => {
-                let response = mero_client.get_context_client_keys(&context_id).await?;
+                let response = client.get_context_client_keys(&context_id).await?;
                 environment.output.write(&response);
             }
             GetSubcommand::Storage => {
-                let response = mero_client.get_context_storage(&context_id).await?;
+                let response = client.get_context_storage(&context_id).await?;
                 environment.output.write(&response);
             }
         }
