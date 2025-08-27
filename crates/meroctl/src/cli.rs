@@ -10,6 +10,7 @@ use serde::{Serialize, Serializer};
 use thiserror::Error as ThisError;
 use url::Url;
 
+use crate::client::Client;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
@@ -90,21 +91,27 @@ pub struct RootArgs {
     pub output_format: Format,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Environment {
     pub output: Output,
-    connection: Option<ConnectionInfo>,
+    client: Option<Client>,
 }
 
 impl Environment {
-    pub const fn new(output: Output, connection: Option<ConnectionInfo>) -> Self {
-        Self { output, connection }
+    pub fn new(output: Output, connection: Option<ConnectionInfo>) -> Result<Self, CliError> {
+        let client = if let Some(conn) = connection {
+            Some(Client::new(conn)?)
+        } else {
+            None
+        };
+
+        Ok(Self { output, client })
     }
 
-    pub fn connection(&self) -> Result<&ConnectionInfo, CliError> {
-        self.connection.as_ref().ok_or(CliError::Other(eyre::eyre!(
-            "Unable to create a connection."
-        )))
+    pub fn client(&self) -> Result<&Client, CliError> {
+        self.client
+            .as_ref()
+            .ok_or_else(|| CliError::Other(eyre::eyre!("Unable to create a connection.")))
     }
 }
 
@@ -124,14 +131,14 @@ impl RootCommand {
             None
         };
 
-        let environment = Environment::new(output, connection);
+        let mut environment = Environment::new(output, connection)?;
 
         let result = match self.action {
-            SubCommands::App(application) => application.run(&environment).await,
-            SubCommands::Blob(blob) => blob.run(&environment).await,
-            SubCommands::Context(context) => context.run(&environment).await,
-            SubCommands::Call(call) => call.run(&environment).await,
-            SubCommands::Peers(peers) => peers.run(&environment).await,
+            SubCommands::App(application) => application.run(&mut environment).await,
+            SubCommands::Blob(blob) => blob.run(&mut environment).await,
+            SubCommands::Context(context) => context.run(&mut environment).await,
+            SubCommands::Call(call) => call.run(&mut environment).await,
+            SubCommands::Peers(peers) => peers.run(&mut environment).await,
             SubCommands::Node(node) => node.run(&environment).await,
         };
 

@@ -3,9 +3,7 @@ use calimero_primitives::context::ContextId;
 use clap::Parser;
 use eyre::{eyre, OptionExt, Result, WrapErr};
 
-use crate::cli::{ApiError, Environment};
-use crate::common::{create_alias, delete_alias, list_aliases, lookup_alias, resolve_alias};
-use crate::connection::ConnectionInfo;
+use crate::cli::Environment;
 use crate::output::{ErrorLine, WarnLine};
 
 #[derive(Copy, Clone, Debug, Parser)]
@@ -46,16 +44,15 @@ pub enum ContextAliasSubcommand {
 }
 
 impl ContextAliasCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
-
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
         match self.command {
             ContextAliasSubcommand::Add {
                 alias,
                 context_id,
                 force,
             } => {
-                if !context_exists(connection, &context_id).await? {
+                let client = environment.client()?.clone();
+                if !context_exists(&client, &context_id).await? {
                     environment.output.write(&ErrorLine(&format!(
                         "Context with ID '{}' does not exist",
                         context_id
@@ -63,7 +60,7 @@ impl ContextAliasCommand {
                     return Ok(());
                 }
 
-                let lookup_result = lookup_alias(connection, alias, None).await?;
+                let lookup_result = client.lookup_alias(alias, None).await?;
                 if let Some(existing_context) = lookup_result.data.value {
                     if existing_context == context_id {
                         environment.output.write(&WarnLine(&format!(
@@ -82,29 +79,37 @@ impl ContextAliasCommand {
                         "Overwriting existing alias '{alias}' from '{existing_context}' to '{context_id}'"
                     )));
 
-                    let _ignored = delete_alias(connection, alias, None)
-                        .await
-                        .wrap_err("Failed to delete existing alias")?;
+                    // Drop client reference to avoid double borrow
+                    {
+                        let _ignored = client
+                            .delete_alias(alias, None)
+                            .await
+                            .wrap_err("Failed to delete existing alias")?;
+                    }
                 }
 
-                let res = create_alias(connection, alias, None, context_id)
+                let res = client
+                    .create_alias_generic(alias, None, context_id)
                     .await
                     .map_err(|e| eyre!("Failed to create alias: {}", e))?;
                 environment.output.write(&res);
             }
 
             ContextAliasSubcommand::Remove { alias } => {
-                let res = delete_alias(connection, alias, None).await?;
+                let client = environment.client()?.clone();
+                let res = client.delete_alias(alias, None).await?;
 
                 environment.output.write(&res);
             }
             ContextAliasSubcommand::Get { alias } => {
-                let res = lookup_alias(connection, alias, None).await?;
+                let client = environment.client()?.clone();
+                let res = client.lookup_alias(alias, None).await?;
 
                 environment.output.write(&res);
             }
             ContextAliasSubcommand::List => {
-                let res = list_aliases::<ContextId>(connection, None).await?;
+                let client = environment.client()?.clone();
+                let res = client.list_aliases::<ContextId>(None).await?;
 
                 environment.output.write(&res);
             }
@@ -126,14 +131,15 @@ pub struct UseCommand {
 }
 
 impl UseCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?.clone();
 
         let default_alias: Alias<ContextId> = "default"
             .parse()
             .wrap_err("Failed to parse 'default' as a valid alias name")?;
 
-        let resolve_response = resolve_alias(connection, self.context, None)
+        let resolve_response = client
+            .resolve_alias(self.context, None)
             .await
             .wrap_err("Failed to resolve context")?;
 
@@ -142,7 +148,7 @@ impl UseCommand {
             .cloned()
             .ok_or_eyre("Failed to resolve context: no value found")?;
 
-        let lookup_result = lookup_alias(connection, default_alias, None).await?;
+        let lookup_result = client.lookup_alias(default_alias, None).await?;
         if let Some(existing_context) = lookup_result.data.value {
             if existing_context == context_id {
                 environment.output.write(&WarnLine(&format!(
@@ -161,12 +167,14 @@ impl UseCommand {
             environment.output.write(&WarnLine(&format!(
                 "Overwriting existing default alias from '{existing_context}' to '{context_id}'"
             )));
-            let _ignored = delete_alias(connection, default_alias, None)
+            let _ignored = client
+                .delete_alias(default_alias, None)
                 .await
                 .wrap_err("Failed to delete existing default alias")?;
         }
 
-        let res = create_alias(connection, default_alias, None, context_id)
+        let res = client
+            .create_alias_generic(default_alias, None, context_id)
             .await
             .wrap_err("Failed to set default context")?;
 
@@ -176,20 +184,11 @@ impl UseCommand {
     }
 }
 
-async fn context_exists(connection: &ConnectionInfo, target_id: &ContextId) -> Result<bool> {
-    let result = connection
-        .get::<serde_json::Value>(&format!("admin-api/contexts/{}", target_id))
-        .await;
+async fn context_exists(client: &crate::client::Client, target_id: &ContextId) -> Result<bool> {
+    let result = client.get_context(target_id).await;
 
     match result {
         Ok(_) => Ok(true),
-        Err(err) => {
-            if let Some(api_error) = err.downcast_ref::<ApiError>() {
-                if api_error.status_code == 404 {
-                    return Ok(false);
-                }
-            }
-            Err(err)
-        }
+        Err(_) => Ok(false),
     }
 }

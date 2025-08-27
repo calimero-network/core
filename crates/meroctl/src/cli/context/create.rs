@@ -5,13 +5,11 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
     CreateAliasRequest, CreateAliasResponse, CreateContextIdentityAlias, CreateContextRequest,
-    CreateContextResponse, GetApplicationResponse, InstallApplicationResponse,
-    InstallDevApplicationRequest, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    CreateContextResponse, GetApplicationResponse, InstallDevApplicationRequest,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -19,9 +17,8 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::Environment;
-use crate::common::create_alias;
-use crate::connection::ConnectionInfo;
-use crate::output::{ErrorLine, InfoLine, Report};
+use crate::client::Client;
+use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Create a new context")]
@@ -71,31 +68,10 @@ pub struct CreateCommand {
     pub context: Option<Alias<ContextId>>,
 }
 
-impl Report for CreateContextResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Context Created").fg(Color::Green)]);
-        let _ = table.add_row(vec![format!("Context ID: {}", self.data.context_id)]);
-        let _ = table.add_row(vec![format!(
-            "Member Public Key: {}",
-            self.data.member_public_key
-        )]);
-        println!("{table}");
-    }
-}
-
-impl Report for UpdateContextApplicationResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Context Updated").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Application successfully updated"]);
-        println!("{table}");
-    }
-}
-
 impl CreateCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?;
+        let client_clone = client.clone();
 
         match self {
             Self {
@@ -110,7 +86,7 @@ impl CreateCommand {
             } => {
                 let _ = create_context(
                     environment,
-                    connection,
+                    &client_clone,
                     context_seed,
                     app_id,
                     params,
@@ -132,12 +108,19 @@ impl CreateCommand {
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
-                let application_id =
-                    install_app(environment, connection, path.clone(), metadata.clone()).await?;
+                let client = environment.client()?;
+                let application_id = client
+                    .install_dev_application(InstallDevApplicationRequest::new(
+                        path.clone(),
+                        metadata.clone().unwrap_or_default(),
+                    ))
+                    .await?
+                    .data
+                    .application_id;
 
                 let (context_id, member_public_key) = create_context(
                     environment,
-                    connection,
+                    &client_clone,
                     context_seed,
                     application_id,
                     params,
@@ -149,7 +132,7 @@ impl CreateCommand {
 
                 watch_app_and_update_context(
                     environment,
-                    connection,
+                    &client_clone,
                     context_id,
                     path,
                     metadata,
@@ -165,8 +148,8 @@ impl CreateCommand {
 }
 
 pub async fn create_context(
-    environment: &Environment,
-    connection: &ConnectionInfo,
+    environment: &mut Environment,
+    client: &Client,
     context_seed: Option<Hash>,
     application_id: ApplicationId,
     params: Option<String>,
@@ -174,7 +157,9 @@ pub async fn create_context(
     identity: Option<Alias<PublicKey>>,
     context: Option<Alias<ContextId>>,
 ) -> Result<(ContextId, PublicKey)> {
-    if !app_installed(connection, &application_id).await? {
+    let response: GetApplicationResponse = client.get_application(&application_id).await?;
+
+    if !response.data.application.is_some() {
         bail!("Application is not installed on node.")
     }
 
@@ -185,7 +170,7 @@ pub async fn create_context(
         params.map(String::into_bytes).unwrap_or_default(),
     );
 
-    let response: CreateContextResponse = connection.post("admin-api/contexts", request).await?;
+    let response: CreateContextResponse = client.create_context(request).await?;
 
     environment.output.write(&response);
 
@@ -197,28 +182,24 @@ pub async fn create_context(
             },
         };
 
-        let alias_response: CreateAliasResponse = connection
-            .post(
-                &format!(
-                    "admin-api/alias/create/identity/{}",
-                    response.data.context_id
-                ),
-                alias_request,
-            )
+        let alias_response: CreateAliasResponse = client
+            .create_context_identity_alias(&response.data.context_id, alias_request)
             .await?;
 
         environment.output.write(&alias_response);
     }
     if let Some(context_alias) = context {
-        let res = create_alias(connection, context_alias, None, response.data.context_id).await?;
+        let res = client
+            .create_alias(context_alias, Some(response.data.context_id))
+            .await?;
         environment.output.write(&res);
     }
     Ok((response.data.context_id, response.data.member_public_key))
 }
 
 async fn watch_app_and_update_context(
-    environment: &Environment,
-    connection: &ConnectionInfo,
+    environment: &mut Environment,
+    _client: &Client,
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
@@ -263,67 +244,22 @@ async fn watch_app_and_update_context(
             | EventKind::Other => continue,
         }
 
-        let application_id =
-            install_app(environment, connection, path.clone(), metadata.clone()).await?;
+        let client = environment.client()?;
+        let application_id = client
+            .install_dev_application(InstallDevApplicationRequest::new(
+                path.clone(),
+                metadata.clone().unwrap_or_default(),
+            ))
+            .await?
+            .data
+            .application_id;
 
-        update_context_application(
-            environment,
-            connection,
-            context_id,
-            application_id,
-            member_public_key,
-        )
-        .await?;
+        let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
+        let response: UpdateContextApplicationResponse = client
+            .update_context_application(&context_id, request)
+            .await?;
+        environment.output.write(&response);
     }
 
     Ok(())
-}
-
-async fn update_context_application(
-    environment: &Environment,
-    connection: &ConnectionInfo,
-    context_id: ContextId,
-    application_id: ApplicationId,
-    member_public_key: PublicKey,
-) -> Result<()> {
-    let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
-
-    let response: UpdateContextApplicationResponse = connection
-        .post(
-            &format!("admin-api/contexts/{}/application", context_id),
-            request,
-        )
-        .await?;
-
-    environment.output.write(&response);
-
-    Ok(())
-}
-
-async fn app_installed(
-    connection: &ConnectionInfo,
-    application_id: &ApplicationId,
-) -> Result<bool> {
-    let response: GetApplicationResponse = connection
-        .get(&format!("admin-api/applications/{application_id}"))
-        .await?;
-
-    Ok(response.data.application.is_some())
-}
-
-async fn install_app(
-    environment: &Environment,
-    connection: &ConnectionInfo,
-    path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
-) -> Result<ApplicationId> {
-    let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
-
-    let response: InstallApplicationResponse = connection
-        .post("admin-api/install-dev-application", request)
-        .await?;
-
-    environment.output.write(&response);
-
-    Ok(response.data.application_id)
 }

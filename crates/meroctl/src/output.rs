@@ -1,5 +1,16 @@
+// Core output module
+pub mod aliases;
+pub mod applications;
+pub mod blobs;
+pub mod common;
+pub mod contexts;
+pub mod proposals;
+
+// Re-export common types
 use clap::ValueEnum;
-use color_eyre::owo_colors::OwoColorize;
+pub use common::{ErrorLine, InfoLine, WarnLine};
+// Re-export types from other modules
+pub use proposals::ProposalDetailsResponse;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -33,32 +44,5 @@ impl Output {
             },
             Format::Human => value.report(),
         }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct InfoLine<'a>(pub &'a str);
-
-impl Report for InfoLine<'_> {
-    fn report(&self) {
-        println!("{} {}", "[INFO]".green(), self.0);
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ErrorLine<'a>(pub &'a str);
-
-impl Report for ErrorLine<'_> {
-    fn report(&self) {
-        println!("{} {}", "[ERROR]".red(), self.0);
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct WarnLine<'a>(pub &'a str);
-
-impl Report for WarnLine<'_> {
-    fn report(&self) {
-        println!("{} {}", "[WARN]".yellow(), self.0);
     }
 }

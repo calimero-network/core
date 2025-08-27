@@ -3,8 +3,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::admin::{
-    InstallApplicationResponse, InstallDevApplicationRequest, UpdateContextApplicationRequest,
-    UpdateContextApplicationResponse,
+    InstallDevApplicationRequest, UpdateContextApplicationRequest,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
@@ -15,8 +14,6 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::Environment;
-use crate::common::resolve_alias;
-use crate::connection::ConnectionInfo;
 use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
@@ -68,19 +65,21 @@ pub struct UpdateCommand {
 }
 
 impl UpdateCommand {
-    pub async fn run(self, environment: &Environment) -> Result<()> {
-        let connection = environment.connection()?;
+    pub async fn run(self, environment: &mut Environment) -> Result<()> {
+        let client = environment.client()?;
 
-        let context_id = resolve_alias(connection, self.context, None)
+        let context_id = client
+            .resolve_alias(self.context, None)
             .await?
             .value()
-            .cloned()
+            .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let executor_id = resolve_alias(connection, self.executor, Some(context_id))
+        let executor_id = client
+            .resolve_alias(self.executor, Some(context_id))
             .await?
             .value()
-            .cloned()
+            .copied()
             .ok_or_eyre("unable to resolve")?;
 
         match self {
@@ -91,14 +90,11 @@ impl UpdateCommand {
                 watch: false,
                 ..
             } => {
-                update_context_application(
-                    environment,
-                    connection,
-                    context_id,
-                    application_id,
-                    executor_id,
-                )
-                .await?;
+                let request = UpdateContextApplicationRequest::new(application_id, executor_id);
+                let _response = client
+                    .update_context_application(&context_id, request)
+                    .await?;
+                environment.output.write(&_response);
             }
             Self {
                 application_id: None,
@@ -108,22 +104,24 @@ impl UpdateCommand {
             } => {
                 let metadata = metadata.map(String::into_bytes);
 
-                let application_id =
-                    install_app(environment, connection, path.clone(), metadata.clone()).await?;
+                let application_id = client
+                    .install_dev_application(InstallDevApplicationRequest::new(
+                        path.clone(),
+                        metadata.clone().unwrap_or_default(),
+                    ))
+                    .await?
+                    .data
+                    .application_id;
 
-                update_context_application(
-                    environment,
-                    connection,
-                    context_id,
-                    application_id,
-                    executor_id,
-                )
-                .await?;
+                let request = UpdateContextApplicationRequest::new(application_id, executor_id);
+                let _response = client
+                    .update_context_application(&context_id, request)
+                    .await?;
+                environment.output.write(&_response);
 
                 if self.watch {
                     watch_app_and_update_context(
                         environment,
-                        connection,
                         context_id,
                         path,
                         metadata,
@@ -140,47 +138,8 @@ impl UpdateCommand {
     }
 }
 
-async fn install_app(
-    environment: &Environment,
-    connection: &ConnectionInfo,
-    path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
-) -> Result<ApplicationId> {
-    let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
-
-    let response: InstallApplicationResponse = connection
-        .post("admin-api/install-dev-application", request)
-        .await?;
-
-    environment.output.write(&response);
-
-    Ok(response.data.application_id)
-}
-
-async fn update_context_application(
-    environment: &Environment,
-    connection: &ConnectionInfo,
-    context_id: ContextId,
-    application_id: ApplicationId,
-    member_public_key: PublicKey,
-) -> Result<()> {
-    let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
-
-    let response: UpdateContextApplicationResponse = connection
-        .post(
-            &format!("admin-api/contexts/{}/application", context_id),
-            request,
-        )
-        .await?;
-
-    environment.output.write(&response);
-
-    Ok(())
-}
-
 async fn watch_app_and_update_context(
-    environment: &Environment,
-    connection: &ConnectionInfo,
+    environment: &mut Environment,
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
@@ -225,17 +184,22 @@ async fn watch_app_and_update_context(
             | EventKind::Other => continue,
         }
 
-        let application_id =
-            install_app(environment, connection, path.clone(), metadata.clone()).await?;
+        let client = environment.client()?;
+        let application_id = client
+            .install_dev_application(InstallDevApplicationRequest::new(
+                path.clone(),
+                metadata.clone().unwrap_or_default(),
+            ))
+            .await?
+            .data
+            .application_id;
 
-        update_context_application(
-            environment,
-            connection,
-            context_id,
-            application_id,
-            member_public_key,
-        )
-        .await?;
+        let client = environment.client()?;
+        let request = UpdateContextApplicationRequest::new(application_id, member_public_key);
+        let response = client
+            .update_context_application(&context_id, request)
+            .await?;
+        environment.output.write(&response);
     }
 
     Ok(())
