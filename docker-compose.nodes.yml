@@ -200,10 +200,10 @@ services:
 
 networks:
   web:
-    external: true
+    driver: bridge
     name: ${COMPOSE_PROJECT_NAME:-calimero}_web
   internal:
-    external: true  
+    internal: true
     name: ${COMPOSE_PROJECT_NAME:-calimero}_internal
 
 volumes:

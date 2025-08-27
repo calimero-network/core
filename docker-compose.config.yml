@@ -9,28 +9,24 @@ services:
       /bin/sh -c "mkdir -p /calimero/data /calimero/logic /calimero/credentials/node1 /calimero/credentials/node2 /calimero/credentials/node3 &&
                   chmod -R 777 /calimero"
 
-  # Backend Build Service (for applications/smart contracts)
-  backend_build:
-    image: rust:latest
+  # WASM File Setup Service
+  setup_wasm:
+    image: debian:bookworm-slim
     user: root
     volumes:
-      - ./apps:/apps
+      - ${WASM_FILE_PATH}:/source.wasm
       - calimero_auth_node:/calimero
-      - cargo-cache:/usr/local/cargo/registry
-    working_dir: /apps
     command: >
-      bash -c "
-        apt-get update && 
-        apt-get install -y binaryen curl jq && 
-        rustup target add wasm32-unknown-unknown && 
-        echo 'Backend build service ready. Add your application build logic here.' &&
+      /bin/sh -c "
+        echo 'Setting up WASM file...' &&
         mkdir -p /calimero/logic &&
-        echo 'Applications will be built and copied to /calimero/logic/'
+        cp /source.wasm /calimero/logic/app.wasm &&
+        echo 'WASM file copied to /calimero/logic/app.wasm'
       "
     depends_on:
       init_volume:
         condition: service_completed_successfully
-    profiles: [build]
+
 
   # Context Coordinator Service (for setting up contexts and applications)
   coordinator:
@@ -44,13 +40,15 @@ services:
     entrypoint: /bin/sh
     volumes:
       - calimero_auth_node:/calimero
-    network_mode: "host"
+    networks:
+      - web
+      - internal
     environment:
       - CONTEXT_RECREATE=${CONTEXT_RECREATE:-false}
-      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-node1}
-      - NODE1_URL=${NODE1_URL:-http://localhost:2528}
-      - NODE2_URL=${NODE2_URL:-http://localhost:2529} 
-      - NODE3_URL=${NODE3_URL:-http://localhost:2530}
+      - COMPOSE_PROFILES=${COMPOSE_PROFILES:-node3}
+      - NODE1_URL=${NODE1_URL:-http://node1:2528}
+      - NODE2_URL=${NODE2_URL:-http://node2:2529} 
+      - NODE3_URL=${NODE3_URL:-http://node3:2530}
     command: >
       -c '
         echo "=== Calimero Context Coordinator ===" &&
@@ -74,23 +72,35 @@ services:
           echo "Reused App ID: $$APP_ID" &&
           echo "Reused Node1 Member Key: $$NODE1_MEMBER_KEY"
         else
-          echo "Creating new context..." &&
-          echo "Add your application installation and context creation logic here" &&
+          echo "Installing application..." &&
+          APP_OUTPUT=$$(meroctl --api http://node1:2528 app install --path /calimero/logic/app.wasm) &&
+          APP_ID=$$(echo "$$APP_OUTPUT" | grep "Application ID:" | sed "s/.*Application ID: //" | sed "s/ *| *//") &&
+          echo "Application ID: $$APP_ID" &&
           
-          # Example context creation (modify as needed)
-          # APP_OUTPUT=$$(meroctl --node-name authnode1 --home /calimero/data app install -p /calimero/logic/your_app.wasm) &&
-          # APP_ID=$$(echo "$$APP_OUTPUT" | grep "application_id:" | sed "s/application_id: //") &&
-          # CONTEXT_OUTPUT=$$(meroctl --node-name authnode1 --home /calimero/data context create -a "$$APP_ID" --protocol near) &&
-          # CONTEXT_ID=$$(echo "$$CONTEXT_OUTPUT" | grep "context_id:" | sed "s/context_id: //") &&
-          # NODE1_MEMBER_KEY=$$(echo "$$CONTEXT_OUTPUT" | grep "member_public_key:" | sed "s/member_public_key: //") &&
+          echo "Creating context..." &&
+          CONTEXT_OUTPUT=$$(meroctl --api http://node1:2528 context create -a $$APP_ID --protocol near 2>&1) &&
+          CONTEXT_EXIT_CODE=$$? &&
+          if [ $$CONTEXT_EXIT_CODE -ne 0 ]; then
+            echo "ERROR: Context creation failed with exit code $$CONTEXT_EXIT_CODE" &&
+            echo "Full error output: $$CONTEXT_OUTPUT" &&
+            exit $$CONTEXT_EXIT_CODE
+          fi &&
+          CONTEXT_ID=$$(echo "$$CONTEXT_OUTPUT" | grep "Context ID:" | sed "s/.*Context ID: //" | sed "s/ *|.*//") &&
+          NODE1_MEMBER_KEY=$$(echo "$$CONTEXT_OUTPUT" | grep "Member Public Key:" | sed "s/.*Member Public Key: //" | sed "s/ *|.*//") &&
           
-          # For now, create placeholder values
-          CONTEXT_ID="placeholder-context-id" &&
-          APP_ID="placeholder-app-id" &&
-          NODE1_MEMBER_KEY="placeholder-member-key" &&
+          if [ -z "$$CONTEXT_ID" ]; then
+            echo "ERROR: Failed to extract Context ID from output" &&
+            echo "Output was: $$CONTEXT_OUTPUT" &&
+            exit 1
+          fi &&
+          
+          if [ -z "$$NODE1_MEMBER_KEY" ]; then
+            echo "ERROR: Failed to extract Member Key from output" &&
+            echo "Output was: $$CONTEXT_OUTPUT" &&
+            exit 1
+          fi &&
           
           echo "Context ID: $$CONTEXT_ID" &&
-          echo "App ID: $$APP_ID" &&
           echo "Node1 Member Key: $$NODE1_MEMBER_KEY" &&
           
           # Save context info for future use
@@ -102,14 +112,13 @@ services:
         echo "CONTEXT_ID=$$CONTEXT_ID" > /calimero/credentials/node1/.env &&
         echo "MEMBER_PUBLIC_KEY=$$NODE1_MEMBER_KEY" >> /calimero/credentials/node1/.env &&
         echo "APP_URL=$NODE1_URL" >> /calimero/credentials/node1/.env &&
-        echo "NODE_NAME=authnode1" >> /calimero/credentials/node1/.env &&
+        echo "NODE_NAME=node1" >> /calimero/credentials/node1/.env &&
         
         echo "Node1 credentials created!" &&
         
-        # Handle Node2 if enabled
-        if [ "$COMPOSE_PROFILES" = "node2" ] || [ "$COMPOSE_PROFILES" = "node3" ]; then
-          echo "Setting up node2..." &&
-          
+        # Handle Node2 (always enabled now)
+        echo "Setting up node2..." &&
+        
           # Check if node2 context info already exists
           if [ -f /calimero/node2_context_info.json ] && [ "$CONTEXT_RECREATE" != "true" ]; then
             echo "Found existing node2 context info. Reusing it..." &&
@@ -117,8 +126,30 @@ services:
             NODE2_MEMBER_KEY=$$(echo "$$NODE2_INFO" | grep -o "\"node2_member_key\":\"[^\"]*\"" | cut -d":" -f2 | tr -d "\"") &&
             echo "Reused Node2 Member Key: $$NODE2_MEMBER_KEY"
           else
-            echo "Add node2 setup logic here (identity generation, invitation, join)" &&
-            NODE2_MEMBER_KEY="placeholder-node2-member-key" &&
+            echo "Generating identity for node2..." &&
+            NODE2_IDENTITY=$$(meroctl --api http://node2:2529 context identity new) &&
+            echo "Node2 identity: $$NODE2_IDENTITY" &&
+            
+            NODE2_PUBKEY=$$(echo "$$NODE2_IDENTITY" | grep "Public Key:" | sed "s/.*Public Key: //" | sed "s/ *|.*//") &&
+            echo "Extracted Node2 Public Key: [$$NODE2_PUBKEY]" &&
+            
+            echo "Generating invitation for node2..." &&
+            echo "Command: meroctl --api http://node1:2528 context invite -c $$CONTEXT_ID --as $$NODE1_MEMBER_KEY $$NODE2_PUBKEY" &&
+            echo "Context ID: [$$CONTEXT_ID]" &&
+            echo "Node1 Member Key: [$$NODE1_MEMBER_KEY]" &&
+            echo "Node2 Public Key: [$$NODE2_PUBKEY]" &&
+            INVITATION=$$(meroctl --api http://node1:2528 context invite -c "$$CONTEXT_ID" --as "$$NODE1_MEMBER_KEY" "$$NODE2_PUBKEY") &&
+            echo "Invitation generated: $$INVITATION" &&
+            
+            INVITATION_PAYLOAD=$$(echo "$$INVITATION" | grep "Encoded Payload" | sed "s/.*| //" | sed "s/ *|.*//") &&
+            echo "Extracted payload: $$INVITATION_PAYLOAD" &&
+            
+            echo "Node2 joining context..." &&
+            JOIN_OUTPUT=$$(meroctl --api http://node2:2529 context join $$INVITATION_PAYLOAD) &&
+            echo "Join output: $$JOIN_OUTPUT" &&
+            
+            NODE2_MEMBER_KEY=$$(echo "$$JOIN_OUTPUT" | grep "member_public_key:" | sed "s/member_public_key: //") &&
+            
             echo "{\"context_id\":\"$$CONTEXT_ID\",\"node2_member_key\":\"$$NODE2_MEMBER_KEY\"}" > /calimero/node2_context_info.json
           fi &&
           
@@ -126,15 +157,13 @@ services:
           echo "CONTEXT_ID=$$CONTEXT_ID" > /calimero/credentials/node2/.env &&
           echo "MEMBER_PUBLIC_KEY=$$NODE2_MEMBER_KEY" >> /calimero/credentials/node2/.env &&
           echo "APP_URL=$NODE2_URL" >> /calimero/credentials/node2/.env &&
-          echo "NODE_NAME=authnode2" >> /calimero/credentials/node2/.env &&
+          echo "NODE_NAME=node2" >> /calimero/credentials/node2/.env &&
           
-          echo "Node2 setup complete!"
-        fi &&
+          echo "Node2 setup complete!" &&
         
-        # Handle Node3 if enabled  
-        if [ "$COMPOSE_PROFILES" = "node3" ]; then
-          echo "Setting up node3..." &&
-          
+        # Handle Node3 (always enabled now)
+        echo "Setting up node3..." &&
+        
           # Check if node3 context info already exists
           if [ -f /calimero/node3_context_info.json ] && [ "$CONTEXT_RECREATE" != "true" ]; then
             echo "Found existing node3 context info. Reusing it..." &&
@@ -142,8 +171,25 @@ services:
             NODE3_MEMBER_KEY=$$(echo "$$NODE3_INFO" | grep -o "\"node3_member_key\":\"[^\"]*\"" | cut -d":" -f2 | tr -d "\"") &&
             echo "Reused Node3 Member Key: $$NODE3_MEMBER_KEY"
           else
-            echo "Add node3 setup logic here (identity generation, invitation, join)" &&
-            NODE3_MEMBER_KEY="placeholder-node3-member-key" &&
+            echo "Generating identity for node3..." &&
+            NODE3_IDENTITY=$$(meroctl --api http://node3:2530 context identity new) &&
+            echo "Node3 identity: $$NODE3_IDENTITY" &&
+            
+            NODE3_PUBKEY=$$(echo "$$NODE3_IDENTITY" | grep "Public Key:" | sed "s/.*Public Key: //" | sed "s/ *|.*//") &&
+            
+            echo "Generating invitation for node3..." &&
+            INVITATION=$$(meroctl --api http://node1:2528 context invite -c $$CONTEXT_ID --as $$NODE1_MEMBER_KEY $$NODE3_PUBKEY) &&
+            echo "Invitation generated: $$INVITATION" &&
+            
+            INVITATION_PAYLOAD=$$(echo "$$INVITATION" | grep "Encoded Payload" | sed "s/.*| //" | sed "s/ *|.*//") &&
+            echo "Extracted payload: $$INVITATION_PAYLOAD" &&
+            
+            echo "Node3 joining context..." &&
+            JOIN_OUTPUT=$$(meroctl --api http://node3:2530 context join $$INVITATION_PAYLOAD) &&
+            echo "Join output: $$JOIN_OUTPUT" &&
+            
+            NODE3_MEMBER_KEY=$$(echo "$$JOIN_OUTPUT" | grep "member_public_key:" | sed "s/member_public_key: //") &&
+            
             echo "{\"context_id\":\"$$CONTEXT_ID\",\"node3_member_key\":\"$$NODE3_MEMBER_KEY\"}" > /calimero/node3_context_info.json
           fi &&
           
@@ -151,10 +197,9 @@ services:
           echo "CONTEXT_ID=$$CONTEXT_ID" > /calimero/credentials/node3/.env &&
           echo "MEMBER_PUBLIC_KEY=$$NODE3_MEMBER_KEY" >> /calimero/credentials/node3/.env &&
           echo "APP_URL=$NODE3_URL" >> /calimero/credentials/node3/.env &&
-          echo "NODE_NAME=authnode3" >> /calimero/credentials/node3/.env &&
+          echo "NODE_NAME=node3" >> /calimero/credentials/node3/.env &&
           
-          echo "Node3 setup complete!"
-        fi &&
+          echo "Node3 setup complete!" &&
         
         echo "=== Configuration Complete ===" &&
         echo "Credentials created in /calimero/credentials/" &&
@@ -163,36 +208,93 @@ services:
     depends_on:
       init_volume:
         condition: service_completed_successfully
-    profiles: [config]
+      setup_wasm:
+        condition: service_completed_successfully
 
-  # Application installer service (for deploying applications to nodes)
-  app_installer:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: runtime
-      secrets:
-        - gh-token
-    user: root
+
+  # Frontend Service for Node1
+  frontend1:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "5173:5173"
     volumes:
       - calimero_auth_node:/calimero
-    network_mode: "host"
-    environment:
-      - APP_PATH=${APP_PATH:-/calimero/logic/app.wasm}
-      - NODE_NAME=${NODE_NAME:-authnode1}
+      - ${FRONTEND_SOURCE_PATH:-./frontend}:/source:ro
     command: >
       /bin/sh -c "
-        echo 'Application Installer Service' &&
-        echo 'App path: $APP_PATH' &&
-        echo 'Node name: $NODE_NAME' &&
-        echo 'Add your application installation logic here' &&
-        # meroctl --node-name $NODE_NAME --home /calimero/data app install -p $APP_PATH
-        echo 'Application installation placeholder completed'
+        echo 'Setting up frontend for node1...' &&
+        cp -r /source/* /app/ &&
+        if [ -f /calimero/credentials/node1/.env ]; then
+          cp /calimero/credentials/node1/.env /app/.env &&
+          echo 'Using credentials from node1'
+        else
+          echo 'No credentials found for node1'
+        fi &&
+        cd /app &&
+        npm install &&
+        npm run dev -- --host 0.0.0.0
       "
     depends_on:
-      init_volume:
+      coordinator:
         condition: service_completed_successfully
-    profiles: [install]
+
+
+  # Frontend Service for Node2
+  frontend2:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "5174:5173"
+    volumes:
+      - calimero_auth_node:/calimero
+      - ${FRONTEND_SOURCE_PATH:-./frontend}:/source:ro
+    command: >
+      /bin/sh -c "
+        echo 'Setting up frontend for node2...' &&
+        cp -r /source/* /app/ &&
+        if [ -f /calimero/credentials/node2/.env ]; then
+          cp /calimero/credentials/node2/.env /app/.env &&
+          echo 'Using credentials from node2'
+        else
+          echo 'No credentials found for node2'
+        fi &&
+        cd /app &&
+        npm install &&
+        npm run dev -- --host 0.0.0.0
+      "
+    depends_on:
+      coordinator:
+        condition: service_completed_successfully
+
+
+  # Frontend Service for Node3
+  frontend3:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "5175:5173"
+    volumes:
+      - calimero_auth_node:/calimero
+      - ${FRONTEND_SOURCE_PATH:-./frontend}:/source:ro
+    command: >
+      /bin/sh -c "
+        echo 'Setting up frontend for node3...' &&
+        cp -r /source/* /app/ &&
+        if [ -f /calimero/credentials/node3/.env ]; then
+          cp /calimero/credentials/node3/.env /app/.env &&
+          echo 'Using credentials from node3'
+        else
+          echo 'No credentials found for node3'
+        fi &&
+        cd /app &&
+        npm install &&
+        npm run dev -- --host 0.0.0.0
+      "
+    depends_on:
+      coordinator:
+        condition: service_completed_successfully
+
 
 networks:
   web:
