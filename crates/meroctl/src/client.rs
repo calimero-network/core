@@ -15,7 +15,4 @@ use crate::storage::FileTokenStorage;
 pub type Client = GenericClient<CliAuthenticator, FileTokenStorage>;
 
 // Re-export response types and traits for convenience
-pub use calimero_client::client::{
-    BlobDeleteResponse, BlobInfoResponse, BlobListResponse, ResolveResponse, ResolveResponseValue,
-    UrlFragment,
-};
+pub use calimero_client::client::{ResolveResponse, ResolveResponseValue};

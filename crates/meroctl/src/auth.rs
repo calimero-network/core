@@ -6,6 +6,7 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
+use calimero_client::connection::AuthMode;
 use calimero_client::storage::{get_session_cache, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
 use serde::Deserialize;
@@ -28,13 +29,12 @@ pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
     let temp_connection = ConnectionInfo::new(
         api_url.clone(),
         None,
-        None,
         create_cli_authenticator(output),
         FileTokenStorage::new(),
     );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
-    if auth_mode == "none" {
+    if auth_mode == AuthMode::None {
         bail!("Server does not require authentication");
     }
 
@@ -252,13 +252,12 @@ pub async fn check_authentication(
     let temp_connection = ConnectionInfo::new(
         url.clone(),
         None,
-        None,
         create_cli_authenticator(output),
         FileTokenStorage::new(),
     );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
-    if auth_mode != "none" {
+    if auth_mode != AuthMode::None {
         match authenticate(url, output).await {
             Ok(tokens) => Ok(Some(tokens)),
             Err(e) => {
@@ -280,13 +279,12 @@ pub async fn authenticate_with_session_cache(
     let temp_connection = ConnectionInfo::new(
         url.clone(),
         None,
-        None,
         create_cli_authenticator(output),
         FileTokenStorage::new(),
     );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
-    if auth_mode != "none" {
+    if auth_mode != AuthMode::None {
         // Check if we have tokens in session cache for this URL
         let session_cache = get_session_cache();
 
@@ -294,7 +292,6 @@ pub async fn authenticate_with_session_cache(
             // We have existing tokens for this URL in session cache
             Ok(ConnectionInfo::new(
                 url.clone(),
-                Some(cached_tokens),
                 None,
                 create_cli_authenticator(output),
                 FileTokenStorage::new(),
@@ -308,7 +305,6 @@ pub async fn authenticate_with_session_cache(
 
                     Ok(ConnectionInfo::new(
                         url.clone(),
-                        Some(jwt_tokens),
                         None,
                         create_cli_authenticator(output),
                         FileTokenStorage::new(),
@@ -323,7 +319,6 @@ pub async fn authenticate_with_session_cache(
         // No authentication required
         Ok(ConnectionInfo::new(
             url.clone(),
-            None,
             None,
             create_cli_authenticator(output),
             FileTokenStorage::new(),
@@ -522,7 +517,7 @@ impl calimero_client::auth::MeroctlOutputHandler for MeroctlOutputWrapper {
         let mut input = String::new();
         drop(io::stdin().read_line(&mut input));
 
-        Ok(input.trim().to_string())
+        Ok(input.trim().to_owned())
     }
 }
 

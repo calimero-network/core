@@ -2,10 +2,11 @@
 //!
 //! This module defines the main error type for client operations.
 
+use serde::Serialize;
 use thiserror::Error;
 
 /// Main error type for Calimero client operations
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize)]
 pub enum ClientError {
     /// Network and HTTP-related errors
     #[error("Network error: {message}")]
