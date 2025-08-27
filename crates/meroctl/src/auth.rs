@@ -6,8 +6,8 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
-use calimero_client::connection::AuthMode;
-use calimero_client::storage::{get_session_cache, JwtToken};
+use client::connection::AuthMode;
+use client::storage::{get_session_cache, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -332,7 +332,7 @@ pub async fn authenticate_with_session_cache(
 /// and provides browser-based authentication flows for the CLI.
 pub struct MeroctlAuthenticator {
     /// Output handler for meroctl
-    output: Box<dyn calimero_client::auth::MeroctlOutputHandler + Send + Sync>,
+    output: Box<dyn client::auth::MeroctlOutputHandler + Send + Sync>,
 }
 
 impl std::fmt::Debug for MeroctlAuthenticator {
@@ -355,17 +355,14 @@ impl Clone for MeroctlAuthenticator {
 
 impl MeroctlAuthenticator {
     /// Create a new meroctl authenticator
-    pub fn new(output: Box<dyn calimero_client::auth::MeroctlOutputHandler + Send + Sync>) -> Self {
+    pub fn new(output: Box<dyn client::auth::MeroctlOutputHandler + Send + Sync>) -> Self {
         Self { output }
     }
 }
 
 #[async_trait::async_trait]
-impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
-    async fn authenticate(
-        &self,
-        api_url: &url::Url,
-    ) -> eyre::Result<calimero_client::storage::JwtToken> {
+impl client::ClientAuthenticator for MeroctlAuthenticator {
+    async fn authenticate(&self, api_url: &url::Url) -> eyre::Result<client::storage::JwtToken> {
         // For now, implement a simple authentication flow directly
         self.output.display_message("Starting authentication...");
 
@@ -394,19 +391,16 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
 
         let token = if has_refresh {
             let refresh_token = self.output.wait_for_input("Enter refresh token: ")?;
-            calimero_client::storage::JwtToken::with_refresh(access_token, refresh_token)
+            client::storage::JwtToken::with_refresh(access_token, refresh_token)
         } else {
-            calimero_client::storage::JwtToken::new(access_token)
+            client::storage::JwtToken::new(access_token)
         };
 
         self.output.display_success("Authentication successful!");
         Ok(token)
     }
 
-    async fn refresh_tokens(
-        &self,
-        refresh_token: &str,
-    ) -> eyre::Result<calimero_client::storage::JwtToken> {
+    async fn refresh_tokens(&self, refresh_token: &str) -> eyre::Result<client::storage::JwtToken> {
         // For now, we'll use a simple approach - ask user for new token
         self.output
             .display_message("Refreshing authentication tokens...");
@@ -419,7 +413,7 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
             return Err(eyre::eyre!("Access token cannot be empty"));
         }
 
-        let token = calimero_client::storage::JwtToken::new(access_token);
+        let token = client::storage::JwtToken::new(access_token);
         self.output.display_success("Token refresh successful!");
         Ok(token)
     }
@@ -427,7 +421,7 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
     async fn handle_auth_failure(
         &self,
         api_url: &url::Url,
-    ) -> eyre::Result<calimero_client::storage::JwtToken> {
+    ) -> eyre::Result<client::storage::JwtToken> {
         self.output
             .display_error("Authentication failed. Please try again.");
 
@@ -466,7 +460,7 @@ impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
 /// No-op output handler for cloning
 struct NoOpOutputHandler;
 
-impl calimero_client::auth::MeroctlOutputHandler for NoOpOutputHandler {
+impl client::auth::MeroctlOutputHandler for NoOpOutputHandler {
     fn display_message(&self, _message: &str) {}
     fn display_error(&self, _error: &str) {}
     fn display_success(&self, _message: &str) {}
@@ -490,7 +484,7 @@ impl MeroctlOutputWrapper {
     }
 }
 
-impl calimero_client::auth::MeroctlOutputHandler for MeroctlOutputWrapper {
+impl client::auth::MeroctlOutputHandler for MeroctlOutputWrapper {
     fn display_message(&self, message: &str) {
         self.output.write(&InfoLine(message));
     }
@@ -521,7 +515,7 @@ impl calimero_client::auth::MeroctlOutputHandler for MeroctlOutputWrapper {
     }
 }
 
-/// Type alias for the authenticator from calimero-client
+/// Type alias for the authenticator from client
 pub type CliAuthenticator = MeroctlAuthenticator;
 
 /// Helper function to create a new CliAuthenticator

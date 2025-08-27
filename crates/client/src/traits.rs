@@ -186,7 +186,7 @@ impl Default for ClientSettings {
             max_retries: 3,
             retry_delay_ms: 1000,
             use_http2: true,
-            user_agent: format!("calimero-client/{}", env!("CARGO_PKG_VERSION")),
+            user_agent: format!("client/{}", env!("CARGO_PKG_VERSION")),
         }
     }
 }

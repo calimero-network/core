@@ -1,6 +1,6 @@
-use calimero_client::storage::JwtToken;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+use client::storage::JwtToken;
 use comfy_table::Table;
 use const_format::concatcp;
 use eyre::{bail, Result};

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use calimero_client::storage::JwtToken as ClientJwtToken;
-use calimero_client::ClientStorage;
+use client::storage::JwtToken as ClientJwtToken;
+use client::ClientStorage;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ impl ClientStorage for FileTokenStorage {
                 crate::config::NodeConnection::Local { jwt_tokens, .. }
                 | crate::config::NodeConnection::Remote { jwt_tokens, .. } => {
                     if let Some(tokens) = jwt_tokens {
-                        // Convert from meroctl JwtToken to calimero-client JwtToken
+                        // Convert from client JwtToken to meroctl JwtToken
                         let client_tokens = if let Some(refresh) = &tokens.refresh_token {
                             ClientJwtToken::with_refresh(
                                 tokens.access_token.clone(),
@@ -60,7 +60,7 @@ impl ClientStorage for FileTokenStorage {
         // Load existing config
         let mut config = crate::config::Config::load().await?;
 
-        // Convert from calimero-client JwtToken to meroctl JwtToken
+        // Convert from client JwtToken to meroctl JwtToken
         let meroctl_tokens = JwtToken {
             access_token: tokens.access_token.clone(),
             refresh_token: tokens.refresh_token.clone(),

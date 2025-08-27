@@ -16,7 +16,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use calimero_client::{
+//! use client::{
 //!     ClientAuthenticator, ClientStorage, ConnectionInfo, ClientError
 //! };
 //!

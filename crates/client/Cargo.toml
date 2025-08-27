@@ -1,5 +1,5 @@
 [package]
-name = "calimero-client"
+name = "client"
 version = "0.1.0"
 edition = "2021"
 description = "Abstract client library for Calimero API interactions"

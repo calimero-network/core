@@ -1,9 +1,9 @@
 use std::process::ExitCode;
 
-use calimero_client::ClientError;
 use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
+use client::ClientError;
 use comfy_table::{Cell, Color, Table};
 use const_format::concatcp;
 use eyre::{bail, Report as EyreReport, Result};

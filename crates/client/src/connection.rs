@@ -21,7 +21,7 @@ pub enum AuthMode {
     None,
 }
 
-// Define RequestType enum locally since it's not available in calimero-client
+// Define RequestType enum locally since it's not available in client
 #[derive(Debug, Clone, Copy)]
 enum RequestType {
     Get,
