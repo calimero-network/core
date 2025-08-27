@@ -1,11 +1,10 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
-    InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
+    InstallApplicationRequest, InstallDevApplicationRequest,
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -14,7 +13,7 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use crate::cli::Environment;
-use crate::output::{ErrorLine, InfoLine, Report};
+use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Install an application")]
@@ -35,17 +34,7 @@ pub struct InstallCommand {
     pub watch: bool,
 }
 
-impl Report for InstallApplicationResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Application Installed").fg(Color::Green)]);
-        let _ = table.add_row(vec![format!(
-            "Application ID: {}",
-            self.data.application_id
-        )]);
-        println!("{table}");
-    }
-}
+
 
 impl InstallCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

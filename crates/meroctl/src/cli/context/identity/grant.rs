@@ -2,13 +2,11 @@ use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::GrantPermissionResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result};
 
 use super::Capability;
 use crate::cli::Environment;
-use crate::output::Report;
 
 #[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Grant permissions to a member in a context")]
@@ -57,8 +55,4 @@ impl GrantPermissionCommand {
     }
 }
 
-impl Report for GrantPermissionResponse {
-    fn report(&self) {
-        println!("Permission granted successfully");
-    }
-}
+

@@ -1,12 +1,9 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
-use comfy_table::{Cell, Table};
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
-use crate::output::Report;
 
 #[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Delete a context")]
@@ -15,20 +12,7 @@ pub struct DeleteCommand {
     pub context: Alias<ContextId>,
 }
 
-impl Report for DeleteContextResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Context Deletion Status").fg(comfy_table::Color::Blue)
-        ]);
-        let _ = table.add_row(vec![if self.data.is_deleted {
-            Cell::new("✓ Deleted").fg(comfy_table::Color::Green)
-        } else {
-            Cell::new("✗ Not Deleted").fg(comfy_table::Color::Red)
-        }]);
-        println!("{table}");
-    }
-}
+
 
 impl DeleteCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

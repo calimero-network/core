@@ -1,11 +1,9 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::SyncContextResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result};
 
 use crate::cli::Environment;
-use crate::output::Report;
 
 #[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Explicitly request a sync")]
@@ -17,13 +15,7 @@ pub struct SyncCommand {
     all: bool,
 }
 
-impl Report for SyncContextResponse {
-    fn report(&self) {
-        let mut table = comfy_table::Table::new();
-        let _ = table.add_row(["Sync requested"]);
-        println!("{table}");
-    }
-}
+
 
 impl SyncCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

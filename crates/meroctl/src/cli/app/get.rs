@@ -1,10 +1,8 @@
 use calimero_primitives::application::ApplicationId;
-use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
 use eyre::Result;
 
 use crate::cli::Environment;
-use crate::output::Report;
 
 #[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Fetch application details")]
@@ -18,14 +16,7 @@ pub enum GetValues {
     Details,
 }
 
-impl Report for GetApplicationResponse {
-    fn report(&self) {
-        match self.data.application {
-            Some(ref application) => application.report(),
-            None => println!("No application found"),
-        }
-    }
-}
+
 
 impl GetCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

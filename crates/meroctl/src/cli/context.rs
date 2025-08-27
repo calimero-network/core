@@ -1,11 +1,8 @@
-use calimero_primitives::context::Context;
 use clap::{Parser, Subcommand};
-use comfy_table::{Cell, Table};
 use const_format::concatcp;
 use eyre::Result;
 
 use crate::cli::Environment;
-use crate::output::Report;
 
 pub mod alias;
 pub mod create;
@@ -68,23 +65,7 @@ pub enum ContextSubCommands {
     Sync(sync::SyncCommand),
 }
 
-impl Report for Context {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![
-            Cell::new("Context Details").fg(comfy_table::Color::Blue)
-        ]);
-        let _ = table.add_row(vec![
-            Cell::new(format!("ID: {}", self.id)).fg(comfy_table::Color::Yellow)
-        ]);
-        let _ = table.add_row(vec![Cell::new(format!(
-            "Application ID: {}",
-            self.application_id
-        ))]);
-        let _ = table.add_row(vec![Cell::new(format!("Root Hash: {}", self.root_hash))]);
-        println!("{table}");
-    }
-}
+
 
 impl ContextCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

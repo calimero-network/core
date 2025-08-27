@@ -7,7 +7,6 @@ use calimero_server_primitives::ws::{
     Request, RequestPayload, Response, ResponseBody, SubscribeRequest,
 };
 use clap::Parser;
-use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -54,25 +53,7 @@ pub struct WatchCommand {
     pub count: Option<usize>,
 }
 
-impl Report for Response {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("WebSocket Response").fg(Color::Blue)]);
 
-        let _ = table.add_row(vec![format!("ID: {:?}", self.id)]);
-
-        match &self.body {
-            ResponseBody::Result(value) => {
-                let _ = table.add_row(vec![format!("Result: {:#}", value)]);
-            }
-            ResponseBody::Error(error) => {
-                let _ = table.add_row(vec![format!("Error: {:?}", error)]);
-            }
-        }
-
-        println!("{table}");
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ExecutionOutput<'a> {
@@ -85,15 +66,26 @@ struct ExecutionOutput<'a> {
 
 impl Report for ExecutionOutput<'_> {
     fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.add_row(vec![format!("Command: {}", self.cmd.join(" "))]);
-        let _ = table.add_row(vec![format!("Status: {:?}", self.status)]);
-        let _ = table.add_row(vec![format!("Stdout: {}", self.stdout)]);
-        let _ = table.add_row(vec![format!("Stderr: {}", self.stderr)]);
-
-        println!("{table}");
+        println!("Command executed: {}", self.cmd.join(" "));
+        if let Some(status) = self.status {
+            println!("Exit status: {}", status);
+        }
+        if !self.stdout.is_empty() {
+            println!("Stdout: {}", self.stdout);
+        }
+        if !self.stderr.is_empty() {
+            println!("Stderr: {}", self.stderr);
+        }
     }
 }
+
+impl Report for Response {
+    fn report(&self) {
+        println!("Received response: {:?}", self);
+    }
+}
+
+
 
 impl WatchCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

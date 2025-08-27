@@ -2,19 +2,13 @@ use calimero_context_config::types::Capability as ConfigCapability;
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_server_primitives::admin::RevokePermissionResponse;
 use clap::Parser;
 use eyre::{OptionExt, Result};
 
 use super::Capability;
 use crate::cli::Environment;
-use crate::output::Report;
 
-impl Report for RevokePermissionResponse {
-    fn report(&self) {
-        println!("Permission revoked successfully");
-    }
-}
+
 
 #[derive(Copy, Clone, Debug, Parser)]
 #[command(about = "Revoke permissions from a member in a context")]

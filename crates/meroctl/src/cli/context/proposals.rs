@@ -1,32 +1,15 @@
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_server_primitives::admin::{
-    GetProposalApproversResponse, GetProposalResponse, GetProposalsResponse,
-};
 use clap::{Parser, Subcommand};
-use comfy_table::{Cell, Color, Table};
 use eyre::{OptionExt, Result};
-use serde::{Deserialize, Serialize};
 
 use crate::cli::Environment;
-use crate::output::Report;
+use crate::output::ProposalDetailsResponse;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProposalDetailsResponse {
-    pub proposal: GetProposalResponse,
-    pub approvers: GetProposalApproversResponse,
-}
 
-impl Report for ProposalDetailsResponse {
-    fn report(&self) {
-        self.proposal.report();
 
-        println!("\nApprovers:");
-        self.approvers.report();
-    }
-}
+
 
 #[derive(Copy, Clone, Parser, Debug)]
 #[command(about = "Manage proposals within a context")]
@@ -71,86 +54,11 @@ pub enum ProposalsSubcommand {
     },
 }
 
-impl Report for GetProposalResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
-        let _ = table.set_header(vec![Cell::new("Proposal Details").fg(Color::Blue)]);
-        let _ = table.add_row(vec![format!("ID: {}", self.data.id)]);
-        let _ = table.add_row(vec![format!("Author: {}", self.data.author_id)]);
-        println!("{table}");
 
-        let mut actions_table = Table::new();
-        let _ = actions_table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = actions_table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
 
-        let _ = actions_table.set_header(vec![
-            Cell::new("#").fg(Color::Blue),
-            Cell::new("Action").fg(Color::Blue),
-        ]);
 
-        if self.data.actions.is_empty() {
-            let _ = actions_table.add_row(vec!["", "No actions"]);
-        } else {
-            println!("\nActions: ({} total)", self.data.actions.len());
-            for (i, action) in self.data.actions.iter().enumerate() {
-                let _ = actions_table.add_row(vec![format!("{}", i + 1), format!("{:?}", action)]);
-            }
-        }
 
-        println!("\n{actions_table}");
-    }
-}
-
-impl Report for GetProposalApproversResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
-
-        let _ = table.set_header(vec![Cell::new("Approver ID").fg(Color::Blue)]);
-
-        if self.data.is_empty() {
-            let _ = table.add_row(vec!["No approvers found"]);
-        } else {
-            for approver in &self.data {
-                let _ = table.add_row(vec![format!("{}", approver)]);
-            }
-        }
-
-        println!("{table}");
-    }
-}
-
-impl Report for GetProposalsResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.load_preset(comfy_table::presets::UTF8_FULL);
-        let _ = table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
-
-        let _ = table.set_header(vec![
-            Cell::new("ID").fg(Color::Blue),
-            Cell::new("Author").fg(Color::Blue),
-            Cell::new("Actions").fg(Color::Blue),
-        ]);
-
-        if self.data.is_empty() {
-            let _ = table.add_row(vec!["No proposals found", "", ""]);
-        } else {
-            for proposal in &self.data {
-                let _ = table.add_row(vec![
-                    format!("{}", proposal.id),
-                    format!("{}", proposal.author_id),
-                    format!("{}", proposal.actions.len()),
-                ]);
-            }
-        }
-
-        println!("{table}");
-    }
-}
 
 impl ProposalsCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {

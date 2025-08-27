@@ -10,7 +10,6 @@ use calimero_server_primitives::admin::{
 };
 use camino::Utf8PathBuf;
 use clap::Parser;
-use comfy_table::{Cell, Color, Table};
 use eyre::{bail, Result};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -19,7 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::cli::Environment;
 use crate::client::Client;
-use crate::output::{ErrorLine, InfoLine, Report};
+use crate::output::{ErrorLine, InfoLine};
 
 #[derive(Debug, Parser)]
 #[command(about = "Create a new context")]
@@ -69,27 +68,7 @@ pub struct CreateCommand {
     pub context: Option<Alias<ContextId>>,
 }
 
-impl Report for CreateContextResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Context Created").fg(Color::Green)]);
-        let _ = table.add_row(vec![format!("Context ID: {}", self.data.context_id)]);
-        let _ = table.add_row(vec![format!(
-            "Member Public Key: {}",
-            self.data.member_public_key
-        )]);
-        println!("{table}");
-    }
-}
 
-impl Report for UpdateContextApplicationResponse {
-    fn report(&self) {
-        let mut table = Table::new();
-        let _ = table.set_header(vec![Cell::new("Context Updated").fg(Color::Green)]);
-        let _ = table.add_row(vec!["Application successfully updated"]);
-        println!("{table}");
-    }
-}
 
 impl CreateCommand {
     pub async fn run(self, environment: &mut Environment) -> Result<()> {
@@ -222,7 +201,7 @@ pub async fn create_context(
 
 async fn watch_app_and_update_context(
     environment: &mut Environment,
-    client: &Client,
+    _client: &Client,
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
