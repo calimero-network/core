@@ -3,6 +3,7 @@ use thiserror::Error as ThisError;
 
 pub mod admin;
 pub mod jsonrpc;
+pub mod sse;
 pub mod ws;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]

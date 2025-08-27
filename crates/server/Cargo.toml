@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 axum = { workspace = true, features = ["multipart"] }
+axum-extra = {workspace=true, features = ["query"]}
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
