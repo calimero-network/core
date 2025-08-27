@@ -19,21 +19,20 @@ use crate::errors::ClientError;
 use crate::output::{Format, Output, Report};
 
 mod app;
-pub mod auth;
 mod blob;
 mod call;
 mod context;
 mod node;
 mod peers;
-pub mod storage;
 
 use app::AppCommand;
-use auth::{authenticate_with_session_cache, check_authentication};
 use blob::BlobCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use node::NodeCommand;
 use peers::PeersCommand;
+
+use crate::auth::{authenticate_with_session_cache, check_authentication};
 
 pub const EXAMPLES: &str = r"
   # List all applications

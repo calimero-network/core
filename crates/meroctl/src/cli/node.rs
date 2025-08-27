@@ -5,11 +5,11 @@ use const_format::concatcp;
 use eyre::{bail, Result};
 use url::Url;
 
-use crate::cli::storage::JwtToken;
 use crate::cli::{check_authentication, Environment};
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::{Config, NodeConnection};
 use crate::output::Output;
+use crate::storage::JwtToken;
 
 #[derive(Debug, Parser)]
 pub struct AddNodeCommand {

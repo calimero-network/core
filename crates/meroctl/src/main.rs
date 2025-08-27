@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+mod auth;
 pub mod cli;
 mod client;
 mod common;
@@ -10,6 +11,7 @@ mod connection;
 mod defaults;
 mod errors;
 mod output;
+mod storage;
 mod version;
 
 #[tokio::main]
