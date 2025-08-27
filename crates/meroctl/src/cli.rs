@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use calimero_client::ClientError;
 use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -15,9 +16,7 @@ use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
 use crate::defaults;
-
 use crate::output::{Format, Output, Report};
-use calimero_client::ClientError;
 
 mod app;
 mod blob;
@@ -172,7 +171,9 @@ impl RootCommand {
 
             // For unregistered local nodes, use authenticate_with_session_cache
             // This will handle authentication if needed, or bypass it for local nodes
-            let connection = authenticate_with_session_cache(&url, &format!("local node {}", node), output).await?;
+            let connection =
+                authenticate_with_session_cache(&url, &format!("local node {}", node), output)
+                    .await?;
             Ok(connection)
         } else if let Some(api_url) = &self.args.api {
             // Use specific API URL - check session cache first, then authenticate if needed
@@ -197,7 +198,8 @@ impl RootCommand {
             // No active node set - fall back to default localhost server
             // For default localhost, use authenticate_with_session_cache
             let default_url = "http://127.0.0.1:2528".parse()?;
-            let connection = authenticate_with_session_cache(&default_url, "default", output).await?;
+            let connection =
+                authenticate_with_session_cache(&default_url, "default", output).await?;
             Ok(connection)
         }
     }

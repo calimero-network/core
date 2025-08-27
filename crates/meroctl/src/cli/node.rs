@@ -1,3 +1,4 @@
+use calimero_client::storage::JwtToken;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::Table;
@@ -9,8 +10,6 @@ use crate::cli::{check_authentication, Environment};
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::{Config, NodeConnection};
 use crate::output::Output;
-use calimero_client::storage::JwtToken;
-
 
 #[derive(Debug, Parser)]
 pub struct AddNodeCommand {
@@ -114,12 +113,12 @@ impl NodeCommand {
                         )
                         .await?;
 
-                        NodeConnection::Local { 
-                            path, 
+                        NodeConnection::Local {
+                            path,
                             jwt_tokens: jwt_tokens.map(|tokens| crate::storage::JwtToken {
                                 access_token: tokens.access_token,
                                 refresh_token: tokens.refresh_token,
-                            })
+                            }),
                         }
                     }
                     LocationType::Remote(url) => {
@@ -131,12 +130,12 @@ impl NodeCommand {
                         )
                         .await?;
 
-                        NodeConnection::Remote { 
-                            url, 
+                        NodeConnection::Remote {
+                            url,
                             jwt_tokens: jwt_tokens.map(|tokens| crate::storage::JwtToken {
                                 access_token: tokens.access_token,
                                 refresh_token: tokens.refresh_token,
-                            })
+                            }),
                         }
                     }
                 };

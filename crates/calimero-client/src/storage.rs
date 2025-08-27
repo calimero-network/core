@@ -1,11 +1,12 @@
 //! Token storage and management for Calimero client
-//! 
+//!
 //! This module provides the core types and functionality for managing
 //! JWT tokens used for API authentication.
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// JWT token pair for API authentication
@@ -35,7 +36,7 @@ impl JwtToken {
             metadata: HashMap::new(),
         }
     }
-    
+
     /// Create a new JWT token with refresh token
     pub fn with_refresh(access_token: String, refresh_token: String) -> Self {
         Self {
@@ -46,7 +47,7 @@ impl JwtToken {
             metadata: HashMap::new(),
         }
     }
-    
+
     /// Check if the token is expired
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
@@ -56,7 +57,7 @@ impl JwtToken {
             false // No expiration set
         }
     }
-    
+
     /// Check if the token will expire soon (within the given seconds)
     pub fn expires_soon(&self, within_seconds: i64) -> bool {
         if let Some(expires_at) = self.expires_at {
@@ -67,24 +68,24 @@ impl JwtToken {
             false
         }
     }
-    
+
     /// Get the authorization header value
     pub fn auth_header(&self) -> String {
         let token_type = self.token_type.as_deref().unwrap_or("Bearer");
         format!("{} {}", token_type, self.access_token)
     }
-    
+
     /// Add metadata to the token
     pub fn with_metadata(mut self, key: String, value: serde_json::Value) -> Self {
         self.metadata.insert(key, value);
         self
     }
-    
+
     /// Get metadata value
     pub fn get_metadata(&self, key: &str) -> Option<&serde_json::Value> {
         self.metadata.get(key)
     }
-    
+
     /// Check if the token has a refresh token
     pub fn has_refresh(&self) -> bool {
         self.refresh_token.is_some()
@@ -117,8 +118,6 @@ impl std::hash::Hash for JwtToken {
     }
 }
 
-
-
 /// In-memory token cache for session management
 #[derive(Debug, Clone)]
 pub struct SessionTokenCache {
@@ -132,37 +131,37 @@ impl SessionTokenCache {
             tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-    
+
     /// Store tokens for a specific URL
     pub async fn store_tokens(&self, url: &str, tokens: &JwtToken) {
         let mut cache = self.tokens.write().await;
         cache.insert(url.to_string(), tokens.clone());
     }
-    
+
     /// Get tokens for a specific URL
     pub async fn get_tokens(&self, url: &str) -> Option<JwtToken> {
         let cache = self.tokens.read().await;
         cache.get(url).cloned()
     }
-    
+
     /// Remove tokens for a specific URL
     pub async fn remove_tokens(&self, url: &str) {
         let mut cache = self.tokens.write().await;
         cache.remove(url);
     }
-    
+
     /// Clear all cached tokens
     pub async fn clear_all(&self) {
         let mut cache = self.tokens.write().await;
         cache.clear();
     }
-    
+
     /// Check if tokens exist for a URL
     pub async fn has_tokens(&self, url: &str) -> bool {
         let cache = self.tokens.read().await;
         cache.contains_key(url)
     }
-    
+
     /// Get all cached URLs
     pub async fn get_cached_urls(&self) -> Vec<String> {
         let cache = self.tokens.read().await;
@@ -177,7 +176,7 @@ impl Default for SessionTokenCache {
 }
 
 /// Global session cache instance
-static SESSION_CACHE: once_cell::sync::Lazy<SessionTokenCache> = 
+static SESSION_CACHE: once_cell::sync::Lazy<SessionTokenCache> =
     once_cell::sync::Lazy::new(SessionTokenCache::new);
 
 /// Get the global session cache instance
@@ -207,7 +206,7 @@ impl TokenValidation {
         let expires_in = token.expires_at.unwrap_or(0) - now;
         let is_expired = expires_in <= 0;
         let expires_soon = expires_in > 0 && expires_in <= 300; // 5 minutes
-        
+
         let mut errors = Vec::new();
         if token.access_token.is_empty() {
             errors.push("Access token is empty".to_string());
@@ -215,7 +214,7 @@ impl TokenValidation {
         if is_expired {
             errors.push("Token is expired".to_string());
         }
-        
+
         Self {
             is_valid: errors.is_empty() && !is_expired,
             is_expired,
@@ -224,7 +223,7 @@ impl TokenValidation {
             errors,
         }
     }
-    
+
     /// Check if the token needs refresh
     pub fn needs_refresh(&self) -> bool {
         self.expires_soon || self.is_expired

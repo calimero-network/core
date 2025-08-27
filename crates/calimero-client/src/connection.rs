@@ -1,5 +1,5 @@
 //! Connection management for Calimero client
-//! 
+//!
 //! This module provides the core connection functionality for making
 //! authenticated API requests to Calimero services.
 
@@ -37,7 +37,7 @@ enum RefreshError {
 
 /// Generic connection information that can work with any authenticator and storage implementation
 #[derive(Clone, Debug)]
-pub struct ConnectionInfo<A, S> 
+pub struct ConnectionInfo<A, S>
 where
     A: ClientAuthenticator + Clone + Send + Sync,
     S: ClientStorage + Clone + Send + Sync,
@@ -175,7 +175,9 @@ where
                     Ok(new_token) => {
                         // Update stored tokens
                         if let Some(ref node_name) = self.node_name {
-                            self.client_storage.update_tokens(node_name, &new_token).await?;
+                            self.client_storage
+                                .update_tokens(node_name, &new_token)
+                                .await?;
                         }
                         continue;
                     }
@@ -185,7 +187,9 @@ where
                             Ok(new_tokens) => {
                                 // Update stored tokens
                                 if let Some(ref node_name) = self.node_name {
-                                    self.client_storage.update_tokens(node_name, &new_tokens).await?;
+                                    self.client_storage
+                                        .update_tokens(node_name, &new_tokens)
+                                        .await?;
                                 }
                                 continue;
                             }
@@ -271,7 +275,10 @@ where
             .await?;
 
         if !response.status().is_success() {
-            return Err(eyre!("Token refresh failed with status: {}", response.status()));
+            return Err(eyre!(
+                "Token refresh failed with status: {}",
+                response.status()
+            ));
         }
 
         let wrapped_response: WrappedResponse = response.json().await?;
@@ -285,7 +292,9 @@ where
     /// Update the stored JWT tokens using the storage interface
     pub async fn update_tokens(&self, new_tokens: &JwtToken) -> Result<()> {
         if let Some(node_name) = &self.node_name {
-            self.client_storage.update_tokens(node_name, new_tokens).await
+            self.client_storage
+                .update_tokens(node_name, new_tokens)
+                .await
         } else {
             // For external connections without a node name, we can't update storage
             // This is expected behavior
@@ -297,7 +306,7 @@ where
     pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
         // Check the admin API health endpoint to determine if authentication is required
         let health_url = self.api_url.join("admin-api/health")?;
-        
+
         match self.client.get(health_url).send().await {
             Ok(response) => {
                 if response.status() == 401 {

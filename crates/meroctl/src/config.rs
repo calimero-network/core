@@ -28,7 +28,7 @@ pub enum NodeConnection {
     Remote {
         url: Url,
         jwt_tokens: Option<JwtToken>,
-    }
+    },
 }
 
 impl Config {
@@ -99,22 +99,26 @@ impl Config {
                 })?;
 
                 ConnectionInfo::new(
-                    url, 
-                    jwt_tokens.as_ref().map(|tokens| calimero_client::storage::JwtToken::with_refresh(
-                        tokens.access_token.clone(),
-                        tokens.refresh_token.clone().unwrap_or_default()
-                    )), 
-                    Some(node.to_owned()), 
-                    crate::auth::create_cli_authenticator(output), 
-                    FileTokenStorage::new()
+                    url,
+                    jwt_tokens.as_ref().map(|tokens| {
+                        calimero_client::storage::JwtToken::with_refresh(
+                            tokens.access_token.clone(),
+                            tokens.refresh_token.clone().unwrap_or_default(),
+                        )
+                    }),
+                    Some(node.to_owned()),
+                    crate::auth::create_cli_authenticator(output),
+                    FileTokenStorage::new(),
                 )
             }
             NodeConnection::Remote { url, jwt_tokens } => ConnectionInfo::new(
                 url.clone(),
-                jwt_tokens.as_ref().map(|tokens| calimero_client::storage::JwtToken::with_refresh(
-                    tokens.access_token.clone(),
-                    tokens.refresh_token.clone().unwrap_or_default()
-                )),
+                jwt_tokens.as_ref().map(|tokens| {
+                    calimero_client::storage::JwtToken::with_refresh(
+                        tokens.access_token.clone(),
+                        tokens.refresh_token.clone().unwrap_or_default(),
+                    )
+                }),
                 Some(node.to_owned()),
                 crate::auth::create_cli_authenticator(output),
                 FileTokenStorage::new(),
@@ -124,7 +128,3 @@ impl Config {
         Ok(Some(connection_info))
     }
 }
-
-
-
-

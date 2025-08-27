@@ -1,5 +1,5 @@
 //! API client for Calimero services
-//! 
+//!
 //! This module provides the core client functionality for making
 //! authenticated API requests to Calimero services.
 
@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use calimero_primitives::alias::{Alias, ScopedAlias};
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::blobs::{BlobId, BlobInfo, BlobMetadata};
+use calimero_primitives::blobs::{BlobId, BlobMetadata};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
@@ -25,10 +25,11 @@ use calimero_server_primitives::admin::{
     UninstallApplicationResponse, UpdateContextApplicationRequest,
     UpdateContextApplicationResponse,
 };
+use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use calimero_server_primitives::jsonrpc::{Request, Response};
 use eyre::Result;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use url::Url;
 
 use crate::connection::ConnectionInfo;
@@ -110,30 +111,9 @@ impl<T> ResolveResponse<T> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Copy, Clone)]
-pub struct BlobDeleteResponse {
-    pub blob_id: BlobId,
-    pub deleted: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BlobListResponse {
-    pub data: BlobListResponseData,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BlobListResponseData {
-    pub blobs: Vec<BlobInfo>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BlobInfoResponse {
-    pub data: BlobMetadata,
-}
-
 /// Generic API client that can work with any authenticator and storage implementation
 #[derive(Clone, Debug)]
-pub struct Client<A, S> 
+pub struct Client<A, S>
 where
     A: ClientAuthenticator + Clone + Send + Sync,
     S: ClientStorage + Clone + Send + Sync,
@@ -309,18 +289,25 @@ where
         let url = self.base_url()?.join("jsonrpc")?;
 
         // Debug: Print the request being sent
-        eprintln!("🔍 JSON-RPC Request to {}: {}", url, serde_json::to_string_pretty(&request)?);
+        eprintln!(
+            "🔍 JSON-RPC Request to {}: {}",
+            url,
+            serde_json::to_string_pretty(&request)?
+        );
 
         let response = self.http_client.post(url).json(&request).send().await?;
-        
+
         // Debug: Print the raw response status and headers
         eprintln!("🔍 JSON-RPC Response Status: {}", response.status());
         eprintln!("🔍 JSON-RPC Response Headers: {:?}", response.headers());
-        
+
         let jsonrpc_response: Response = response.json().await?;
-        
+
         // Debug: Print the parsed response
-        eprintln!("🔍 JSON-RPC Parsed Response: {}", serde_json::to_string_pretty(&jsonrpc_response)?);
+        eprintln!(
+            "🔍 JSON-RPC Parsed Response: {}",
+            serde_json::to_string_pretty(&jsonrpc_response)?
+        );
 
         Ok(jsonrpc_response)
     }
@@ -485,10 +472,7 @@ where
         Ok(sync_response)
     }
 
-    pub async fn join_context(
-        &self,
-        request: JoinContextRequest,
-    ) -> Result<JoinContextResponse> {
+    pub async fn join_context(&self, request: JoinContextRequest) -> Result<JoinContextResponse> {
         let url = self.base_url()?.join("admin-api/contexts/join")?;
 
         let response = self.http_client.post(url).json(&request).send().await?;
@@ -497,7 +481,10 @@ where
         Ok(join_response)
     }
 
-    pub async fn get_context_storage(&self, context_id: &ContextId) -> Result<GetContextStorageResponse> {
+    pub async fn get_context_storage(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<GetContextStorageResponse> {
         let url = self
             .base_url()?
             .join(&format!("admin-api/contexts/{context_id}/storage"))?;
@@ -508,7 +495,11 @@ where
         Ok(storage_response)
     }
 
-    pub async fn get_context_identities(&self, context_id: &ContextId, owned: bool) -> Result<GetContextIdentitiesResponse> {
+    pub async fn get_context_identities(
+        &self,
+        context_id: &ContextId,
+        owned: bool,
+    ) -> Result<GetContextIdentitiesResponse> {
         let endpoint = if owned {
             format!("admin-api/contexts/{}/identities-owned", context_id)
         } else {
@@ -522,7 +513,10 @@ where
         Ok(identities_response)
     }
 
-    pub async fn get_context_client_keys(&self, context_id: &ContextId) -> Result<GetContextClientKeysResponse> {
+    pub async fn get_context_client_keys(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<GetContextClientKeysResponse> {
         let url = self
             .base_url()?
             .join(&format!("admin-api/contexts/{context_id}/client-keys"))?;
@@ -573,8 +567,6 @@ where
         self.create_alias(alias, value, scope).await
     }
 
-
-
     pub async fn create_alias<T>(
         &self,
         alias: Alias<T>,
@@ -596,7 +588,9 @@ where
             value: value.create(),
         };
 
-        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope_path}"))?;
+        let url = self
+            .base_url()?
+            .join(&format!("{prefix}/{kind}{scope_path}"))?;
         let response = self.http_client.post(url).json(&body).send().await?;
         let create_alias_response: CreateAliasResponse = response.json().await?;
 
@@ -636,7 +630,9 @@ where
             .map(|scope| format!("/{}", scope))
             .unwrap_or_default();
 
-        let url = self.base_url()?.join(&format!("{prefix}/{kind}{scope_path}"))?;
+        let url = self
+            .base_url()?
+            .join(&format!("{prefix}/{kind}{scope_path}"))?;
         let response = self.http_client.get(url).send().await?;
         let list_aliases_response: ListAliasesResponse<T> = response.json().await?;
 
@@ -660,9 +656,9 @@ where
         let url = self
             .base_url()?
             .join(&format!("{prefix}/{kind}{scope_path}/{alias}"))?;
-        
+
         let response = self.http_client.post(url).send().await?;
-        
+
         let list_aliases_response: LookupAliasResponse<T> = response.json().await?;
 
         Ok(list_aliases_response)

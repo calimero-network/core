@@ -6,6 +6,7 @@ use axum::extract::Query;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
+use calimero_client::storage::{get_session_cache, JwtToken};
 use eyre::{bail, eyre, OptionExt, Result};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -15,7 +16,6 @@ use url::Url;
 
 use crate::connection::ConnectionInfo;
 use crate::output::{InfoLine, Output, WarnLine};
-use calimero_client::{storage::{get_session_cache, JwtToken}};
 use crate::storage::FileTokenStorage;
 
 #[derive(Debug, Deserialize)]
@@ -25,13 +25,13 @@ struct AuthCallback {
 }
 
 pub async fn authenticate(api_url: &Url, output: Output) -> Result<JwtToken> {
-            let temp_connection = ConnectionInfo::new(
-            api_url.clone(), 
-            None, 
-            None, 
-            create_cli_authenticator(output),
-            FileTokenStorage::new()
-        );
+    let temp_connection = ConnectionInfo::new(
+        api_url.clone(),
+        None,
+        None,
+        create_cli_authenticator(output),
+        FileTokenStorage::new(),
+    );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
     if auth_mode == "none" {
@@ -250,11 +250,11 @@ pub async fn check_authentication(
     output: Output,
 ) -> Result<Option<JwtToken>> {
     let temp_connection = ConnectionInfo::new(
-        url.clone(), 
-        None, 
-        None, 
+        url.clone(),
+        None,
+        None,
         create_cli_authenticator(output),
-        FileTokenStorage::new()
+        FileTokenStorage::new(),
     );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
@@ -278,11 +278,11 @@ pub async fn authenticate_with_session_cache(
     output: Output,
 ) -> Result<ConnectionInfo> {
     let temp_connection = ConnectionInfo::new(
-        url.clone(), 
-        None, 
-        None, 
+        url.clone(),
+        None,
+        None,
         create_cli_authenticator(output),
-        FileTokenStorage::new()
+        FileTokenStorage::new(),
     );
     let auth_mode = temp_connection.detect_auth_mode().await?;
 
@@ -321,12 +321,18 @@ pub async fn authenticate_with_session_cache(
         }
     } else {
         // No authentication required
-        Ok(ConnectionInfo::new(url.clone(), None, None, create_cli_authenticator(output), FileTokenStorage::new()))
+        Ok(ConnectionInfo::new(
+            url.clone(),
+            None,
+            None,
+            create_cli_authenticator(output),
+            FileTokenStorage::new(),
+        ))
     }
 }
 
 /// Meroctl-specific implementation of ClientAuthenticator
-/// 
+///
 /// This authenticator is designed to work with meroctl's Output type
 /// and provides browser-based authentication flows for the CLI.
 pub struct MeroctlAuthenticator {
@@ -361,88 +367,106 @@ impl MeroctlAuthenticator {
 
 #[async_trait::async_trait]
 impl calimero_client::ClientAuthenticator for MeroctlAuthenticator {
-    async fn authenticate(&self, api_url: &url::Url) -> eyre::Result<calimero_client::storage::JwtToken> {
+    async fn authenticate(
+        &self,
+        api_url: &url::Url,
+    ) -> eyre::Result<calimero_client::storage::JwtToken> {
         // For now, implement a simple authentication flow directly
         self.output.display_message("Starting authentication...");
-        
+
         // Try to open the authentication URL in the browser
         if let Err(e) = self.output.open_browser(api_url) {
-            self.output.display_error(&format!("Failed to open browser: {}", e));
-            self.output.display_message(&format!("Please manually visit: {}", api_url));
+            self.output
+                .display_error(&format!("Failed to open browser: {}", e));
+            self.output
+                .display_message(&format!("Please manually visit: {}", api_url));
         }
-        
+
         // Wait for user to complete authentication
-        self.output.display_message("Please complete authentication in your browser, then provide the access token.");
+        self.output.display_message(
+            "Please complete authentication in your browser, then provide the access token.",
+        );
         let access_token = self.output.wait_for_input("Enter access token: ")?;
-        
+
         if access_token.is_empty() {
             return Err(eyre::eyre!("Access token cannot be empty"));
         }
-        
+
         // Ask for refresh token if available
-        self.output.display_message("Do you have a refresh token? (y/n)");
+        self.output
+            .display_message("Do you have a refresh token? (y/n)");
         let has_refresh = self.output.wait_for_input("y/n: ")?.to_lowercase() == "y";
-        
+
         let token = if has_refresh {
             let refresh_token = self.output.wait_for_input("Enter refresh token: ")?;
             calimero_client::storage::JwtToken::with_refresh(access_token, refresh_token)
         } else {
             calimero_client::storage::JwtToken::new(access_token)
         };
-        
+
         self.output.display_success("Authentication successful!");
         Ok(token)
     }
-    
-    async fn refresh_tokens(&self, refresh_token: &str) -> eyre::Result<calimero_client::storage::JwtToken> {
+
+    async fn refresh_tokens(
+        &self,
+        refresh_token: &str,
+    ) -> eyre::Result<calimero_client::storage::JwtToken> {
         // For now, we'll use a simple approach - ask user for new token
-        self.output.display_message("Refreshing authentication tokens...");
-        
-        self.output.display_message("Please provide new access token:");
+        self.output
+            .display_message("Refreshing authentication tokens...");
+
+        self.output
+            .display_message("Please provide new access token:");
         let access_token = self.output.wait_for_input("Enter new access token: ")?;
-        
+
         if access_token.is_empty() {
             return Err(eyre::eyre!("Access token cannot be empty"));
         }
-        
+
         let token = calimero_client::storage::JwtToken::new(access_token);
         self.output.display_success("Token refresh successful!");
         Ok(token)
     }
-    
-    async fn handle_auth_failure(&self, api_url: &url::Url) -> eyre::Result<calimero_client::storage::JwtToken> {
-        self.output.display_error("Authentication failed. Please try again.");
-        
+
+    async fn handle_auth_failure(
+        &self,
+        api_url: &url::Url,
+    ) -> eyre::Result<calimero_client::storage::JwtToken> {
+        self.output
+            .display_error("Authentication failed. Please try again.");
+
         // Try to open the authentication URL in the browser
         if let Err(e) = self.output.open_browser(api_url) {
-            self.output.display_error(&format!("Failed to open browser: {}", e));
-            self.output.display_message(&format!("Please manually visit: {}", api_url));
+            self.output
+                .display_error(&format!("Failed to open browser: {}", e));
+            self.output
+                .display_message(&format!("Please manually visit: {}", api_url));
         }
-        
+
         // Wait for user to complete authentication
-        self.output.display_message("Please complete authentication in your browser, then press Enter.");
+        self.output
+            .display_message("Please complete authentication in your browser, then press Enter.");
         self.output.wait_for_input("Press Enter when done: ")?;
-        
+
         // Try to authenticate again
         self.authenticate(api_url).await
     }
-    
+
     async fn check_auth_required(&self, _api_url: &url::Url) -> eyre::Result<bool> {
         // For now, assume all APIs require authentication
         // In a real implementation, this would check the API health endpoint
         Ok(true)
     }
-    
+
     fn get_auth_method(&self) -> &'static str {
         "Meroctl Browser-based OAuth"
     }
-    
+
     fn supports_refresh(&self) -> bool {
         true
     }
 }
-
-
 
 /// No-op output handler for cloning
 struct NoOpOutputHandler;
@@ -451,8 +475,12 @@ impl calimero_client::auth::MeroctlOutputHandler for NoOpOutputHandler {
     fn display_message(&self, _message: &str) {}
     fn display_error(&self, _error: &str) {}
     fn display_success(&self, _message: &str) {}
-    fn open_browser(&self, _url: &url::Url) -> eyre::Result<()> { Ok(()) }
-    fn wait_for_input(&self, _prompt: &str) -> eyre::Result<String> { Ok(String::new()) }
+    fn open_browser(&self, _url: &url::Url) -> eyre::Result<()> {
+        Ok(())
+    }
+    fn wait_for_input(&self, _prompt: &str) -> eyre::Result<String> {
+        Ok(String::new())
+    }
 }
 
 /// Concrete implementation of MeroctlOutputHandler for meroctl's Output type
@@ -471,29 +499,29 @@ impl calimero_client::auth::MeroctlOutputHandler for MeroctlOutputWrapper {
     fn display_message(&self, message: &str) {
         self.output.write(&InfoLine(message));
     }
-    
+
     fn display_error(&self, error: &str) {
         self.output.write(&WarnLine(error));
     }
-    
+
     fn display_success(&self, message: &str) {
         self.output.write(&InfoLine(message));
     }
-    
+
     fn open_browser(&self, url: &Url) -> Result<()> {
         webbrowser::open(url.as_str())?;
         Ok(())
     }
-    
+
     fn wait_for_input(&self, prompt: &str) -> Result<String> {
         use std::io::{self, Write};
-        
+
         print!("{}", prompt);
         io::stdout().flush()?;
-        
+
         let mut input = String::new();
         drop(io::stdin().read_line(&mut input));
-        
+
         Ok(input.trim().to_string())
     }
 }
