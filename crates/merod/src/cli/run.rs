@@ -29,6 +29,7 @@ impl RunCommand {
             config.network.server.admin,
             config.network.server.jsonrpc,
             config.network.server.websocket,
+            config.network.server.sse,
         );
 
         start(NodeConfig {
