@@ -25,6 +25,13 @@ pub struct CliAuthenticator {
     output: Box<dyn OutputHandler + Send + Sync>,
 }
 
+impl Clone for CliAuthenticator {
+    fn clone(&self) -> Self {
+        // Create a new authenticator with console output
+        Self::new()
+    }
+}
+
 /// Trait for handling output during authentication
 pub trait OutputHandler: Send + Sync {
     /// Display a message to the user
@@ -72,7 +79,7 @@ impl OutputHandler for ConsoleOutputHandler {
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
 
-        Ok(input.trim().to_string())
+        Ok(input.trim().to_owned())
     }
 }
 
@@ -275,7 +282,7 @@ impl ClientAuthenticator for ApiKeyAuthenticator {
     async fn authenticate(&self, _api_url: &Url) -> Result<JwtToken> {
         // For API key auth, we create a simple token
         let token = JwtToken::new(self.api_key.clone())
-            .with_metadata("auth_type".to_string(), serde_json::json!("api_key"));
+            .with_metadata("auth_type".to_owned(), serde_json::json!("api_key"));
         Ok(token)
     }
 

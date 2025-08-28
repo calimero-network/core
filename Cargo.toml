@@ -3,6 +3,7 @@ authors = ["Calimero Limited <info@calimero.network>"]
 edition = "2021"
 repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
+description = "Core Calimero infrastructure and tools"
 
 [workspace]
 resolver = "2"
@@ -150,6 +151,7 @@ wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 web3 = "0.19.0"
 webbrowser = "1.0.4"
+pyo3 = "0.20"
 
 calimero-blobstore.path = "./crates/store/blobs"
 calimero-client.path = "./crates/client"
