@@ -106,7 +106,7 @@ pub async fn start(
     #[cfg(feature = "jsonrpc")]
     {
         if let Some((path, router)) = jsonrpc::service(&config, ctx_client) {
-            app = app.nest(path, router);
+            app = app.nest(&path, router);
             serviced = true;
         }
     }
@@ -114,7 +114,7 @@ pub async fn start(
     #[cfg(feature = "websocket")]
     {
         if let Some((path, handler)) = ws::service(&config, node_client.clone()) {
-            app = app.route(path, handler);
+            app = app.route(&path, handler);
 
             serviced = true;
         }
@@ -124,10 +124,10 @@ pub async fn start(
     {
         if let Some((api_path, router)) = setup(&config, shared_state) {
             if let Some((site_path, serve_dir)) = site(&config) {
-                app = app.nest_service(site_path, serve_dir);
+                app = app.nest_service(site_path.as_str(), serve_dir);
             }
 
-            app = app.nest(api_path, router);
+            app = app.nest(&api_path, router);
             serviced = true;
         }
     }
