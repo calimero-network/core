@@ -25,6 +25,13 @@ pub struct CliAuthenticator {
     output: Box<dyn OutputHandler + Send + Sync>,
 }
 
+impl Clone for CliAuthenticator {
+    fn clone(&self) -> Self {
+        // Create a new authenticator with console output
+        Self::new()
+    }
+}
+
 /// Trait for handling output during authentication
 pub trait OutputHandler: Send + Sync {
     /// Display a message to the user
