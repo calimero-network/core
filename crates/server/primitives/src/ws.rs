@@ -91,30 +91,8 @@ pub struct UnsubscribeResponse {
 }
 // *************************************************************************
 
-// this version has u16 as the command we need to remove the code
 #[derive(Debug)]
 pub enum Command {
     Close(u16, String),
     Send(Response),
-}
-
-// list of sse events to trigger
-#[derive(Debug)]
-pub enum SseEvent {
-    Connection,
-    Message,
-    Close,
-    Error,
-}
-
-impl SseEvent {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SseEvent::Connection => "connection",
-            SseEvent::Message => "message",
-            SseEvent::Close => "close",
-            SseEvent::Error => "error",
-            SseEvent::Connection => "connection",
-        }
-    }
 }
