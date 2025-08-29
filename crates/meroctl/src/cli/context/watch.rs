@@ -3,17 +3,15 @@ use std::process::Stdio;
 
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::ws::{
-    Request, RequestPayload, Response, ResponseBody, SubscribeRequest,
+use calimero_server_primitives::sse::{
+    Response, ResponseBody, SseEvent,
 };
 use clap::Parser;
 use eyre::{OptionExt, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::cli::Environment;
 use crate::output::{ErrorLine, InfoLine, Report};
@@ -53,6 +51,24 @@ pub struct WatchCommand {
     pub count: Option<usize>,
 }
 
+impl Report for Response {
+    fn report(&self) {
+        let mut table = Table::new();
+        let _ = table.set_header(vec![Cell::new("Sse Events").fg(Color::Blue)]);
+
+        match &self.body {
+            ResponseBody::Result(value) => {
+                let _ = table.add_row(vec![format!("Result: {:#}", value)]);
+            }
+            ResponseBody::Error(error) => {
+                let _ = table.add_row(vec![format!("Error: {:?}", error)]);
+            }
+        }
+
+        println!("{table}");
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct ExecutionOutput<'a> {
     #[serde(borrow)]
@@ -84,44 +100,42 @@ impl Report for Response {
 }
 
 impl WatchCommand {
-    pub async fn run(self, environment: &mut Environment) -> Result<()> {
-        let client = environment.client()?;
-        let api_url = client.api_url().clone();
 
-        let resolve_response = client.resolve_alias(self.context, None).await?;
+    pub async fn run(self, environment: &Environment) -> Result<()> {
+        let connection = environment.connection()?;
+
+        let resolve_response = resolve_alias(connection, self.context, None).await?;
         let context_id = resolve_response
             .value()
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-        let mut url = api_url;
 
-        let scheme = match url.scheme() {
-            "https" => "wss",
-            "http" | _ => "ws",
-        };
-
-        url.set_scheme(scheme)
-            .map_err(|()| eyre::eyre!("Failed to set URL scheme"))?;
-        url.set_path("ws");
+        let mut url = connection.api_url.clone();
+        url.set_path("sse");
+        url.set_query(Some(&format!("contextId={}", context_id)));
 
         environment
             .output
-            .write(&InfoLine(&format!("Connecting to WebSocket at {url}")));
+            .write(&InfoLine(&format!("Connecting to {url}")));
 
-        let (ws_stream, _) = connect_async(url.as_str()).await?;
-        let (mut write, mut read) = ws_stream.split();
 
-        let subscribe_request = RequestPayload::Subscribe(SubscribeRequest {
-            context_ids: vec![context_id],
-        });
-        let request = Request {
-            id: None,
-            payload: serde_json::to_value(&subscribe_request)?,
-        };
+        let response = connection.client
+            .get(url.as_str())
+            .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("Referer", connection.api_url.as_str()) 
+            .send()
+            .await?;
+        println!("Hello i am after");
 
-        let subscribe_msg = serde_json::to_string(&request)?;
-        write.send(WsMessage::Text(subscribe_msg)).await?;
+        let status = response.status();
+    
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(eyre::eyre!("HTTP {}: {}", status, body));
+        }
 
         environment
             .output
@@ -138,66 +152,91 @@ impl WatchCommand {
             .output
             .write(&InfoLine("Streaming events (press Ctrl+C to stop):"));
 
-        let mut event_count = 0;
-        while let Some(message) = read.next().await {
-            match message {
-                Ok(msg) => {
-                    if let WsMessage::Text(text) = msg {
-                        let response = serde_json::from_str::<Response>(&text)?;
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut event_count = 0usize;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(pos) = buffer.find("\n\n") {
+                let block = buffer.drain(..pos + 2).collect::<String>();
+
+                let mut event_type = SseEvent::Message;
+                let mut data_str = String::new();
+
+                for line in block.lines() {
+                    if line.is_empty() || line.starts_with(':') {
+                        // keep-alive
+                        continue;
+                    }
+                    if let Some(rest) = line.strip_prefix("event:") {
+                        event_type = match rest.trim() {
+                            "message" => SseEvent::Message,
+                            "close" => SseEvent::Close,
+                            "error" => SseEvent::Error,
+                            other => {
+                                eprintln!("Unknown event type: {other}, defaulting to message");
+                                SseEvent::Message
+                            }
+                        };
+                    } else if let Some(rest) = line.strip_prefix("data:") {
+                        data_str.push_str(rest.trim());
+                    }
+                }
+
+                match event_type {
+                    SseEvent::Message => {
+                        if data_str.is_empty() || data_str.starts_with(':') {
+                                // keep-alive
+                                continue;
+                            }
+
+                        let response: Response = serde_json::from_str(&data_str)?;
                         environment.output.write(&response);
 
                         if let Some(cmd) = &self.exec {
-                            if let Some(max_count) = self.count {
-                                if event_count >= max_count {
-                                    break;
-                                }
-                            }
-
                             let mut child = Command::new(&cmd[0])
                                 .args(&cmd[1..])
                                 .stdin(Stdio::piped())
                                 .spawn()?;
 
-                            let stdin = child.stdin.take();
-
-                            let stdin = tokio::spawn(async {
-                                let Some(mut stdin) = stdin else {
-                                    return Ok(());
-                                };
-
-                                if let ResponseBody::Result(result) = response.body {
-                                    let result = result.to_string();
-
-                                    return stdin.write_all(result.as_bytes()).await;
+                            if let Some(mut stdin) = child.stdin.take() {
+                                if let ResponseBody::Result(result) = &response.body {
+                                    stdin.write_all(result.to_string().as_bytes()).await?;
                                 }
+                            }
 
-                                Ok(())
-                            });
-
-                            let output = child
-                                .wait_with_output()
-                                .await
-                                .map_err(|e| eyre::eyre!("Failed to execute command: {}", e))?;
-
-                            stdin.await??;
-
+                            let output = child.wait_with_output().await?;
                             let outcome = ExecutionOutput {
                                 cmd: cmd.into(),
                                 status: output.status.code(),
                                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                             };
-
                             environment.output.write(&outcome);
                         }
 
                         event_count += 1;
+                        if let Some(max) = self.count {
+                            if event_count >= max {
+                                environment.output.write(&InfoLine(
+                                    "Max event count reached, exiting.",
+                                ));
+                                return Ok(());
+                            }
+                        }
                     }
-                }
-                Err(err) => {
-                    environment
-                        .output
-                        .write(&ErrorLine(&format!("Error receiving message: {err}")));
+                    SseEvent::Close => {
+                        environment.output.write(&InfoLine("SSE stream closed by server."));
+                        return Ok(());
+                    }
+                    SseEvent::Error => {
+                        environment
+                            .output
+                            .write(&ErrorLine(&format!("SSE error: {data_str}")));
+                    }
                 }
             }
         }
