@@ -1,13 +1,13 @@
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
 use core::convert::Infallible;
 use core::pin::pin;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use axum_extra::extract::Query;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
+use axum_extra::extract::Query;
 use calimero_node_primitives::client::NodeClient;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::events::NodeEvent;
@@ -58,7 +58,7 @@ pub(crate) fn service(
     config: &ServerConfig,
     node_client: NodeClient,
 ) -> Option<(&'static str, MethodRouter)> {
-     let _ = match &config.sse {
+    let _ = match &config.sse {
         Some(config) if config.enabled => config,
         _ => {
             info!("Sse server is disabled");
@@ -66,7 +66,7 @@ pub(crate) fn service(
         }
     };
 
-    let path = "/sse"; 
+    let path = "/sse";
 
     for listen in &config.listen {
         info!("Sse server listening on {}/http{{{}}}", listen, path);
@@ -77,7 +77,7 @@ pub(crate) fn service(
         connections: RwLock::default(),
     });
 
-    Some((path,get(sse_handler).layer(Extension(state))))
+    Some((path, get(sse_handler).layer(Extension(state))))
 }
 
 async fn sse_handler(
@@ -153,11 +153,9 @@ async fn handle_node_events(
     state: Arc<ServiceState>,
     command_sender: mpsc::Sender<Command>,
 ) {
-
     let events = state.node_client.receive_events();
 
     let mut events = pin!(events);
-
 
     while let Some(event) = events.next().await {
         let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned()

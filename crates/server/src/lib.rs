@@ -124,13 +124,13 @@ pub async fn start(
 
     #[cfg(feature = "sse")]
     {
-{
-        if let Some((path, handler)) = sse::service(&config, node_client.clone()) {
-            app = app.route(path, handler);
+        {
+            if let Some((path, handler)) = sse::service(&config, node_client.clone()) {
+                app = app.route(path, handler);
 
-            serviced = true;
+                serviced = true;
+            }
         }
-    }
     }
 
     #[cfg(feature = "admin")]
