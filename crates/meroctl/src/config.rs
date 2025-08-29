@@ -10,7 +10,7 @@ use url::Url;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::connection::ConnectionInfo;
 use crate::output::Output;
-use crate::storage::JwtToken;
+use crate::storage::{FileTokenStorage, JwtToken};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -84,7 +84,10 @@ impl Config {
         };
 
         let connection_info = match connection {
-            NodeConnection::Local { path, jwt_tokens } => {
+            NodeConnection::Local {
+                path,
+                jwt_tokens: _,
+            } => {
                 let config = load_config(path, node)
                     .await
                     .wrap_err_with(|| format!("Failed to load config for local node '{}'", node))?;
@@ -98,13 +101,18 @@ impl Config {
                     )
                 })?;
 
-                ConnectionInfo::new(url, jwt_tokens.clone(), Some(node.to_owned()), Some(output))
+                ConnectionInfo::new(
+                    url,
+                    Some(node.to_owned()),
+                    crate::auth::create_cli_authenticator(output),
+                    FileTokenStorage::new(),
+                )
             }
-            NodeConnection::Remote { url, jwt_tokens } => ConnectionInfo::new(
+            NodeConnection::Remote { url, jwt_tokens: _ } => ConnectionInfo::new(
                 url.clone(),
-                jwt_tokens.clone(),
                 Some(node.to_owned()),
-                Some(output),
+                crate::auth::create_cli_authenticator(output),
+                FileTokenStorage::new(),
             ),
         };
 

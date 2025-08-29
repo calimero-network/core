@@ -1,5 +1,6 @@
 use std::process::ExitCode;
 
+use calimero_client::ClientError;
 use calimero_version::CalimeroVersion;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
@@ -15,7 +16,6 @@ use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::Config;
 use crate::connection::ConnectionInfo;
 use crate::defaults;
-use crate::errors::ClientError;
 use crate::output::{Format, Output, Report};
 
 mod app;
@@ -143,13 +143,12 @@ impl RootCommand {
         };
 
         if let Err(err) = result {
-            let err = match err.downcast::<ClientError>() {
-                Ok(err) => CliError::ClientError(err),
+            let cli_err = match err.downcast::<ClientError>() {
+                Ok(client_err) => CliError::ClientError(client_err),
                 Err(err) => CliError::Other(err),
             };
-
-            environment.output.write(&err);
-            return Err(err);
+            environment.output.write(&cli_err);
+            return Err(cli_err);
         }
 
         Ok(())
@@ -170,7 +169,8 @@ impl RootCommand {
             let multiaddr = fetch_multiaddr(&config)?;
             let url = multiaddr_to_url(&multiaddr, "")?;
 
-            // Even local nodes might require authentication - use session cache for unregistered nodes
+            // For unregistered local nodes, use authenticate_with_session_cache
+            // This will handle authentication if needed, or bypass it for local nodes
             let connection =
                 authenticate_with_session_cache(&url, &format!("local node {}", node), output)
                     .await?;
@@ -196,10 +196,10 @@ impl RootCommand {
             }
 
             // No active node set - fall back to default localhost server
+            // For default localhost, use authenticate_with_session_cache
             let default_url = "http://127.0.0.1:2528".parse()?;
             let connection =
-                authenticate_with_session_cache(&default_url, "default localhost server", output)
-                    .await?;
+                authenticate_with_session_cache(&default_url, "default", output).await?;
             Ok(connection)
         }
     }
@@ -232,7 +232,7 @@ impl Report for CliError {
         let mut table = Table::new();
         let _ = table.set_header(vec![Cell::new("ERROR").fg(Color::Red)]);
         let _ = table.add_row(vec![match self {
-            CliError::ClientError(e) => format!("Client Error ({}): {}", e.status_code, e.message),
+            CliError::ClientError(e) => format!("Client Error: {}", e),
             CliError::Other(e) => format!("Error: {:?}", e),
         }]);
         println!("{table}");

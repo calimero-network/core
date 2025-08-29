@@ -1,3 +1,4 @@
+use calimero_client::storage::JwtToken;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use comfy_table::Table;
@@ -9,7 +10,6 @@ use crate::cli::{check_authentication, Environment};
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 use crate::config::{Config, NodeConnection};
 use crate::output::Output;
-use crate::storage::JwtToken;
 
 #[derive(Debug, Parser)]
 pub struct AddNodeCommand {
@@ -113,7 +113,13 @@ impl NodeCommand {
                         )
                         .await?;
 
-                        NodeConnection::Local { path, jwt_tokens }
+                        NodeConnection::Local {
+                            path,
+                            jwt_tokens: jwt_tokens.map(|tokens| crate::storage::JwtToken {
+                                access_token: tokens.access_token,
+                                refresh_token: tokens.refresh_token,
+                            }),
+                        }
                     }
                     LocationType::Remote(url) => {
                         let jwt_tokens = determine_auth_tokens(
@@ -124,7 +130,13 @@ impl NodeCommand {
                         )
                         .await?;
 
-                        NodeConnection::Remote { url, jwt_tokens }
+                        NodeConnection::Remote {
+                            url,
+                            jwt_tokens: jwt_tokens.map(|tokens| crate::storage::JwtToken {
+                                access_token: tokens.access_token,
+                                refresh_token: tokens.refresh_token,
+                            }),
+                        }
                     }
                 };
 
@@ -208,12 +220,18 @@ async fn determine_auth_tokens(
 ) -> Result<Option<JwtToken>> {
     // If access token is provided, use direct JWT tokens (skip automatic auth)
     if let Some(access_token) = &cmd.access_token {
-        return Ok(Some(JwtToken {
-            access_token: access_token.clone(),
-            refresh_token: cmd.refresh_token.clone(),
+        return Ok(Some(if let Some(refresh) = &cmd.refresh_token {
+            JwtToken::with_refresh(access_token.clone(), refresh.clone())
+        } else {
+            JwtToken::new(access_token.clone())
         }));
     }
 
-    // Otherwise, use automatic authentication
+    // For local nodes, bypass authentication (same logic as main prepare_connection)
+    if node_description.contains("local node") {
+        return Ok(None); // No JWT tokens needed for local nodes
+    }
+
+    // Otherwise, use automatic authentication for remote nodes
     check_authentication(url, node_description, output).await
 }

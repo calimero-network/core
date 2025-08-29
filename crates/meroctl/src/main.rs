@@ -9,9 +9,10 @@ mod common;
 mod config;
 mod connection;
 mod defaults;
-mod errors;
+
 mod output;
 mod storage;
+
 mod version;
 
 #[tokio::main]

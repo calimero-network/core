@@ -92,6 +92,13 @@ impl CallCommand {
         );
 
         let response = client.execute_jsonrpc(request).await?;
+
+        // Debug: Print what we're about to output
+        eprintln!(
+            "🔍 meroctl call output: {}",
+            serde_json::to_string_pretty(&response)?
+        );
+
         environment.output.write(&response);
 
         Ok(())

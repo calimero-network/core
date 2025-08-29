@@ -1,7 +1,7 @@
+use calimero_server_primitives::blob::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 use comfy_table::{Cell, Color, Table};
 
 use super::Report;
-use crate::client::{BlobDeleteResponse, BlobInfoResponse, BlobListResponse};
 
 // Blob-related Report implementations
 impl Report for BlobDeleteResponse {
