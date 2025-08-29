@@ -39,7 +39,7 @@ calimero-context-config.workspace = true
 calimero-primitives.workspace = true
 calimero-server-primitives.workspace = true
 calimero-version.workspace = true
-async-trait = "0.1"
+async-trait.workspace = true
 
 [lints]
 workspace = true

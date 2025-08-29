@@ -9,7 +9,7 @@ license.workspace = true
 
 [dependencies]
 aes-gcm = "0.10.3"
-async-trait = "0.1.88"
+async-trait.workspace = true
 axum = { workspace = true, features = ["macros"] }
 axum-extra = { version = "0.10.1", features = ["cookie", "cookie-signed", "cookie-private"] }
 base64.workspace = true

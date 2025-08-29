@@ -15,7 +15,7 @@ use crate::auth::validation::{escape_html, sanitize_identifier, ValidatedJson};
 use crate::server::AppState;
 use crate::storage::models::{Key, KeyType};
 
-/// Generate client key request
+/// Client key generation request
 #[derive(Debug, Deserialize, Validate)]
 pub struct GenerateClientKeyRequest {
     /// Context ID selected by user
@@ -26,6 +26,9 @@ pub struct GenerateClientKeyRequest {
 
     /// Additional permissions requested
     pub permissions: Option<Vec<String>>,
+
+    /// Target node URL for which to generate the client key
+    pub target_node_url: Option<String>,
 }
 
 /// Client list handler
@@ -115,6 +118,9 @@ pub async fn generate_client_key_handler(
 
     let root_key_id = auth_response.key_id;
 
+    // Extract node URL from request for node-specific token generation
+    let node_url = request.target_node_url.clone();
+
     // Sanitize identifiers to prevent injection attacks
     let context_id = match request.context_id {
         Some(id) => sanitize_identifier(&id),
@@ -196,7 +202,8 @@ pub async fn generate_client_key_handler(
 
     let name = format!("Context Client - {} ({})", context_id, context_identity);
 
-    let client_key = Key::new_client_key(root_key_id.clone(), name, all_permissions);
+    let client_key =
+        Key::new_client_key(root_key_id.clone(), name, all_permissions, node_url.clone());
 
     if let Err(err) = state.0.key_manager.set_key(&client_id, &client_key).await {
         error!("Failed to store client key: {}", err);
@@ -210,7 +217,7 @@ pub async fn generate_client_key_handler(
     match state
         .0
         .token_generator
-        .generate_token_pair(client_id.clone(), client_key.permissions)
+        .generate_token_pair(client_id.clone(), client_key.permissions, node_url)
         .await
     {
         Ok((access_token, refresh_token)) => {
