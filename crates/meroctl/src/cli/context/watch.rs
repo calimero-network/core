@@ -3,9 +3,7 @@ use std::process::Stdio;
 
 use calimero_primitives::alias::Alias;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::sse::{
-    Response, ResponseBody, SseEvent,
-};
+use calimero_server_primitives::sse::{Response, ResponseBody, SseEvent};
 use clap::Parser;
 use eyre::{OptionExt, Result};
 use futures_util::StreamExt;
@@ -100,7 +98,6 @@ impl Report for Response {
 }
 
 impl WatchCommand {
-
     pub async fn run(self, environment: &Environment) -> Result<()> {
         let connection = environment.connection()?;
 
@@ -110,7 +107,6 @@ impl WatchCommand {
             .copied()
             .ok_or_eyre("unable to resolve")?;
 
-
         let mut url = connection.api_url.clone();
         url.set_path("sse");
         url.set_query(Some(&format!("contextId={}", context_id)));
@@ -119,18 +115,15 @@ impl WatchCommand {
             .output
             .write(&InfoLine(&format!("Connecting to {url}")));
 
-
-        let response = connection.client
+        let response = connection
+            .client
             .get(url.as_str())
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
-            .header("Referer", connection.api_url.as_str()) 
             .send()
             .await?;
-        println!("Hello i am after");
 
         let status = response.status();
-    
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -189,9 +182,9 @@ impl WatchCommand {
                 match event_type {
                     SseEvent::Message => {
                         if data_str.is_empty() || data_str.starts_with(':') {
-                                // keep-alive
-                                continue;
-                            }
+                            // keep-alive
+                            continue;
+                        }
 
                         let response: Response = serde_json::from_str(&data_str)?;
                         environment.output.write(&response);
@@ -221,15 +214,17 @@ impl WatchCommand {
                         event_count += 1;
                         if let Some(max) = self.count {
                             if event_count >= max {
-                                environment.output.write(&InfoLine(
-                                    "Max event count reached, exiting.",
-                                ));
+                                environment
+                                    .output
+                                    .write(&InfoLine("Max event count reached, exiting."));
                                 return Ok(());
                             }
                         }
                     }
                     SseEvent::Close => {
-                        environment.output.write(&InfoLine("SSE stream closed by server."));
+                        environment
+                            .output
+                            .write(&InfoLine("SSE stream closed by server."));
                         return Ok(());
                     }
                     SseEvent::Error => {
