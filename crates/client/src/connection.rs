@@ -75,6 +75,12 @@ where
         self.request(RequestType::Get, path, None::<()>).await
     }
 
+    /// Check if a path requires authentication
+    fn path_requires_auth(&self, path: &str) -> bool {
+        // Only admin-api/health is public, everything else requires authentication
+        !path.starts_with("admin-api/health")
+    }
+
     pub async fn post<I, O>(&self, path: &str, body: I) -> Result<O>
     where
         I: Serialize,
@@ -95,9 +101,16 @@ where
         let mut url = self.api_url.clone();
         url.set_path(path);
 
+        // Check if this path requires authentication
+        let requires_auth = self.path_requires_auth(path);
+
         // Load tokens from storage before making the request
-        let auth_header = if let Some(ref node_name) = self.node_name {
-            if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
+        let auth_header = if requires_auth && self.node_name.is_some() {
+            if let Ok(Some(tokens)) = self
+                .client_storage
+                .load_tokens(&self.node_name.as_ref().unwrap())
+                .await
+            {
                 Some(format!("Bearer {}", tokens.access_token))
             } else {
                 // No tokens available, try to authenticate proactively
@@ -105,7 +118,7 @@ where
                     Ok(new_tokens) => {
                         // Update stored tokens
                         self.client_storage
-                            .update_tokens(node_name, &new_tokens)
+                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
                             .await?;
                         Some(format!("Bearer {}", new_tokens.access_token))
                     }
@@ -141,9 +154,16 @@ where
         let mut url = self.api_url.clone();
         url.set_path(path);
 
+        // Check if this path requires authentication
+        let requires_auth = self.path_requires_auth(path);
+
         // Load tokens from storage before making the request
-        let auth_header = if let Some(ref node_name) = self.node_name {
-            if let Ok(Some(tokens)) = self.client_storage.load_tokens(node_name).await {
+        let auth_header = if requires_auth && self.node_name.is_some() {
+            if let Ok(Some(tokens)) = self
+                .client_storage
+                .load_tokens(&self.node_name.as_ref().unwrap())
+                .await
+            {
                 Some(format!("Bearer {}", tokens.access_token))
             } else {
                 // No tokens available, try to authenticate proactively
@@ -151,7 +171,7 @@ where
                     Ok(new_tokens) => {
                         // Update stored tokens
                         self.client_storage
-                            .update_tokens(node_name, &new_tokens)
+                            .update_tokens(&self.node_name.as_ref().unwrap(), &new_tokens)
                             .await?;
                         Some(format!("Bearer {}", new_tokens.access_token))
                     }
@@ -293,8 +313,8 @@ where
         }
 
         let request_body = RefreshRequest {
-            access_token: access_token.to_string(),
-            refresh_token: refresh_token.to_string(),
+            access_token: access_token.to_owned(),
+            refresh_token: refresh_token.to_owned(),
         };
 
         let response = self
@@ -334,13 +354,15 @@ where
 
     /// Detect the authentication mode for this connection
     pub async fn detect_auth_mode(&self) -> Result<AuthMode> {
-        // For remote nodes, always require authentication
-        // The admin-api/health endpoint might not be properly protected
-        if self.node_name.is_some() {
-            return Ok(AuthMode::Required);
+        // For local nodes (localhost), authentication is usually not required
+        if self.api_url.host_str() == Some("localhost")
+            || self.api_url.host_str() == Some("127.0.0.1")
+        {
+            return Ok(AuthMode::None);
         }
 
-        // For external connections without a node name, check the admin API health endpoint
+        // For remote nodes, check if authentication is actually required
+        // Try to access a public endpoint first
         let health_url = self.api_url.join("admin-api/health")?;
 
         match self.client.get(health_url).send().await {

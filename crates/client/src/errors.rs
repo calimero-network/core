@@ -31,7 +31,7 @@ impl From<reqwest::Error> for ClientError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
             ClientError::Network {
-                message: "Request timeout".to_string(),
+                message: "Request timeout".to_owned(),
             }
         } else if err.is_connect() {
             ClientError::Network {
@@ -67,10 +67,10 @@ impl From<std::io::Error> for ClientError {
     fn from(err: std::io::Error) -> Self {
         match err.kind() {
             std::io::ErrorKind::NotFound => ClientError::Storage {
-                message: "File not found".to_string(),
+                message: "File not found".to_owned(),
             },
             std::io::ErrorKind::PermissionDenied => ClientError::Storage {
-                message: "Permission denied".to_string(),
+                message: "Permission denied".to_owned(),
             },
             _ => ClientError::Storage {
                 message: format!("IO error: {}", err),

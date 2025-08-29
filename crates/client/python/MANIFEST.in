@@ -1,0 +1,38 @@
+# Include README and license files
+include README.md
+include LICENSE.md
+include CHANGELOG.md
+
+# Include Python source files
+recursive-include src *.py
+
+# Include type stubs
+recursive-include src *.pyi
+
+# Include examples
+recursive-include ../src/bindings/python/examples *.py
+
+# Include documentation
+recursive-include docs *.md *.rst *.txt
+
+# Include configuration files
+include pyproject.toml
+include setup.py
+include rust-toolchain.toml
+
+# Exclude build artifacts
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .pytest_cache
+global-exclude .mypy_cache
+global-exclude .coverage
+global-exclude htmlcov
+global-exclude .tox
+global-exclude .venv
+global-exclude venv
+global-exclude target
+global-exclude dist
+global-exclude build
+global-exclude *.egg-info

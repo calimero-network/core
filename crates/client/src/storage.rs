@@ -33,7 +33,7 @@ impl JwtToken {
         Self {
             access_token,
             refresh_token: None,
-            token_type: Some("Bearer".to_string()),
+            token_type: Some("Bearer".to_owned()),
             expires_at: None,
             metadata: HashMap::new(),
         }
@@ -44,7 +44,7 @@ impl JwtToken {
         Self {
             access_token,
             refresh_token: Some(refresh_token),
-            token_type: Some("Bearer".to_string()),
+            token_type: Some("Bearer".to_owned()),
             expires_at: None,
             metadata: HashMap::new(),
         }
@@ -99,7 +99,7 @@ impl Default for JwtToken {
         Self {
             access_token: String::new(),
             refresh_token: None,
-            token_type: Some("Bearer".to_string()),
+            token_type: Some("Bearer".to_owned()),
             expires_at: None,
             metadata: HashMap::new(),
         }
@@ -137,7 +137,7 @@ impl SessionTokenCache {
     /// Store tokens for a specific URL
     pub async fn store_tokens(&self, url: &str, tokens: &JwtToken) {
         let mut cache = self.tokens.write().await;
-        cache.insert(url.to_string(), tokens.clone());
+        cache.insert(url.to_owned(), tokens.clone());
     }
 
     /// Get tokens for a specific URL
@@ -211,10 +211,10 @@ impl TokenValidation {
 
         let mut errors = Vec::new();
         if token.access_token.is_empty() {
-            errors.push("Access token is empty".to_string());
+            errors.push("Access token is empty".to_owned());
         }
         if is_expired {
-            errors.push("Token is expired".to_string());
+            errors.push("Token is expired".to_owned());
         }
 
         Self {
