@@ -18,6 +18,9 @@ on:
       - '.github/workflows/build-wheels.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-wheels:
     name: Build wheels on ${{ matrix.os }}
