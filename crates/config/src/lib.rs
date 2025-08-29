@@ -2,9 +2,9 @@ use core::time::Duration;
 
 use calimero_context::config::ContextConfig;
 use calimero_network_primitives::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
-use calimero_server::{admin::service::AdminConfig, sse::SseConfig};
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
+use calimero_server::{admin::service::AdminConfig, sse::SseConfig};
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use multiaddr::Multiaddr;
@@ -107,7 +107,7 @@ impl ServerConfig {
             admin,
             jsonrpc,
             websocket,
-            sse
+            sse,
         }
     }
 }

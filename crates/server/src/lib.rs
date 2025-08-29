@@ -131,7 +131,6 @@ pub async fn start(
     {
         if let Some((path, handler)) = sse::service(&config, node_client.clone()) {
             app = app.route(path, handler);
-
             serviced = true;
         }
     }
