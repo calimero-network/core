@@ -3,10 +3,16 @@
 //! This module provides various authentication implementations including
 //! CLI-based authentication and other authentication methods.
 
+// Standard library
+use std::io::{self, Write};
+
+// External crates
 use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
+use webbrowser;
 
+// Local crate
 use crate::storage::JwtToken;
 use crate::traits::ClientAuthenticator;
 
@@ -60,8 +66,6 @@ impl OutputHandler for ConsoleOutputHandler {
     }
 
     fn wait_for_input(&self, prompt: &str) -> Result<String> {
-        use std::io::{self, Write};
-
         print!("{}", prompt);
         io::stdout().flush()?;
 

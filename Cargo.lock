@@ -1835,14 +1835,14 @@ dependencies = [
  "eyre",
  "hex",
  "once_cell",
- "reqwest 0.11.27",
+ "reqwest 0.12.9",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
  "url",
- "webbrowser 0.8.15",
+ "webbrowser",
 ]
 
 [[package]]
@@ -6088,15 +6088,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "malloc_buf"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "match_cfg"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6237,7 +6228,7 @@ dependencies = [
  "tokio-tungstenite",
  "toml 0.8.19",
  "url",
- "webbrowser 1.0.4",
+ "webbrowser",
 ]
 
 [[package]]
@@ -7203,15 +7194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
-dependencies = [
- "malloc_buf",
-]
-
-[[package]]
 name = "objc2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8125,12 +8107,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60fcc7d6849342eff22c4350c8b9a989ee8ceabc4b481253e8946b9fe83d684"
 
 [[package]]
-name = "raw-window-handle"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2ff9a1f06a88b01621b7ae906ef0211290d1c8a168a15542486a8f61c0833b9"
-
-[[package]]
 name = "rayon"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8284,7 +8260,6 @@ version = "0.11.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd67538700a17451e7cba03ac727fb961abb7607553461627b97de0b89cf4a62"
 dependencies = [
- "async-compression",
  "base64 0.21.7",
  "bytes",
  "encoding_rs",
@@ -8314,7 +8289,6 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls 0.24.1",
- "tokio-util",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -8330,6 +8304,7 @@ version = "0.12.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a77c62af46e79de0a562e1a9849205ffcb7fc1238876e9bd743357570e04046f"
 dependencies = [
+ "async-compression",
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
@@ -11356,23 +11331,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "url",
-]
-
-[[package]]
-name = "webbrowser"
-version = "0.8.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db67ae75a9405634f5882791678772c94ff5f16a66535aae186e26aa0841fc8b"
-dependencies = [
- "core-foundation 0.9.4",
- "home",
- "jni",
- "log",
- "ndk-context",
- "objc",
- "raw-window-handle",
- "url",
- "web-sys",
 ]
 
 [[package]]

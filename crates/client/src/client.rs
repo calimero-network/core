@@ -3,8 +3,10 @@
 //! This module provides the core client functionality for making
 //! authenticated API requests to Calimero services.
 
+// Standard library
 use std::str::FromStr;
 
+// External crates
 use calimero_primitives::alias::{Alias, ScopedAlias};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::{BlobId, BlobMetadata};
@@ -32,6 +34,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
+// Local crate
 use crate::connection::ConnectionInfo;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 
@@ -483,8 +486,8 @@ where
         value: T,
     ) -> Result<CreateAliasResponse>
     where
-        T: UrlFragment + serde::Serialize,
-        T::Value: serde::Serialize,
+        T: UrlFragment + Serialize,
+        T::Value: Serialize,
     {
         self.create_alias(alias, value, scope).await
     }
@@ -496,8 +499,8 @@ where
         scope: Option<T::Scope>,
     ) -> Result<CreateAliasResponse>
     where
-        T: UrlFragment + serde::Serialize,
-        T::Value: serde::Serialize,
+        T: UrlFragment + Serialize,
+        T::Value: Serialize,
     {
         let prefix = "admin-api/alias/create";
         let kind = T::KIND;

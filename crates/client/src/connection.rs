@@ -3,12 +3,14 @@
 //! This module provides the core connection functionality for making
 //! authenticated API requests to Calimero services.
 
+// External crates
 use eyre::{bail, eyre, Result};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
+// Local crate
 use crate::storage::JwtToken;
 use crate::traits::{ClientAuthenticator, ClientStorage};
 

@@ -4,10 +4,12 @@
 //! must implement. This allows for maximum flexibility while maintaining
 //! a consistent interface.
 
+// External crates
 use async_trait::async_trait;
 use eyre::Result;
 use url::Url;
 
+// Local crate
 use crate::storage::JwtToken;
 
 /// Abstract trait for client token storage operations

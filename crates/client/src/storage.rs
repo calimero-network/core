@@ -3,9 +3,11 @@
 //! This module provides the core types and functionality for managing
 //! JWT tokens used for API authentication.
 
+// Standard library
 use std::collections::HashMap;
 use std::sync::Arc;
 
+// External crates
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 

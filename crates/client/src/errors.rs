@@ -2,6 +2,7 @@
 //!
 //! This module defines the main error type for client operations.
 
+// External crates
 use serde::Serialize;
 use thiserror::Error;
 
