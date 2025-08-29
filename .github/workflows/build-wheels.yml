@@ -6,8 +6,14 @@ permissions:
 on:
   push:
     branches: [ master ]
+    paths:
+      - 'crates/client/**'
+      - '.github/workflows/build-wheels.yml'
   pull_request:
     branches: [ master ]
+    paths:
+      - 'crates/client/**'
+      - '.github/workflows/build-wheels.yml'
   workflow_dispatch:
 
 jobs:
