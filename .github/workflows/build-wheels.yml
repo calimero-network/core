@@ -8,11 +8,13 @@ on:
     branches: [ master ]
     paths:
       - 'crates/client/**'
+      - 'crates/auth/**'
       - '.github/workflows/build-wheels.yml'
   pull_request:
     branches: [ master ]
     paths:
       - 'crates/client/**'
+      - 'crates/auth/src/**'
       - '.github/workflows/build-wheels.yml'
   workflow_dispatch:
 
