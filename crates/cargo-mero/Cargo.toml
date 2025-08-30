@@ -1,6 +1,6 @@
 [package]
 name = "cargo-mero"
-version = "0.1.0"
+version.workspace = true
 description = "CLI tool for building applications on the Calimero network"
 categories = ["command-line-utilities"]
 keywords = ["cli", "cargo", "subcommand"]

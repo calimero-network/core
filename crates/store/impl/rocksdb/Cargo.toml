@@ -1,6 +1,6 @@
 [package]
 name = "calimero-store-rocksdb"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
