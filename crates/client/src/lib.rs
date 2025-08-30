@@ -12,7 +12,6 @@
 //! - **Token Storage**: Abstract token management with multiple backends
 //! - **HTTP Client**: Robust HTTP client with retry and error handling
 //! - **Async Support**: Full async/await support throughout
-//! - **Python Bindings**: Optional Python bindings via PyO3
 
 pub mod auth;
 pub mod client;
@@ -20,9 +19,6 @@ pub mod connection;
 pub mod errors;
 pub mod storage;
 pub mod traits;
-
-#[cfg(feature = "python")]
-pub mod bindings;
 
 // Re-export main types for easy access
 pub use auth::{CliAuthenticator, MeroctlOutputHandler};

@@ -1,7 +1,6 @@
 [package]
 name = "calimero-abi"
 description = "CLI tool for extracting Calimero WASM ABI"
-version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true

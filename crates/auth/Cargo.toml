@@ -1,6 +1,5 @@
 [package]
 name = "mero-auth"
-version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
 description = "Forward Authentication Service for Calimero Network"
