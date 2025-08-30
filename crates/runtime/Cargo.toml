@@ -1,5 +1,6 @@
 [package]
 name = "calimero-runtime"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -28,6 +29,7 @@ calimero-sys.workspace = true
 
 [[example]]
 name = "demo"
+version.workspace = true
 
 [dev-dependencies]
 assert-json-diff.workspace = true

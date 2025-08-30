@@ -1,5 +1,6 @@
 [package]
 name = "calimero-blobstore"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -7,6 +8,7 @@ license.workspace = true
 
 [[example]]
 name = "blobstore"
+version.workspace = true
 required-features = ["examples"]
 
 [dependencies]

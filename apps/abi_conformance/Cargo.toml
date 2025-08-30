@@ -1,5 +1,6 @@
 [package]
 name = "abi_conformance"
+version.workspace = true
 description = "Calimero ABI conformance test application"
 authors.workspace = true
 edition.workspace = true

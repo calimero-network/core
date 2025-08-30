@@ -1,5 +1,6 @@
 [package]
 name = "calimero-wasm-abi-v1"
+version.workspace = true
 description = "WASM-level ABI v1 for Calimero applications"
 authors.workspace = true
 edition.workspace = true
@@ -20,4 +21,5 @@ jsonschema.workspace = true
 workspace = true
 
 [lib]
-name = "calimero_wasm_abi_v1" 
+name = "calimero_wasm_abi_v1"
+version.workspace = true 

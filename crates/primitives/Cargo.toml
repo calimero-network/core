@@ -1,9 +1,12 @@
 [package]
 name = "calimero-primitives"
+version.workspace = true
+publish = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
+description.workspace = true
 
 [dependencies]
 bs58.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "calimero-abi"
+version.workspace = true
 description = "CLI tool for extracting Calimero WASM ABI"
 authors.workspace = true
 edition.workspace = true
@@ -8,6 +9,7 @@ license.workspace = true
 
 [[bin]]
 name = "calimero-abi"
+version.workspace = true
 path = "src/main.rs"
 
 [dependencies]

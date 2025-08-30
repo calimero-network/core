@@ -1,5 +1,6 @@
 [package]
 name = "calimero-server"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true

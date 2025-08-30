@@ -1,5 +1,7 @@
 [package]
 name = "calimero-client"
+version.workspace = true
+publish = true
 authors.workspace = true
 edition.workspace = true
 repository.workspace = true
