@@ -58,6 +58,7 @@ jobs:
       with:
         name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
         path: crates/client/python/dist/*.whl
+        retention-days: 1
 
   check-version:
     name: Check if version was bumped
@@ -93,53 +94,10 @@ jobs:
         if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
           echo "Version bumped from $PREVIOUS_VERSION to $CURRENT_VERSION"
           echo "bumped=true" >> $GITHUB_OUTPUT
-          echo "VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
         else
           echo "No version change detected"
           echo "bumped=false" >> $GITHUB_OUTPUT
         fi
-
-    - name: Create git tag (if version bumped)
-      if: steps.check.outputs.bumped == 'true'
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git tag "v$VERSION"
-        git push origin "v$VERSION"
-
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: [build-wheels, check-version]
-    if: github.ref == 'refs/heads/master' && needs.check-version.outputs.version-bumped == 'true'
-    permissions:
-      contents: write
-      packages: write
-      # 'contents: write' to create release, 'packages: write' for GH Packages. Remove if not needed.
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: dist/
-
-    - name: Combine artifacts
-      run: |
-        mkdir -p dist/
-        # Move wheels to dist/
-        find . -name "*.whl" -exec mv {} dist/ \;
-        # List contents
-        ls -la dist/
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/*
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish-pypi:
     name: Publish to PyPI
@@ -153,15 +111,19 @@ jobs:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
-        path: dist/
+        pattern: wheels-*
+        merge-multiple: true
+        download-archive-multiple: true
 
     - name: Combine artifacts
       run: |
         mkdir -p dist/
-        # Move wheels to dist/
+        # Find and move all wheel files to dist/
         find . -name "*.whl" -exec mv {} dist/ \;
         # List contents
+        echo "Wheels found:"
         ls -la dist/
+        echo "Total wheel count: $(ls dist/*.whl 2>/dev/null | wc -l)"
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
