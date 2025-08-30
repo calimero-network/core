@@ -5,6 +5,11 @@ repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
 description = "Core Calimero infrastructure and tools"
 
+[workspace.metadata.workspaces]
+# Shared version of all public crates in the workspace.
+version = "0.1.1"
+exclude = ["merod", "meroctl", "calimero-abi", "kv-store", "abi_conformance", "e2e-tests"]
+
 [workspace]
 resolver = "2"
 members = [
