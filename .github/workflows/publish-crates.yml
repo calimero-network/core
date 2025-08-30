@@ -5,14 +5,13 @@ on:
     branches:
       - master
 
-  permissions:
-    contents: read
-
 jobs:
   publish-cargo-crates:
     name: "Publish calimero-workspaces on crates.io"
     runs-on: ubuntu-latest
     environment: deploy
+    permissions:
+      contents: write # required for crates push
     timeout-minutes: 30 
     
     steps:
