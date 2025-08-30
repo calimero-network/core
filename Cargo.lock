@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "abi_conformance"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bs58 0.5.1",
  "calimero-sdk",
@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-abi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "eyre",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-blobstore"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "calimero-primitives",
@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bs58 0.5.1",
  "calimero-context",
@@ -1867,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-context"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix",
  "borsh",
@@ -1892,7 +1892,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-context-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy",
  "alloy-sol-types",
@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-context-primitives"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix",
  "async-stream",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calimero-primitives",
  "curve25519-dalek",
@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-network-primitives"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix",
  "bytes",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix",
  "borsh",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-node-primitives"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix",
  "async-stream",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert-json-diff",
  "borsh",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-sdk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-sdk-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "prettyplease 0.2.25",
  "proc-macro2",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-sdk-near"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calimero-primitives",
  "calimero-sdk",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum 0.7.9",
  "bytes",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-server-primitives"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calimero-context-config",
  "calimero-context-primitives",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borsh",
  "calimero-sdk",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-storage-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borsh",
  "calimero-sdk",
@@ -2222,7 +2222,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borsh",
  "calimero-primitives",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "calimero-store-rocksdb"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calimero-store",
  "eyre",
@@ -2249,14 +2249,14 @@ dependencies = [
 
 [[package]]
 name = "calimero-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cfg-if",
 ]
 
 [[package]]
 name = "calimero-utils-actix"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "actix",
  "async-stream",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-mero"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cargo_metadata",
  "clap",
@@ -3364,7 +3364,7 @@ checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 
 [[package]]
 name = "e2e-tests"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy",
  "async-compression",
@@ -5358,7 +5358,7 @@ dependencies = [
 
 [[package]]
 name = "kv-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
@@ -6149,7 +6149,7 @@ dependencies = [
 
 [[package]]
 name = "mero-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
