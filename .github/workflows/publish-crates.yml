@@ -5,18 +5,27 @@ on:
     branches:
       - master
 
+  permissions:
+    contents: read
+
 jobs:
   publish-cargo-crates:
     name: "Publish calimero-workspaces on crates.io"
     runs-on: ubuntu-latest
     environment: deploy
-    permissions:
-      contents: write # required for crates push
     timeout-minutes: 30 
     
     steps:
       - name: Checkout core repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust installation
+        run: rustc --version
 
       - name: Check if version is already published
         run: |
