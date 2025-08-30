@@ -60,4 +60,4 @@ jobs:
           # Publish only the core crates from the crates/ directory
           cargo ws publish --yes --allow-dirty --force \
               --no-git-commit --no-git-push --no-git \
-              --crates ./crates
+              ./crates
